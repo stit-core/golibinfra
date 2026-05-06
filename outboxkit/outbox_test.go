@@ -85,9 +85,6 @@ func TestRepository_HappyPath(t *testing.T) {
 	}
 }
 
-// TestRepository_RollbackDropsMessage is the core outbox guarantee:
-// when the surrounding business transaction rolls back, the outbox Insert
-// must be rolled back too — the message must NOT be visible afterwards.
 func TestRepository_RollbackDropsMessage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
@@ -128,7 +125,6 @@ func TestRepository_RollbackDropsMessage(t *testing.T) {
 		t.Fatalf("rollback failed — outbox kept message; got %d msgs", len(msgs))
 	}
 
-	// And on commit, message is persisted.
 	err = tr.WithTx(ctx, func(ctx context.Context) error {
 		return repo.Insert(ctx, "user.created", sample{Foo: "commit", N: 2})
 	})

@@ -14,7 +14,6 @@ var Module = fx.Module("natskit",
 	),
 )
 
-
 func newConfig() (Config, error) {
 	var c Config
 	return c, envconfig.Process("", &c)

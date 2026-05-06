@@ -19,7 +19,6 @@ type PoolConfig struct {
 	HealthCheck     time.Duration `envconfig:"PG_HEALTH_CHECK" default:"30s"`
 	OTelTrace       bool          `envconfig:"PG_OTEL_TRACE" default:"true"`
 
-	// Session-level timeouts. Zero value disables the corresponding setting.
 	StatementTimeout       time.Duration `envconfig:"PG_STATEMENT_TIMEOUT" default:"30s"`
 	IdleInTxSessionTimeout time.Duration `envconfig:"PG_IDLE_IN_TX_SESSION_TIMEOUT" default:"60s"`
 	LockTimeout            time.Duration `envconfig:"PG_LOCK_TIMEOUT" default:"5s"`
@@ -74,7 +73,7 @@ func applySessionTimeouts(ctx context.Context, conn *pgx.Conn, cfg PoolConfig) e
 		if ms < 0 {
 			ms = 0
 		}
-		// SET <name> = '<ms>ms'; ms=0 disables the setting.
+
 		stmt := fmt.Sprintf("SET %s = '%dms'", s.name, ms)
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("pgkit: set %s: %w", s.name, err)

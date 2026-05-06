@@ -1,8 +1,8 @@
 package pgkit
 
 type ReplicaConfig struct {
-	ReplicaDSN  string `envconfig:"PG_REPLICA_DSN"`
-	MaxConns    int32  `envconfig:"PG_REPLICA_MAX_CONNS" default:"10"`
+	ReplicaDSN string `envconfig:"PG_REPLICA_DSN"`
+	MaxConns   int32  `envconfig:"PG_REPLICA_MAX_CONNS" default:"10"`
 }
 
 type ReadWriteDB struct {

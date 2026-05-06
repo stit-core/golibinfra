@@ -12,11 +12,6 @@ type pgGuard struct {
 	cfg Config
 }
 
-// NewPgGuard constructs a Postgres-backed Guard.
-//
-// The underlying *pgkit.DB is tx-aware: when this method is called inside
-// a pgkit.Transactor.WithTx scope the queries automatically run on the
-// surrounding transaction's connection.
 func NewPgGuard(db *pgkit.DB, cfg Config) Guard {
 	return &pgGuard{db: db, cfg: cfg}
 }
@@ -42,9 +37,6 @@ func (g *pgGuard) Check(ctx context.Context, subject, ip string) (*LockState, er
 	return nil, nil
 }
 
-// TODO: when sliding-window reset lands, use cfg.Window to drop
-// failed_count back to 1 if NOW() - last_attempt > Window. For now we
-// only enforce hard threshold + LockDuration.
 const recordFailureSQL = `
 INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt)
 VALUES ($1, $2, 1, NOW())

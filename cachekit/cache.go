@@ -78,7 +78,6 @@ func (c *redisCache) Ping(ctx context.Context) error {
 	return nil
 }
 
-// Probe returns a readiness probe compatible with httpkit.Probe.
 func Probe(c Cache) func(ctx context.Context) error {
 	return func(ctx context.Context) error {
 		return c.Ping(ctx)

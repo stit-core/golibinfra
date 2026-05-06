@@ -56,12 +56,10 @@ func TestPgGuard_LockAfterMaxFailures(t *testing.T) {
 	const subject = "user@example.com"
 	const ip = "10.0.0.1"
 
-	// initially not locked
 	if st, err := g.Check(ctx, subject, ip); err != nil || st != nil {
 		t.Fatalf("initial Check: st=%v err=%v", st, err)
 	}
 
-	// 2 failures: still not locked
 	for i := 0; i < 2; i++ {
 		if err := g.RecordFailure(ctx, subject, ip); err != nil {
 			t.Fatalf("RecordFailure %d: %v", i, err)
@@ -71,7 +69,6 @@ func TestPgGuard_LockAfterMaxFailures(t *testing.T) {
 		t.Fatalf("after 2 failures Check: st=%v err=%v", st, err)
 	}
 
-	// 3rd failure → locked
 	before := time.Now()
 	if err := g.RecordFailure(ctx, subject, ip); err != nil {
 		t.Fatalf("RecordFailure threshold: %v", err)
@@ -121,7 +118,6 @@ func TestPgGuard_RecordSuccessResets(t *testing.T) {
 		t.Fatalf("RecordSuccess: %v", err)
 	}
 
-	// after success: row gone, not locked, and first new failure does not lock
 	if st, err := g.Check(ctx, subject, ip); err != nil || st != nil {
 		t.Fatalf("Check after success: st=%v err=%v", st, err)
 	}

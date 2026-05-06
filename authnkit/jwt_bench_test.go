@@ -7,11 +7,11 @@ import (
 
 func benchClaims() map[string]any {
 	return map[string]any{
-		"sub":      "user-123",
-		"role":     "admin",
-		"tenant":   "t1",
-		"scope":    "read write",
-		"jti":      "abc-def-ghi",
+		"sub":    "user-123",
+		"role":   "admin",
+		"tenant": "t1",
+		"scope":  "read write",
+		"jti":    "abc-def-ghi",
 	}
 }
 

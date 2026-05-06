@@ -43,7 +43,7 @@ func TestAPIError_JSON(t *testing.T) {
 }
 
 func TestAPIError_ProblemJSON_OmitEmpty(t *testing.T) {
-	// Without WithDefaults, empty Type/Instance must be omitted.
+
 	e := httpkit.Error("X", http.StatusBadRequest, "d")
 	body, err := json.Marshal(e)
 	if err != nil {
@@ -81,7 +81,6 @@ func TestAPIError_WithDefaults(t *testing.T) {
 		t.Errorf("serialised type: want about:blank, got %v", m["type"])
 	}
 
-	// Should not overwrite an explicit Type.
 	custom := httpkit.APIError{Type: "https://errors.example/foo", Status: 400}.WithDefaults()
 	if custom.Type != "https://errors.example/foo" {
 		t.Errorf("explicit Type overwritten: %q", custom.Type)
