@@ -6,6 +6,8 @@ import (
 	"runtime/debug"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
@@ -92,19 +94,19 @@ func (r *statusRecorder) WriteHeader(s int) {
 
 type AuthExtractor func(r *http.Request) (context.Context, error)
 
-func Auth(extract AuthExtractor) func(http.Handler) http.Handler {
-	return func(next http.Handler) http.Handler {
-		if extract == nil {
-			return next
+func HumaAuth(api huma.API, extract AuthExtractor) func(huma.Context, func(huma.Context)) {
+	return func(ctx huma.Context, next func(huma.Context)) {
+		if extract == nil || len(ctx.Operation().Security) == 0 {
+			next(ctx)
+			return
 		}
-		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			ctx, err := extract(r)
-			if err != nil {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
-				return
-			}
-			next.ServeHTTP(w, r.WithContext(ctx))
-		})
+		r, w := humachi.Unwrap(ctx)
+		newCtx, err := extract(r)
+		if err != nil {
+			_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, "unauthorized")
+			return
+		}
+		next(humachi.NewContext(ctx.Operation(), r.WithContext(newCtx), w))
 	}
 }
 

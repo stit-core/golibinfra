@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -15,6 +16,7 @@ type PoolConfig struct {
 	MaxConnLifetime time.Duration `envconfig:"PG_MAX_CONN_LIFETIME" default:"30m"`
 	MaxConnIdleTime time.Duration `envconfig:"PG_MAX_CONN_IDLE_TIME" default:"5m"`
 	HealthCheck     time.Duration `envconfig:"PG_HEALTH_CHECK" default:"30s"`
+	OTelTrace       bool          `envconfig:"PG_OTEL_TRACE" default:"true"`
 }
 
 func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
@@ -27,6 +29,9 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 	pcfg.MaxConnLifetime = cfg.MaxConnLifetime
 	pcfg.MaxConnIdleTime = cfg.MaxConnIdleTime
 	pcfg.HealthCheckPeriod = cfg.HealthCheck
+	if cfg.OTelTrace {
+		pcfg.ConnConfig.Tracer = otelpgx.NewTracer()
+	}
 
 	pool, err := pgxpool.NewWithConfig(ctx, pcfg)
 	if err != nil {

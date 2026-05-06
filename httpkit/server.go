@@ -30,7 +30,15 @@ type Server struct {
 
 func NewServer(cfg Config) *Server {
 	r := chi.NewRouter()
-	api := humachi.New(r, huma.DefaultConfig(cfg.APITitle, cfg.APIVersion))
+	humaConfig := huma.DefaultConfig(cfg.APITitle, cfg.APIVersion)
+	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
+		"Bearer": {
+			Type:         "http",
+			Scheme:       "bearer",
+			BearerFormat: "JWT",
+		},
+	}
+	api := humachi.New(r, humaConfig)
 
 	srv := &http.Server{
 		Addr:         cfg.Addr,

@@ -14,11 +14,22 @@ var Module = fx.Module("httpkit",
 		newServerWithLifecycle,
 		func(s *Server) huma.API { return s.API() },
 	),
+	fx.Invoke(registerHealth),
 )
 
 type AuthExtractorIn struct {
 	fx.In
 	Extract AuthExtractor `optional:"true"`
+}
+
+type healthIn struct {
+	fx.In
+	API    huma.API
+	Probes []Probe `group:"health"`
+}
+
+func registerHealth(in healthIn) {
+	RegisterHealth(in.API, in.Probes...)
 }
 
 func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn) *Server {
@@ -30,9 +41,7 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai A
 		AccessLog(log),
 		OTel(),
 	)
-	if ai.Extract != nil {
-		s.router.Use(Auth(ai.Extract))
-	}
+	s.api.UseMiddleware(HumaAuth(s.api, ai.Extract))
 
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
