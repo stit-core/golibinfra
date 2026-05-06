@@ -71,7 +71,7 @@ chmod 600 ~/.netrc
 
 ```bash
 mkdir /tmp/check && cd /tmp/check && go mod init check
-go get git.stit.tech/akadmin/golibinfra@v0.8.0
+go get git.stit.tech/akadmin/golibinfra@v0.9.0
 # должно скачать без ошибок
 ```
 
@@ -79,7 +79,7 @@ go get git.stit.tech/akadmin/golibinfra@v0.8.0
 
 В `go.mod`:
 ```
-require git.stit.tech/akadmin/golibinfra v0.8.0
+require git.stit.tech/akadmin/golibinfra v0.9.0
 ```
 
 `go mod tidy` подтянет.
@@ -95,21 +95,26 @@ require git.stit.tech/akadmin/golibinfra v0.8.0
 
 | Пакет | Ответственность |
 |---|---|
-| [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner, маппинг pg-ошибок, `DBProbe` health-probe |
-| [`httpkit`](httpkit/) | Huma bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, HumaAuth; `APIError` (`{code,status,title,detail}`), `MapErr`, `MapSentinel`, `ErrorMapping` |
-| [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus` интерфейс, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module |
-| [`httpclient`](httpclient/) | HTTP-клиент с retry, OTel-инструментированием и автоматической передачей `X-Request-ID` |
+| [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner, маппинг pg-ошибок, `DBProbe` health-probe; `ReadWriteDB` для read-replica (`PG_REPLICA_DSN`) |
+| [`httpkit`](httpkit/) | Huma bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, HumaAuth, **SecurityHeaders** (HSTS/X-Frame/CSP, auto в Module), **Idempotency** (опц., требует `IdempotencyStore`); `APIError` (`{code,status,title,detail}`), `MapErr`, `MapSentinel`, `ErrorMapping` |
+| [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus` интерфейс, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module; panic recovery в subscriber'ах + backpressure (semaphore `NATS_MAX_IN_FLIGHT`) |
+| [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel-инструментированием и автоматической передачей `X-Request-ID` |
+| [`cachekit`](cachekit/) | Redis-обёртка: `Cache` интерфейс, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` адаптер для `httpkit` |
+| [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
 | [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
-| [`logkit`](logkit/) | `Logger` интерфейс + JSON-реализация поверх slog; trace_id correlation; `ServiceConfig{Service,Env,Version}` — автоматические атрибуты `service/env/version` в каждой записи; `RegisterAttr` для кастомных полей |
-| [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация; `JWTConfig` + JWT sign/verify |
+| [`logkit`](logkit/) | `Logger` интерфейс + JSON-реализация поверх slog; trace_id correlation; `ServiceConfig{Service,Env,Version}` — автоматические атрибуты `service/env/version` в каждой записи; `RegisterAttr` для кастомных полей; `NewWithRedact` + `RedactConfig` (PII-фильтры через regex, `LOG_REDACT_ENABLED`) |
+| [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация; `JWTConfig` + JWT sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers |
 
 ## Стабильность API
 
-Публичные структуры конфигов (`pgkit.PoolConfig`, `httpkit.Config`,
-`telemetry.Config`, `logkit.Config`, `authnkit.Argon2idParams`) — **part of public API**.
+Публичные структуры конфигов (`pgkit.PoolConfig`, `pgkit.ReplicaConfig`,
+`httpkit.Config`, `httpkit.SecurityHeadersConfig`, `httpkit.IdempotencyConfig`,
+`telemetry.Config`, `logkit.Config`, `logkit.RedactConfig`, `authnkit.Argon2idParams`,
+`cachekit.Config`, `flagkit.Config`, `natskit.Config` (incl. `BackpressureConfig`),
+`httpclient.BreakerConfig`) — **part of public API**.
 Менять имена/типы полей или их envconfig-теги = breaking change, идёт мажорным
 апгрейдом. Продукты собирают свой `App`-конфиг из этих структур и зависят от
 их стабильности.
@@ -120,13 +125,13 @@ require git.stit.tech/akadmin/golibinfra v0.8.0
 
 ```bash
 # подъём минорной версии
-git tag v0.8.0
-git push origin v0.8.0
+git tag v0.9.0
+git push origin v0.9.0
 ```
 
 В шаблонах/проектах после релиза:
 ```bash
-go get git.stit.tech/akadmin/golibinfra@v0.8.0
+go get git.stit.tech/akadmin/golibinfra@v0.9.0
 go mod tidy
 ```
 
