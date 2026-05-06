@@ -9,3 +9,13 @@ type Logger interface {
 	Error(ctx context.Context, msg string, kv ...any)
 	With(kv ...any) Logger
 }
+
+func Nop() Logger { return nopLogger{} }
+
+type nopLogger struct{}
+
+func (nopLogger) Debug(context.Context, string, ...any) {}
+func (nopLogger) Info(context.Context, string, ...any)  {}
+func (nopLogger) Warn(context.Context, string, ...any)  {}
+func (nopLogger) Error(context.Context, string, ...any) {}
+func (nopLogger) With(...any) Logger                    { return nopLogger{} }
