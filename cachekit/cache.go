@@ -22,6 +22,7 @@ type Cache interface {
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
 	Delete(ctx context.Context, keys ...string) error
 	InvalidateByTag(ctx context.Context, tag string) error
+	Ping(ctx context.Context) error
 }
 
 type redisCache struct {
@@ -68,6 +69,20 @@ func (c *redisCache) Delete(ctx context.Context, keys ...string) error {
 		return fmt.Errorf("cachekit: delete: %w", err)
 	}
 	return nil
+}
+
+func (c *redisCache) Ping(ctx context.Context) error {
+	if err := c.client.Ping(ctx).Err(); err != nil {
+		return fmt.Errorf("cachekit: ping: %w", err)
+	}
+	return nil
+}
+
+// Probe returns a readiness probe compatible with httpkit.Probe.
+func Probe(c Cache) func(ctx context.Context) error {
+	return func(ctx context.Context) error {
+		return c.Ping(ctx)
+	}
 }
 
 func (c *redisCache) InvalidateByTag(ctx context.Context, tag string) error {

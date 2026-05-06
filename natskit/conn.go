@@ -14,6 +14,28 @@ type Conn struct {
 
 func (c *Conn) raw() *nats.Conn { return c.nc }
 
+// Status returns the underlying NATS connection status.
+func (c *Conn) Status() nats.Status { return c.nc.Status() }
+
+// Healthy returns nil when the connection is in CONNECTED state, otherwise an
+// error describing the current state. It is safe to call concurrently.
+func (c *Conn) Healthy() error {
+	if c == nil || c.nc == nil {
+		return fmt.Errorf("natskit: conn is nil")
+	}
+	if s := c.nc.Status(); s != nats.CONNECTED {
+		return fmt.Errorf("natskit: not connected (status=%s)", s)
+	}
+	return nil
+}
+
+// Probe returns a readiness probe compatible with httpkit.Probe.
+func Probe(c *Conn) func(ctx context.Context) error {
+	return func(_ context.Context) error {
+		return c.Healthy()
+	}
+}
+
 func newConn(lc fx.Lifecycle, cfg Config) (*Conn, error) {
 	nc, err := nats.Connect(cfg.URL,
 		nats.Timeout(cfg.ConnectTimeout),

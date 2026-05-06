@@ -9,6 +9,7 @@ var Module = fx.Module("cachekit",
 	fx.Provide(
 		newConfig,
 		fx.Annotate(newRedisCache, fx.As(new(Cache))),
+		Probe,
 	),
 )
 

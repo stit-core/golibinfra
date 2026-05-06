@@ -6,12 +6,21 @@ import (
 	"net/http"
 )
 
+// APIError is an RFC 7807 (problem+json) compatible error payload.
+//
+// `Type`/`Title`/`Status`/`Detail`/`Instance` follow the spec; `Code` is an
+// extension member for stable machine-readable identifiers used in our APIs.
 type APIError struct {
-	Code   string `json:"code"`
-	Status int    `json:"status"`
-	Title  string `json:"title"`
-	Detail string `json:"detail"`
+	Type     string `json:"type,omitempty"`
+	Title    string `json:"title,omitempty"`
+	Status   int    `json:"status,omitempty"`
+	Detail   string `json:"detail,omitempty"`
+	Instance string `json:"instance,omitempty"`
+	Code     string `json:"code,omitempty"`
 }
+
+// ProblemContentType is the media type for RFC 7807 problem details responses.
+const ProblemContentType = "application/problem+json"
 
 func (e *APIError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Code, e.Detail)
@@ -19,6 +28,19 @@ func (e *APIError) Error() string {
 
 func (e *APIError) GetStatus() int {
 	return e.Status
+}
+
+// WithDefaults fills in RFC 7807 default fields. If Type is empty, it is set
+// to "about:blank" as required by the spec when no problem-specific URI is
+// provided.
+func (e APIError) WithDefaults() APIError {
+	if e.Type == "" {
+		e.Type = "about:blank"
+	}
+	if e.Title == "" && e.Status != 0 {
+		e.Title = http.StatusText(e.Status)
+	}
+	return e
 }
 
 func Error(code string, status int, detail string) *APIError {

@@ -10,6 +10,7 @@ var Module = fx.Module("natskit",
 		newConfig,
 		newConn,
 		fx.Annotate(NewBus, fx.As(new(Bus))),
+		Probe,
 	),
 )
 

@@ -42,6 +42,58 @@ func TestAPIError_JSON(t *testing.T) {
 	}
 }
 
+func TestAPIError_ProblemJSON_OmitEmpty(t *testing.T) {
+	// Without WithDefaults, empty Type/Instance must be omitted.
+	e := httpkit.Error("X", http.StatusBadRequest, "d")
+	body, err := json.Marshal(e)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(body, &m); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if _, ok := m["type"]; ok {
+		t.Errorf("type should be omitted when empty, got %v", m["type"])
+	}
+	if _, ok := m["instance"]; ok {
+		t.Errorf("instance should be omitted when empty")
+	}
+}
+
+func TestAPIError_WithDefaults(t *testing.T) {
+	e := httpkit.APIError{Status: http.StatusBadRequest, Detail: "d"}
+	got := e.WithDefaults()
+	if got.Type != "about:blank" {
+		t.Errorf("Type: want about:blank, got %q", got.Type)
+	}
+	if got.Title != "Bad Request" {
+		t.Errorf("Title: want Bad Request, got %q", got.Title)
+	}
+
+	body, err := json.Marshal(got)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var m map[string]any
+	_ = json.Unmarshal(body, &m)
+	if m["type"] != "about:blank" {
+		t.Errorf("serialised type: want about:blank, got %v", m["type"])
+	}
+
+	// Should not overwrite an explicit Type.
+	custom := httpkit.APIError{Type: "https://errors.example/foo", Status: 400}.WithDefaults()
+	if custom.Type != "https://errors.example/foo" {
+		t.Errorf("explicit Type overwritten: %q", custom.Type)
+	}
+}
+
+func TestProblemContentType(t *testing.T) {
+	if httpkit.ProblemContentType != "application/problem+json" {
+		t.Errorf("unexpected: %s", httpkit.ProblemContentType)
+	}
+}
+
 func TestAPIError_GetStatus(t *testing.T) {
 	tests := []struct {
 		name string
