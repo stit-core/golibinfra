@@ -13,12 +13,16 @@ import (
 )
 
 type Config struct {
-	Addr         string        `envconfig:"HTTP_ADDR" default:":8080"`
-	ReadTimeout  time.Duration `envconfig:"HTTP_READ_TIMEOUT" default:"15s"`
-	WriteTimeout time.Duration `envconfig:"HTTP_WRITE_TIMEOUT" default:"30s"`
-	IdleTimeout  time.Duration `envconfig:"HTTP_IDLE_TIMEOUT" default:"60s"`
-	APITitle     string        `envconfig:"HTTP_API_TITLE" default:"API"`
-	APIVersion   string        `envconfig:"HTTP_API_VERSION" default:"0.1.0"`
+	Addr            string        `envconfig:"HTTP_ADDR" default:":8080"`
+	ReadTimeout     time.Duration `envconfig:"HTTP_READ_TIMEOUT" default:"15s"`
+	WriteTimeout    time.Duration `envconfig:"HTTP_WRITE_TIMEOUT" default:"30s"`
+	IdleTimeout     time.Duration `envconfig:"HTTP_IDLE_TIMEOUT" default:"60s"`
+	ShutdownTimeout time.Duration `envconfig:"HTTP_SHUTDOWN_TIMEOUT" default:"15s"`
+	APITitle        string        `envconfig:"HTTP_API_TITLE" default:"API"`
+	APIVersion      string        `envconfig:"HTTP_API_VERSION" default:"0.1.0"`
+	CORS            CORSConfig
+	RateLimit       RateLimitConfig
+	MaxBody         MaxBodyConfig
 }
 
 type Server struct {

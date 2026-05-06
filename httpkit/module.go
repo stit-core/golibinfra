@@ -4,6 +4,7 @@ import (
 	"context"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
 	"git.stit.tech/akadmin/golibinfra/logkit"
@@ -11,11 +12,17 @@ import (
 
 var Module = fx.Module("httpkit",
 	fx.Provide(
+		newConfig,
 		newServerWithLifecycle,
 		func(s *Server) huma.API { return s.API() },
 	),
 	fx.Invoke(registerHealth),
 )
+
+func newConfig() (Config, error) {
+	var c Config
+	return c, envconfig.Process("", &c)
+}
 
 type AuthExtractorIn struct {
 	fx.In
@@ -36,6 +43,9 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai A
 	s := NewServer(cfg)
 
 	s.router.Use(
+		CORS(cfg.CORS),
+		RateLimit(cfg.RateLimit),
+		MaxBody(cfg.MaxBody),
 		RequestID(),
 		Recovery(log),
 		AccessLog(log),
@@ -53,7 +63,9 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai A
 			return nil
 		},
 		OnStop: func(stopCtx context.Context) error {
-			return s.Stop(stopCtx)
+			ctx, cancel := context.WithTimeout(stopCtx, cfg.ShutdownTimeout)
+			defer cancel()
+			return s.Stop(ctx)
 		},
 	})
 
