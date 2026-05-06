@@ -71,7 +71,7 @@ chmod 600 ~/.netrc
 
 ```bash
 mkdir /tmp/check && cd /tmp/check && go mod init check
-go get git.stit.tech/akadmin/golibinfra@v0.1.0
+go get git.stit.tech/akadmin/golibinfra@v0.3.0
 # должно скачать без ошибок
 ```
 
@@ -79,7 +79,7 @@ go get git.stit.tech/akadmin/golibinfra@v0.1.0
 
 В `go.mod`:
 ```
-require git.stit.tech/akadmin/golibinfra v0.1.0
+require git.stit.tech/akadmin/golibinfra v0.3.0
 ```
 
 `go mod tidy` подтянет.
@@ -107,13 +107,13 @@ require git.stit.tech/akadmin/golibinfra v0.1.0
 
 ```bash
 # подъём минорной версии
-git tag v0.2.0
-git push origin v0.2.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
 
 В шаблонах/проектах после релиза:
 ```bash
-go get git.stit.tech/akadmin/golibinfra@v0.2.0
+go get git.stit.tech/akadmin/golibinfra@v0.3.0
 go mod tidy
 ```
 
