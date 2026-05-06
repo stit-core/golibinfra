@@ -14,6 +14,15 @@ import (
 	"git.stit.tech/akadmin/golibinfra/logkit"
 )
 
+func init() {
+	logkit.RegisterAttr(func(ctx context.Context) (string, any, bool) {
+		if id := RequestIDFrom(ctx); id != "" {
+			return "request_id", id, true
+		}
+		return "", nil, false
+	})
+}
+
 const HeaderRequestID = "X-Request-ID"
 
 type requestIDKey struct{}

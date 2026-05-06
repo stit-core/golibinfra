@@ -9,6 +9,32 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
+func TestRegisterAttr_AppearsInLog(t *testing.T) {
+	resetAttrs()
+	t.Cleanup(resetAttrs)
+
+	RegisterAttr(func(ctx context.Context) (string, any, bool) {
+		if v, ok := ctx.Value(struct{ k string }{"my_key"}).(string); ok {
+			return "my_key", v, true
+		}
+		return "", nil, false
+	})
+
+	var buf bytes.Buffer
+	l := NewWithWriter(Config{Level: "debug"}, &buf)
+
+	ctx := context.WithValue(context.Background(), struct{ k string }{"my_key"}, "my_value")
+	l.Info(ctx, "test custom attr")
+
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("not valid JSON: %v\nraw: %s", err, buf.String())
+	}
+	if m["my_key"] != "my_value" {
+		t.Errorf("expected my_key=my_value in log, got: %v", m)
+	}
+}
+
 func TestNopDoesNotPanic(t *testing.T) {
 	l := Nop()
 	ctx := context.Background()

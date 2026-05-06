@@ -59,6 +59,11 @@ func (h *traceHandler) Handle(ctx context.Context, r slog.Record) error {
 			slog.String("span_id", sc.SpanID().String()),
 		)
 	}
+	for _, fn := range collectAttrs() {
+		if k, v, ok := fn(ctx); ok {
+			r.AddAttrs(slog.Any(k, v))
+		}
+	}
 	return h.Handler.Handle(ctx, r)
 }
 
