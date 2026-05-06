@@ -71,7 +71,7 @@ chmod 600 ~/.netrc
 
 ```bash
 mkdir /tmp/check && cd /tmp/check && go mod init check
-go get git.stit.tech/akadmin/golibinfra@v0.3.0
+go get git.stit.tech/akadmin/golibinfra@v0.8.0
 # должно скачать без ошибок
 ```
 
@@ -79,7 +79,7 @@ go get git.stit.tech/akadmin/golibinfra@v0.3.0
 
 В `go.mod`:
 ```
-require git.stit.tech/akadmin/golibinfra v0.3.0
+require git.stit.tech/akadmin/golibinfra v0.8.0
 ```
 
 `go mod tidy` подтянет.
@@ -95,13 +95,16 @@ require git.stit.tech/akadmin/golibinfra v0.3.0
 
 | Пакет | Ответственность |
 |---|---|
-| [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner (auto on start), маппинг pg-ошибок |
-| [`httpkit`](httpkit/) | Huma bootstrap, generic middlewares (recovery, request-id, auth-callback, otel) |
+| [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner, маппинг pg-ошибок, `DBProbe` health-probe |
+| [`httpkit`](httpkit/) | Huma bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, HumaAuth; `APIError` (`{code,status,title,detail}`), `MapErr`, `MapSentinel`, `ErrorMapping` |
+| [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus` интерфейс, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module |
+| [`httpclient`](httpclient/) | HTTP-клиент с retry, OTel-инструментированием и автоматической передачей `X-Request-ID` |
+| [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
 | [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
-| [`logkit`](logkit/) | `Logger` интерфейс + JSON-реализация поверх slog с trace_id correlation |
-| [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация |
+| [`logkit`](logkit/) | `Logger` интерфейс + JSON-реализация поверх slog; trace_id correlation; `ServiceConfig{Service,Env,Version}` — автоматические атрибуты `service/env/version` в каждой записи; `RegisterAttr` для кастомных полей |
+| [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация; `JWTConfig` + JWT sign/verify |
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
-| [`testkit`](testkit/) | testcontainers (postgres), httptest helpers |
+| [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers |
 
 ## Стабильность API
 
@@ -117,13 +120,13 @@ require git.stit.tech/akadmin/golibinfra v0.3.0
 
 ```bash
 # подъём минорной версии
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.8.0
+git push origin v0.8.0
 ```
 
 В шаблонах/проектах после релиза:
 ```bash
-go get git.stit.tech/akadmin/golibinfra@v0.3.0
+go get git.stit.tech/akadmin/golibinfra@v0.8.0
 go mod tidy
 ```
 
