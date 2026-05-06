@@ -10,6 +10,7 @@ import (
 var Module = fx.Module("pgkit",
 	fx.Provide(
 		newPoolWithLifecycle,
+		NewDB,
 		fx.Annotate(NewPoolTransactor, fx.As(new(Transactor))),
 	),
 )
