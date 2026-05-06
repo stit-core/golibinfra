@@ -1,0 +1,42 @@
+run:
+  timeout: 3m
+  go: "1.26"
+
+linters:
+  disable-all: true
+  enable:
+    - errcheck
+    - errorlint
+    - gosec
+    - gosimple
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unused
+    - gofumpt
+
+linters-settings:
+  errorlint:
+    errorf: true
+    asserts: true
+    comparison: true
+  gofumpt:
+    extra-rules: true
+  revive:
+    rules:
+      - name: var-naming
+      - name: unused-parameter
+        disabled: true
+      - name: exported
+        disabled: true
+
+issues:
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gosec
+        - errcheck
