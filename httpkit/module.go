@@ -2,10 +2,11 @@ package httpkit
 
 import (
 	"context"
-	"log/slog"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/fx"
+
+	"git.stit.tech/akadmin/golibinfra/logkit"
 )
 
 var Module = fx.Module("httpkit",
@@ -20,7 +21,7 @@ type AuthExtractorIn struct {
 	Extract AuthExtractor `optional:"true"`
 }
 
-func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log *slog.Logger, ai AuthExtractorIn) *Server {
+func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn) *Server {
 	s := NewServer(cfg)
 
 	s.router.Use(
@@ -37,7 +38,7 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log *slog.Logger, ai Au
 		OnStart: func(_ context.Context) error {
 			go func() {
 				if err := s.Start(); err != nil {
-					log.Error("http server stopped", slog.Any("err", err))
+					log.Error(context.Background(), "http server stopped", "err", err)
 				}
 			}()
 			return nil

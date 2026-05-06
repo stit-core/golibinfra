@@ -2,7 +2,6 @@ package telemetry
 
 import (
 	"context"
-	"log/slog"
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
@@ -13,7 +12,6 @@ import (
 var Module = fx.Module("telemetry",
 	fx.Provide(
 		newProvidersWithLifecycle,
-		newSloggerFromConfig,
 		newTracer,
 		newMeter,
 	),
@@ -36,10 +34,6 @@ func newProvidersWithLifecycle(lc fx.Lifecycle, cfg Config) (*Providers, error) 
 	})
 
 	return p, nil
-}
-
-func newSloggerFromConfig(_ *Providers) *slog.Logger {
-	return NewSlogger(slog.LevelInfo)
 }
 
 func newTracer(_ *Providers) trace.Tracer { return otel.Tracer("app") }

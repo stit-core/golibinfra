@@ -2,13 +2,14 @@ package httpkit
 
 import (
 	"context"
-	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
 
 	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+
+	"git.stit.tech/akadmin/golibinfra/logkit"
 )
 
 const HeaderRequestID = "X-Request-ID"
@@ -36,14 +37,14 @@ func RequestID() func(http.Handler) http.Handler {
 	}
 }
 
-func Recovery(log *slog.Logger) func(http.Handler) http.Handler {
+func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					log.ErrorContext(r.Context(), "panic recovered",
-						slog.Any("panic", rec),
-						slog.String("stack", string(debug.Stack())),
+					log.Error(r.Context(), "panic recovered",
+						"panic", rec,
+						"stack", string(debug.Stack()),
 					)
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 				}
@@ -53,26 +54,28 @@ func Recovery(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
+func AccessLog(log logkit.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rec, r)
 
-			lvl := slog.LevelInfo
-			if rec.status >= 500 {
-				lvl = slog.LevelError
-			} else if rec.status >= 400 {
-				lvl = slog.LevelWarn
+			kv := []any{
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"dur", time.Since(start),
+				"request_id", RequestIDFrom(r.Context()),
 			}
-			log.LogAttrs(r.Context(), lvl, "http",
-				slog.String("method", r.Method),
-				slog.String("path", r.URL.Path),
-				slog.Int("status", rec.status),
-				slog.Duration("dur", time.Since(start)),
-				slog.String("request_id", RequestIDFrom(r.Context())),
-			)
+			switch {
+			case rec.status >= 500:
+				log.Error(r.Context(), "http", kv...)
+			case rec.status >= 400:
+				log.Warn(r.Context(), "http", kv...)
+			default:
+				log.Info(r.Context(), "http", kv...)
+			}
 		})
 	}
 }

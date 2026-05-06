@@ -95,11 +95,21 @@ require git.stit.tech/akadmin/golibinfra v0.3.0
 
 | Пакет | Ответственность |
 |---|---|
-| [`pgkit`](pgkit/) | pgxpool, Transactor, migrate-runner, маппинг pg-ошибок |
+| [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner (auto on start), маппинг pg-ошибок |
 | [`httpkit`](httpkit/) | Huma bootstrap, generic middlewares (recovery, request-id, auth-callback, otel) |
-| [`telemetry`](telemetry/) | OTel init (trace/meter/log), slog с автокорреляцией trace_id, OTLP exporters |
-| [`config`](config/) | Загрузчик конфигов: env + Vault с fallback |
+| [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
+| [`logkit`](logkit/) | `Logger` интерфейс + JSON-реализация поверх slog с trace_id correlation |
+| [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация |
+| [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers (postgres), httptest helpers |
+
+## Стабильность API
+
+Публичные структуры конфигов (`pgkit.PoolConfig`, `httpkit.Config`,
+`telemetry.Config`, `logkit.Config`, `authnkit.Argon2idParams`) — **part of public API**.
+Менять имена/типы полей или их envconfig-теги = breaking change, идёт мажорным
+апгрейдом. Продукты собирают свой `App`-конфиг из этих структур и зависят от
+их стабильности.
 
 ## Версионирование
 
