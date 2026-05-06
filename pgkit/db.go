@@ -8,7 +8,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// Type-aliases чтобы продуктовый код не импортил pgx/pgconn напрямую.
 type (
 	Row        = pgx.Row
 	Rows       = pgx.Rows
@@ -17,9 +16,6 @@ type (
 	CommandTag = pgconn.CommandTag
 )
 
-// DB — публичный фасад поверх pool'а. Репозитории получают *pgkit.DB
-// и не знают про pgxpool. Внутри маршрутизирует tx-из-ctx (если идёт
-// через Transactor.WithTx) или работает напрямую с пулом.
 type DB struct {
 	pool *pgxpool.Pool
 }

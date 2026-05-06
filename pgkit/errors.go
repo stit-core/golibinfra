@@ -23,7 +23,6 @@ func IsForeignKeyViolation(err error) bool { return pgErrCode(err) == codeForeig
 func IsCheckViolation(err error) bool      { return pgErrCode(err) == codeCheckViolation }
 func IsNotNullViolation(err error) bool    { return pgErrCode(err) == codeNotNullViolation }
 
-// IsRetryable — кандидаты на прозрачный ретрай: serialization failure и deadlock.
 func IsRetryable(err error) bool {
 	c := pgErrCode(err)
 	return c == codeSerializationFail || c == codeDeadlockDetected

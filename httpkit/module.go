@@ -15,7 +15,6 @@ var Module = fx.Module("httpkit",
 	),
 )
 
-// AuthExtractorIn — опциональная зависимость: если продукт зарегистрировал extractor, он подцепится.
 type AuthExtractorIn struct {
 	fx.In
 	Extract AuthExtractor `optional:"true"`

@@ -14,8 +14,6 @@ type Transactor interface {
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
 }
 
-// DBTX — общий минимум pgx.Tx и *pgxpool.Pool. Репо принимает его и не знает,
-// крутится ли вокруг транзакция. Достаётся через Conn(ctx, pool).
 type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
@@ -32,7 +30,6 @@ func NewPoolTransactor(pool *pgxpool.Pool) *PoolTransactor {
 
 type txCtxKey struct{}
 
-// Conn возвращает активную транзакцию из ctx, иначе — пул.
 func Conn(ctx context.Context, pool *pgxpool.Pool) DBTX {
 	if tx, ok := ctx.Value(txCtxKey{}).(pgx.Tx); ok {
 		return tx
@@ -40,7 +37,6 @@ func Conn(ctx context.Context, pool *pgxpool.Pool) DBTX {
 	return pool
 }
 
-// WithTx — вложенные вызовы переиспользуют внешнюю транзакцию.
 func (t *PoolTransactor) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	if _, ok := ctx.Value(txCtxKey{}).(pgx.Tx); ok {
 		return fn(ctx)

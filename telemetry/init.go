@@ -23,7 +23,6 @@ type Providers struct {
 	LoggerProvider *sdklog.LoggerProvider
 }
 
-// Shutdown — порядок гасит провайдеры в обратном порядке инициализации; ошибки агрегируются.
 func (p *Providers) Shutdown(ctx context.Context) error {
 	var errs []error
 	if p.LoggerProvider != nil {

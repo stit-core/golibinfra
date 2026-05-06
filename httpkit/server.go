@@ -1,4 +1,3 @@
-// Package httpkit — HTTP-bootstrap: chi-роутер, Huma API, набор generic-middleware'ов.
 package httpkit
 
 import (

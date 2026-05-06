@@ -1,4 +1,3 @@
-// Package telemetry — OTel (trace + metric + log), slog с автокорреляцией trace_id, OTLP-экспортёры.
 package telemetry
 
 import "time"
@@ -12,7 +11,5 @@ type Config struct {
 	SampleRatio    float64       `envconfig:"OTEL_TRACES_SAMPLER_ARG" default:"1.0"`
 	ExportTimeout  time.Duration `envconfig:"OTEL_EXPORT_TIMEOUT" default:"10s"`
 
-	// Если true — данные не уходят наружу, всё пишется только в stdout-логи.
-	// Полезно для локальной разработки без коллектора.
 	StdoutOnly bool `envconfig:"OTEL_STDOUT_ONLY" default:"false"`
 }

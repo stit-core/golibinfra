@@ -38,7 +38,6 @@ func newProvidersWithLifecycle(lc fx.Lifecycle, cfg Config) (*Providers, error) 
 	return p, nil
 }
 
-// Slogger зависит от Providers, чтобы инициализация OTel завершилась раньше.
 func newSloggerFromConfig(_ *Providers) *slog.Logger {
 	return NewSlogger(slog.LevelInfo)
 }

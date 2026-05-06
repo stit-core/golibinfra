@@ -22,7 +22,6 @@ func RequestIDFrom(ctx context.Context) string {
 	return ""
 }
 
-// RequestID — берёт из заголовка либо генерит UUID; кладёт в ctx и в response.
 func RequestID() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -37,7 +36,6 @@ func RequestID() func(http.Handler) http.Handler {
 	}
 }
 
-// Recovery — ловит панику, пишет 500, не валит процесс.
 func Recovery(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -55,7 +53,6 @@ func Recovery(log *slog.Logger) func(http.Handler) http.Handler {
 	}
 }
 
-// AccessLog — структурный лог запроса; уровень зависит от статуса.
 func AccessLog(log *slog.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -90,11 +87,8 @@ func (r *statusRecorder) WriteHeader(s int) {
 	r.ResponseWriter.WriteHeader(s)
 }
 
-// AuthExtractor — продукт-специфичная функция: берёт креды из запроса и обогащает ctx (например, кладёт identity).
 type AuthExtractor func(r *http.Request) (context.Context, error)
 
-// Auth — обёртка над AuthExtractor; при ошибке отвечает 401, иначе пробрасывает обогащённый ctx дальше.
-// Если extract == nil — middleware no-op (полезно когда auth применяется не глобально, а на конкретные роуты).
 func Auth(extract AuthExtractor) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		if extract == nil {
@@ -111,7 +105,6 @@ func Auth(extract AuthExtractor) func(http.Handler) http.Handler {
 	}
 }
 
-// OTel — инструментация HTTP-обработчиков спанами и метриками через otelhttp.
 func OTel() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return otelhttp.NewHandler(next, "http")

@@ -1,4 +1,3 @@
-// Package testkit — хелперы для интеграционных тестов: testcontainers (postgres), httptest.
 package testkit
 
 import (
@@ -19,8 +18,6 @@ type PostgresFixture struct {
 	Container *tcpostgres.PostgresContainer
 }
 
-// StartPostgres поднимает контейнер postgres:17-alpine, накатывает миграции из migrationsPath
-// (если != ""), регистрирует teardown через t.Cleanup. Возвращает DSN с готовой схемой.
 func StartPostgres(t *testing.T, migrationsPath string) *PostgresFixture {
 	t.Helper()
 	ctx := context.Background()
@@ -57,8 +54,6 @@ func StartPostgres(t *testing.T, migrationsPath string) *PostgresFixture {
 	return &PostgresFixture{DSN: dsn, Container: c}
 }
 
-// DB поднимает pgkit.DB поверх фикстуры и регистрирует cleanup пула.
-// Тесты получают то же, что и продовые репо: *pgkit.DB и ничего больше.
 func (f *PostgresFixture) DB(t *testing.T) *pgkit.DB {
 	t.Helper()
 	pool, err := pgxpool.New(context.Background(), f.DSN)

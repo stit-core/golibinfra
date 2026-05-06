@@ -1,4 +1,3 @@
-// Package pgkit — Postgres-инфраструктура: пул, транзактор, маппинг ошибок, миграции.
 package pgkit
 
 import (

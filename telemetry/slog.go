@@ -8,7 +8,6 @@ import (
 	"go.opentelemetry.io/otel/trace"
 )
 
-// NewSlogger — JSON-логгер, автоматически добавляющий trace_id/span_id из активного спана.
 func NewSlogger(level slog.Level) *slog.Logger {
 	base := slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level})
 	return slog.New(&traceHandler{Handler: base})

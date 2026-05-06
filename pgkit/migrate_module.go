@@ -17,9 +17,6 @@ func newMigrateRunnerConfig() (MigrateRunnerConfig, error) {
 	return c, envconfig.Process("", &c)
 }
 
-// MigrateModule прогоняет MigrateUp на старте сервиса. Подключается
-// отдельной строкой в main — чтобы можно было собрать бинарь без
-// авто-миграций (например, для джоб или dry-run).
 var MigrateModule = fx.Module("pgkit-migrate",
 	fx.Provide(newMigrateRunnerConfig),
 	fx.Invoke(runMigrationsOnStart),

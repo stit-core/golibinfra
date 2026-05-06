@@ -36,8 +36,6 @@ type vaultSource struct {
 	path   string
 }
 
-// Vault — источник из секрета KV v2 по указанному пути. Поля dst, помеченные тегом `vault:"key"`,
-// будут заполнены значениями из этого секрета. Если client == nil, источник no-op (fallback на env).
 func Vault(client *vault.Client, path string) Source {
 	return &vaultSource{client: client, path: path}
 }
@@ -85,8 +83,6 @@ func applyVaultData(data map[string]any, dst any) error {
 	return nil
 }
 
-// KV v2 в Vault: путь вида "secret/data/myapp" → mount="secret", key="myapp".
-// Здесь мы разбиваем по первому слэшу.
 func splitMount(path string) string {
 	for i := 0; i < len(path); i++ {
 		if path[i] == '/' {

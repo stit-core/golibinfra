@@ -40,7 +40,6 @@ func MigrateDown(cfg MigrateConfig) error {
 	return nil
 }
 
-// MigrateVersion возвращает текущую версию схемы; (0, false, nil) если миграции не накатывались.
 func MigrateVersion(cfg MigrateConfig) (uint, bool, error) {
 	m, err := newMigrator(cfg)
 	if err != nil {
