@@ -31,7 +31,7 @@ func TestBus_PublishSubscribe(t *testing.T) {
 	fix := testkit.StartNATS(t)
 	conn := connect(t, fix.URL)
 	log := logkit.Nop()
-	bus := natskit.NewBus(conn, log)
+	bus := natskit.NewBus(conn, log, natskit.Config{})
 
 	ctx := context.Background()
 	subject := "test.roundtrip"
@@ -66,7 +66,7 @@ func TestBus_PublishSubscribeJSON(t *testing.T) {
 	fix := testkit.StartNATS(t)
 	conn := connect(t, fix.URL)
 	log := logkit.Nop()
-	bus := natskit.NewBus(conn, log)
+	bus := natskit.NewBus(conn, log, natskit.Config{})
 
 	ctx := context.Background()
 	subject := "test.json"

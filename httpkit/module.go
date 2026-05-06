@@ -2,6 +2,8 @@ package httpkit
 
 import (
 	"context"
+	"net/http"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/kelseyhightower/envconfig"
@@ -18,6 +20,11 @@ var Module = fx.Module("httpkit",
 	),
 	fx.Invoke(registerHealth),
 )
+
+type idempotencyIn struct {
+	fx.In
+	Store IdempotencyStore `optional:"true"`
+}
 
 func newConfig() (Config, error) {
 	var c Config
@@ -39,18 +46,27 @@ func registerHealth(in healthIn) {
 	RegisterHealth(in.API, in.Probes...)
 }
 
-func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn) *Server {
+func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn) *Server {
 	s := NewServer(cfg)
 
-	s.router.Use(
+	mws := []func(http.Handler) http.Handler{
 		CORS(cfg.CORS),
 		RateLimit(cfg.RateLimit),
 		MaxBody(cfg.MaxBody),
 		RequestID(),
 		Recovery(log),
+		SecurityHeaders(cfg.Security),
 		AccessLog(log),
 		OTel(),
-	)
+	}
+	if ii.Store != nil {
+		mws = append(mws, Idempotency(IdempotencyConfig{
+			Header:       "Idempotency-Key",
+			TTL:          24 * time.Hour,
+			MaxBodyBytes: 65536,
+		}, ii.Store))
+	}
+	s.router.Use(mws...)
 	s.api.UseMiddleware(HumaAuth(s.api, ai.Extract))
 
 	lc.Append(fx.Hook{

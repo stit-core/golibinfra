@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/sony/gobreaker/v2"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
 	"git.stit.tech/akadmin/golibinfra/httpkit"
@@ -17,11 +18,13 @@ type Config struct {
 	Timeout    time.Duration `envconfig:"HTTPCLIENT_TIMEOUT" default:"10s"`
 	MaxRetries int           `envconfig:"HTTPCLIENT_MAX_RETRIES" default:"3"`
 	RetryWait  time.Duration `envconfig:"HTTPCLIENT_RETRY_WAIT" default:"200ms"`
+	Breaker    BreakerConfig
 }
 
 type Client struct {
-	cfg Config
-	c   *http.Client
+	cfg     Config
+	c       *http.Client
+	breaker *gobreaker.CircuitBreaker[*http.Response]
 }
 
 func New(cfg Config) *Client {
@@ -32,6 +35,7 @@ func New(cfg Config) *Client {
 			Timeout:   cfg.Timeout,
 			Transport: transport,
 		},
+		breaker: newBreaker(cfg.Breaker),
 	}
 }
 
@@ -40,6 +44,13 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		req.Header.Set(httpkit.HeaderRequestID, id)
 	}
 
+	resp, err := c.breaker.Execute(func() (*http.Response, error) {
+		return c.doWithRetry(req)
+	})
+	return resp, err
+}
+
+func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	var (
 		resp *http.Response
 		err  error
@@ -70,7 +81,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	if err != nil {
 		return nil, fmt.Errorf("httpclient: %w", err)
 	}
-	return resp, fmt.Errorf("httpclient: server error after %d retries", c.cfg.MaxRetries)
+	return nil, fmt.Errorf("httpclient: server error after %d retries", c.cfg.MaxRetries)
 }
 
 func backoff(base time.Duration, attempt int) time.Duration {

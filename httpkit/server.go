@@ -23,6 +23,7 @@ type Config struct {
 	CORS            CORSConfig
 	RateLimit       RateLimitConfig
 	MaxBody         MaxBodyConfig
+	Security        SecurityHeadersConfig
 }
 
 type Server struct {

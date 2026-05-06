@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime/debug"
 
 	"github.com/nats-io/nats.go"
+	"golang.org/x/sync/semaphore"
 
 	"git.stit.tech/akadmin/golibinfra/logkit"
 )
@@ -18,10 +20,19 @@ type Bus interface {
 type natsBus struct {
 	conn *nats.Conn
 	log  logkit.Logger
+	sem  *semaphore.Weighted
 }
 
-func NewBus(conn *Conn, log logkit.Logger) Bus {
-	return &natsBus{conn: conn.raw(), log: log}
+func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus {
+	maxInFlight := int64(cfg.Backpressure.MaxInFlight)
+	if maxInFlight <= 0 {
+		maxInFlight = 100
+	}
+	return &natsBus{
+		conn: conn.raw(),
+		log:  log,
+		sem:  semaphore.NewWeighted(maxInFlight),
+	}
 }
 
 func (b *natsBus) Publish(_ context.Context, subject string, payload any) error {
@@ -37,9 +48,22 @@ func (b *natsBus) Publish(_ context.Context, subject string, payload any) error 
 
 func (b *natsBus) Subscribe(_ context.Context, subject string, handler func(ctx context.Context, payload []byte) error) error {
 	_, err := b.conn.Subscribe(subject, func(msg *nats.Msg) {
-		if err := handler(context.Background(), msg.Data); err != nil {
-			b.log.Error(context.Background(), "natskit: handler error", "subject", subject, "err", err)
-		}
+		_ = b.sem.Acquire(context.Background(), 1)
+		go func() {
+			defer b.sem.Release(1)
+			defer func() {
+				if rec := recover(); rec != nil {
+					b.log.Error(context.Background(), "natskit: handler panic",
+						"subject", subject,
+						"panic", rec,
+						"stack", string(debug.Stack()),
+					)
+				}
+			}()
+			if err := handler(context.Background(), msg.Data); err != nil {
+				b.log.Error(context.Background(), "natskit: handler error", "subject", subject, "err", err)
+			}
+		}()
 	})
 	if err != nil {
 		return fmt.Errorf("natskit: subscribe: %w", err)
