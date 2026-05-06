@@ -24,8 +24,8 @@ var MigrateModule = fx.Module("pgkit-migrate",
 
 func runMigrationsOnStart(lc fx.Lifecycle, pool PoolConfig, mig MigrateRunnerConfig) {
 	lc.Append(fx.Hook{
-		OnStart: func(_ context.Context) error {
-			if err := MigrateUp(MigrateConfig{DSN: pool.DSN, Path: mig.Path}); err != nil {
+		OnStart: func(ctx context.Context) error {
+			if err := runMigrateUpLocked(ctx, pool.DSN, mig.Path); err != nil {
 				return fmt.Errorf("pgkit: migrate on start: %w", err)
 			}
 			return nil
