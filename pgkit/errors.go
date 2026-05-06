@@ -29,8 +29,7 @@ func IsRetryable(err error) bool {
 }
 
 func pgErrCode(err error) string {
-	var pg *pgconn.PgError
-	if errors.As(err, &pg) {
+	if pg, ok := errors.AsType[*pgconn.PgError](err); ok {
 		return pg.Code
 	}
 	return ""
