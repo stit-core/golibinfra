@@ -11,6 +11,7 @@ var Module = fx.Module("outboxkit",
 		NewConfig,
 		NewRepository,
 		NewBus,
+		func(b *Bus) Publisher { return b },
 		NewWorker,
 		fx.Annotate(
 			func(w *Worker, cfg Config) timerkit.Job {
