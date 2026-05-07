@@ -38,7 +38,7 @@ func (r *pgRepository) Insert(ctx context.Context, subject string, payload any) 
 	return nil
 }
 
-const listUnpublishedSQL = `SELECT id, subject, payload FROM outbox WHERE published_at IS NULL ORDER BY id LIMIT $1`
+const listUnpublishedSQL = `SELECT id, subject, payload FROM outbox WHERE published_at IS NULL ORDER BY created_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`
 
 func (r *pgRepository) ListUnpublished(ctx context.Context, limit int) ([]Message, error) {
 	rows, err := r.db.Query(ctx, listUnpublishedSQL, limit)
