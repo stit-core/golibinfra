@@ -3,7 +3,11 @@ package eventbus
 import (
 	"context"
 	"sync"
+
+	"git.stit.tech/akadmin/golibinfra/outboxkit"
 )
+
+var _ outboxkit.Publisher = (*Recorder)(nil)
 
 type Event struct {
 	Subject string

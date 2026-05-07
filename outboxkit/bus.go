@@ -6,10 +6,18 @@ import (
 	"git.stit.tech/akadmin/golibinfra/natskit"
 )
 
+// Publisher — узкий port-интерфейс для публикации событий, чтобы домены
+// и тесты зависели от него, а не от конкретного *Bus.
+type Publisher interface {
+	Publish(ctx context.Context, subject string, payload any) error
+}
+
 type Bus struct {
 	repo    Repository
 	natsBus natskit.Bus
 }
+
+var _ Publisher = (*Bus)(nil)
 
 func NewBus(repo Repository, natsBus natskit.Bus) *Bus {
 	return &Bus{repo: repo, natsBus: natsBus}
