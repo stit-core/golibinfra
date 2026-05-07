@@ -22,7 +22,8 @@ func StartPostgres(t *testing.T, migrationsPath string) *PostgresFixture {
 	t.Helper()
 	ctx := context.Background()
 
-	c, err := tcpostgres.Run(ctx, "postgres:17-alpine",
+	c, err := tcpostgres.Run(
+		ctx, "postgres:17-alpine",
 		tcpostgres.WithDatabase("test"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
