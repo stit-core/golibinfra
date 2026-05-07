@@ -37,6 +37,17 @@ func (r *Recorder) Actions() []string {
 	return out
 }
 
+func (r *Recorder) Has(action string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, e := range r.entries {
+		if e.Action == action {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Recorder) Last(action string) *auditkit.Entry {
 	r.mu.Lock()
 	defer r.mu.Unlock()
