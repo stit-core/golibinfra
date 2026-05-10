@@ -9,7 +9,7 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
-	"git.stit.tech/akadmin/golibinfra/logkit"
+	"git.stit.tech/stit/golibinfra/logkit"
 )
 
 var Module = fx.Module("httpkit",

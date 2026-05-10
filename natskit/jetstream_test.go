@@ -10,8 +10,8 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"git.stit.tech/akadmin/golibinfra/logkit"
-	"git.stit.tech/akadmin/golibinfra/natskit"
+	"git.stit.tech/stit/golibinfra/logkit"
+	"git.stit.tech/stit/golibinfra/natskit"
 )
 
 func startJetStreamNATS(t *testing.T) string {

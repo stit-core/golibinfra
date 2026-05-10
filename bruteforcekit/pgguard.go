@@ -4,7 +4,7 @@ import (
 	"context"
 	"time"
 
-	"git.stit.tech/akadmin/golibinfra/pgkit"
+	"git.stit.tech/stit/golibinfra/pgkit"
 )
 
 type pgGuard struct {

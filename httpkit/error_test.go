@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"git.stit.tech/akadmin/golibinfra/httpkit"
+	"git.stit.tech/stit/golibinfra/httpkit"
 )
 
 func TestAPIError_JSON(t *testing.T) {

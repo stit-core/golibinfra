@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"git.stit.tech/akadmin/golibinfra/bruteforcekit"
-	"git.stit.tech/akadmin/golibinfra/testkit"
+	"git.stit.tech/stit/golibinfra/bruteforcekit"
+	"git.stit.tech/stit/golibinfra/testkit"
 )
 
 func extractMigrations(t *testing.T) string {

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"git.stit.tech/akadmin/golibinfra/pgkit"
-	"git.stit.tech/akadmin/golibinfra/testkit"
+	"git.stit.tech/stit/golibinfra/pgkit"
+	"git.stit.tech/stit/golibinfra/testkit"
 )
 
 func TestNewPool_AppliesSessionTimeouts(t *testing.T) {

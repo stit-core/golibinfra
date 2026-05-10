@@ -11,7 +11,7 @@ import (
 	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"git.stit.tech/akadmin/golibinfra/logkit"
+	"git.stit.tech/stit/golibinfra/logkit"
 )
 
 func init() {

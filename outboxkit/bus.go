@@ -3,7 +3,7 @@ package outboxkit
 import (
 	"context"
 
-	"git.stit.tech/akadmin/golibinfra/natskit"
+	"git.stit.tech/stit/golibinfra/natskit"
 )
 
 // Publisher — узкий port-интерфейс для публикации событий, чтобы домены

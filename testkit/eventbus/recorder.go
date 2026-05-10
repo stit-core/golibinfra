@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"git.stit.tech/akadmin/golibinfra/outboxkit"
+	"git.stit.tech/stit/golibinfra/outboxkit"
 )
 
 var _ outboxkit.Publisher = (*Recorder)(nil)

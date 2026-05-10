@@ -11,9 +11,9 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"git.stit.tech/akadmin/golibinfra/outboxkit"
-	"git.stit.tech/akadmin/golibinfra/pgkit"
-	"git.stit.tech/akadmin/golibinfra/testkit"
+	"git.stit.tech/stit/golibinfra/outboxkit"
+	"git.stit.tech/stit/golibinfra/pgkit"
+	"git.stit.tech/stit/golibinfra/testkit"
 )
 
 func extractMigrations(t *testing.T) string {

@@ -9,7 +9,7 @@ import (
 	"github.com/nats-io/nats.go"
 	"golang.org/x/sync/semaphore"
 
-	"git.stit.tech/akadmin/golibinfra/logkit"
+	"git.stit.tech/stit/golibinfra/logkit"
 )
 
 type Bus interface {

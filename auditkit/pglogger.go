@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"git.stit.tech/akadmin/golibinfra/pgkit"
+	"git.stit.tech/stit/golibinfra/pgkit"
 )
 
 type pgLogger struct {

@@ -5,7 +5,7 @@ import (
 	"sync"
 	"time"
 
-	"git.stit.tech/akadmin/golibinfra/bruteforcekit"
+	"git.stit.tech/stit/golibinfra/bruteforcekit"
 )
 
 type Permissive struct{}

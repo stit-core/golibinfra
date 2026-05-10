@@ -12,7 +12,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"golang.org/x/sync/semaphore"
 
-	"git.stit.tech/akadmin/golibinfra/logkit"
+	"git.stit.tech/stit/golibinfra/logkit"
 )
 
 var ErrJetStreamDisabled = errors.New("natskit: jetstream is disabled")

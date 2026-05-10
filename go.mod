@@ -1,4 +1,4 @@
-module git.stit.tech/akadmin/golibinfra
+module git.stit.tech/stit/golibinfra
 
 go 1.26
 

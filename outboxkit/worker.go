@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"git.stit.tech/akadmin/golibinfra/natskit"
+	"git.stit.tech/stit/golibinfra/natskit"
 )
 
 type Worker struct {

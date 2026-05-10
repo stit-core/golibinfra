@@ -11,7 +11,7 @@ import (
 	"github.com/sony/gobreaker/v2"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"git.stit.tech/akadmin/golibinfra/httpkit"
+	"git.stit.tech/stit/golibinfra/httpkit"
 )
 
 type Config struct {

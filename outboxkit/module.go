@@ -3,7 +3,7 @@ package outboxkit
 import (
 	"go.uber.org/fx"
 
-	"git.stit.tech/akadmin/golibinfra/timerkit"
+	"git.stit.tech/stit/golibinfra/timerkit"
 )
 
 var Module = fx.Module("outboxkit",
