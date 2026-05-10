@@ -9,6 +9,12 @@ import (
 	"go.uber.org/fx"
 )
 
+// Asymmetry note: Module НЕ provide'ит pgkit.PoolConfig — caller
+// обязан зарегистрировать его сам (типично через App-структуру в
+// app-config модуле). Аналогично telemetry.Module — telemetry.Config
+// ждёт извне. Только httpkit.Module provide'ит свой Config через
+// httpkit.newConfig. Если добавить newPoolConfig сюда, у app-side
+// провайдера получится fx-конфликт "already provided".
 var Module = fx.Module("pgkit",
 	fx.Provide(
 		newPoolWithLifecycle,

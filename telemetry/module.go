@@ -9,6 +9,10 @@ import (
 	"go.uber.org/fx"
 )
 
+// Asymmetry note: Module НЕ provide'ит telemetry.Config — caller
+// обязан зарегистрировать его сам (типично через App-структуру). См.
+// pgkit/module.go для подробностей. Только httpkit.Module provide'ит
+// свой Config внутренне.
 var Module = fx.Module("telemetry",
 	fx.Provide(
 		newProvidersWithLifecycle,

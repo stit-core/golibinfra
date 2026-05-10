@@ -22,12 +22,25 @@ func New(cfg Config) Logger {
 }
 
 func NewWithWriter(cfg Config, w io.Writer) Logger {
+	return &slogLogger{l: NewSlogWithWriter(cfg, w)}
+}
+
+// NewSlog возвращает *slog.Logger с тем же handler chain (traceHandler +
+// JSON), что и logkit.Logger. Для consumer'ов golibinfra (например
+// timerkit), которые принимают *slog.Logger напрямую — provide'ится
+// модулем `Module`. Без него каждый проектный cmd/* писал бы свой
+// мостик, и они дрейфовали бы по level/destination.
+func NewSlog(cfg Config) *slog.Logger {
+	return NewSlogWithWriter(cfg, os.Stdout)
+}
+
+func NewSlogWithWriter(cfg Config, w io.Writer) *slog.Logger {
 	var lvl slog.Level
 	if err := lvl.UnmarshalText([]byte(cfg.Level)); err != nil {
 		lvl = slog.LevelInfo
 	}
 	base := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})
-	return &slogLogger{l: slog.New(&traceHandler{Handler: base})}
+	return slog.New(&traceHandler{Handler: base})
 }
 
 func (s *slogLogger) Debug(ctx context.Context, msg string, kv ...any) {

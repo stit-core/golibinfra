@@ -10,6 +10,10 @@ var Module = fx.Module("logkit",
 		newConfig,
 		newServiceConfig,
 		New,
+		// *slog.Logger для consumer'ов которые не используют logkit.Logger
+		// interface (timerkit и пр.). Тот же handler-chain (trace IDs,
+		// JSON), что и Logger — единое место конфигурации.
+		NewSlog,
 	),
 	fx.Invoke(registerServiceAttrs),
 )
