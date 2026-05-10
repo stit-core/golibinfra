@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
@@ -44,11 +45,19 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 }
 
 func Init(ctx context.Context, cfg Config) (*Providers, error) {
-	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
-		semconv.SchemaURL,
+	attrs := []attribute.KeyValue{
 		semconv.ServiceName(cfg.ServiceName),
 		semconv.ServiceVersion(cfg.ServiceVersion),
 		semconv.DeploymentEnvironment(cfg.Environment),
+	}
+	if cfg.Tenant != "" {
+		attrs = append(attrs,
+			semconv.ServiceNamespace(cfg.Tenant),
+			attribute.String("tenant", cfg.Tenant),
+		)
+	}
+	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
+		semconv.SchemaURL, attrs...,
 	))
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: resource: %w", err)
@@ -93,6 +102,9 @@ func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 	if cfg.OTLPInsecure {
 		opts = append(opts, otlptracehttp.WithInsecure())
 	}
+	if h := otlpHeaders(cfg); len(h) > 0 {
+		opts = append(opts, otlptracehttp.WithHeaders(h))
+	}
 	exp, err := otlptracehttp.New(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: trace exporter: %w", err)
@@ -109,6 +121,9 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 	if cfg.OTLPInsecure {
 		opts = append(opts, otlpmetrichttp.WithInsecure())
 	}
+	if h := otlpHeaders(cfg); len(h) > 0 {
+		opts = append(opts, otlpmetrichttp.WithHeaders(h))
+	}
 	exp, err := otlpmetrichttp.New(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: metric exporter: %w", err)
@@ -124,6 +139,9 @@ func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 	if cfg.OTLPInsecure {
 		opts = append(opts, otlploghttp.WithInsecure())
 	}
+	if h := otlpHeaders(cfg); len(h) > 0 {
+		opts = append(opts, otlploghttp.WithHeaders(h))
+	}
 	exp, err := otlploghttp.New(ctx, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: log exporter: %w", err)
@@ -132,4 +150,11 @@ func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 		sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
 		sdklog.WithResource(res),
 	), nil
+}
+
+func otlpHeaders(cfg Config) map[string]string {
+	if cfg.OTLPBearerToken == "" {
+		return nil
+	}
+	return map[string]string{"Authorization": "Bearer " + cfg.OTLPBearerToken}
 }
