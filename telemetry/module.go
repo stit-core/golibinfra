@@ -3,16 +3,15 @@ package telemetry
 import (
 	"context"
 
+	"github.com/kelseyhightower/envconfig"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 )
 
-// Asymmetry note: Module НЕ provide'ит telemetry.Config — caller
-// обязан зарегистрировать его сам (типично через App-структуру). См.
-// pgkit/module.go для подробностей. Только httpkit.Module provide'ит
-// свой Config внутренне.
+// Module не provide'ит Config (см. asymmetry note в pgkit/module.go).
+// Дешёвый mode: `fx.Provide(telemetry.NewConfig)`.
 var Module = fx.Module("telemetry",
 	fx.Provide(
 		newProvidersWithLifecycle,
@@ -20,6 +19,11 @@ var Module = fx.Module("telemetry",
 		newMeter,
 	),
 )
+
+func NewConfig() (Config, error) {
+	var c Config
+	return c, envconfig.Process("", &c)
+}
 
 func newProvidersWithLifecycle(lc fx.Lifecycle, cfg Config) (*Providers, error) {
 	ctx, cancel := context.WithCancel(context.Background())

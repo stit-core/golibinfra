@@ -9,23 +9,27 @@ import (
 	"go.uber.org/fx"
 )
 
-// Asymmetry note: Module НЕ provide'ит pgkit.PoolConfig — caller
-// обязан зарегистрировать его сам (типично через App-структуру в
-// app-config модуле). Аналогично telemetry.Module — telemetry.Config
-// ждёт извне. Только httpkit.Module provide'ит свой Config через
-// httpkit.newConfig. Если добавить newPoolConfig сюда, у app-side
-// провайдера получится fx-конфликт "already provided".
+// Asymmetry note (golibinfra ≥ v0.17): ни один kit не provide'ит свой
+// Config внутренне. Caller обязан регистрировать Config'и сам (типично
+// через App-структуру в app-config модуле). Дешёвый mode без
+// App-pattern — `fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig)`.
+// Это однородно с httpkit/telemetry/authnkit/cachekit/flagkit/natskit/
+// logkit/httpclient — у каждого Config-фабрика exported, но не в Module.
 var Module = fx.Module("pgkit",
 	fx.Provide(
 		newPoolWithLifecycle,
 		NewDB,
 		fx.Annotate(NewPoolTransactor, fx.As(new(Transactor))),
-		newReplicaConfig,
 		newReadWriteDB,
 	),
 )
 
-func newReplicaConfig() (ReplicaConfig, error) {
+func NewPoolConfig() (PoolConfig, error) {
+	var c PoolConfig
+	return c, envconfig.Process("", &c)
+}
+
+func NewReplicaConfig() (ReplicaConfig, error) {
 	var c ReplicaConfig
 	return c, envconfig.Process("", &c)
 }

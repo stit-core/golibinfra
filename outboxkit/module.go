@@ -6,9 +6,10 @@ import (
 	"git.stit.tech/stit/golibinfra/timerkit"
 )
 
+// Module не provide'ит Config (см. asymmetry note в pgkit/module.go).
+// Дешёвый mode: `fx.Provide(outboxkit.NewConfig)`.
 var Module = fx.Module("outboxkit",
 	fx.Provide(
-		NewConfig,
 		NewRepository,
 		NewBus,
 		func(b *Bus) Publisher { return b },

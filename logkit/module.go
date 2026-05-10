@@ -5,10 +5,11 @@ import (
 	"go.uber.org/fx"
 )
 
+// Module не provide'ит logkit.Config / ServiceConfig — caller обязан
+// зарегистрировать их сам (см. asymmetry note в pgkit/module.go).
+// Дешёвый mode: `fx.Provide(logkit.NewConfig, logkit.NewServiceConfig)`.
 var Module = fx.Module("logkit",
 	fx.Provide(
-		newConfig,
-		newServiceConfig,
 		New,
 		// *slog.Logger для consumer'ов которые не используют logkit.Logger
 		// interface (timerkit и пр.). Тот же handler-chain (trace IDs,
@@ -18,12 +19,12 @@ var Module = fx.Module("logkit",
 	fx.Invoke(registerServiceAttrs),
 )
 
-func newConfig() (Config, error) {
+func NewConfig() (Config, error) {
 	var c Config
 	return c, envconfig.Process("", &c)
 }
 
-func newServiceConfig() (ServiceConfig, error) {
+func NewServiceConfig() (ServiceConfig, error) {
 	var c ServiceConfig
 	return c, envconfig.Process("", &c)
 }

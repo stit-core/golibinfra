@@ -5,15 +5,17 @@ import (
 	"go.uber.org/fx"
 )
 
+// Module не provide'ит Config (см. asymmetry note в pgkit/module.go) —
+// caller обязан зарегистрировать сам. Дешёвый mode:
+// `fx.Provide(cachekit.NewConfig)`.
 var Module = fx.Module("cachekit",
 	fx.Provide(
-		newConfig,
 		fx.Annotate(newRedisCache, fx.As(new(Cache))),
 		Probe,
 	),
 )
 
-func newConfig() (Config, error) {
+func NewConfig() (Config, error) {
 	var c Config
 	return c, envconfig.Process("", &c)
 }

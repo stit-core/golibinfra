@@ -5,9 +5,10 @@ import (
 	"go.uber.org/fx"
 )
 
+// Module не provide'ит Config (см. asymmetry note в pgkit/module.go).
+// Дешёвый mode: `fx.Provide(natskit.NewConfig)`.
 var Module = fx.Module("natskit",
 	fx.Provide(
-		newConfig,
 		newConn,
 		fx.Annotate(NewBus, fx.As(new(Bus))),
 		NewStreamBus,
@@ -15,7 +16,7 @@ var Module = fx.Module("natskit",
 	),
 )
 
-func newConfig() (Config, error) {
+func NewConfig() (Config, error) {
 	var c Config
 	return c, envconfig.Process("", &c)
 }

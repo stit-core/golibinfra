@@ -12,9 +12,13 @@ import (
 	"git.stit.tech/stit/golibinfra/logkit"
 )
 
+// Module не provide'ит httpkit.Config — caller обязан зарегистрировать
+// его сам. Это однородно с pgkit/telemetry: все три kit'а ждут свой
+// Config извне (типично через App-структуру в app-config модуле).
+// Если приложение не использует App-pattern — добавить
+// `fx.Provide(httpkit.NewConfig)` рядом с httpkit.Module.
 var Module = fx.Module("httpkit",
 	fx.Provide(
-		newConfig,
 		newServerWithLifecycle,
 		func(s *Server) huma.API { return s.API() },
 	),
@@ -26,7 +30,9 @@ type idempotencyIn struct {
 	Store IdempotencyStore `optional:"true"`
 }
 
-func newConfig() (Config, error) {
+// NewConfig — exported для приложений без App-pattern, которые хотят
+// дешевле провайдить httpkit.Config из ENV: `fx.Provide(httpkit.NewConfig)`.
+func NewConfig() (Config, error) {
 	var c Config
 	return c, envconfig.Process("", &c)
 }
