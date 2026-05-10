@@ -3,11 +3,11 @@
 Инфраструктурные библиотеки для Go-сервисов компании. Импортируется как Go-модуль из бизнес-репозиториев.
 
 ```go
-import "git.stit.tech/akadmin/golibinfra/pgkit"
-import "git.stit.tech/akadmin/golibinfra/httpkit"
-import "git.stit.tech/akadmin/golibinfra/telemetry"
-import "git.stit.tech/akadmin/golibinfra/config"
-import "git.stit.tech/akadmin/golibinfra/testkit"
+import "git.stit.tech/stit/golibinfra/pgkit"
+import "git.stit.tech/stit/golibinfra/httpkit"
+import "git.stit.tech/stit/golibinfra/telemetry"
+import "git.stit.tech/stit/golibinfra/config"
+import "git.stit.tech/stit/golibinfra/testkit"
 ```
 
 ## Доступ к репозиторию
@@ -48,7 +48,7 @@ Go по умолчанию ходит за модулями через HTTPS. Ч
 git config --global url."git@git.stit.tech:".insteadOf "https://git.stit.tech/"
 ```
 
-После этого `go mod tidy` будет ходить за `git.stit.tech/akadmin/golibinfra` через SSH.
+После этого `go mod tidy` будет ходить за `git.stit.tech/stit/golibinfra` через SSH.
 
 ### Альтернатива: HTTPS + личный токен
 
@@ -71,7 +71,7 @@ chmod 600 ~/.netrc
 
 ```bash
 mkdir /tmp/check && cd /tmp/check && go mod init check
-go get git.stit.tech/akadmin/golibinfra@v0.9.0
+go get git.stit.tech/stit/golibinfra@v0.15.0
 # должно скачать без ошибок
 ```
 
@@ -79,7 +79,7 @@ go get git.stit.tech/akadmin/golibinfra@v0.9.0
 
 В `go.mod`:
 ```
-require git.stit.tech/akadmin/golibinfra v0.9.0
+require git.stit.tech/stit/golibinfra v0.15.0
 ```
 
 `go mod tidy` подтянет.
@@ -125,13 +125,13 @@ require git.stit.tech/akadmin/golibinfra v0.9.0
 
 ```bash
 # подъём минорной версии
-git tag v0.9.0
-git push origin v0.9.0
+git tag v0.15.0
+git push origin v0.15.0
 ```
 
 В шаблонах/проектах после релиза:
 ```bash
-go get git.stit.tech/akadmin/golibinfra@v0.9.0
+go get git.stit.tech/stit/golibinfra@v0.15.0
 go mod tidy
 ```
 
@@ -139,7 +139,7 @@ go mod tidy
 
 Когда правишь `golibinfra` параллельно с продуктом — добавь временный `replace` в `go.mod` продукта:
 ```
-replace git.stit.tech/akadmin/golibinfra => ../golibinfra
+replace git.stit.tech/stit/golibinfra => ../golibinfra
 ```
 
 **Не коммить эту строку** — это для local-only ветки. Перед мержем убрать и поднять версию через `go get`.
