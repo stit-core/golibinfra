@@ -35,16 +35,6 @@ type Server struct {
 
 func NewServer(cfg Config) *Server {
 	r := chi.NewRouter()
-	humaConfig := huma.DefaultConfig(cfg.APITitle, cfg.APIVersion)
-	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
-		"Bearer": {
-			Type:         "http",
-			Scheme:       "bearer",
-			BearerFormat: "JWT",
-		},
-	}
-	api := humachi.New(r, humaConfig)
-
 	srv := &http.Server{
 		Addr:         cfg.Addr,
 		Handler:      r,
@@ -52,11 +42,34 @@ func NewServer(cfg Config) *Server {
 		WriteTimeout: cfg.WriteTimeout,
 		IdleTimeout:  cfg.IdleTimeout,
 	}
-	return &Server{cfg: cfg, router: r, api: api, srv: srv}
+	// huma.API создаётся лениво в BindAPI(): humachi.New на huma ≥ 2.37
+	// сразу регистрирует /openapi.json и /docs route'ы, что блокирует
+	// последующий router.Use(...) (chi panics "all middlewares must be
+	// defined before routes"). Caller обязан вызвать BindAPI() ПОСЛЕ
+	// router.Use(...).
+	return &Server{cfg: cfg, router: r, srv: srv}
+}
+
+// BindAPI инициализирует huma.API поверх chi router'а. Идемпотентен.
+// Вызывается caller'ом после того, как все middleware на router зарегистрированы.
+func (s *Server) BindAPI() huma.API {
+	if s.api != nil {
+		return s.api
+	}
+	humaConfig := huma.DefaultConfig(s.cfg.APITitle, s.cfg.APIVersion)
+	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
+		"Bearer": {
+			Type:         "http",
+			Scheme:       "bearer",
+			BearerFormat: "JWT",
+		},
+	}
+	s.api = humachi.New(s.router, humaConfig)
+	return s.api
 }
 
 func (s *Server) Router() *chi.Mux { return s.router }
-func (s *Server) API() huma.API    { return s.api }
+func (s *Server) API() huma.API    { return s.BindAPI() }
 
 func (s *Server) Start() error {
 	if err := s.srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {

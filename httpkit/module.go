@@ -67,7 +67,11 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai A
 		}, ii.Store))
 	}
 	s.router.Use(mws...)
-	s.api.UseMiddleware(HumaAuth(s.api, ai.Extract))
+	// BindAPI ПОСЛЕ Use — humachi.New регистрирует /openapi.json /docs
+	// route'ы, что блокирует chi.Mux.Use (panic "all middlewares must
+	// be defined before routes on a mux").
+	api := s.BindAPI()
+	api.UseMiddleware(HumaAuth(api, ai.Extract))
 
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
