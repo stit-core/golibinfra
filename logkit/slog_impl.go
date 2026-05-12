@@ -29,7 +29,11 @@ func New(cfg Config, lp *sdklog.LoggerProvider) Logger {
 // которые принимают *slog.Logger напрямую (timerkit и пр.).
 func NewSlog(cfg Config, lp *sdklog.LoggerProvider) *slog.Logger {
 	base := otelslog.NewHandler("backend", otelslog.WithLoggerProvider(lp))
-	return slog.New(&traceHandler{
+	// На прод-пути trace_id/span_id уже embedded в LogRecord самим otelslog
+	// (вычитывает из ctx), service/env/version — в resource attrs telemetry.Init.
+	// attrHandler добавляет только user-registered (RegisterAttr) attrs — например,
+	// request_id из httpkit middleware.
+	return slog.New(&attrHandler{
 		Handler: &levelHandler{level: parseLevel(cfg.Level), inner: base},
 	})
 }
@@ -99,12 +103,31 @@ func (h *levelHandler) WithGroup(name string) slog.Handler {
 	return &levelHandler{level: h.level, inner: h.inner.WithGroup(name)}
 }
 
-// traceHandler добавляет в record trace_id/span_id из ctx плюс
-// registered Attrs (RegisterAttr). На OTel-пути trace context уже
-// embedded в LogRecord самим otelslog'ом — этот wrap'ер скорее для
-// удобства консумеров (slog-record читается ими напрямую) и для тестов
-// через NewWithWriter (там slog.JSONHandler сам по себе trace не знает).
-// Очистка дублирующихся attrs — отдельный шаг (план C3).
+// attrHandler добавляет только user-registered attrs (RegisterAttr).
+// trace_id/span_id НЕ инжектит — на OTel-пути их кладёт otelslog, на
+// test-пути это делает traceHandler.
+type attrHandler struct{ slog.Handler }
+
+func (h *attrHandler) Handle(ctx context.Context, r slog.Record) error {
+	for _, fn := range collectAttrs() {
+		if k, v, ok := fn(ctx); ok {
+			r.AddAttrs(slog.Any(k, v))
+		}
+	}
+	return h.Handler.Handle(ctx, r)
+}
+
+func (h *attrHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &attrHandler{Handler: h.Handler.WithAttrs(attrs)}
+}
+
+func (h *attrHandler) WithGroup(name string) slog.Handler {
+	return &attrHandler{Handler: h.Handler.WithGroup(name)}
+}
+
+// traceHandler — test-only: для NewSlogWithWriter (raw slog.JSONHandler
+// trace context из ctx не читает) вручную добавляет trace_id/span_id +
+// user-registered attrs.
 type traceHandler struct{ slog.Handler }
 
 func (h *traceHandler) Handle(ctx context.Context, r slog.Record) error {

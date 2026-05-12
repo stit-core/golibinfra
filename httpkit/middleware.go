@@ -53,7 +53,8 @@ func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
 				if rec := recover(); rec != nil {
-					log.Error(r.Context(), "panic recovered",
+					log.Error(
+						r.Context(), "panic recovered",
 						"panic", rec,
 						"stack", string(debug.Stack()),
 					)
@@ -72,12 +73,13 @@ func AccessLog(log logkit.Logger) func(http.Handler) http.Handler {
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
 			next.ServeHTTP(rec, r)
 
+			// request_id не дублируем — Attr-registrar в init() добавит автоматом
+			// в любом ctx-scoped лог-вызове.
 			kv := []any{
 				"method", r.Method,
 				"path", r.URL.Path,
 				"status", rec.status,
 				"dur", time.Since(start),
-				"request_id", RequestIDFrom(r.Context()),
 			}
 			switch {
 			case rec.status >= 500:
