@@ -1,11 +1,9 @@
-package outboxkit
+package pgstore
 
 import (
 	"context"
 	"fmt"
 	"time"
-
-	"git.stit.tech/stit/golibinfra/pgkit"
 )
 
 const schemaSQL = `CREATE TABLE IF NOT EXISTS outbox (
@@ -35,7 +33,9 @@ func PartitionSQL(month time.Time) (name, sql string) {
 	return name, sql
 }
 
-func EnsurePartitions(ctx context.Context, db *pgkit.DB, monthsAhead int) error {
+// EnsurePartitions создаёт партиции outbox для текущего месяца и далее
+// monthsAhead месяцев вперёд. Идемпотентна.
+func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 	if monthsAhead < 0 {
 		monthsAhead = 0
 	}
@@ -43,7 +43,7 @@ func EnsurePartitions(ctx context.Context, db *pgkit.DB, monthsAhead int) error 
 	for i := 0; i <= monthsAhead; i++ {
 		m := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, i, 0)
 		_, sql := PartitionSQL(m)
-		if _, err := db.Exec(ctx, sql); err != nil {
+		if _, err := s.db.Exec(ctx, sql); err != nil {
 			return fmt.Errorf("outboxkit: ensure partition %s: %w", m.Format("2006-01"), err)
 		}
 	}

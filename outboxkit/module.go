@@ -6,11 +6,13 @@ import (
 	"git.stit.tech/stit/golibinfra/timerkit"
 )
 
-// Module не provide'ит Config (см. asymmetry note в pgkit/module.go).
-// Дешёвый mode: `fx.Provide(outboxkit.NewConfig)`.
-var Module = fx.Module("outboxkit",
+// Module провайдит orchestration-слой outbox (Bus, Publisher, Worker, drain-Job).
+// Repository — внешняя зависимость; caller подключает отдельно: либо
+// `outboxkit/pgstore.Module`, либо собственный store-адаптер.
+// Конфиг тоже не provide'ится — caller добавляет `fx.Provide(outboxkit.NewConfig)`.
+var Module = fx.Module(
+	"outboxkit",
 	fx.Provide(
-		NewRepository,
 		NewBus,
 		func(b *Bus) Publisher { return b },
 		NewWorker,

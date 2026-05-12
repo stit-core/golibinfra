@@ -1,16 +1,16 @@
-package outboxkit_test
+package pgstore_test
 
 import (
 	"context"
 	"testing"
 	"time"
 
-	"git.stit.tech/stit/golibinfra/outboxkit"
+	"git.stit.tech/stit/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit/golibinfra/testkit"
 )
 
 func TestPartitionSQL_Naming(t *testing.T) {
-	name, sql := outboxkit.PartitionSQL(time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC))
+	name, sql := pgstore.PartitionSQL(time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC))
 	if name != "outbox_2026_05" {
 		t.Fatalf("name: %s", name)
 	}
@@ -20,12 +20,12 @@ func TestPartitionSQL_Naming(t *testing.T) {
 }
 
 func TestSchemaSQL_NotEmpty(t *testing.T) {
-	if outboxkit.SchemaSQL() == "" {
+	if pgstore.SchemaSQL() == "" {
 		t.Fatal("schema sql is empty")
 	}
 }
 
-func TestRepository_PartitionedDrain(t *testing.T) {
+func TestStore_PartitionedDrain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
@@ -36,15 +36,15 @@ func TestRepository_PartitionedDrain(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	repo := outboxkit.NewRepository(db)
+	s := pgstore.NewStore(db)
 
 	for i := 0; i < 5; i++ {
-		if err := repo.Insert(ctx, "evt.test", map[string]int{"i": i}); err != nil {
+		if err := s.Insert(ctx, "evt.test", map[string]int{"i": i}); err != nil {
 			t.Fatalf("Insert: %v", err)
 		}
 	}
 
-	msgs, err := repo.ListUnpublished(ctx, 10)
+	msgs, err := s.ListUnpublished(ctx, 10)
 	if err != nil {
 		t.Fatalf("ListUnpublished: %v", err)
 	}
@@ -52,11 +52,11 @@ func TestRepository_PartitionedDrain(t *testing.T) {
 		t.Fatalf("want 5 unpublished, got %d", len(msgs))
 	}
 	for _, m := range msgs {
-		if err := repo.MarkPublished(ctx, m.ID); err != nil {
+		if err := s.MarkPublished(ctx, m.ID); err != nil {
 			t.Fatalf("MarkPublished: %v", err)
 		}
 	}
-	left, err := repo.ListUnpublished(ctx, 10)
+	left, err := s.ListUnpublished(ctx, 10)
 	if err != nil {
 		t.Fatalf("ListUnpublished after: %v", err)
 	}
@@ -64,12 +64,33 @@ func TestRepository_PartitionedDrain(t *testing.T) {
 		t.Fatalf("want 0, got %d", len(left))
 	}
 
-	row := db.QueryRow(ctx, "SELECT relkind FROM pg_class WHERE relname='outbox'")
+	row := db.QueryRow(ctx, "SELECT relkind::text FROM pg_class WHERE relname='outbox'")
 	var kind string
 	if err := row.Scan(&kind); err != nil {
 		t.Fatalf("scan: %v", err)
 	}
 	if kind != "p" {
 		t.Fatalf("expected partitioned table (relkind=p), got %s", kind)
+	}
+}
+
+func TestStore_EnsurePartitions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	migDir := extractMigrations(t)
+	fx := testkit.StartPostgres(t, migDir)
+	db := fx.DB(t)
+	s := pgstore.NewStore(db)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := s.EnsurePartitions(ctx, 6); err != nil {
+		t.Fatalf("EnsurePartitions: %v", err)
+	}
+
+	if err := s.EnsurePartitions(ctx, 6); err != nil {
+		t.Fatalf("EnsurePartitions idempotent: %v", err)
 	}
 }

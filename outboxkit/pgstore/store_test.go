@@ -1,4 +1,4 @@
-package outboxkit_test
+package pgstore_test
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
-	"git.stit.tech/stit/golibinfra/outboxkit"
+	"git.stit.tech/stit/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit/golibinfra/pgkit"
 	"git.stit.tech/stit/golibinfra/testkit"
 )
@@ -19,14 +19,14 @@ import (
 func extractMigrations(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	err := fs.WalkDir(outboxkit.Migrations, "migrations", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(pgstore.MigrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		data, err := outboxkit.Migrations.ReadFile(path)
+		data, err := pgstore.MigrationsFS.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -43,7 +43,7 @@ type sample struct {
 	N   int    `json:"n"`
 }
 
-func TestRepository_HappyPath(t *testing.T) {
+func TestStore_HappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
@@ -52,16 +52,16 @@ func TestRepository_HappyPath(t *testing.T) {
 	fx := testkit.StartPostgres(t, migDir)
 	db := fx.DB(t)
 
-	repo := outboxkit.NewRepository(db)
+	s := pgstore.NewStore(db)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	if err := repo.Insert(ctx, "user.created", sample{Foo: "bar", N: 7}); err != nil {
+	if err := s.Insert(ctx, "user.created", sample{Foo: "bar", N: 7}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 
-	msgs, err := repo.ListUnpublished(ctx, 100)
+	msgs, err := s.ListUnpublished(ctx, 100)
 	if err != nil {
 		t.Fatalf("ListUnpublished: %v", err)
 	}
@@ -72,11 +72,11 @@ func TestRepository_HappyPath(t *testing.T) {
 		t.Fatalf("subject mismatch: %s", msgs[0].Subject)
 	}
 
-	if err := repo.MarkPublished(ctx, msgs[0].ID); err != nil {
+	if err := s.MarkPublished(ctx, msgs[0].ID); err != nil {
 		t.Fatalf("MarkPublished: %v", err)
 	}
 
-	msgs2, err := repo.ListUnpublished(ctx, 100)
+	msgs2, err := s.ListUnpublished(ctx, 100)
 	if err != nil {
 		t.Fatalf("ListUnpublished after publish: %v", err)
 	}
@@ -85,7 +85,7 @@ func TestRepository_HappyPath(t *testing.T) {
 	}
 }
 
-func TestRepository_RollbackDropsMessage(t *testing.T) {
+func TestStore_RollbackDropsMessage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
@@ -101,14 +101,14 @@ func TestRepository_RollbackDropsMessage(t *testing.T) {
 
 	db := pgkit.NewDB(pool)
 	tr := pgkit.NewPoolTransactor(pool)
-	repo := outboxkit.NewRepository(db)
+	s := pgstore.NewStore(db)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
 	wantErr := errors.New("business failure")
 	err = tr.WithTx(ctx, func(ctx context.Context) error {
-		if err := repo.Insert(ctx, "user.created", sample{Foo: "rollback", N: 1}); err != nil {
+		if err := s.Insert(ctx, "user.created", sample{Foo: "rollback", N: 1}); err != nil {
 			return err
 		}
 		return wantErr
@@ -117,7 +117,7 @@ func TestRepository_RollbackDropsMessage(t *testing.T) {
 		t.Fatalf("WithTx err: got %v, want %v", err, wantErr)
 	}
 
-	msgs, err := repo.ListUnpublished(ctx, 100)
+	msgs, err := s.ListUnpublished(ctx, 100)
 	if err != nil {
 		t.Fatalf("ListUnpublished: %v", err)
 	}
@@ -126,12 +126,12 @@ func TestRepository_RollbackDropsMessage(t *testing.T) {
 	}
 
 	err = tr.WithTx(ctx, func(ctx context.Context) error {
-		return repo.Insert(ctx, "user.created", sample{Foo: "commit", N: 2})
+		return s.Insert(ctx, "user.created", sample{Foo: "commit", N: 2})
 	})
 	if err != nil {
 		t.Fatalf("WithTx commit: %v", err)
 	}
-	msgs2, err := repo.ListUnpublished(ctx, 100)
+	msgs2, err := s.ListUnpublished(ctx, 100)
 	if err != nil {
 		t.Fatalf("ListUnpublished: %v", err)
 	}
