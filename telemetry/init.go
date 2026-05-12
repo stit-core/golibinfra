@@ -98,10 +98,7 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 }
 
 func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdktrace.TracerProvider, error) {
-	opts := []otlptracehttp.Option{otlptracehttp.WithEndpoint(cfg.OTLPEndpoint)}
-	if cfg.OTLPInsecure {
-		opts = append(opts, otlptracehttp.WithInsecure())
-	}
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(buildOTLPURL(cfg, "v1/traces"))}
 	if h := otlpHeaders(cfg); len(h) > 0 {
 		opts = append(opts, otlptracehttp.WithHeaders(h))
 	}
@@ -117,10 +114,7 @@ func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 }
 
 func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
-	opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpoint(cfg.OTLPEndpoint)}
-	if cfg.OTLPInsecure {
-		opts = append(opts, otlpmetrichttp.WithInsecure())
-	}
+	opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpointURL(buildOTLPURL(cfg, "v1/metrics"))}
 	if h := otlpHeaders(cfg); len(h) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(h))
 	}
@@ -135,10 +129,7 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 }
 
 func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdklog.LoggerProvider, error) {
-	opts := []otlploghttp.Option{otlploghttp.WithEndpoint(cfg.OTLPEndpoint)}
-	if cfg.OTLPInsecure {
-		opts = append(opts, otlploghttp.WithInsecure())
-	}
+	opts := []otlploghttp.Option{otlploghttp.WithEndpointURL(buildOTLPURL(cfg, "v1/logs"))}
 	if h := otlpHeaders(cfg); len(h) > 0 {
 		opts = append(opts, otlploghttp.WithHeaders(h))
 	}
@@ -157,6 +148,19 @@ func otlpHeaders(cfg Config) map[string]string {
 		return nil
 	}
 	return map[string]string{"Authorization": "Bearer " + cfg.OTLPBearerToken}
+}
+
+// buildOTLPURL составляет полный URL для OTLP-exporter'а с явной схемой —
+// чтобы не зависеть от env-based scheme inference. У otlploghttp v0.19
+// (experimental) есть quirk: `url.Parse("host:port")` парсит как
+// scheme=host, opaque=port → insecureFromScheme считает scheme непустой
+// → невольно ставит insecure=true. Явный URL обходит эту цепочку.
+func buildOTLPURL(cfg Config, signalPath string) string {
+	scheme := "https"
+	if cfg.OTLPInsecure {
+		scheme = "http"
+	}
+	return scheme + "://" + cfg.OTLPEndpoint + "/" + signalPath
 }
 
 // initStdout — dev-режим: все три сигнала идут в stdout через OTel
