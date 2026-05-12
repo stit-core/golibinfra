@@ -45,7 +45,7 @@ SET failed_count = bruteforce_attempts.failed_count + 1,
     last_attempt = NOW(),
     locked_until = CASE
         WHEN bruteforce_attempts.failed_count + 1 >= $3
-        THEN NOW() + ($4 || ' seconds')::INTERVAL
+        THEN NOW() + make_interval(secs => $4)
         ELSE NULL
     END
 `
