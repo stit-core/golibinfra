@@ -1,4 +1,4 @@
-package auditkit_test
+package pgstore_test
 
 import (
 	"context"
@@ -10,20 +10,21 @@ import (
 	"time"
 
 	"git.stit.tech/stit/golibinfra/auditkit"
+	"git.stit.tech/stit/golibinfra/auditkit/pgstore"
 	"git.stit.tech/stit/golibinfra/testkit"
 )
 
 func extractMigrations(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	err := fs.WalkDir(auditkit.Migrations, "migrations", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(pgstore.MigrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		data, err := auditkit.Migrations.ReadFile(path)
+		data, err := pgstore.MigrationsFS.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -35,7 +36,7 @@ func extractMigrations(t *testing.T) string {
 	return dir
 }
 
-func TestPgLogger_Log(t *testing.T) {
+func TestStore_Log(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
@@ -44,7 +45,7 @@ func TestPgLogger_Log(t *testing.T) {
 	fx := testkit.StartPostgres(t, migDir)
 	db := fx.DB(t)
 
-	logger := auditkit.NewPgLogger(db)
+	s := pgstore.NewStore(db)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -60,7 +61,7 @@ func TestPgLogger_Log(t *testing.T) {
 		IP:         "127.0.0.1",
 		RequestID:  "req-xyz",
 	}
-	if err := logger.Log(ctx, entry); err != nil {
+	if err := s.Log(ctx, entry); err != nil {
 		t.Fatalf("Log: %v", err)
 	}
 

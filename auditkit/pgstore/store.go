@@ -1,4 +1,4 @@
-package auditkit
+package pgstore
 
 import (
 	"context"
@@ -6,15 +6,16 @@ import (
 	"fmt"
 	"time"
 
+	"git.stit.tech/stit/golibinfra/auditkit"
 	"git.stit.tech/stit/golibinfra/pgkit"
 )
 
-type pgLogger struct {
+type Store struct {
 	db *pgkit.DB
 }
 
-func NewPgLogger(db *pgkit.DB) Logger {
-	return &pgLogger{db: db}
+func NewStore(db *pgkit.DB) *Store {
+	return &Store{db: db}
 }
 
 const insertAuditSQL = `
@@ -22,7 +23,7 @@ INSERT INTO audit_log (actor_id, action, resource, resource_id, metadata, ip, re
 VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 `
 
-func (l *pgLogger) Log(ctx context.Context, e Entry) error {
+func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 	at := e.At
 	if at.IsZero() {
 		at = time.Now()
@@ -37,7 +38,8 @@ func (l *pgLogger) Log(ctx context.Context, e Entry) error {
 		}
 	}
 
-	_, err := l.db.Exec(ctx, insertAuditSQL,
+	_, err := s.db.Exec(
+		ctx, insertAuditSQL,
 		nullStr(e.ActorID),
 		e.Action,
 		e.Resource,
