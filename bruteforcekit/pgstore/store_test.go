@@ -1,4 +1,4 @@
-package bruteforcekit_test
+package pgstore_test
 
 import (
 	"context"
@@ -9,20 +9,21 @@ import (
 	"time"
 
 	"git.stit.tech/stit/golibinfra/bruteforcekit"
+	"git.stit.tech/stit/golibinfra/bruteforcekit/pgstore"
 	"git.stit.tech/stit/golibinfra/testkit"
 )
 
 func extractMigrations(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	err := fs.WalkDir(bruteforcekit.Migrations, "migrations", func(path string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(pgstore.MigrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
 			return nil
 		}
-		data, err := bruteforcekit.Migrations.ReadFile(path)
+		data, err := pgstore.MigrationsFS.ReadFile(path)
 		if err != nil {
 			return err
 		}
@@ -34,7 +35,7 @@ func extractMigrations(t *testing.T) string {
 	return dir
 }
 
-func TestPgGuard_LockAfterMaxFailures(t *testing.T) {
+func TestStore_LockAfterMaxFailures(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
@@ -48,7 +49,7 @@ func TestPgGuard_LockAfterMaxFailures(t *testing.T) {
 		LockDuration: 15 * time.Minute,
 		Window:       time.Hour,
 	}
-	g := bruteforcekit.NewPgGuard(db, cfg)
+	s := pgstore.NewStore(db, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -56,24 +57,24 @@ func TestPgGuard_LockAfterMaxFailures(t *testing.T) {
 	const subject = "user@example.com"
 	const ip = "10.0.0.1"
 
-	if st, err := g.Check(ctx, subject, ip); err != nil || st != nil {
+	if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
 		t.Fatalf("initial Check: st=%v err=%v", st, err)
 	}
 
 	for i := 0; i < 2; i++ {
-		if err := g.RecordFailure(ctx, subject, ip); err != nil {
+		if err := s.RecordFailure(ctx, subject, ip); err != nil {
 			t.Fatalf("RecordFailure %d: %v", i, err)
 		}
 	}
-	if st, err := g.Check(ctx, subject, ip); err != nil || st != nil {
+	if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
 		t.Fatalf("after 2 failures Check: st=%v err=%v", st, err)
 	}
 
 	before := time.Now()
-	if err := g.RecordFailure(ctx, subject, ip); err != nil {
+	if err := s.RecordFailure(ctx, subject, ip); err != nil {
 		t.Fatalf("RecordFailure threshold: %v", err)
 	}
-	st, err := g.Check(ctx, subject, ip)
+	st, err := s.Check(ctx, subject, ip)
 	if err != nil {
 		t.Fatalf("Check after lock: %v", err)
 	}
@@ -87,7 +88,7 @@ func TestPgGuard_LockAfterMaxFailures(t *testing.T) {
 	}
 }
 
-func TestPgGuard_RecordSuccessResets(t *testing.T) {
+func TestStore_RecordSuccessResets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
@@ -101,7 +102,7 @@ func TestPgGuard_RecordSuccessResets(t *testing.T) {
 		LockDuration: 15 * time.Minute,
 		Window:       time.Hour,
 	}
-	g := bruteforcekit.NewPgGuard(db, cfg)
+	s := pgstore.NewStore(db, cfg)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -110,21 +111,21 @@ func TestPgGuard_RecordSuccessResets(t *testing.T) {
 	const ip = "10.0.0.2"
 
 	for i := 0; i < 2; i++ {
-		if err := g.RecordFailure(ctx, subject, ip); err != nil {
+		if err := s.RecordFailure(ctx, subject, ip); err != nil {
 			t.Fatalf("RecordFailure %d: %v", i, err)
 		}
 	}
-	if err := g.RecordSuccess(ctx, subject, ip); err != nil {
+	if err := s.RecordSuccess(ctx, subject, ip); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
 	}
 
-	if st, err := g.Check(ctx, subject, ip); err != nil || st != nil {
+	if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
 		t.Fatalf("Check after success: st=%v err=%v", st, err)
 	}
-	if err := g.RecordFailure(ctx, subject, ip); err != nil {
+	if err := s.RecordFailure(ctx, subject, ip); err != nil {
 		t.Fatalf("RecordFailure after reset: %v", err)
 	}
-	if st, err := g.Check(ctx, subject, ip); err != nil || st != nil {
+	if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
 		t.Fatalf("Check after single failure (reset): st=%v err=%v", st, err)
 	}
 }

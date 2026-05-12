@@ -1,19 +1,20 @@
-package bruteforcekit
+package pgstore
 
 import (
 	"context"
 	"time"
 
+	"git.stit.tech/stit/golibinfra/bruteforcekit"
 	"git.stit.tech/stit/golibinfra/pgkit"
 )
 
-type pgGuard struct {
+type Store struct {
 	db  *pgkit.DB
-	cfg Config
+	cfg bruteforcekit.Config
 }
 
-func NewPgGuard(db *pgkit.DB, cfg Config) Guard {
-	return &pgGuard{db: db, cfg: cfg}
+func NewStore(db *pgkit.DB, cfg bruteforcekit.Config) *Store {
+	return &Store{db: db, cfg: cfg}
 }
 
 const checkSQL = `
@@ -22,9 +23,9 @@ FROM bruteforce_attempts
 WHERE subject = $1 AND ip = $2
 `
 
-func (g *pgGuard) Check(ctx context.Context, subject, ip string) (*LockState, error) {
+func (s *Store) Check(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	var lockedUntil *time.Time
-	err := g.db.QueryRow(ctx, checkSQL, subject, ip).Scan(&lockedUntil)
+	err := s.db.QueryRow(ctx, checkSQL, subject, ip).Scan(&lockedUntil)
 	if pgkit.IsNoRows(err) {
 		return nil, nil
 	}
@@ -32,7 +33,7 @@ func (g *pgGuard) Check(ctx context.Context, subject, ip string) (*LockState, er
 		return nil, err
 	}
 	if lockedUntil != nil && lockedUntil.After(time.Now()) {
-		return &LockState{Until: *lockedUntil}, nil
+		return &bruteforcekit.LockState{Until: *lockedUntil}, nil
 	}
 	return nil, nil
 }
@@ -50,9 +51,9 @@ SET failed_count = bruteforce_attempts.failed_count + 1,
     END
 `
 
-func (g *pgGuard) RecordFailure(ctx context.Context, subject, ip string) error {
-	lockSecs := int(g.cfg.LockDuration.Seconds())
-	_, err := g.db.Exec(ctx, recordFailureSQL, subject, ip, g.cfg.MaxFailures, lockSecs)
+func (s *Store) RecordFailure(ctx context.Context, subject, ip string) error {
+	lockSecs := int(s.cfg.LockDuration.Seconds())
+	_, err := s.db.Exec(ctx, recordFailureSQL, subject, ip, s.cfg.MaxFailures, lockSecs)
 	return err
 }
 
@@ -60,7 +61,7 @@ const recordSuccessSQL = `
 DELETE FROM bruteforce_attempts WHERE subject = $1 AND ip = $2
 `
 
-func (g *pgGuard) RecordSuccess(ctx context.Context, subject, ip string) error {
-	_, err := g.db.Exec(ctx, recordSuccessSQL, subject, ip)
+func (s *Store) RecordSuccess(ctx context.Context, subject, ip string) error {
+	_, err := s.db.Exec(ctx, recordSuccessSQL, subject, ip)
 	return err
 }
