@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"testing"
 
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -46,7 +47,9 @@ func TestNopDoesNotPanic(t *testing.T) {
 }
 
 func TestNewNotNil(t *testing.T) {
-	l := New(Config{Level: "debug"})
+	lp := sdklog.NewLoggerProvider()
+	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
+	l := New(Config{Level: "debug"}, lp)
 	if l == nil {
 		t.Fatal("New returned nil")
 	}

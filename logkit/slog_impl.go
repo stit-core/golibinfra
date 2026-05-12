@@ -4,8 +4,9 @@ import (
 	"context"
 	"io"
 	"log/slog"
-	"os"
 
+	"go.opentelemetry.io/contrib/bridges/otelslog"
+	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -17,30 +18,41 @@ type slogLogger struct {
 	l *slog.Logger
 }
 
-func New(cfg Config) Logger {
-	return NewWithWriter(cfg, os.Stdout)
+// New создаёт OTLP-bound Logger: запись идёт в LoggerProvider, дальше его
+// processors/exporters решают куда отправить (OTLP HTTP, stdoutlog, etc).
+// stdout-JSON путь — только через [NewWithWriter] для тестов.
+func New(cfg Config, lp *sdklog.LoggerProvider) Logger {
+	return &slogLogger{l: NewSlog(cfg, lp)}
 }
 
+// NewSlog возвращает *slog.Logger c тем же chain, что и [New]. Для consumer'ов
+// которые принимают *slog.Logger напрямую (timerkit и пр.).
+func NewSlog(cfg Config, lp *sdklog.LoggerProvider) *slog.Logger {
+	base := otelslog.NewHandler("backend", otelslog.WithLoggerProvider(lp))
+	return slog.New(&traceHandler{
+		Handler: &levelHandler{level: parseLevel(cfg.Level), inner: base},
+	})
+}
+
+// NewWithWriter — test-only: JSON в произвольный writer, без OTel SDK.
+// Прод-путь идёт через [New] с LoggerProvider; этот конструктор
+// удерживается для unit-тестов которым LoggerProvider избыточен.
 func NewWithWriter(cfg Config, w io.Writer) Logger {
 	return &slogLogger{l: NewSlogWithWriter(cfg, w)}
 }
 
-// NewSlog возвращает *slog.Logger с тем же handler chain (traceHandler +
-// JSON), что и logkit.Logger. Для consumer'ов golibinfra (например
-// timerkit), которые принимают *slog.Logger напрямую — provide'ится
-// модулем `Module`. Без него каждый проектный cmd/* писал бы свой
-// мостик, и они дрейфовали бы по level/destination.
-func NewSlog(cfg Config) *slog.Logger {
-	return NewSlogWithWriter(cfg, os.Stdout)
+// NewSlogWithWriter — test-only, см. [NewWithWriter].
+func NewSlogWithWriter(cfg Config, w io.Writer) *slog.Logger {
+	base := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: parseLevel(cfg.Level)})
+	return slog.New(&traceHandler{Handler: base})
 }
 
-func NewSlogWithWriter(cfg Config, w io.Writer) *slog.Logger {
+func parseLevel(s string) slog.Level {
 	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(cfg.Level)); err != nil {
-		lvl = slog.LevelInfo
+	if err := lvl.UnmarshalText([]byte(s)); err != nil {
+		return slog.LevelInfo
 	}
-	base := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})
-	return slog.New(&traceHandler{Handler: base})
+	return lvl
 }
 
 func (s *slogLogger) Debug(ctx context.Context, msg string, kv ...any) {
@@ -63,6 +75,36 @@ func (s *slogLogger) With(kv ...any) Logger {
 	return &slogLogger{l: s.l.With(kv...)}
 }
 
+// levelHandler фильтрует записи по slog.Level перед передачей inner.
+// otelslog.Handler сам не делает level-cutoff (шлёт всё в SDK), поэтому
+// нужен слой выше для consistency с LOG_LEVEL.
+type levelHandler struct {
+	level slog.Level
+	inner slog.Handler
+}
+
+func (h *levelHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.level
+}
+
+func (h *levelHandler) Handle(ctx context.Context, r slog.Record) error {
+	return h.inner.Handle(ctx, r)
+}
+
+func (h *levelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	return &levelHandler{level: h.level, inner: h.inner.WithAttrs(attrs)}
+}
+
+func (h *levelHandler) WithGroup(name string) slog.Handler {
+	return &levelHandler{level: h.level, inner: h.inner.WithGroup(name)}
+}
+
+// traceHandler добавляет в record trace_id/span_id из ctx плюс
+// registered Attrs (RegisterAttr). На OTel-пути trace context уже
+// embedded в LogRecord самим otelslog'ом — этот wrap'ер скорее для
+// удобства консумеров (slog-record читается ими напрямую) и для тестов
+// через NewWithWriter (там slog.JSONHandler сам по себе trace не знает).
+// Очистка дублирующихся attrs — отдельный шаг (план C3).
 type traceHandler struct{ slog.Handler }
 
 func (h *traceHandler) Handle(ctx context.Context, r slog.Record) error {
