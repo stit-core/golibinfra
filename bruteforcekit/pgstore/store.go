@@ -65,3 +65,15 @@ func (s *Store) RecordSuccess(ctx context.Context, subject, ip string) error {
 	_, err := s.db.Exec(ctx, recordSuccessSQL, subject, ip)
 	return err
 }
+
+const cleanupSQL = `
+DELETE FROM bruteforce_attempts
+WHERE (locked_until IS NULL OR locked_until < NOW())
+  AND last_attempt < NOW() - make_interval(secs => $1)
+`
+
+func (s *Store) Cleanup(ctx context.Context) error {
+	retentionSecs := int(s.cfg.CleanupRetention.Seconds())
+	_, err := s.db.Exec(ctx, cleanupSQL, retentionSecs)
+	return err
+}

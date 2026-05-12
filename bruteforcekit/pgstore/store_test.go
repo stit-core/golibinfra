@@ -88,6 +88,51 @@ func TestStore_LockAfterMaxFailures(t *testing.T) {
 	}
 }
 
+func TestStore_Cleanup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+
+	migDir := extractMigrations(t)
+	fx := testkit.StartPostgres(t, migDir)
+	db := fx.DB(t)
+
+	cfg := bruteforcekit.Config{
+		MaxFailures:      3,
+		LockDuration:     15 * time.Minute,
+		Window:           time.Hour,
+		CleanupRetention: 0,
+	}
+	s := pgstore.NewStore(db, cfg)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	if err := s.RecordFailure(ctx, "stale@example.com", "1.1.1.1"); err != nil {
+		t.Fatalf("RecordFailure stale: %v", err)
+	}
+	for i := 0; i < 3; i++ {
+		if err := s.RecordFailure(ctx, "locked@example.com", "2.2.2.2"); err != nil {
+			t.Fatalf("RecordFailure locked %d: %v", i, err)
+		}
+	}
+
+	if err := s.Cleanup(ctx); err != nil {
+		t.Fatalf("Cleanup: %v", err)
+	}
+
+	if st, err := s.Check(ctx, "stale@example.com", "1.1.1.1"); err != nil || st != nil {
+		t.Fatalf("stale row should be gone: st=%v err=%v", st, err)
+	}
+	st, err := s.Check(ctx, "locked@example.com", "2.2.2.2")
+	if err != nil {
+		t.Fatalf("Check locked: %v", err)
+	}
+	if st == nil {
+		t.Fatalf("locked row must survive Cleanup")
+	}
+}
+
 func TestStore_RecordSuccessResets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")

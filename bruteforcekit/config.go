@@ -7,9 +7,10 @@ import (
 )
 
 type Config struct {
-	MaxFailures  int           `envconfig:"BRUTEFORCE_MAX_FAILURES" default:"5"`
-	LockDuration time.Duration `envconfig:"BRUTEFORCE_LOCK_DURATION" default:"15m"`
-	Window       time.Duration `envconfig:"BRUTEFORCE_WINDOW" default:"1h"`
+	MaxFailures      int           `envconfig:"BRUTEFORCE_MAX_FAILURES" default:"5"`
+	LockDuration     time.Duration `envconfig:"BRUTEFORCE_LOCK_DURATION" default:"15m"`
+	Window           time.Duration `envconfig:"BRUTEFORCE_WINDOW" default:"1h"`
+	CleanupRetention time.Duration `envconfig:"BRUTEFORCE_CLEANUP_RETENTION" default:"24h"`
 }
 
 func NewConfig() (Config, error) {
