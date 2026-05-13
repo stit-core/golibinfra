@@ -17,7 +17,8 @@ import (
 // Config извне (типично через App-структуру в app-config модуле).
 // Если приложение не использует App-pattern — добавить
 // `fx.Provide(httpkit.NewConfig)` рядом с httpkit.Module.
-var Module = fx.Module("httpkit",
+var Module = fx.Module(
+	"httpkit",
 	fx.Provide(
 		newServerWithLifecycle,
 		func(s *Server) huma.API { return s.API() },
@@ -48,12 +49,17 @@ type healthIn struct {
 	Probes []Probe `group:"health"`
 }
 
+type securitySchemesIn struct {
+	fx.In
+	Schemes []SecuritySchemeEntry `group:"httpkit.security_scheme"`
+}
+
 func registerHealth(in healthIn) {
 	RegisterHealth(in.API, in.Probes...)
 }
 
-func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn) *Server {
-	s := NewServer(cfg)
+func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn, ss securitySchemesIn) *Server {
+	s := NewServer(cfg, ss.Schemes...)
 
 	mws := []func(http.Handler) http.Handler{
 		CORS(cfg.CORS),

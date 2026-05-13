@@ -26,14 +26,23 @@ type Config struct {
 	Security        SecurityHeadersConfig
 }
 
-type Server struct {
-	cfg    Config
-	router *chi.Mux
-	api    huma.API
-	srv    *http.Server
+// SecuritySchemeEntry — одна запись в openapi `components.securitySchemes`.
+// Регистрируется caller'ом через fx-группу `httpkit.security_scheme` или
+// аргументом `NewServer`. httpkit не выставляет дефолтных схем.
+type SecuritySchemeEntry struct {
+	Name   string
+	Scheme *huma.SecurityScheme
 }
 
-func NewServer(cfg Config) *Server {
+type Server struct {
+	cfg     Config
+	router  *chi.Mux
+	api     huma.API
+	srv     *http.Server
+	schemes []SecuritySchemeEntry
+}
+
+func NewServer(cfg Config, schemes ...SecuritySchemeEntry) *Server {
 	r := chi.NewRouter()
 	srv := &http.Server{
 		Addr:         cfg.Addr,
@@ -47,7 +56,7 @@ func NewServer(cfg Config) *Server {
 	// последующий router.Use(...) (chi panics "all middlewares must be
 	// defined before routes"). Caller обязан вызвать BindAPI() ПОСЛЕ
 	// router.Use(...).
-	return &Server{cfg: cfg, router: r, srv: srv}
+	return &Server{cfg: cfg, router: r, srv: srv, schemes: schemes}
 }
 
 // BindAPI инициализирует huma.API поверх chi router'а. Идемпотентен.
@@ -57,12 +66,11 @@ func (s *Server) BindAPI() huma.API {
 		return s.api
 	}
 	humaConfig := huma.DefaultConfig(s.cfg.APITitle, s.cfg.APIVersion)
-	humaConfig.Components.SecuritySchemes = map[string]*huma.SecurityScheme{
-		"Bearer": {
-			Type:         "http",
-			Scheme:       "bearer",
-			BearerFormat: "JWT",
-		},
+	if len(s.schemes) > 0 {
+		humaConfig.Components.SecuritySchemes = make(map[string]*huma.SecurityScheme, len(s.schemes))
+		for _, e := range s.schemes {
+			humaConfig.Components.SecuritySchemes[e.Name] = e.Scheme
+		}
 	}
 	s.api = humachi.New(s.router, humaConfig)
 	return s.api
