@@ -9,7 +9,11 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/semaphore"
 
 	"git.stit.tech/stit/golibinfra/logkit"
@@ -29,6 +33,7 @@ type jsBus struct {
 	enabled     bool
 	ackWait     time.Duration
 	maxInFlight int
+	instr       *natsInstruments
 }
 
 type disabledStreamBus struct{}
@@ -64,6 +69,7 @@ func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error) 
 		enabled:     true,
 		ackWait:     ackWait,
 		maxInFlight: maxInFlight,
+		instr:       newNatsInstruments(),
 	}
 	if err := b.ensureStreams(context.Background(), cfg); err != nil {
 		return nil, err
@@ -127,8 +133,32 @@ func (b *jsBus) PublishStream(ctx context.Context, subject string, payload []byt
 	if !b.enabled {
 		return ErrJetStreamDisabled
 	}
-	if _, err := b.js.Publish(ctx, subject, payload); err != nil {
-		return fmt.Errorf("natskit: jetstream publish: %w", err)
+
+	msg, _, span := b.instr.startPublishSpan(ctx, subject, payload)
+	start := time.Now()
+
+	_, pubErr := b.js.PublishMsg(ctx, msg)
+	dur := time.Since(start).Seconds()
+
+	status := "ok"
+	if pubErr != nil {
+		status = "error"
+		span.RecordError(pubErr)
+		span.SetStatus(codes.Error, pubErr.Error())
+	}
+	span.End()
+
+	b.instr.publishedTotal.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("subject", subject),
+		attribute.String("status", status),
+		attribute.String("transport", "jetstream"),
+	))
+	b.instr.publishDuration.Record(ctx, dur,
+		metric.WithAttributes(attribute.String("subject", subject), attribute.String("transport", "jetstream")),
+	)
+
+	if pubErr != nil {
+		return fmt.Errorf("natskit: jetstream publish: %w", pubErr)
 	}
 	return nil
 }
@@ -154,36 +184,68 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 		}
 		go func() {
 			defer b.sem.Release(1)
-			defer func() {
-				if rec := recover(); rec != nil {
-					b.log.Error(context.Background(), "natskit: jetstream handler panic",
-						"subject", msg.Subject(),
-						"panic", rec,
-						"stack", string(debug.Stack()),
-					)
-					_ = msg.Nak()
-				}
-			}()
-			if err := handler(context.Background(), msg.Data()); err != nil {
-				b.log.Error(context.Background(), "natskit: jetstream handler error",
-					"subject", msg.Subject(),
-					"err", err,
-				)
-				_ = msg.Nak()
-				return
-			}
-			if err := msg.Ack(); err != nil {
-				b.log.Error(context.Background(), "natskit: jetstream ack error",
-					"subject", msg.Subject(),
-					"err", err,
-				)
-			}
+			b.handleStreamOne(msg, handler)
 		}()
 	})
 	if err != nil {
 		return fmt.Errorf("natskit: jetstream consume: %w", err)
 	}
 	return nil
+}
+
+func (b *jsBus) handleStreamOne(msg jetstream.Msg, handler func(ctx context.Context, payload []byte) error) {
+	subject := msg.Subject()
+	subjAttr := metric.WithAttributes(
+		attribute.String("subject", subject),
+		attribute.String("transport", "jetstream"),
+	)
+	b.instr.inflight.Add(context.Background(), 1, subjAttr)
+	defer b.instr.inflight.Add(context.Background(), -1, subjAttr)
+
+	// jetstream.Msg хранит header в nats.Header-форме — переиспользуем.
+	natsMsg := &nats.Msg{Subject: subject, Data: msg.Data(), Header: msg.Headers()}
+	ctx, span := b.instr.startConsumerSpan(context.Background(), natsMsg)
+	start := time.Now()
+	status := "ok"
+
+	defer func() {
+		dur := time.Since(start).Seconds()
+		if rec := recover(); rec != nil {
+			status = "panic"
+			err := fmt.Errorf("natskit: jetstream handler panic: %v", rec)
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
+			b.log.Error(ctx, "natskit: jetstream handler panic",
+				"subject", subject,
+				"panic", rec,
+				"stack", string(debug.Stack()),
+			)
+			_ = msg.Nak()
+		}
+		span.End()
+		b.instr.consumedTotal.Add(context.Background(), 1, metric.WithAttributes(
+			attribute.String("subject", subject),
+			attribute.String("status", status),
+			attribute.String("transport", "jetstream"),
+		))
+		b.instr.handleDuration.Record(context.Background(), dur, subjAttr)
+	}()
+
+	if err := handler(ctx, msg.Data()); err != nil {
+		status = "handler_error"
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
+		b.log.Error(ctx, "natskit: jetstream handler error",
+			"subject", subject, "err", err,
+		)
+		_ = msg.Nak()
+		return
+	}
+	if err := msg.Ack(); err != nil {
+		b.log.Error(ctx, "natskit: jetstream ack error",
+			"subject", subject, "err", err,
+		)
+	}
 }
 
 func PublishStreamJSON[T any](b StreamBus, ctx context.Context, subject string, msg T) error {
@@ -203,4 +265,3 @@ func SubscribeStreamJSON[T any](b StreamBus, ctx context.Context, stream, subjec
 		return h(ctx, v)
 	})
 }
-

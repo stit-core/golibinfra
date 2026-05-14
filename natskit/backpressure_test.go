@@ -84,8 +84,11 @@ func TestBus_Backpressure(t *testing.T) {
 	ctx := context.Background()
 	subject := "test.backpressure"
 
+	total := 200
 	var current, peak int32
-	done := make(chan struct{})
+	// Buffered to total — non-blocking handler send без потери сигналов
+	// при гонке нескольких worker'ов с одним receiver'ом.
+	done := make(chan struct{}, total)
 
 	if err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
 		cur := atomic.AddInt32(&current, 1)
@@ -97,16 +100,12 @@ func TestBus_Backpressure(t *testing.T) {
 		}
 		time.Sleep(50 * time.Millisecond)
 		atomic.AddInt32(&current, -1)
-		select {
-		case done <- struct{}{}:
-		default:
-		}
+		done <- struct{}{}
 		return nil
 	}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	total := 200
 	for i := 0; i < total; i++ {
 		if err := bus.Publish(ctx, subject, i); err != nil {
 			t.Fatalf("publish %d: %v", i, err)
