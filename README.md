@@ -105,6 +105,8 @@ require git.stit.tech/stit/golibinfra v0.15.0
 | [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
 | [`logkit`](logkit/) | `Logger` интерфейс + JSON-реализация поверх slog; trace_id correlation; `ServiceConfig{Service,Env,Version}` — автоматические атрибуты `service/env/version` в каждой записи; `RegisterAttr` для кастомных полей; `NewWithRedact` + `RedactConfig` (PII-фильтры через regex, `LOG_REDACT_ENABLED`) |
 | [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация; `JWTConfig` + JWT sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
+| [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
+| [`outboxkit`](outboxkit/) | Transactional outbox: Worker, Bus, core+pgstore split, `LagReporter` для `outbox_lag_seconds` |
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers |
 
@@ -135,14 +137,15 @@ fx.New(
 
 OTel SDK выставляет их через `telemetry.Config`:
 
-| Attr | Значение | Почему обязательно |
-|---|---|---|
-| `service.name` | `"backend"` (или другое) | Variable `$service` в дашбордах |
-| `service.namespace` | == имя tenant'а | `Apps · Logs` фильтрует по `service_namespace` (Loki не несёт `tenant` как label) |
-| `service.version` | semver / git short-sha | Чтобы дашборды могли различить deploy'и |
-| `deployment.environment.name` | `prod` / `staging` / `smoke` | Variable `$env` |
+| Attr | Значение | Кто ставит | Почему важно |
+|---|---|---|---|
+| `service.name` | `"backend"` (или другое) | приложение | Variable `$service` в дашбордах |
+| `service.version` | semver / git short-sha | приложение | Чтобы дашборды различали deploy'и |
+| `deployment.environment.name` | `prod` / `staging` / `smoke` | приложение | Variable `$env` |
+| `tenant` | имя tenant'а | **корп otel-collector** (из X-Scope-OrgID) | Multi-tenant изоляция |
+| `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) | Loki tenant-filter (Loki не имеет `tenant` label) |
 
-`tenant` resource attr ставится корп-otel-collector'ом из `X-Scope-OrgID` header'а — приложение его не выставляет.
+`tenant` и `service.namespace` приложение не выставляет — их ставит/перезатирает корп otel-collector (`stit/infra` ADR-0004 §2). Если приложение всё же выставит `service.namespace` — оно будет перезатёрто значением `tenant`. Это **инвариант**: ваши логи всегда найдутся через `{service_namespace="<tenant>"}` в Loki.
 
 ### Business-метрики (`biz_*`)
 
@@ -161,7 +164,30 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 
 Helper упадёт panic'ом если префикс/суффикс не соответствует конвенции — defence-in-depth против "ну я только тут одну метрику".
 
-Полный гайд для проектов: [stit-infra docs/observability-app-guide.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [stit-infra docs/observability-metrics-inventory.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-metrics-inventory.md).
+Полный гайд для проектов: [stit-infra docs/observability-app-guide.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [stit-infra docs/observability-metrics-inventory.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-metrics-inventory.md). Архитектурные решения: [ADR-0002](https://git.stit.tech/stit/infra/src/branch/main/docs/adrs/0002-observability-multitenancy.md), [ADR-0004](https://git.stit.tech/stit/infra/src/branch/main/docs/adrs/0004-observability-tenant-hardening.md).
+
+### Что эмитит каждый пакет (короткий reference)
+
+| Пакет | Метрики | Спаны |
+|---|---|---|
+| `telemetry` | runtime (`go_*`, `process_*` ≈ 200 метрик) | — |
+| `logkit` | `log_messages_total{level}` | — (но slog инжектит `trace_id`/`span_id` в record) |
+| `httpkit` | `http_requests_total{method,path,status}`, `http_*_duration_seconds`, `http_panics_total{path}`, `http_max_body_rejections_total{path}`, `http_idempotency_total{path,result}` | server span от `otelhttp.NewHandler` |
+| `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*` | client span от `otelhttp.NewTransport` |
+| `pgkit` | `db_pool_*` (9 метрик: acquired/idle/max/wait/canceled/empty/…) | per-query span через `otelpgx` |
+| `natskit` | `nats_messages_{published,consumed}_total{subject,status}`, `nats_{publish,handle}_duration_seconds{subject}`, `nats_inflight_messages{subject}` | producer + consumer spans с trace-propagation через NATS headers |
+| `outboxkit` | `outbox_events_{inserted,processed}_total{subject,status}`, `outbox_batch_{size,duration_seconds}`, `outbox_publish_duration_seconds{subject}`, `outbox_lag_seconds{subject}` (opt-in через `LagReporter`) | worker span |
+| `authnkit` | `jwt_verifications_total{result}`, `password_{hash,verify}_duration_seconds`, `totp_verifications_total{result}` | — |
+| `bizmetric` | `biz_<domain>_<event>_total|_seconds|<gauge>` | — |
+
+Все labels автоматически дополняются resource attrs (`service_name`, `service_version`, `deployment_environment_name`, `tenant`, `service_namespace`) — это работа otel-collector'а (`resource_to_telemetry_conversion: true`).
+
+### Anti-patterns
+
+- **Не парсить тело Loki через `| json`.** OTel→Loki экспортер уже распарсил resource/log attrs в **stream labels** (`method`, `path`, `status`, `request_id`, `severity_text`, `detected_level`, …). Тело часто — operation name (`"http"`) или span event, не JSON-сообщение. Фильтр по level — через label `detected_level=~"error"` (lowercase, auto-detected Loki 3.x).
+- **Не выставлять `service.namespace` руками.** Bizdocoll force-сетит = tenant. Если выставишь — перезатрётся.
+- **Не выпускать `:latest` Docker tag для проектного API.** Шаблонная конвенция — `<sha>` или `<semver>` (см. `stit/go-backend-template`).
+- **Не плодить biz-метрики обходя `bizmetric.Counter`.** Helper форсит конвенцию префиксом и panic'ит — это безопасный rail.
 
 ## Стабильность API
 
