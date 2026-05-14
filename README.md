@@ -108,6 +108,61 @@ require git.stit.tech/stit/golibinfra v0.15.0
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers |
 
+## Minimum viable observability
+
+Подключение fx-модулей golibinfra даёт **автоматический** RED + DB-pool + bus + logs + traces. Минимальный набор для сервиса, который должен сразу попасть на стандартные дашборды корп-Grafana (папка **Apps**):
+
+```go
+fx.New(
+  telemetry.Module,   // OTLP exporter + runtime (go_*, process_*)
+  logkit.Module,      // log_messages_total{level}, slog с trace_id
+  httpkit.Module,     // http_requests_total, http_*_duration_seconds
+  pgkit.Module,       // db_pool_* (acquired/idle/max/wait), pg traces
+  natskit.Module,     // nats_messages_*, nats_handle_duration_seconds (если NewBusWithObservability)
+  outboxkit.Module,   // outbox_events_*, outbox_batch_size, outbox_publish_duration_seconds
+  authnkit.Module,    // jwt_verifications_total, password_*_duration_seconds
+  ...
+)
+```
+
+После запуска приложение видно на:
+- **Apps · Service Overview / HTTP** — без правок.
+- **Apps · Database / Bus / Outbox** — без правок.
+- **Apps · Logs** — все `log.Info/Warn/Error/Debug` идут в Loki с trace_id correlation.
+- **Apps · Traces** — Tempo получает spans от `otelhttp`, `otelpgx`, `natskit`.
+
+### Обязательные resource attrs
+
+OTel SDK выставляет их через `telemetry.Config`:
+
+| Attr | Значение | Почему обязательно |
+|---|---|---|
+| `service.name` | `"backend"` (или другое) | Variable `$service` в дашбордах |
+| `service.namespace` | == имя tenant'а | `Apps · Logs` фильтрует по `service_namespace` (Loki не несёт `tenant` как label) |
+| `service.version` | semver / git short-sha | Чтобы дашборды могли различить deploy'и |
+| `deployment.environment.name` | `prod` / `staging` / `smoke` | Variable `$env` |
+
+`tenant` resource attr ставится корп-otel-collector'ом из `X-Scope-OrgID` header'а — приложение его не выставляет.
+
+### Business-метрики (`biz_*`)
+
+Свои метрики бизнес-уровня — через `bizmetric` (форсит конвенцию `biz_<domain>_<event>_total|_seconds|_<gauge>`):
+
+```go
+import "git.stit.tech/stit/golibinfra/bizmetric"
+
+logins := bizmetric.Counter(meter, "auth", "login_attempts")
+// → имя: biz_auth_login_attempts_total
+
+logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
+```
+
+`Apps · Business` автоматически рендерит repeating-panel'и для всех найденных `biz_*_total`. `result` label почти обязателен — без него не рисуется breakdown ok/error.
+
+Helper упадёт panic'ом если префикс/суффикс не соответствует конвенции — defence-in-depth против "ну я только тут одну метрику".
+
+Полный гайд для проектов: [stit-infra docs/observability-app-guide.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [stit-infra docs/observability-metrics-inventory.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-metrics-inventory.md).
+
 ## Стабильность API
 
 Публичные структуры конфигов (`pgkit.PoolConfig`, `pgkit.ReplicaConfig`,
