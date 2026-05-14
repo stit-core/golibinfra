@@ -10,6 +10,17 @@ import "git.stit.tech/stit/golibinfra/config"
 import "git.stit.tech/stit/golibinfra/testkit"
 ```
 
+## Где это в экосистеме
+
+`golibinfra` — одна из четырёх компонент stit-экосистемы:
+
+- [`stit/infra`](https://git.stit.tech/stit/infra) — корп-control-plane (Vault, Grafana, OTLP-ingest, Gitea-registry).
+- [`stit/project-infra-template-compose`](https://git.stit.tech/stit/project-infra-template-compose) — шаблон проектной VPS (форкается в `<org>/infra`).
+- [`stit/go-backend-template`](https://git.stit.tech/stit/go-backend-template) — шаблон Go-бэкенда (форкается в `<org>/backend`, импортирует эту lib'у).
+- **`stit/golibinfra`** (вы здесь) — общая lib, observability-by-default, инварианты ADR-0004.
+
+Каноническая карта 4 репо, контракты (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow), happy paths — [`stit/infra/docs/ecosystem.md`](https://git.stit.tech/stit/infra/src/branch/main/docs/ecosystem.md).
+
 ## Доступ к репозиторию
 
 Репо приватный, лежит на собственной Gitea (`git.stit.tech`). Чтобы `go get` / `go mod tidy` мог его подтянуть, нужно настроить три вещи: GOPRIVATE, git-аутентификацию и (опционально) SSH-overlay поверх HTTPS.
