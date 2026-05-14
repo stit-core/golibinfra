@@ -6,6 +6,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kelseyhightower/envconfig"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
 )
 
@@ -22,7 +23,31 @@ var Module = fx.Module("pgkit",
 		fx.Annotate(NewPoolTransactor, fx.As(new(Transactor))),
 		newReadWriteDB,
 	),
+	fx.Invoke(instrumentPoolFx),
 )
+
+// instrumentParams — optional Meter: если в DI нет telemetry.Module,
+// pgkit не должен падать на старте. Тогда инструментация — no-op.
+type instrumentParams struct {
+	fx.In
+	LC    fx.Lifecycle
+	Pool  *pgxpool.Pool
+	Meter metric.Meter `optional:"true"`
+}
+
+func instrumentPoolFx(p instrumentParams) error {
+	if p.Meter == nil {
+		return nil
+	}
+	reg, err := InstrumentPool(p.Pool, p.Meter)
+	if err != nil {
+		return fmt.Errorf("pgkit: instrument pool: %w", err)
+	}
+	p.LC.Append(fx.Hook{
+		OnStop: func(_ context.Context) error { return reg.Unregister() },
+	})
+	return nil
+}
 
 func NewPoolConfig() (PoolConfig, error) {
 	var c PoolConfig
