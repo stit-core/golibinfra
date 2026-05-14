@@ -1,3 +1,8 @@
+// Package pgkit — фасад поверх pgx/v5: пул соединений, Transactor,
+// migrate-runner, маппинг pg-ошибок в sentinel'ы, health-probe.
+// Поддерживает read-replica (PG_REPLICA_DSN) через ReadWriteDB и
+// автоматически инструментирует пул метриками db_pool_* (см. metrics.go)
+// и per-query спанами через otelpgx.
 package pgkit
 
 import (

@@ -118,8 +118,11 @@ require git.stit.tech/stit/golibinfra v0.15.0
 | [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация; `JWTConfig` + JWT sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
 | [`outboxkit`](outboxkit/) | Transactional outbox: Worker, Bus, core+pgstore split, `LagReporter` для `outbox_lag_seconds` |
+| [`auditkit`](auditkit/) | Audit-log: `Entry`/`Recorder`, core+pgstore split |
+| [`bruteforcekit`](bruteforcekit/) | Brute-force guard: per-subject + per-IP счётчики, `LockState`, core+pgstore split |
+| [`clockkit`](clockkit/) | `Clock` интерфейс + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
-| [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers |
+| [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers; per-kit subpackages |
 
 ## Minimum viable observability
 
@@ -129,7 +132,7 @@ require git.stit.tech/stit/golibinfra v0.15.0
 fx.New(
   telemetry.Module,   // OTLP exporter + runtime (go_*, process_*)
   logkit.Module,      // log_messages_total{level}, slog с trace_id
-  httpkit.Module,     // http_requests_total, http_*_duration_seconds
+  httpkit.Module,     // http_requests_total, http_request_duration_seconds
   pgkit.Module,       // db_pool_* (acquired/idle/max/wait), pg traces
   natskit.Module,     // nats_messages_*, nats_handle_duration_seconds (если NewBusWithObservability)
   outboxkit.Module,   // outbox_events_*, outbox_batch_size, outbox_publish_duration_seconds
@@ -183,10 +186,10 @@ Helper упадёт panic'ом если префикс/суффикс не со�
 |---|---|---|
 | `telemetry` | runtime (`go_*`, `process_*` ≈ 200 метрик) | — |
 | `logkit` | `log_messages_total{level}` | — (но slog инжектит `trace_id`/`span_id` в record) |
-| `httpkit` | `http_requests_total{method,path,status}`, `http_*_duration_seconds`, `http_panics_total{path}`, `http_max_body_rejections_total{path}`, `http_idempotency_total{path,result}` | server span от `otelhttp.NewHandler` |
-| `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*` | client span от `otelhttp.NewTransport` |
-| `pgkit` | `db_pool_*` (9 метрик: acquired/idle/max/wait/canceled/empty/…) | per-query span через `otelpgx` |
-| `natskit` | `nats_messages_{published,consumed}_total{subject,status}`, `nats_{publish,handle}_duration_seconds{subject}`, `nats_inflight_messages{subject}` | producer + consumer spans с trace-propagation через NATS headers |
+| `httpkit` | `http_requests_total{method,path,status}`, `http_request_duration_seconds{method,path,status}`, `http_panics_total{path}`, `http_max_body_rejections_total{path}`, `http_idempotency_total{path,result}` | server span от `otelhttp.NewHandler` |
+| `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_transitions_total`, `http_client_breaker_open`, `http_client_retry_attempts_total` | client span от `otelhttp.NewTransport` |
+| `pgkit` | `db_pool_{acquired,idle,total,max,constructing}_conns`, `db_pool_{empty_acquire,canceled_acquire,acquire}_total`, `db_pool_acquire_duration_seconds_total` (9 метрик) | per-query span через `otelpgx` |
+| `natskit` | `nats_messages_{published,consumed}_total{subject,status[,transport]}`, `nats_{publish,handle}_duration_seconds{subject[,transport]}`, `nats_inflight_messages{subject}` (label `transport=jetstream` добавляется на JetStream-пути) | producer + consumer spans с trace-propagation через NATS headers |
 | `outboxkit` | `outbox_events_{inserted,processed}_total{subject,status}`, `outbox_batch_{size,duration_seconds}`, `outbox_publish_duration_seconds{subject}`, `outbox_lag_seconds{subject}` (opt-in через `LagReporter`) | worker span |
 | `authnkit` | `jwt_verifications_total{result}`, `password_{hash,verify}_duration_seconds`, `totp_verifications_total{result}` | — |
 | `bizmetric` | `biz_<domain>_<event>_total|_seconds|<gauge>` | — |

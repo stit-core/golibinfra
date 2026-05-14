@@ -1,3 +1,10 @@
+// Package natskit — pub/sub поверх NATS: интерфейс Bus, типизированные
+// helper'ы PublishJSON[T]/SubscribeJSON[T], опц. JetStream, panic
+// recovery в subscriber'ах и backpressure через семафор
+// (NATS_MAX_IN_FLIGHT). W3C trace-context инжектится в nats.Header,
+// чтобы consumer-спан был child'ом producer-спана. Эмитит
+// nats_messages_{published,consumed}_total, nats_{publish,handle}_duration_seconds,
+// nats_inflight_messages.
 package natskit
 
 import (

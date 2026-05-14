@@ -1,3 +1,10 @@
+// Package authnkit — building blocks для аутентификации: Hasher
+// (Argon2id), JWT sign/verify (HS256), TOTP-генератор (RFC 6238) и
+// RBAC-примитивы (Permission, RolePermissions, Has). Конкретные
+// auth-flow'ы (login, refresh, MFA enrollment) — за consumer'ом, kit
+// предоставляет только криптографически-корректные кирпичики. Эмитит
+// jwt_verifications_total{result}, password_{hash,verify}_duration_seconds,
+// totp_verifications_total{result}.
 package authnkit
 
 import (

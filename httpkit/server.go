@@ -1,3 +1,9 @@
+// Package httpkit — HTTP-сервер на huma/v2 + chi с готовой
+// middleware-цепочкой (CORS, RateLimit, MaxBody, RequestID, Recovery,
+// SecurityHeaders, AccessLog, Metrics, OTel, опц. Idempotency) и
+// унифицированной error-моделью APIError ({code,status,title,detail}).
+// Эмитит метрики http_requests_total, http_request_duration_seconds,
+// http_panics_total, http_max_body_rejections_total, http_idempotency_total.
 package httpkit
 
 import (

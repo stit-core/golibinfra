@@ -1,3 +1,7 @@
+// Package flagkit — простейшие feature flags из ENV:
+// `FEATURE_FLAGS=foo=true,bar=baz` парсится в Store, который отдаёт
+// Bool/String. Без remote-источников и динамического refresh — для
+// тех случаев, когда достаточно kill-switch'а на рестарт.
 package flagkit
 
 import (

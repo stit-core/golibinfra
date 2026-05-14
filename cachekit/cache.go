@@ -1,3 +1,6 @@
+// Package cachekit — Redis-обёртка: интерфейс Cache, типизированные
+// helper'ы GetJSON[T]/SetJSON[T], tag-based invalidation
+// (InvalidateByTag) и адаптер IdempotencyStore для httpkit.Idempotency.
 package cachekit
 
 import (

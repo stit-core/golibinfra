@@ -1,3 +1,8 @@
+// Package httpclient — outbound HTTP-клиент с retry, circuit breaker
+// (sony/gobreaker/v2), OTel-инструментированием через otelhttp.Transport
+// и автоматическим прокидыванием X-Request-ID из ctx. Эмитит
+// http_client_request_duration_seconds, http_client_breaker_transitions_total,
+// http_client_breaker_open, http_client_retry_attempts_total.
 package httpclient
 
 import (

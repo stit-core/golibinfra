@@ -1,3 +1,8 @@
+// Package testkit — testcontainers-обёртки для интеграционных тестов:
+// StartPostgres/StartNATS/StartRedis поднимают контейнер на свободный
+// порт и регистрируют t.Cleanup для остановки. Подпакеты
+// (audittest, authntest, bruteforcetest, eventbus, handlertest, txkit)
+// дают per-kit'овые helper'ы.
 package testkit
 
 import (

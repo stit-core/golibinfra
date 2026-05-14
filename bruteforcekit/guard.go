@@ -1,3 +1,7 @@
+// Package bruteforcekit — guard против brute-force на login-эндпойнты:
+// считает неудачные попытки per-subject (логин/email) и per-IP, при
+// превышении порога возвращает LockState{Until}. Core-абстракция
+// (Guard) отделена от pgstore-реализации.
 package bruteforcekit
 
 import (

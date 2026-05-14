@@ -1,3 +1,7 @@
+// Package config — композиция загрузчиков конфигурации: интерфейс
+// Source (Apply(ctx, dst)) реализуют env- и vault-источники, Load
+// прогоняет dst через каждый по порядку. Поздние Source'ы перезатирают
+// поля более ранних, что позволяет: env-default'ы → vault-override.
 package config
 
 import (

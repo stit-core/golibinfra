@@ -1,3 +1,11 @@
+// Package telemetry — bootstrap OTel SDK: tracer/meter/logger providers,
+// OTLP HTTP-экспортёры (с Bearer-токеном для корп ingest) или
+// stdout-fallback для local-dev. Выставляет resource-атрибуты
+// service.name, service.version, deployment.environment.name из Config;
+// tenant/service.namespace выставляются только если Config.Tenant
+// задан (типично local-dev) — в проде их force-сетит корп
+// otel-collector из X-Scope-OrgID (ADR-0004). Включает стандартную
+// runtime-инструментацию (go_*, process_*) через contrib/instrumentation/runtime.
 package telemetry
 
 import (
