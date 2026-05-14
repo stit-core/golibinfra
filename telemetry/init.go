@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 
+	runtimeinstr "go.opentelemetry.io/contrib/instrumentation/runtime"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
@@ -93,6 +94,19 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
+
+	// Стандартный набор go-runtime метрик (runtime.go.goroutines,
+	// runtime.go.mem.heap_alloc/inuse, runtime.go.gc.duration, etc.).
+	// Без них невозможно отличить memory leak от utilization spike.
+	if err := runtimeinstr.Start(
+		runtimeinstr.WithMeterProvider(mp),
+		runtimeinstr.WithMinimumReadMemStatsInterval(cfg.ExportTimeout),
+	); err != nil {
+		_ = lp.Shutdown(ctx)
+		_ = mp.Shutdown(ctx)
+		_ = tp.Shutdown(ctx)
+		return nil, fmt.Errorf("telemetry: runtime instrumentation: %w", err)
+	}
 
 	return &Providers{TracerProvider: tp, MeterProvider: mp, LoggerProvider: lp}, nil
 }
