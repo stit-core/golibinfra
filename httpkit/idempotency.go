@@ -6,6 +6,9 @@ import (
 	"net/http"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 )
 
 type IdempotencyConfig struct {
@@ -73,6 +76,7 @@ func (w *idempotencyResponseWriter) Write(b []byte) (int, error) {
 }
 
 func Idempotency(cfg IdempotencyConfig, store IdempotencyStore) func(http.Handler) http.Handler {
+	instr := newHTTPInstruments()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch r.Method {
@@ -93,6 +97,10 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore) func(http.Handle
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(status)
 				_, _ = w.Write(cached)
+				instr.idempotencyHits.Add(r.Context(), 1, metric.WithAttributes(
+					attribute.String("path", r.URL.Path),
+					attribute.String("result", "replayed"),
+				))
 				return
 			}
 
@@ -100,6 +108,10 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore) func(http.Handle
 			next.ServeHTTP(rec, r)
 
 			_ = store.Set(r.Context(), key, rec.buf.Bytes(), rec.status)
+			instr.idempotencyHits.Add(r.Context(), 1, metric.WithAttributes(
+				attribute.String("path", r.URL.Path),
+				attribute.String("result", "stored"),
+			))
 		})
 	}
 }

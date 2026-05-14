@@ -10,6 +10,8 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"git.stit.tech/stit/golibinfra/logkit"
 )
@@ -49,6 +51,7 @@ func RequestID() func(http.Handler) http.Handler {
 }
 
 func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
+	instr := newHTTPInstruments()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			defer func() {
@@ -58,6 +61,9 @@ func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
 						"panic", rec,
 						"stack", string(debug.Stack()),
 					)
+					instr.panicsTotal.Add(r.Context(), 1, metric.WithAttributes(
+						attribute.String("path", r.URL.Path),
+					))
 					http.Error(w, "internal server error", http.StatusInternalServerError)
 				}
 			}()

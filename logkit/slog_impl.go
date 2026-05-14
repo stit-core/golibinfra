@@ -6,12 +6,37 @@ import (
 	"log/slog"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
 type Config struct {
 	Level string `envconfig:"LOG_LEVEL" default:"info"`
+}
+
+// logMessagesCounter — единственный counter per-level. Lazy-init на
+// первой записи через newLogCounter(); до этого — nil → no-op в record().
+var logMessagesCounter = newLogCounter()
+
+func newLogCounter() metric.Int64Counter {
+	c, err := otel.Meter("git.stit.tech/stit/golibinfra/logkit").Int64Counter(
+		"log_messages_total",
+		metric.WithDescription("Log messages by level"),
+	)
+	if err != nil {
+		return nil
+	}
+	return c
+}
+
+func recordLog(ctx context.Context, level string) {
+	if logMessagesCounter == nil {
+		return
+	}
+	logMessagesCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("level", level)))
 }
 
 type slogLogger struct {
@@ -60,18 +85,22 @@ func parseLevel(s string) slog.Level {
 }
 
 func (s *slogLogger) Debug(ctx context.Context, msg string, kv ...any) {
+	recordLog(ctx, "debug")
 	s.l.DebugContext(ctx, msg, kv...)
 }
 
 func (s *slogLogger) Info(ctx context.Context, msg string, kv ...any) {
+	recordLog(ctx, "info")
 	s.l.InfoContext(ctx, msg, kv...)
 }
 
 func (s *slogLogger) Warn(ctx context.Context, msg string, kv ...any) {
+	recordLog(ctx, "warn")
 	s.l.WarnContext(ctx, msg, kv...)
 }
 
 func (s *slogLogger) Error(ctx context.Context, msg string, kv ...any) {
+	recordLog(ctx, "error")
 	s.l.ErrorContext(ctx, msg, kv...)
 }
 
