@@ -61,20 +61,25 @@ func (h *HS256JWT) Parse(token string) (map[string]any, error) {
 	if err != nil {
 		switch {
 		case errors.Is(err, jwt.ErrTokenExpired):
+			recordJWTResult("expired")
 			return nil, ErrTokenExpired
 		case errors.Is(err, jwt.ErrTokenSignatureInvalid):
+			recordJWTResult("signature_invalid")
 			return nil, ErrTokenSignature
 		default:
+			recordJWTResult("malformed")
 			return nil, ErrTokenMalformed
 		}
 	}
 	mc, ok := tok.Claims.(jwt.MapClaims)
 	if !ok || !tok.Valid {
+		recordJWTResult("malformed")
 		return nil, ErrTokenMalformed
 	}
 	result := make(map[string]any, len(mc))
 	for k, v := range mc {
 		result[k] = v
 	}
+	recordJWTResult("ok")
 	return result, nil
 }

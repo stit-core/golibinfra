@@ -1,12 +1,14 @@
 package authnkit
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/base64"
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"golang.org/x/crypto/argon2"
 )
@@ -33,6 +35,11 @@ func NewArgon2idHasher(p Argon2idParams) *Argon2idHasher {
 }
 
 func (h *Argon2idHasher) Hash(plain string) (string, error) {
+	start := time.Now()
+	defer func() {
+		getInstruments().hashDuration.Record(context.Background(), time.Since(start).Seconds())
+	}()
+
 	salt := make([]byte, h.p.SaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("authnkit: salt: %w", err)
@@ -48,6 +55,11 @@ func (h *Argon2idHasher) Hash(plain string) (string, error) {
 }
 
 func (h *Argon2idHasher) Verify(plain, encoded string) (bool, error) {
+	start := time.Now()
+	defer func() {
+		getInstruments().verifyDuration.Record(context.Background(), time.Since(start).Seconds())
+	}()
+
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[1] != "argon2id" {
 		return false, errors.New("authnkit: invalid argon2id encoding")

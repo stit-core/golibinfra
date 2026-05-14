@@ -26,5 +26,11 @@ func (g *TOTPGenerator) Generate(accountName string) (secret string, otpauthURL 
 }
 
 func (g *TOTPGenerator) Verify(secret, code string) bool {
-	return totp.Validate(code, secret)
+	ok := totp.Validate(code, secret)
+	if ok {
+		recordTOTPResult("ok")
+	} else {
+		recordTOTPResult("invalid")
+	}
+	return ok
 }
