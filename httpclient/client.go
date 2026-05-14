@@ -6,10 +6,13 @@ import (
 	"fmt"
 	"math/rand"
 	"net/http"
+	"strconv"
 	"time"
 
 	"github.com/sony/gobreaker/v2"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/metric"
 
 	"git.stit.tech/stit/golibinfra/httpkit"
 )
@@ -25,17 +28,20 @@ type Client struct {
 	cfg     Config
 	c       *http.Client
 	breaker *gobreaker.CircuitBreaker[*http.Response]
+	instr   *httpClientInstruments
 }
 
 func New(cfg Config) *Client {
 	transport := otelhttp.NewTransport(http.DefaultTransport)
+	instr := newInstruments()
 	return &Client{
 		cfg: cfg,
 		c: &http.Client{
 			Timeout:   cfg.Timeout,
 			Transport: transport,
 		},
-		breaker: newBreaker(cfg.Breaker),
+		breaker: newBreaker(cfg.Breaker, instr),
+		instr:   instr,
 	}
 }
 
@@ -44,9 +50,22 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 		req.Header.Set(httpkit.HeaderRequestID, id)
 	}
 
+	start := time.Now()
 	resp, err := c.breaker.Execute(func() (*http.Response, error) {
 		return c.doWithRetry(req)
 	})
+
+	status := "error"
+	if resp != nil {
+		status = strconv.Itoa(resp.StatusCode)
+	}
+	c.instr.requestDuration.Record(req.Context(), time.Since(start).Seconds(),
+		metric.WithAttributes(
+			attribute.String("host", req.URL.Host),
+			attribute.String("method", req.Method),
+			attribute.String("status", status),
+		),
+	)
 	return resp, err
 }
 
@@ -57,6 +76,9 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 	)
 	for attempt := 0; attempt <= c.cfg.MaxRetries; attempt++ {
 		if attempt > 0 {
+			c.instr.retryAttempts.Add(req.Context(), 1, metric.WithAttributes(
+				attribute.String("host", req.URL.Host),
+			))
 			wait := backoff(c.cfg.RetryWait, attempt)
 			select {
 			case <-req.Context().Done():
