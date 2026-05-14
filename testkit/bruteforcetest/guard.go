@@ -15,6 +15,7 @@ func (Permissive) Check(context.Context, string, string) (*bruteforcekit.LockSta
 }
 func (Permissive) RecordFailure(context.Context, string, string) error { return nil }
 func (Permissive) RecordSuccess(context.Context, string, string) error { return nil }
+func (Permissive) Cleanup(context.Context) error                       { return nil }
 
 type Locked struct {
 	Until time.Time
@@ -25,6 +26,7 @@ func (l Locked) Check(context.Context, string, string) (*bruteforcekit.LockState
 }
 func (Locked) RecordFailure(context.Context, string, string) error { return nil }
 func (Locked) RecordSuccess(context.Context, string, string) error { return nil }
+func (Locked) Cleanup(context.Context) error                       { return nil }
 
 type Recorder struct {
 	mu        sync.Mutex
@@ -65,3 +67,5 @@ func (r *Recorder) Successes() []string {
 	copy(out, r.successes)
 	return out
 }
+
+func (r *Recorder) Cleanup(context.Context) error { return nil }
