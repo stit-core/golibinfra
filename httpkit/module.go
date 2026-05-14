@@ -7,6 +7,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/kelseyhightower/envconfig"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit/golibinfra/logkit"
@@ -29,6 +30,14 @@ var Module = fx.Module(
 type idempotencyIn struct {
 	fx.In
 	Store IdempotencyStore `optional:"true"`
+}
+
+// meterIn — optional Meter. Если в DI есть telemetry.Module — Meter
+// будет provide'ен; иначе пропустим Metrics middleware (otelhttp всё
+// равно даст спаны через OTel() middleware).
+type meterIn struct {
+	fx.In
+	Meter metric.Meter `optional:"true"`
 }
 
 // NewConfig — exported для приложений без App-pattern, которые хотят
@@ -58,7 +67,7 @@ func registerHealth(in healthIn) {
 	RegisterHealth(in.API, in.Probes...)
 }
 
-func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn, ss securitySchemesIn) *Server {
+func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn, ss securitySchemesIn, mi meterIn) *Server {
 	s := NewServer(cfg, ss.Schemes...)
 
 	mws := []func(http.Handler) http.Handler{
@@ -69,8 +78,11 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai A
 		Recovery(log),
 		SecurityHeaders(cfg.Security),
 		AccessLog(log),
-		OTel(),
 	}
+	if mi.Meter != nil {
+		mws = append(mws, Metrics(mi.Meter))
+	}
+	mws = append(mws, OTel())
 	if ii.Store != nil {
 		mws = append(mws, Idempotency(IdempotencyConfig{
 			Header:       "Idempotency-Key",
