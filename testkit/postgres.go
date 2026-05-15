@@ -15,7 +15,7 @@ import (
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 	"github.com/testcontainers/testcontainers-go/wait"
 
-	"git.stit.tech/stit/golibinfra/pgkit"
+	"git.stit.tech/stit-infra/golibinfra/pgkit"
 )
 
 type PostgresFixture struct {

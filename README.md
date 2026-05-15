@@ -3,23 +3,23 @@
 Инфраструктурные библиотеки для Go-сервисов компании. Импортируется как Go-модуль из бизнес-репозиториев.
 
 ```go
-import "git.stit.tech/stit/golibinfra/pgkit"
-import "git.stit.tech/stit/golibinfra/httpkit"
-import "git.stit.tech/stit/golibinfra/telemetry"
-import "git.stit.tech/stit/golibinfra/config"
-import "git.stit.tech/stit/golibinfra/testkit"
+import "git.stit.tech/stit-infra/golibinfra/pgkit"
+import "git.stit.tech/stit-infra/golibinfra/httpkit"
+import "git.stit.tech/stit-infra/golibinfra/telemetry"
+import "git.stit.tech/stit-infra/golibinfra/config"
+import "git.stit.tech/stit-infra/golibinfra/testkit"
 ```
 
 ## Где это в экосистеме
 
 `golibinfra` — одна из четырёх компонент stit-экосистемы:
 
-- [`stit/infra`](https://git.stit.tech/stit/infra) — корп-control-plane (Vault, Grafana, OTLP-ingest, Gitea-registry).
-- [`stit/project-infra-template-compose`](https://git.stit.tech/stit/project-infra-template-compose) — шаблон проектной VPS (форкается в `<org>/infra`).
-- [`stit/go-backend-template`](https://git.stit.tech/stit/go-backend-template) — шаблон Go-бэкенда (форкается в `<org>/backend`, импортирует эту lib'у).
-- **`stit/golibinfra`** (вы здесь) — общая lib, observability-by-default, инварианты ADR-0004.
+- [`stit-infra/infra`](https://git.stit.tech/stit-infra/infra) — корп-control-plane (Vault, Grafana, OTLP-ingest, Gitea-registry).
+- [`stit-infra/project-infra-template-compose`](https://git.stit.tech/stit-infra/project-infra-template-compose) — шаблон проектной VPS (форкается в `<org>/infra`).
+- [`stit-infra/go-backend-template`](https://git.stit.tech/stit-infra/go-backend-template) — шаблон Go-бэкенда (форкается в `<org>/backend`, импортирует эту lib'у).
+- **`stit-infra/golibinfra`** (вы здесь) — общая lib, observability-by-default, инварианты ADR-0004.
 
-Каноническая карта 4 репо, контракты (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow), happy paths — [`stit/infra/docs/ecosystem.md`](https://git.stit.tech/stit/infra/src/branch/main/docs/ecosystem.md).
+Каноническая карта 4 репо, контракты (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow), happy paths — [`stit-infra/infra/docs/ecosystem.md`](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/ecosystem.md).
 
 ## Доступ к репозиторию
 
@@ -59,7 +59,7 @@ Go по умолчанию ходит за модулями через HTTPS. Ч
 git config --global url."git@git.stit.tech:".insteadOf "https://git.stit.tech/"
 ```
 
-После этого `go mod tidy` будет ходить за `git.stit.tech/stit/golibinfra` через SSH.
+После этого `go mod tidy` будет ходить за `git.stit.tech/stit-infra/golibinfra` через SSH.
 
 ### Альтернатива: HTTPS + личный токен
 
@@ -82,7 +82,7 @@ chmod 600 ~/.netrc
 
 ```bash
 mkdir /tmp/check && cd /tmp/check && go mod init check
-go get git.stit.tech/stit/golibinfra@v0.15.0
+go get git.stit.tech/stit-infra/golibinfra@v0.15.0
 # должно скачать без ошибок
 ```
 
@@ -90,7 +90,7 @@ go get git.stit.tech/stit/golibinfra@v0.15.0
 
 В `go.mod`:
 ```
-require git.stit.tech/stit/golibinfra v0.15.0
+require git.stit.tech/stit-infra/golibinfra v0.15.0
 ```
 
 `go mod tidy` подтянет.
@@ -159,14 +159,14 @@ OTel SDK выставляет их через `telemetry.Config`:
 | `tenant` | имя tenant'а | **корп otel-collector** (из X-Scope-OrgID) | Multi-tenant изоляция |
 | `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) | Loki tenant-filter (Loki не имеет `tenant` label) |
 
-`tenant` и `service.namespace` приложение не выставляет — их ставит/перезатирает корп otel-collector (`stit/infra` ADR-0004 §2). Если приложение всё же выставит `service.namespace` — оно будет перезатёрто значением `tenant`. Это **инвариант**: ваши логи всегда найдутся через `{service_namespace="<tenant>"}` в Loki.
+`tenant` и `service.namespace` приложение не выставляет — их ставит/перезатирает корп otel-collector (`stit-infra/infra` ADR-0004 §2). Если приложение всё же выставит `service.namespace` — оно будет перезатёрто значением `tenant`. Это **инвариант**: ваши логи всегда найдутся через `{service_namespace="<tenant>"}` в Loki.
 
 ### Business-метрики (`biz_*`)
 
 Свои метрики бизнес-уровня — через `bizmetric` (форсит конвенцию `biz_<domain>_<event>_total|_seconds|_<gauge>`):
 
 ```go
-import "git.stit.tech/stit/golibinfra/bizmetric"
+import "git.stit.tech/stit-infra/golibinfra/bizmetric"
 
 logins := bizmetric.Counter(meter, "auth", "login_attempts")
 // → имя: biz_auth_login_attempts_total
@@ -178,7 +178,7 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 
 Helper упадёт panic'ом если префикс/суффикс не соответствует конвенции — defence-in-depth против "ну я только тут одну метрику".
 
-Полный гайд для проектов: [stit-infra docs/observability-app-guide.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [stit-infra docs/observability-metrics-inventory.md](https://git.stit.tech/stit/infra/src/branch/main/docs/observability-metrics-inventory.md). Архитектурные решения: [ADR-0002](https://git.stit.tech/stit/infra/src/branch/main/docs/adrs/0002-observability-multitenancy.md), [ADR-0004](https://git.stit.tech/stit/infra/src/branch/main/docs/adrs/0004-observability-tenant-hardening.md).
+Полный гайд для проектов: [stit-infra docs/observability-app-guide.md](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [stit-infra docs/observability-metrics-inventory.md](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/observability-metrics-inventory.md). Архитектурные решения: [ADR-0002](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/adrs/0002-observability-multitenancy.md), [ADR-0004](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/adrs/0004-observability-tenant-hardening.md).
 
 ### Что эмитит каждый пакет (короткий reference)
 
@@ -200,7 +200,7 @@ Helper упадёт panic'ом если префикс/суффикс не со�
 
 - **Не парсить тело Loki через `| json`.** OTel→Loki экспортер уже распарсил resource/log attrs в **stream labels** (`method`, `path`, `status`, `request_id`, `severity_text`, `detected_level`, …). Тело часто — operation name (`"http"`) или span event, не JSON-сообщение. Фильтр по level — через label `detected_level=~"error"` (lowercase, auto-detected Loki 3.x).
 - **Не выставлять `service.namespace` руками.** Bizdocoll force-сетит = tenant. Если выставишь — перезатрётся.
-- **Не выпускать `:latest` Docker tag для проектного API.** Шаблонная конвенция — `<sha>` или `<semver>` (см. `stit/go-backend-template`).
+- **Не выпускать `:latest` Docker tag для проектного API.** Шаблонная конвенция — `<sha>` или `<semver>` (см. `stit-infra/go-backend-template`).
 - **Не плодить biz-метрики обходя `bizmetric.Counter`.** Helper форсит конвенцию префиксом и panic'ит — это безопасный rail.
 
 ## Стабильность API
@@ -226,7 +226,7 @@ git push origin v0.15.0
 
 В шаблонах/проектах после релиза:
 ```bash
-go get git.stit.tech/stit/golibinfra@v0.15.0
+go get git.stit.tech/stit-infra/golibinfra@v0.15.0
 go mod tidy
 ```
 
@@ -234,7 +234,7 @@ go mod tidy
 
 Когда правишь `golibinfra` параллельно с продуктом — добавь временный `replace` в `go.mod` продукта:
 ```
-replace git.stit.tech/stit/golibinfra => ../golibinfra
+replace git.stit.tech/stit-infra/golibinfra => ../golibinfra
 ```
 
 **Не коммить эту строку** — это для local-only ветки. Перед мержем убрать и поднять версию через `go get`.

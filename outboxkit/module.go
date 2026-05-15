@@ -5,7 +5,7 @@ import (
 
 	"go.uber.org/fx"
 
-	"git.stit.tech/stit/golibinfra/timerkit"
+	"git.stit.tech/stit-infra/golibinfra/timerkit"
 )
 
 // Module провайдит orchestration-слой outbox (Bus, Publisher, Worker, drain-Job).

@@ -48,8 +48,8 @@ type natsInstruments struct {
 }
 
 func newNatsInstruments() *natsInstruments {
-	meter := otel.Meter("git.stit.tech/stit/golibinfra/natskit")
-	tracer := otel.Tracer("git.stit.tech/stit/golibinfra/natskit")
+	meter := otel.Meter("git.stit.tech/stit-infra/golibinfra/natskit")
+	tracer := otel.Tracer("git.stit.tech/stit-infra/golibinfra/natskit")
 
 	publishedTotal, _ := meter.Int64Counter("nats_messages_published_total",
 		metric.WithDescription("NATS messages published"),

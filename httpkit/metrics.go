@@ -26,7 +26,7 @@ type httpInstruments struct {
 }
 
 func newHTTPInstruments() *httpInstruments {
-	return newHTTPInstrumentsWithMeter(otel.Meter("git.stit.tech/stit/golibinfra/httpkit"))
+	return newHTTPInstrumentsWithMeter(otel.Meter("git.stit.tech/stit-infra/golibinfra/httpkit"))
 }
 
 func newHTTPInstrumentsWithMeter(m metric.Meter) *httpInstruments {

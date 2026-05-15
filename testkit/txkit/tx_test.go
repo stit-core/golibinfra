@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
-	"git.stit.tech/stit/golibinfra/pgkit"
-	"git.stit.tech/stit/golibinfra/testkit/txkit"
+	"git.stit.tech/stit-infra/golibinfra/pgkit"
+	"git.stit.tech/stit-infra/golibinfra/testkit/txkit"
 )
 
 var (

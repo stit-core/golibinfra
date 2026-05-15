@@ -22,7 +22,7 @@ type Config struct {
 var logMessagesCounter = newLogCounter()
 
 func newLogCounter() metric.Int64Counter {
-	c, err := otel.Meter("git.stit.tech/stit/golibinfra/logkit").Int64Counter(
+	c, err := otel.Meter("git.stit.tech/stit-infra/golibinfra/logkit").Int64Counter(
 		"log_messages_total",
 		metric.WithDescription("Log messages by level"),
 	)

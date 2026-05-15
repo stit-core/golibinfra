@@ -21,7 +21,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/semaphore"
 
-	"git.stit.tech/stit/golibinfra/logkit"
+	"git.stit.tech/stit-infra/golibinfra/logkit"
 )
 
 type Bus interface {

@@ -8,7 +8,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"git.stit.tech/stit/golibinfra/natskit"
+	"git.stit.tech/stit-infra/golibinfra/natskit"
 )
 
 type Worker struct {

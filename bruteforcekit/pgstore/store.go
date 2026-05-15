@@ -4,8 +4,8 @@ import (
 	"context"
 	"time"
 
-	"git.stit.tech/stit/golibinfra/bruteforcekit"
-	"git.stit.tech/stit/golibinfra/pgkit"
+	"git.stit.tech/stit-infra/golibinfra/bruteforcekit"
+	"git.stit.tech/stit-infra/golibinfra/pgkit"
 )
 
 type Store struct {

@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"git.stit.tech/stit/golibinfra/clockkit"
+	"git.stit.tech/stit-infra/golibinfra/clockkit"
 )
 
 func TestFixed_AlwaysSameNow(t *testing.T) {

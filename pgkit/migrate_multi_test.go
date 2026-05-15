@@ -6,8 +6,8 @@ import (
 	"testing/fstest"
 	"time"
 
-	"git.stit.tech/stit/golibinfra/pgkit"
-	"git.stit.tech/stit/golibinfra/testkit"
+	"git.stit.tech/stit-infra/golibinfra/pgkit"
+	"git.stit.tech/stit-infra/golibinfra/testkit"
 )
 
 func TestMigrateUpMulti_TwoSources(t *testing.T) {

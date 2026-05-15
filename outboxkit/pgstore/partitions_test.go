@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"git.stit.tech/stit/golibinfra/outboxkit/pgstore"
-	"git.stit.tech/stit/golibinfra/testkit"
+	"git.stit.tech/stit-infra/golibinfra/outboxkit/pgstore"
+	"git.stit.tech/stit-infra/golibinfra/testkit"
 )
 
 func TestPartitionSQL_Naming(t *testing.T) {

@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"time"
 
-	"git.stit.tech/stit/golibinfra/outboxkit"
-	"git.stit.tech/stit/golibinfra/pgkit"
+	"git.stit.tech/stit-infra/golibinfra/outboxkit"
+	"git.stit.tech/stit-infra/golibinfra/pgkit"
 )
 
 type Store struct {

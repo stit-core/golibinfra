@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"git.stit.tech/stit/golibinfra/logkit"
+	"git.stit.tech/stit-infra/golibinfra/logkit"
 )
 
 func init() {
