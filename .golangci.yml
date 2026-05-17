@@ -1,14 +1,12 @@
+version: "2"
 run:
-  timeout: 3m
   go: "1.26"
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - errorlint
     - gosec
-    - gosimple
     - govet
     - ineffassign
     - misspell
@@ -17,26 +15,43 @@ linters:
     - staticcheck
     - unconvert
     - unused
-    - gofumpt
-
-linters-settings:
-  errorlint:
-    errorf: true
-    asserts: true
-    comparison: true
-  gofumpt:
-    extra-rules: true
-  revive:
+  settings:
+    errorlint:
+      errorf: true
+      asserts: true
+      comparison: true
+    revive:
+      rules:
+        - name: var-naming
+        - name: unused-parameter
+          disabled: true
+        - name: exported
+          disabled: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
     rules:
-      - name: var-naming
-      - name: unused-parameter
-        disabled: true
-      - name: exported
-        disabled: true
-
-issues:
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gosec
-        - errcheck
+      - linters:
+          - errcheck
+          - gosec
+        path: _test\.go
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
+    - gofumpt
+  settings:
+    gofumpt:
+      extra-rules: true
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

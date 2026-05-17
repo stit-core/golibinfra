@@ -34,4 +34,3 @@ func TestOTLPHeaders(t *testing.T) {
 		})
 	}
 }
-

@@ -1,7 +1,7 @@
 package httpclient
 
 import (
-	"fmt"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,7 +39,7 @@ func TestCircuitBreaker_OpensAfterFailures(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error from open circuit breaker")
 	}
-	if err != gobreaker.ErrOpenState {
+	if !errors.Is(err, gobreaker.ErrOpenState) {
 		t.Fatalf("expected ErrOpenState, got: %v", err)
 	}
 }
@@ -77,7 +77,7 @@ func TestCircuitBreaker_RecoveryTimeout(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
 	_, err := client.Do(req)
-	if err != gobreaker.ErrOpenState {
+	if !errors.Is(err, gobreaker.ErrOpenState) {
 		t.Fatalf("expected open state, got: %v", err)
 	}
 
@@ -92,5 +92,4 @@ func TestCircuitBreaker_RecoveryTimeout(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
 	}
-	_ = fmt.Sprintf("probe succeeded")
 }

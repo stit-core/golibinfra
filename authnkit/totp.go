@@ -14,7 +14,7 @@ func NewTOTP(issuer string) *TOTPGenerator {
 	return &TOTPGenerator{Issuer: issuer}
 }
 
-func (g *TOTPGenerator) Generate(accountName string) (secret string, otpauthURL string, err error) {
+func (g *TOTPGenerator) Generate(accountName string) (secret, otpauthURL string, err error) {
 	key, err := totp.Generate(totp.GenerateOpts{
 		Issuer:      g.Issuer,
 		AccountName: accountName,

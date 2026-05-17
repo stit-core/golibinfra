@@ -91,6 +91,6 @@ func (h *Argon2idHasher) Verify(plain, encoded string) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("authnkit: decode hash: %w", err)
 	}
-	got := argon2.IDKey([]byte(plain), salt, time, memory, threads, uint32(len(want)))
+	got := argon2.IDKey([]byte(plain), salt, time, memory, threads, uint32(len(want))) //nolint:gosec // len(want): our own base64-decoded argon2 hash (~32B), never exceeds uint32
 	return subtle.ConstantTimeCompare(got, want) == 1, nil
 }

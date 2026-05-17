@@ -112,11 +112,11 @@ func composeMigrations(cfg MultiSourceConfig) (string, error) {
 		g := i + 1
 		upName := fmt.Sprintf("%04d_%s.up.sql", g, p.name)
 		dnName := fmt.Sprintf("%04d_%s.down.sql", g, p.name)
-		if err := os.WriteFile(filepath.Join(tmp, upName), p.upData, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(tmp, upName), p.upData, 0o600); err != nil {
 			_ = os.RemoveAll(tmp)
 			return "", fmt.Errorf("pgkit: write %s: %w", upName, err)
 		}
-		if err := os.WriteFile(filepath.Join(tmp, dnName), p.dnData, 0o644); err != nil {
+		if err := os.WriteFile(filepath.Join(tmp, dnName), p.dnData, 0o600); err != nil {
 			_ = os.RemoveAll(tmp)
 			return "", fmt.Errorf("pgkit: write %s: %w", dnName, err)
 		}

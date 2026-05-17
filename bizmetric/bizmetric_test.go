@@ -20,9 +20,9 @@ func TestMustName(t *testing.T) {
 		{"checkout", "orders_completed", "biz_checkout_orders_completed", false},
 		{"signup", "attempts", "biz_signup_attempts", false},
 		{"a", "b", "biz_a_b", false},
-		{"Checkout", "x", "", true},        // uppercase
+		{"Checkout", "x", "", true},                // uppercase
 		{"checkout", "orders-completed", "", true}, // dash
-		{"", "x", "", true},                // empty
+		{"", "x", "", true},                        // empty
 		{"checkout", "", "", true},
 		{"1abc", "x", "", true}, // starts with digit
 	}

@@ -96,7 +96,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore) func(http.Handle
 			if err == nil && found {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(status)
-				_, _ = w.Write(cached)
+				_, _ = w.Write(cached) //nolint:gosec // replayed idempotent response; Content-Type forced application/json, server-produced cached bytes
 				instr.idempotencyHits.Add(r.Context(), 1, metric.WithAttributes(
 					attribute.String("path", r.URL.Path),
 					attribute.String("result", "replayed"),

@@ -54,4 +54,3 @@ func registerLagGaugeIfReporter(p lagParams) error {
 	})
 	return nil
 }
-

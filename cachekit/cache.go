@@ -6,6 +6,7 @@ package cachekit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -48,7 +49,7 @@ func NewRedisCache(cfg Config) (Cache, error) {
 
 func (c *redisCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
 	val, err := c.client.Get(ctx, key).Bytes()
-	if err == redis.Nil {
+	if errors.Is(err, redis.Nil) {
 		return nil, false, nil
 	}
 	if err != nil {
@@ -90,7 +91,7 @@ func Probe(c Cache) func(ctx context.Context) error {
 func (c *redisCache) InvalidateByTag(ctx context.Context, tag string) error {
 	tagKey := "tag:" + tag
 	keys, err := c.client.SMembers(ctx, tagKey).Result()
-	if err != nil && err != redis.Nil {
+	if err != nil && !errors.Is(err, redis.Nil) {
 		return fmt.Errorf("cachekit: invalidate tag members: %w", err)
 	}
 	if len(keys) > 0 {

@@ -113,7 +113,7 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 
 func backoff(base time.Duration, attempt int) time.Duration {
 	exp := base * (1 << attempt)
-	jitter := time.Duration(rand.Int63n(int64(base)))
+	jitter := time.Duration(rand.Int63n(int64(base))) //nolint:gosec // non-crypto jitter for retry backoff
 	return exp + jitter
 }
 

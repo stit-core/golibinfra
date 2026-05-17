@@ -43,7 +43,6 @@ func TestAPIError_JSON(t *testing.T) {
 }
 
 func TestAPIError_ProblemJSON_OmitEmpty(t *testing.T) {
-
 	e := httpkit.Error("X", http.StatusBadRequest, "d")
 	body, err := json.Marshal(e)
 	if err != nil {

@@ -1,6 +1,8 @@
 package config
 
 import (
+	"context"
+
 	vault "github.com/hashicorp/vault/api"
 	"go.uber.org/fx"
 )
@@ -16,7 +18,7 @@ var Module = fx.Module("config",
 
 func newVaultClientConfig() (VaultClientConfig, error) {
 	var c VaultClientConfig
-	if err := Env().Apply(nil, &c); err != nil {
+	if err := Env().Apply(context.TODO(), &c); err != nil {
 		return c, err
 	}
 	return c, nil
@@ -28,7 +30,7 @@ type VaultPathConfig struct {
 
 func newVaultPathConfig() (VaultPathConfig, error) {
 	var c VaultPathConfig
-	if err := Env().Apply(nil, &c); err != nil {
+	if err := Env().Apply(context.TODO(), &c); err != nil {
 		return c, err
 	}
 	return c, nil

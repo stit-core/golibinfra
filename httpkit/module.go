@@ -99,7 +99,7 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai A
 
 	lc.Append(fx.Hook{
 		OnStart: func(_ context.Context) error {
-			go func() {
+			go func() { //nolint:gosec // server goroutine outlives fx OnStart ctx; background ctx intentional for the terminal log
 				if err := s.Start(); err != nil {
 					log.Error(context.Background(), "http server stopped", "err", err)
 				}

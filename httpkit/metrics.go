@@ -18,11 +18,11 @@ var durationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5
 // нужно прокидывать Meter в каждый middleware: они сами берут глобальный
 // otel.Meter (telemetry.Init выставляет правильный provider).
 type httpInstruments struct {
-	reqTotal           metric.Int64Counter
-	reqDuration        metric.Float64Histogram
-	panicsTotal        metric.Int64Counter
-	maxBodyRejections  metric.Int64Counter
-	idempotencyHits    metric.Int64Counter
+	reqTotal          metric.Int64Counter
+	reqDuration       metric.Float64Histogram
+	panicsTotal       metric.Int64Counter
+	maxBodyRejections metric.Int64Counter
+	idempotencyHits   metric.Int64Counter
 }
 
 func newHTTPInstruments() *httpInstruments {

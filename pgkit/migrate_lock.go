@@ -13,7 +13,7 @@ const migrateAdvisoryLockKey = "golibinfra-migrate"
 func advisoryLockKey() int64 {
 	h := fnv.New64a()
 	_, _ = h.Write([]byte(migrateAdvisoryLockKey))
-	return int64(h.Sum64())
+	return int64(h.Sum64()) //nolint:gosec // intentional bit-reinterpret of FNV-1a hash into pg advisory-lock int64 key
 }
 
 func runMigrateUpLocked(ctx context.Context, dsn, path string) error {
