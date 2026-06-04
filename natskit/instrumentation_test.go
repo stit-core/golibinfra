@@ -13,9 +13,9 @@ import (
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
-	"git.stit.tech/stit-infra/golibinfra/logkit"
-	"git.stit.tech/stit-infra/golibinfra/natskit"
-	"git.stit.tech/stit-infra/golibinfra/testkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/logkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/natskit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
 )
 
 func TestBus_EmitsMetricsAndSpans(t *testing.T) {

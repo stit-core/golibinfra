@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"git.stit.tech/stit-infra/golibinfra/testkit/eventbus"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit/eventbus"
 )
 
 type narrowBus interface {

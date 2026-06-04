@@ -3,52 +3,52 @@
 Инфраструктурные библиотеки для Go-сервисов компании. Импортируется как Go-модуль из бизнес-репозиториев.
 
 ```go
-import "git.stit.tech/stit-infra/golibinfra/pgkit"
-import "git.stit.tech/stit-infra/golibinfra/httpkit"
-import "git.stit.tech/stit-infra/golibinfra/telemetry"
-import "git.stit.tech/stit-infra/golibinfra/config"
-import "git.stit.tech/stit-infra/golibinfra/testkit"
+import "git.sftbmb.ru/sftbmb-core/golibinfra/pgkit"
+import "git.sftbmb.ru/sftbmb-core/golibinfra/httpkit"
+import "git.sftbmb.ru/sftbmb-core/golibinfra/telemetry"
+import "git.sftbmb.ru/sftbmb-core/golibinfra/config"
+import "git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
 ```
 
 ## Где это в экосистеме
 
 `golibinfra` — одна из четырёх компонент stit-экосистемы:
 
-- [`stit-infra/infra`](https://git.stit.tech/stit-infra/infra) — корп-control-plane (Vault, Grafana, OTLP-ingest, Gitea-registry).
-- [`stit-infra/project-infra-template-compose`](https://git.stit.tech/stit-infra/project-infra-template-compose) — шаблон проектной VPS (форкается в `<org>/infra`).
-- [`stit-infra/go-backend-template`](https://git.stit.tech/stit-infra/go-backend-template) — шаблон Go-бэкенда (форкается в `<org>/backend`, импортирует эту lib'у).
-- **`stit-infra/golibinfra`** (вы здесь) — общая lib, observability-by-default, инварианты ADR-0004.
+- [`sftbmb-infra/infra`](https://git.sftbmb.ru/sftbmb-infra/infra) — корп-control-plane (Vault, Grafana, OTLP-ingest, Gitea-registry).
+- [`sftbmb-core/project-infra-template-compose`](https://git.sftbmb.ru/sftbmb-core/project-infra-template-compose) — шаблон проектной VPS (форкается в `<org>/infra`).
+- [`sftbmb-core/go-backend-template`](https://git.sftbmb.ru/sftbmb-core/go-backend-template) — шаблон Go-бэкенда (форкается в `<org>/backend`, импортирует эту lib'у).
+- **`sftbmb-core/golibinfra`** (вы здесь) — общая lib, observability-by-default, инварианты ADR-0004.
 
-Каноническая карта 4 репо, контракты (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow), happy paths — [`stit-infra/infra/docs/ecosystem.md`](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/ecosystem.md).
+Каноническая карта 4 репо, контракты (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow), happy paths — [`sftbmb-infra/infra/docs/ecosystem.md`](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/ecosystem.md).
 
 ## Доступ к репозиторию
 
-Репо приватный, лежит на собственной Gitea (`git.stit.tech`). Чтобы `go get` / `go mod tidy` мог его подтянуть, нужно настроить три вещи: GOPRIVATE, git-аутентификацию и (опционально) SSH-overlay поверх HTTPS.
+Репо приватный, лежит на собственной Gitea (`git.sftbmb.ru`). Чтобы `go get` / `go mod tidy` мог его подтянуть, нужно настроить три вещи: GOPRIVATE, git-аутентификацию и (опционально) SSH-overlay поверх HTTPS.
 
 ### Шаг 1. SSH-ключ в Gitea
 
 ```bash
 # если ключа ещё нет
-ssh-keygen -t ed25519 -C "you@stit.tech"
+ssh-keygen -t ed25519 -C "you@sftbmb.ru"
 
-# залить публичный ключ в Gitea: https://git.stit.tech/-/user/settings/keys
+# залить публичный ключ в Gitea: https://git.sftbmb.ru/-/user/settings/keys
 cat ~/.ssh/id_ed25519.pub | xclip -selection clipboard
 
 # проверить, что подключение работает
-ssh -T git@git.stit.tech
+ssh -T git@git.sftbmb.ru
 ```
 
 ### Шаг 2. GOPRIVATE
 
-Сообщаем Go, что `git.stit.tech` — приватный (не идти через `proxy.golang.org`, не проверять `sum.golang.org`):
+Сообщаем Go, что `git.sftbmb.ru` — приватный (не идти через `proxy.golang.org`, не проверять `sum.golang.org`):
 
 ```bash
-go env -w GOPRIVATE='git.stit.tech/*'
+go env -w GOPRIVATE='git.sftbmb.ru/*'
 ```
 
 Альтернативно — переменная окружения в `~/.zshrc` / `~/.bashrc`:
 ```bash
-export GOPRIVATE='git.stit.tech/*'
+export GOPRIVATE='git.sftbmb.ru/*'
 ```
 
 ### Шаг 3. SSH вместо HTTPS
@@ -56,10 +56,10 @@ export GOPRIVATE='git.stit.tech/*'
 Go по умолчанию ходит за модулями через HTTPS. Чтобы использовать SSH-ключ из шага 1 — добавляем git-overlay в `~/.gitconfig`:
 
 ```bash
-git config --global url."git@git.stit.tech:".insteadOf "https://git.stit.tech/"
+git config --global url."git@git.sftbmb.ru:".insteadOf "https://git.sftbmb.ru/"
 ```
 
-После этого `go mod tidy` будет ходить за `git.stit.tech/stit-infra/golibinfra` через SSH.
+После этого `go mod tidy` будет ходить за `git.sftbmb.ru/sftbmb-core/golibinfra` через SSH.
 
 ### Альтернатива: HTTPS + личный токен
 
@@ -69,7 +69,7 @@ git config --global url."git@git.stit.tech:".insteadOf "https://git.stit.tech/"
 # Gitea → Settings → Applications → Generate Token (scope: read:repository)
 # Сохранить в ~/.netrc:
 cat >> ~/.netrc <<EOF
-machine git.stit.tech
+machine git.sftbmb.ru
 login your-username
 password ${GITEA_TOKEN}
 EOF
@@ -82,7 +82,7 @@ chmod 600 ~/.netrc
 
 ```bash
 mkdir /tmp/check && cd /tmp/check && go mod init check
-go get git.stit.tech/stit-infra/golibinfra@v0.15.0
+go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.15.0
 # должно скачать без ошибок
 ```
 
@@ -90,7 +90,7 @@ go get git.stit.tech/stit-infra/golibinfra@v0.15.0
 
 В `go.mod`:
 ```
-require git.stit.tech/stit-infra/golibinfra v0.15.0
+require git.sftbmb.ru/sftbmb-core/golibinfra v0.15.0
 ```
 
 `go mod tidy` подтянет.
@@ -159,14 +159,14 @@ OTel SDK выставляет их через `telemetry.Config`:
 | `tenant` | имя tenant'а | **корп otel-collector** (из X-Scope-OrgID) | Multi-tenant изоляция |
 | `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) | Loki tenant-filter (Loki не имеет `tenant` label) |
 
-`tenant` и `service.namespace` приложение не выставляет — их ставит/перезатирает корп otel-collector (`stit-infra/infra` ADR-0004 §2). Если приложение всё же выставит `service.namespace` — оно будет перезатёрто значением `tenant`. Это **инвариант**: ваши логи всегда найдутся через `{service_namespace="<tenant>"}` в Loki.
+`tenant` и `service.namespace` приложение не выставляет — их ставит/перезатирает корп otel-collector (`sftbmb-infra/infra` ADR-0004 §2). Если приложение всё же выставит `service.namespace` — оно будет перезатёрто значением `tenant`. Это **инвариант**: ваши логи всегда найдутся через `{service_namespace="<tenant>"}` в Loki.
 
 ### Business-метрики (`biz_*`)
 
 Свои метрики бизнес-уровня — через `bizmetric` (форсит конвенцию `biz_<domain>_<event>_total|_seconds|_<gauge>`):
 
 ```go
-import "git.stit.tech/stit-infra/golibinfra/bizmetric"
+import "git.sftbmb.ru/sftbmb-core/golibinfra/bizmetric"
 
 logins := bizmetric.Counter(meter, "auth", "login_attempts")
 // → имя: biz_auth_login_attempts_total
@@ -178,7 +178,7 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 
 Helper упадёт panic'ом если префикс/суффикс не соответствует конвенции — defence-in-depth против "ну я только тут одну метрику".
 
-Полный гайд для проектов: [stit-infra docs/observability-app-guide.md](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [stit-infra docs/observability-metrics-inventory.md](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/observability-metrics-inventory.md). Архитектурные решения: [ADR-0002](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/adrs/0002-observability-multitenancy.md), [ADR-0004](https://git.stit.tech/stit-infra/infra/src/branch/main/docs/adrs/0004-observability-tenant-hardening.md).
+Полный гайд для проектов: [sftbmb-infra docs/observability-app-guide.md](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [sftbmb-infra docs/observability-metrics-inventory.md](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/observability-metrics-inventory.md). Архитектурные решения: [ADR-0002](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/adrs/0002-observability-multitenancy.md), [ADR-0004](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/adrs/0004-observability-tenant-hardening.md).
 
 ### Что эмитит каждый пакет (короткий reference)
 
@@ -200,7 +200,7 @@ Helper упадёт panic'ом если префикс/суффикс не со�
 
 - **Не парсить тело Loki через `| json`.** OTel→Loki экспортер уже распарсил resource/log attrs в **stream labels** (`method`, `path`, `status`, `request_id`, `severity_text`, `detected_level`, …). Тело часто — operation name (`"http"`) или span event, не JSON-сообщение. Фильтр по level — через label `detected_level=~"error"` (lowercase, auto-detected Loki 3.x).
 - **Не выставлять `service.namespace` руками.** Bizdocoll force-сетит = tenant. Если выставишь — перезатрётся.
-- **Не выпускать `:latest` Docker tag для проектного API.** Шаблонная конвенция — `<sha>` или `<semver>` (см. `stit-infra/go-backend-template`).
+- **Не выпускать `:latest` Docker tag для проектного API.** Шаблонная конвенция — `<sha>` или `<semver>` (см. `sftbmb-core/go-backend-template`).
 - **Не плодить biz-метрики обходя `bizmetric.Counter`.** Helper форсит конвенцию префиксом и panic'ит — это безопасный rail.
 
 ## Стабильность API
@@ -226,7 +226,7 @@ git push origin v0.15.0
 
 В шаблонах/проектах после релиза:
 ```bash
-go get git.stit.tech/stit-infra/golibinfra@v0.15.0
+go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.15.0
 go mod tidy
 ```
 
@@ -234,7 +234,7 @@ go mod tidy
 
 Когда правишь `golibinfra` параллельно с продуктом — добавь временный `replace` в `go.mod` продукта:
 ```
-replace git.stit.tech/stit-infra/golibinfra => ../golibinfra
+replace git.sftbmb.ru/sftbmb-core/golibinfra => ../golibinfra
 ```
 
 **Не коммить эту строку** — это для local-only ветки. Перед мержем убрать и поднять версию через `go get`.

@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.stit.tech/stit-infra/golibinfra/httpkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/httpkit"
 )
 
 func okHandler(w http.ResponseWriter, _ *http.Request) {

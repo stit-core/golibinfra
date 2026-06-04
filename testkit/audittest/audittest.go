@@ -4,7 +4,7 @@ import (
 	"context"
 	"sync"
 
-	"git.stit.tech/stit-infra/golibinfra/auditkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/auditkit"
 )
 
 type Recorder struct {

@@ -9,7 +9,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"git.stit.tech/stit-infra/golibinfra/authnkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/authnkit"
 )
 
 func TestMetricsEmitted(t *testing.T) {

@@ -15,7 +15,7 @@ type httpClientInstruments struct {
 }
 
 func newInstruments() *httpClientInstruments {
-	m := otel.Meter("git.stit.tech/stit-infra/golibinfra/httpclient")
+	m := otel.Meter("git.sftbmb.ru/sftbmb-core/golibinfra/httpclient")
 
 	transitions, err := m.Int64Counter("http_client_breaker_transitions_total",
 		metric.WithDescription("Circuit breaker state transitions"),

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"git.stit.tech/stit-infra/golibinfra/bruteforcekit"
-	"git.stit.tech/stit-infra/golibinfra/testkit/bruteforcetest"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/bruteforcekit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit/bruteforcetest"
 )
 
 var (

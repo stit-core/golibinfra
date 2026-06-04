@@ -16,7 +16,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/semaphore"
 
-	"git.stit.tech/stit-infra/golibinfra/logkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/logkit"
 )
 
 var ErrJetStreamDisabled = errors.New("natskit: jetstream is disabled")

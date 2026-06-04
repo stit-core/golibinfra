@@ -9,8 +9,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"git.stit.tech/stit-infra/golibinfra/pgkit"
-	"git.stit.tech/stit-infra/golibinfra/testkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/pgkit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
 )
 
 func TestInstrumentPool_EmitsPoolStats(t *testing.T) {

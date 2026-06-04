@@ -6,7 +6,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"git.stit.tech/stit-infra/golibinfra/natskit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/natskit"
 )
 
 // Publisher — узкий port-интерфейс для публикации событий, чтобы домены

@@ -3,7 +3,7 @@ package storagekit_test
 import (
 	"testing"
 
-	"git.stit.tech/stit-infra/golibinfra/storagekit"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/storagekit"
 )
 
 func TestURLBuilder_Build(t *testing.T) {

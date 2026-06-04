@@ -26,7 +26,7 @@ type outboxInstruments struct {
 }
 
 func newOutboxInstruments() *outboxInstruments {
-	m := otel.Meter("git.stit.tech/stit-infra/golibinfra/outboxkit")
+	m := otel.Meter("git.sftbmb.ru/sftbmb-core/golibinfra/outboxkit")
 	inserted, _ := m.Int64Counter("outbox_events_inserted_total",
 		metric.WithDescription("Events inserted into outbox"),
 	)
@@ -56,7 +56,7 @@ func newOutboxInstruments() *outboxInstruments {
 // RegisterLagGauge регистрирует ObservableGauge `outbox_lag_seconds{subject}`
 // поверх LagReporter. Возвращает Registration — вызвать Unregister на shutdown.
 func RegisterLagGauge(reporter LagReporter) (metric.Registration, error) {
-	m := otel.Meter("git.stit.tech/stit-infra/golibinfra/outboxkit")
+	m := otel.Meter("git.sftbmb.ru/sftbmb-core/golibinfra/outboxkit")
 	gauge, err := m.Float64ObservableGauge("outbox_lag_seconds",
 		metric.WithDescription("Age of oldest unpublished event per subject"),
 		metric.WithUnit("s"),

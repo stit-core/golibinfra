@@ -12,8 +12,8 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
 
-	"git.stit.tech/stit-infra/golibinfra/storagekit"
-	skminio "git.stit.tech/stit-infra/golibinfra/storagekit/minio"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/storagekit"
+	skminio "git.sftbmb.ru/sftbmb-core/golibinfra/storagekit/minio"
 )
 
 const minioImage = "minio/minio:RELEASE.2025-01-20T14-49-07Z"

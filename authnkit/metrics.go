@@ -26,7 +26,7 @@ type authnInstruments struct {
 
 func getInstruments() *authnInstruments {
 	instrOnce.Do(func() {
-		m := otel.Meter("git.stit.tech/stit-infra/golibinfra/authnkit")
+		m := otel.Meter("git.sftbmb.ru/sftbmb-core/golibinfra/authnkit")
 		jwt, _ := m.Int64Counter("jwt_verifications_total",
 			metric.WithDescription("JWT verification outcomes"),
 		)

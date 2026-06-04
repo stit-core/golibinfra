@@ -1,6 +1,6 @@
 # AGENTS.md
 
-Инфраструктурные Go-библиотеки для stit-сервисов: observability/auth/db/messaging-кит'ы. Импортируется как Go-модуль из бизнес-репозиториев (`go get git.stit.tech/stit-infra/golibinfra@v0.x.y`).
+Инфраструктурные Go-библиотеки для stit-сервисов: observability/auth/db/messaging-кит'ы. Импортируется как Go-модуль из бизнес-репозиториев (`go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.x.y`).
 
 Этот файл — постоянный гайд для агента. Полная human-доку — `README.md` (включая Minimum viable observability, invariants, API stability, версионирование). `AGENTS.md` фокусируется на том, что меняется при работе с кодом lib'ы.
 
@@ -8,9 +8,9 @@
 
 **Роль:** общая Go-библиотека. Не сервис, не stack — модули, которые консумят stit-сервисы.
 **Зависит от:** — (только upstream Go-deps: pgx/v5, otel-go, huma/v2, sony/gobreaker, nats.go, …).
-**Используется:** все stit Go-сервисы (`stit-infra/go-backend-template` и все его форки `<client-org>/backend`, плюс будущие worker/billing/…). Кит'ы коммитят на корп-инфра-конвенции (ADR-0004 invariants по `tenant` / `service.namespace`), но **runtime их не выставляет** — это работа корп `otel-collector`'а в `stit-infra/infra`.
+**Используется:** все stit Go-сервисы (`sftbmb-core/go-backend-template` и все его форки `<client-org>/backend`, плюс будущие worker/billing/…). Кит'ы коммитят на корп-инфра-конвенции (ADR-0004 invariants по `tenant` / `service.namespace`), но **runtime их не выставляет** — это работа корп `otel-collector`'а в `sftbmb-infra/infra`.
 
-Карта 4 репо и канонические контракты — `stit-infra/infra/docs/ecosystem.md`. Observability-invariants и кто что эмитит — `README.md §Minimum viable observability`.
+Карта 4 репо и канонические контракты — `sftbmb-infra/infra/docs/ecosystem.md`. Observability-invariants и кто что эмитит — `README.md §Minimum viable observability`.
 
 ## Пакеты (короткая карта)
 
@@ -41,10 +41,10 @@
 Эти три инварианта описаны в `README.md §Обязательные resource attrs` и продублированы здесь как короткий чек-лист:
 
 1. **`service.name`, `service.version`, `deployment.environment.name`** — приложение выставляет через `telemetry.Config`. Без них дашборды Apps/* теряют variable'ы `$service`/`$env`.
-2. **`tenant`, `service.namespace`** — приложение **не выставляет**. Их ставит/перезатирает корп `otel-collector` (`stit-infra/infra` ADR-0004 §2, processor `resource/service_namespace` action: upsert). Если выставишь — будет молча перезатёрто.
+2. **`tenant`, `service.namespace`** — приложение **не выставляет**. Их ставит/перезатирает корп `otel-collector` (`sftbmb-infra/infra` ADR-0004 §2, processor `resource/service_namespace` action: upsert). Если выставишь — будет молча перезатёрто.
 3. **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён для business-метрик. Enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 
-Любая правка пакетов `telemetry/`, `logkit/`, `bizmetric/`, или resource-attrs init-флоу должна сверяться с `stit-infra/infra/docs/adrs/0004-observability-tenant-hardening.md` — изменение этих инвариантов = breaking для всех сервисов.
+Любая правка пакетов `telemetry/`, `logkit/`, `bizmetric/`, или resource-attrs init-флоу должна сверяться с `sftbmb-infra/infra/docs/adrs/0004-observability-tenant-hardening.md` — изменение этих инвариантов = breaking для всех сервисов.
 
 ## Стиль
 
@@ -65,7 +65,7 @@ git tag v0.x.y && git push origin v0.x.y
 В консюмере (`<org>/backend`):
 
 ```bash
-go get git.stit.tech/stit-infra/golibinfra@v0.x.y
+go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.x.y
 go mod tidy
 make pre-merge   # обязательный gate перед claim "готово"
 ```
@@ -78,12 +78,12 @@ make pre-merge   # обязательный gate перед claim "готово"
 
 - Перед коммитом: `go test ./... -race -short`, `golangci-lint run`, проверить что новые публичные структуры/функции описаны в README или package-комментарии.
 - При добавлении нового kit'а — обновить таблицу пакетов в `README.md §Пакеты` и в этом файле (§Пакеты выше).
-- При изменении эмитимых метрик / labels / span attrs — обновить `README.md §Что эмитит каждый пакет` **и** `stit-infra/infra/docs/observability-metrics-inventory.md` (актуальный snapshot per-version).
+- При изменении эмитимых метрик / labels / span attrs — обновить `README.md §Что эмитит каждый пакет` **и** `sftbmb-infra/infra/docs/observability-metrics-inventory.md` (актуальный snapshot per-version).
 
 ### Сначала спросить
 
 - Менять public конфиг-структуры (имена полей, envconfig-теги, types) — это breaking, нужен явный OK и bump major.
-- Менять `telemetry/`, `bizmetric/`, или способ выставления resource attrs — затрагивает все сервисы и инвариант ADR-0004. Сверяй с `stit-infra/infra` доками.
+- Менять `telemetry/`, `bizmetric/`, или способ выставления resource attrs — затрагивает все сервисы и инвариант ADR-0004. Сверяй с `sftbmb-infra/infra` доками.
 - Добавлять новые зависимости в `go.mod`.
 
 ### Не делать никогда

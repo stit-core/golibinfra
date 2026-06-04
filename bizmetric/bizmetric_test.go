@@ -8,7 +8,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"git.stit.tech/stit-infra/golibinfra/bizmetric"
+	"git.sftbmb.ru/sftbmb-core/golibinfra/bizmetric"
 )
 
 func TestMustName(t *testing.T) {
