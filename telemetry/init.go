@@ -4,7 +4,7 @@
 // service.name, service.version, deployment.environment.name из Config;
 // tenant/service.namespace выставляются только если Config.Tenant
 // задан (типично local-dev) — в проде их force-сетит корп
-// otel-collector из X-Scope-OrgID (ADR-0004). Включает стандартную
+// otel-collector из X-Scope-OrgID (корп obs-контракт). Включает стандартную
 // runtime-инструментацию (go_*, process_*) через contrib/instrumentation/runtime.
 package telemetry
 

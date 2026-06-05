@@ -44,13 +44,14 @@ otelpgx), `natskit` (NATS/JetStream), `outboxkit` (outbox + lag-reporter),
 1. **`service.name` / `service.version` / `deployment.environment.name`** — выставляет
    приложение через `telemetry.Config`. Без них дашборды Apps/* теряют `$service`/`$env`.
 2. **`tenant` / `service.namespace`** — приложение **не** выставляет; их ставит корп
-   `otel-collector` (managed — в `sftbmb-infra/infra`; self-hosted — в `corp-infra-template`).
-   Выставишь сам — будет молча перезатёрто.
+   `otel-collector` (managed — инстанс на `*.sftbmb.ru`; self-hosted — ваш форк
+   `corp-infra-template`). Выставишь сам — будет молча перезатёрто.
 3. **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
    business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 
 Правка `telemetry/`, `logkit/`, `bizmetric/` или resource-attrs init-флоу — breaking
-для всех сервисов; сверяйся с ADR-0004 в control-plane перед изменением инвариантов.
+для всех сервисов; сверяйся с корп obs-контрактом (`corp-infra-template/docs/ecosystem.md`
+§ Tenant identity / Observability resource-attrs) перед изменением инвариантов.
 
 ## Стиль (инварианты)
 
@@ -80,7 +81,7 @@ otelpgx), `natskit` (NATS/JetStream), `outboxkit` (outbox + lag-reporter),
 
 ### Сначала спросить
 - Менять public конфиг-структуры (имена полей, envconfig-теги, типы) — breaking, нужен major.
-- Менять `telemetry/`/`bizmetric/`/resource-attrs — затрагивает все сервисы (ADR-0004).
+- Менять `telemetry/`/`bizmetric/`/resource-attrs — затрагивает все сервисы (корп obs-контракт).
 - Добавлять новую зависимость в `go.mod`.
 
 ### Не делать никогда

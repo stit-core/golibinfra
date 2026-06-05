@@ -23,8 +23,8 @@ description: Выпустить новую версию golibinfra — semver-т
 1. **Gate зелёный.** `golangci-lint run ./...` + `go test -short -race ./...` +
    `go build ./...` — все три. Красное → не релизим.
 2. **Версия (semver).** Pre-v1.0.0: **minor может быть breaking**. Breaking change
-   (переименование public-полей/тегов конфигов, смена сигнатур, изменение инвариантов
-   ADR-0004) → bump minor (`v0.X.0`); багфикс/добавление без слома → patch (`v0.X.Y`).
+   (переименование public-полей/тегов конфигов, смена сигнатур, изменение корп
+   obs-инвариантов) → bump minor (`v0.X.0`); багфикс/добавление без слома → patch (`v0.X.Y`).
    Спроси у пользователя версию, если неочевидно.
 3. **Тег + push** (пуш — гейт человека, делаем по явной просьбе):
    ```bash
@@ -39,8 +39,8 @@ description: Выпустить новую версию golibinfra — semver-т
    make check        # обязательный gate в консьюмере
    ```
 5. **Если менялись эмитимые сигналы** (метрики/labels/span-attrs) — напомни обновить
-   инвентарь observability на стороне control-plane (`sftbmb-infra/infra` для managed,
-   `corp-infra-template` для self-hosted).
+   инвентарь observability на стороне control-plane (`corp-infra-template`: managed —
+   инстанс на `*.sftbmb.ru`, self-hosted — форк).
 
 ## Нет тупика
 

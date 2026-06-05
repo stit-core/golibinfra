@@ -35,7 +35,9 @@ description: Добавить новый kit (пакет) в golibinfra по к�
    метрики/спаны через otel-go SDK, читая resource attrs из `telemetry.Config`
    (через fx). Не выставляй `tenant`/`service.namespace` — их ставит control-plane.
 5. **testkit-сабпакет (опц.).** Нужны helpers для тестов консьюмера — заведи
-   `testkit/<kit>test/` (см. соседние `authntest`, `bruteforcetest`).
+   `testkit/<name>test/`, где `<name>` — имя кита **без** суффикса `kit`
+   (`cachekit` → `testkit/cachetest/`; см. соседние `authntest` от `authnkit`,
+   `bruteforcetest` от `bruteforcekit`).
 6. **Документация.** Добавь строку в `README.md § Пакеты` (slug + ответственность +
    что эмитит) и в карту пакетов в `CLAUDE.md`. Без этого kit «невидим».
 7. **Gate.** `golangci-lint run ./...` + `go test -short -race ./...` + `go build ./...`

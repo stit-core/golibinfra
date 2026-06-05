@@ -1,1 +1,19 @@
+# IDE / редакторы
 .idea
+.vscode/
+
+# Go build / test артефакты
+*.test
+coverage.out
+coverage.html
+dist/
+
+# Локальные env (секретов в репо не держим)
+.env
+.env.local
+*.pem
+*.key
+
+# Персональные настройки Claude Code (не для общего репо)
+.claude/settings.local.json
+**/.claude/settings.local.json
