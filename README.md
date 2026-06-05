@@ -12,7 +12,7 @@ import "git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
 
 ## Где это в экосистеме
 
-`golibinfra` — одна из четырёх компонент stit-экосистемы:
+`golibinfra` — одна из компонент экосистемы sftbmb:
 
 - [`sftbmb-infra/infra`](https://git.sftbmb.ru/sftbmb-infra/infra) — корп-control-plane (Vault, Grafana, OTLP-ingest, Gitea-registry).
 - [`sftbmb-core/project-infra-template-compose`](https://git.sftbmb.ru/sftbmb-core/project-infra-template-compose) — шаблон проектной VPS (форкается в `<org>/infra`).
@@ -23,7 +23,7 @@ import "git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
 
 ## Доступ к репозиторию
 
-Репо приватный, лежит на собственной Gitea (`git.sftbmb.ru`). Чтобы `go get` / `go mod tidy` мог его подтянуть, нужно настроить три вещи: GOPRIVATE, git-аутентификацию и (опционально) SSH-overlay поверх HTTPS.
+Репо лежит на собственной Gitea (`git.sftbmb.ru`), не на публичном Go-proxy. Чтобы `go get` / `go mod tidy` мог его подтянуть, нужно настроить GOPRIVATE (чтобы Go не шёл через `proxy.golang.org`/`sum.golang.org`); для авторизованного доступа (приватные форки, CI) — git-аутентификацию SSH-ключом или токеном.
 
 ### Шаг 1. SSH-ключ в Gitea
 
@@ -241,4 +241,4 @@ replace git.sftbmb.ru/sftbmb-core/golibinfra => ../golibinfra
 
 ## Лицензия
 
-Internal. Stit Tech.
+Apache-2.0 — см. [`LICENSE`](LICENSE).
