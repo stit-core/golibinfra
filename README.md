@@ -1,6 +1,21 @@
+<div align="center">
+
 # golibinfra
 
-Инфраструктурные библиотеки для Go-сервисов компании. Импортируется как Go-модуль из бизнес-репозиториев.
+### Инфраструктурные Go-kit'ы с observability из коробки
+
+Набор переиспользуемых Go-библиотек для сервисов экосистемы sftbmb: телеметрия,
+auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Module`,
+инструментирован OTel, подключается независимо. Импортируется как Go-модуль из
+бизнес-репозиториев.
+
+[![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
+[![Часть sftbmb](https://img.shields.io/badge/sftbmb-открытые_шаблоны-6366f1)](https://git.sftbmb.ru/sftbmb-core/sftbmb-public)
+[![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
+[![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
+[![Kits](https://img.shields.io/badge/kits-18-0ea5e9)](#пакеты)
+
+</div>
 
 ```go
 import "git.sftbmb.ru/sftbmb-core/golibinfra/pgkit"
@@ -12,121 +27,114 @@ import "git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
 
 ## Где это в экосистеме
 
-`golibinfra` — одна из компонент экосистемы sftbmb:
-
-- [`sftbmb-infra/infra`](https://git.sftbmb.ru/sftbmb-infra/infra) — корп-control-plane (Vault, Grafana, OTLP-ingest, Gitea-registry).
-- [`sftbmb-core/project-infra-template-compose`](https://git.sftbmb.ru/sftbmb-core/project-infra-template-compose) — шаблон проектной VPS (форкается в `<org>/infra`).
-- [`sftbmb-core/go-backend-template`](https://git.sftbmb.ru/sftbmb-core/go-backend-template) — шаблон Go-бэкенда (форкается в `<org>/backend`, импортирует эту lib'у).
-- **`sftbmb-core/golibinfra`** (вы здесь) — общая lib, observability-by-default, инварианты ADR-0004.
-
-Каноническая карта 4 репо, контракты (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow), happy paths — [`sftbmb-infra/infra/docs/ecosystem.md`](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/ecosystem.md).
+`golibinfra` — общая Go-lib экосистемы sftbmb (5 форкаемых шаблонов + 2 общие
+библиотеки). Её импортирует
+[`go-backend-template`](https://git.sftbmb.ru/sftbmb-core/go-backend-template)
+(форк `<org>/backend`); телеметрия из коробки попадает на стандартные дашборды
+корп-Grafana. Карта всех репо — на
+[витрине sftbmb](https://git.sftbmb.ru/sftbmb-core/sftbmb-public). Каноническая
+карта контрактов (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow)
+— [`corp-infra-template/docs/ecosystem.md`](https://git.sftbmb.ru/sftbmb-core/corp-infra-template/src/branch/main/docs/ecosystem.md).
 
 ## Доступ к репозиторию
 
-Репо лежит на собственной Gitea (`git.sftbmb.ru`), не на публичном Go-proxy. Чтобы `go get` / `go mod tidy` мог его подтянуть, нужно настроить GOPRIVATE (чтобы Go не шёл через `proxy.golang.org`/`sum.golang.org`); для авторизованного доступа (приватные форки, CI) — git-аутентификацию SSH-ключом или токеном.
-
-### Шаг 1. SSH-ключ в Gitea
-
-```bash
-# если ключа ещё нет
-ssh-keygen -t ed25519 -C "you@sftbmb.ru"
-
-# залить публичный ключ в Gitea: https://git.sftbmb.ru/-/user/settings/keys
-cat ~/.ssh/id_ed25519.pub | xclip -selection clipboard
-
-# проверить, что подключение работает
-ssh -T git@git.sftbmb.ru
-```
-
-### Шаг 2. GOPRIVATE
-
-Сообщаем Go, что `git.sftbmb.ru` — приватный (не идти через `proxy.golang.org`, не проверять `sum.golang.org`):
+Репо лежит на собственной Gitea (`git.sftbmb.ru`), не на публичном Go-proxy.
+Чтобы `go get` / `go mod tidy` мог его подтянуть, настройте `GOPRIVATE` (чтобы Go
+не шёл через `proxy.golang.org`/`sum.golang.org`); для авторизованного доступа —
+git-аутентификацию SSH-ключом или токеном.
 
 ```bash
+# 1. SSH-ключ в Gitea (если нет): ssh-keygen -t ed25519 -C "you@sftbmb.ru"
+#    залить ~/.ssh/id_ed25519.pub в https://git.sftbmb.ru/-/user/settings/keys
+ssh -T git@git.sftbmb.ru                                   # проверить
+
+# 2. GOPRIVATE: git.sftbmb.ru — приватный
 go env -w GOPRIVATE='git.sftbmb.ru/*'
-```
 
-Альтернативно — переменная окружения в `~/.zshrc` / `~/.bashrc`:
-```bash
-export GOPRIVATE='git.sftbmb.ru/*'
-```
-
-### Шаг 3. SSH вместо HTTPS
-
-Go по умолчанию ходит за модулями через HTTPS. Чтобы использовать SSH-ключ из шага 1 — добавляем git-overlay в `~/.gitconfig`:
-
-```bash
+# 3. SSH вместо HTTPS для модулей
 git config --global url."git@git.sftbmb.ru:".insteadOf "https://git.sftbmb.ru/"
 ```
 
-После этого `go mod tidy` будет ходить за `git.sftbmb.ru/sftbmb-core/golibinfra` через SSH.
-
-### Альтернатива: HTTPS + личный токен
-
-Если SSH недоступен (CI без ssh-agent и т.п.) — можно через токен:
-
+**Альтернатива (CI без ssh-agent):** HTTPS + токен в `~/.netrc`:
 ```bash
 # Gitea → Settings → Applications → Generate Token (scope: read:repository)
-# Сохранить в ~/.netrc:
-cat >> ~/.netrc <<EOF
-machine git.sftbmb.ru
-login your-username
-password ${GITEA_TOKEN}
-EOF
+printf 'machine git.sftbmb.ru\nlogin %s\npassword %s\n' "$USER" "$GITEA_TOKEN" >> ~/.netrc
 chmod 600 ~/.netrc
 ```
 
-В CI пробрасывай `GITEA_TOKEN` секретом и пиши `.netrc` в job-prepare шаге.
-
-### Проверка
-
-```bash
-mkdir /tmp/check && cd /tmp/check && go mod init check
-go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.15.0
-# должно скачать без ошибок
-```
+Проверка: `go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.24.0` скачивает без ошибок.
 
 ## Использование в проекте
 
-В `go.mod`:
 ```
-require git.sftbmb.ru/sftbmb-core/golibinfra v0.15.0
+require git.sftbmb.ru/sftbmb-core/golibinfra v0.24.0
 ```
 
 `go mod tidy` подтянет.
 
 ## Принципы
 
-- **Никакой продуктовой специфики.** Если файл знает про конкретные роли, домены, имена сервисов — он не здесь.
-- **Без скрытых зависимостей.** Каждый пакет можно подключать независимо.
+- **Никакой продуктовой специфики.** Если файл знает про конкретные роли, домены,
+  имена сервисов — он не здесь.
+- **Без скрытых зависимостей.** Каждый пакет подключается независимо.
 - **fx-first.** Каждый пакет экспортирует `Module` для проводки.
 - **Observability-by-default.** Все компоненты инструментированы OTel.
 
 ## Пакеты
 
+Per-kit `README.md` в каталогах китов осознанно **не заводим**: единый источник
+правды по каждому киту — эта таблица (ответственность) + § Стабильность API
+(public-конфиги) + § Что эмитит каждый пакет (телеметрия). Ссылка
+`[<kit>](<kit>/)` ведёт прямо в исходники.
+
 | Пакет | Ответственность |
 |---|---|
 | [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner, маппинг pg-ошибок, `DBProbe` health-probe; `ReadWriteDB` для read-replica (`PG_REPLICA_DSN`) |
-| [`httpkit`](httpkit/) | Huma bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, HumaAuth, **SecurityHeaders** (HSTS/X-Frame/CSP, auto в Module), **Idempotency** (опц., требует `IdempotencyStore`); `APIError` (`{code,status,title,detail}`), `MapErr`, `MapSentinel`, `ErrorMapping` |
-| [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus` интерфейс, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module; panic recovery в subscriber'ах + backpressure (semaphore `NATS_MAX_IN_FLIGHT`) |
-| [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel-инструментированием и автоматической передачей `X-Request-ID` |
-| [`cachekit`](cachekit/) | Redis-обёртка: `Cache` интерфейс, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` адаптер для `httpkit` |
+| [`storagekit`](storagekit/) | S3/object storage: `Storage` (`Put`/`Delete`), `URLBuilder`, in-memory адаптер для тестов, `minio`-подпакет; `Config` + `NewKey` (content-addressed) |
+| [`httpkit`](httpkit/) | Huma bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, HumaAuth, **SecurityHeaders**, **Idempotency**; `APIError`, `MapErr`, `MapSentinel` |
+| [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus`, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
+| [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel и автопередачей `X-Request-ID` |
+| [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
 | [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
-| [`logkit`](logkit/) | `Logger` интерфейс + JSON-реализация поверх slog; trace_id correlation; `ServiceConfig{Service,Env,Version}` — автоматические атрибуты `service/env/version` в каждой записи; `RegisterAttr` для кастомных полей; `NewWithRedact` + `RedactConfig` (PII-фильтры через regex, `LOG_REDACT_ENABLED`) |
-| [`authnkit`](authnkit/) | `Hasher` интерфейс + Argon2id-реализация; `JWTConfig` + JWT sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
+| [`logkit`](logkit/) | `Logger` поверх slog; trace_id correlation; авто-атрибуты `service/env/version`; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
+| [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
 | [`outboxkit`](outboxkit/) | Transactional outbox: Worker, Bus, core+pgstore split, `LagReporter` для `outbox_lag_seconds` |
 | [`auditkit`](auditkit/) | Audit-log: `Entry`/`Recorder`, core+pgstore split |
 | [`bruteforcekit`](bruteforcekit/) | Brute-force guard: per-subject + per-IP счётчики, `LockState`, core+pgstore split |
-| [`clockkit`](clockkit/) | `Clock` интерфейс + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
+| [`clockkit`](clockkit/) | `Clock` + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers; per-kit subpackages |
 
+## Per-concern endpoints (multi-host)
+
+Каждый кит читает свой эндпоинт из ENV — **разное значение = разный хост**. Это
+«шов» для split-топологии: telemetry / storage / Postgres / NATS / Redis можно
+развести по отдельным серверам, **не трогая код**. Репликация / HA / failover —
+дело потребителя (швы и скиллы — в `corp-infra-template` и
+`project-infra-template-compose`).
+
+| Env | Кит | Назначение |
+|---|---|---|
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP-ingest коллектора (пусто / `OTEL_STDOUT_ONLY=true` → stdout) |
+| `VAULT_ADDR` | `config` | Vault как secret-source |
+| `PG_DSN` | `pgkit` | Postgres (primary) |
+| `PG_REPLICA_DSN` | `pgkit` | Postgres read-replica (опц.; `ReadWriteDB`) |
+| `STORAGE_S3_ENDPOINT` | `storagekit` | S3 / MinIO object storage |
+| `NATS_URL` | `natskit` | NATS / JetStream |
+| `REDIS_URL` | `cachekit` | Redis (cache + idempotency store) |
+
+`outboxkit` **не** имеет своего эндпоинта — он co-located с pg-хостом: outbox
+пишется в той же транзакции, что и доменные данные (атомарность), поэтому живёт
+на том же Postgres, что `PG_DSN`.
+
 ## Minimum viable observability
 
-Подключение fx-модулей golibinfra даёт **автоматический** RED + DB-pool + bus + logs + traces. Минимальный набор для сервиса, который должен сразу попасть на стандартные дашборды корп-Grafana (папка **Apps**):
+Подключение fx-модулей golibinfra даёт **автоматический** RED + DB-pool + bus +
+logs + traces. Минимальный набор для сервиса, который сразу попадает на
+стандартные дашборды корп-Grafana (папка **Apps**):
 
 ```go
 fx.New(
@@ -134,111 +142,105 @@ fx.New(
   logkit.Module,      // log_messages_total{level}, slog с trace_id
   httpkit.Module,     // http_requests_total, http_request_duration_seconds
   pgkit.Module,       // db_pool_* (acquired/idle/max/wait), pg traces
-  natskit.Module,     // nats_messages_*, nats_handle_duration_seconds (если NewBusWithObservability)
+  natskit.Module,     // nats_messages_*, nats_handle_duration_seconds
   outboxkit.Module,   // outbox_events_*, outbox_batch_size, outbox_publish_duration_seconds
   authnkit.Module,    // jwt_verifications_total, password_*_duration_seconds
   ...
 )
 ```
 
-После запуска приложение видно на:
-- **Apps · Service Overview / HTTP** — без правок.
-- **Apps · Database / Bus / Outbox** — без правок.
-- **Apps · Logs** — все `log.Info/Warn/Error/Debug` идут в Loki с trace_id correlation.
-- **Apps · Traces** — Tempo получает spans от `otelhttp`, `otelpgx`, `natskit`.
+После запуска приложение видно на дашбордах **Apps · Service Overview / HTTP /
+Database / Bus / Outbox / Logs / Traces** — без правок.
 
 ### Обязательные resource attrs
 
-OTel SDK выставляет их через `telemetry.Config`:
+| Attr | Значение | Кто ставит |
+|---|---|---|
+| `service.name` | `"backend"` (или другое) | приложение (`telemetry.Config`) |
+| `service.version` | semver / git short-sha | приложение |
+| `deployment.environment.name` | `prod` / `staging` / `smoke` | приложение |
+| `tenant` | имя tenant'а | **корп otel-collector** (из `X-Scope-OrgID`) |
+| `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) |
 
-| Attr | Значение | Кто ставит | Почему важно |
-|---|---|---|---|
-| `service.name` | `"backend"` (или другое) | приложение | Variable `$service` в дашбордах |
-| `service.version` | semver / git short-sha | приложение | Чтобы дашборды различали deploy'и |
-| `deployment.environment.name` | `prod` / `staging` / `smoke` | приложение | Variable `$env` |
-| `tenant` | имя tenant'а | **корп otel-collector** (из X-Scope-OrgID) | Multi-tenant изоляция |
-| `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) | Loki tenant-filter (Loki не имеет `tenant` label) |
-
-`tenant` и `service.namespace` приложение не выставляет — их ставит/перезатирает корп otel-collector (`sftbmb-infra/infra` ADR-0004 §2). Если приложение всё же выставит `service.namespace` — оно будет перезатёрто значением `tenant`. Это **инвариант**: ваши логи всегда найдутся через `{service_namespace="<tenant>"}` в Loki.
+`tenant` и `service.namespace` приложение **не** выставляет — их ставит/перезатирает
+корп otel-collector (managed на `*.sftbmb.ru` или self-hosted форк
+`corp-infra-template`). Инвариант `service_namespace == tenant`: ваши логи всегда
+найдутся через `{service_namespace="<tenant>"}` в Loki.
 
 ### Business-метрики (`biz_*`)
 
-Свои метрики бизнес-уровня — через `bizmetric` (форсит конвенцию `biz_<domain>_<event>_total|_seconds|_<gauge>`):
+Свои метрики бизнес-уровня — через `bizmetric` (форсит конвенцию
+`biz_<domain>_<event>_total|_seconds|_<gauge>`, panic при нарушении):
 
 ```go
-import "git.sftbmb.ru/sftbmb-core/golibinfra/bizmetric"
-
-logins := bizmetric.Counter(meter, "auth", "login_attempts")
-// → имя: biz_auth_login_attempts_total
-
+logins := bizmetric.Counter(meter, "auth", "login_attempts")  // → biz_auth_login_attempts_total
 logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 ```
 
-`Apps · Business` автоматически рендерит repeating-panel'и для всех найденных `biz_*_total`. `result` label почти обязателен — без него не рисуется breakdown ok/error.
-
-Helper упадёт panic'ом если префикс/суффикс не соответствует конвенции — defence-in-depth против "ну я только тут одну метрику".
-
-Полный гайд для проектов: [sftbmb-infra docs/observability-app-guide.md](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/observability-app-guide.md). Инвентарь всех эмитящихся метрик: [sftbmb-infra docs/observability-metrics-inventory.md](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/observability-metrics-inventory.md). Архитектурные решения: [ADR-0002](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/adrs/0002-observability-multitenancy.md), [ADR-0004](https://git.sftbmb.ru/sftbmb-infra/infra/src/branch/main/docs/adrs/0004-observability-tenant-hardening.md).
+`Apps · Business` автоматически рендерит панели для всех `biz_*_total`. Полный
+гайд — [`corp-infra-template/docs/observability-app-guide.md`](https://git.sftbmb.ru/sftbmb-core/corp-infra-template/src/branch/main/docs/observability-app-guide.md);
+инвентарь метрик —
+[`observability-metrics-inventory.md`](https://git.sftbmb.ru/sftbmb-core/corp-infra-template/src/branch/main/docs/observability-metrics-inventory.md).
 
 ### Что эмитит каждый пакет (короткий reference)
 
 | Пакет | Метрики | Спаны |
 |---|---|---|
 | `telemetry` | runtime (`go_*`, `process_*` ≈ 200 метрик) | — |
-| `logkit` | `log_messages_total{level}` | — (но slog инжектит `trace_id`/`span_id` в record) |
-| `httpkit` | `http_requests_total{method,path,status}`, `http_request_duration_seconds{method,path,status}`, `http_panics_total{path}`, `http_max_body_rejections_total{path}`, `http_idempotency_total{path,result}` | server span от `otelhttp.NewHandler` |
-| `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_transitions_total`, `http_client_breaker_open`, `http_client_retry_attempts_total` | client span от `otelhttp.NewTransport` |
-| `pgkit` | `db_pool_{acquired,idle,total,max,constructing}_conns`, `db_pool_{empty_acquire,canceled_acquire,acquire}_total`, `db_pool_acquire_duration_seconds_total` (9 метрик) | per-query span через `otelpgx` |
-| `natskit` | `nats_messages_{published,consumed}_total{subject,status[,transport]}`, `nats_{publish,handle}_duration_seconds{subject[,transport]}`, `nats_inflight_messages{subject}` (label `transport=jetstream` добавляется на JetStream-пути) | producer + consumer spans с trace-propagation через NATS headers |
-| `outboxkit` | `outbox_events_{inserted,processed}_total{subject,status}`, `outbox_batch_{size,duration_seconds}`, `outbox_publish_duration_seconds{subject}`, `outbox_lag_seconds{subject}` (opt-in через `LagReporter`) | worker span |
-| `authnkit` | `jwt_verifications_total{result}`, `password_{hash,verify}_duration_seconds`, `totp_verifications_total{result}` | — |
-| `bizmetric` | `biz_<domain>_<event>_total|_seconds|<gauge>` | — |
+| `logkit` | `log_messages_total{level}` | — (slog инжектит `trace_id`/`span_id`) |
+| `httpkit` | `http_requests_total`, `http_request_duration_seconds`, `http_panics_total`, `http_max_body_rejections_total`, `http_idempotency_total` | server span (`otelhttp`) |
+| `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*`, `http_client_retry_attempts_total` | client span |
+| `pgkit` | `db_pool_*` (9 метрик) | per-query span (`otelpgx`) |
+| `storagekit` | — | — |
+| `natskit` | `nats_messages_*`, `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
+| `outboxkit` | `outbox_events_*`, `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds` (opt-in) | worker span |
+| `authnkit` | `jwt_verifications_total`, `password_*_duration_seconds`, `totp_verifications_total` | — |
+| `bizmetric` | `biz_<domain>_<event>_total\|_seconds\|<gauge>` | — |
 
-Все labels автоматически дополняются resource attrs (`service_name`, `service_version`, `deployment_environment_name`, `tenant`, `service_namespace`) — это работа otel-collector'а (`resource_to_telemetry_conversion: true`).
+Все labels автоматически дополняются resource attrs otel-collector'ом
+(`resource_to_telemetry_conversion: true`).
 
 ### Anti-patterns
 
-- **Не парсить тело Loki через `| json`.** OTel→Loki экспортер уже распарсил resource/log attrs в **stream labels** (`method`, `path`, `status`, `request_id`, `severity_text`, `detected_level`, …). Тело часто — operation name (`"http"`) или span event, не JSON-сообщение. Фильтр по level — через label `detected_level=~"error"` (lowercase, auto-detected Loki 3.x).
-- **Не выставлять `service.namespace` руками.** Bizdocoll force-сетит = tenant. Если выставишь — перезатрётся.
-- **Не выпускать `:latest` Docker tag для проектного API.** Шаблонная конвенция — `<sha>` или `<semver>` (см. `sftbmb-core/go-backend-template`).
-- **Не плодить biz-метрики обходя `bizmetric.Counter`.** Helper форсит конвенцию префиксом и panic'ит — это безопасный rail.
+- **Не парсить тело Loki через `| json`** — OTel→Loki экспортер уже распарсил
+  resource/log attrs в stream labels. Фильтр по level — `detected_level=~"error"`.
+- **Не выставлять `service.namespace` руками** — otel-collector force-сетит = tenant.
+- **Не выпускать `:latest` Docker tag** для проектного API — `<sha>` или `<semver>`.
+- **Не плодить biz-метрики обходя `bizmetric.Counter`** — helper форсит конвенцию.
 
 ## Стабильность API
 
 Публичные структуры конфигов (`pgkit.PoolConfig`, `pgkit.ReplicaConfig`,
-`httpkit.Config`, `httpkit.SecurityHeadersConfig`, `httpkit.IdempotencyConfig`,
-`telemetry.Config`, `logkit.Config`, `logkit.RedactConfig`, `authnkit.Argon2idParams`,
-`cachekit.Config`, `flagkit.Config`, `natskit.Config` (incl. `BackpressureConfig`),
-`httpclient.BreakerConfig`) — **part of public API**.
-Менять имена/типы полей или их envconfig-теги = breaking change, идёт мажорным
-апгрейдом. Продукты собирают свой `App`-конфиг из этих структур и зависят от
-их стабильности.
+`storagekit.Config`, `httpkit.Config`, `httpkit.SecurityHeadersConfig`,
+`httpkit.IdempotencyConfig`, `telemetry.Config`, `logkit.Config`,
+`logkit.RedactConfig`, `authnkit.Argon2idParams`, `cachekit.Config`,
+`flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
+`config.VaultClientConfig`) — **part of public API**. Менять имена/типы полей или
+их envconfig-теги = breaking change, идёт мажорным апгрейдом.
 
 ## Версионирование
 
-Семвер. Теги вида `v0.x.y`. До `v1.0.0` — API считается нестабильным, breaking changes допустимы в minor.
-
+Семвер, теги `v0.x.y`. До `v1.0.0` API нестабилен — breaking changes допустимы в
+minor. Релиз — skill `/release` (`git tag vX.Y.Z` + push). В проектах после релиза:
 ```bash
-# подъём минорной версии
-git tag v0.15.0
-git push origin v0.15.0
-```
-
-В шаблонах/проектах после релиза:
-```bash
-go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.15.0
-go mod tidy
+go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.24.0 && go mod tidy
 ```
 
 ## Локальная разработка с правкой golibinfra
 
-Когда правишь `golibinfra` параллельно с продуктом — добавь временный `replace` в `go.mod` продукта:
+Правите `golibinfra` параллельно с продуктом — временный `replace` в `go.mod`
+продукта (**не коммитить**, перед мержем убрать и поднять версию через `go get`):
 ```
 replace git.sftbmb.ru/sftbmb-core/golibinfra => ../golibinfra
 ```
 
-**Не коммить эту строку** — это для local-only ветки. Перед мержем убрать и поднять версию через `go get`.
+## Часть экосистемы sftbmb
+
+Это одна из открытых библиотек sftbmb (Apache-2.0). Карта всех шаблонов и точка
+входа — **[витрина sftbmb](https://git.sftbmb.ru/sftbmb-core/sftbmb-public)**.
+Нужна команда, стандарт или поддержка —
+**[наш подход и контакты (vision)](https://git.sftbmb.ru/sftbmb/vision)**.
 
 ## Лицензия
 
-Apache-2.0 — см. [`LICENSE`](LICENSE).
+**Apache-2.0** — см. [`LICENSE`](LICENSE).
