@@ -69,7 +69,6 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 		t.Fatal("handler not invoked")
 	}
 
-	// metrics
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatal(err)
@@ -94,7 +93,6 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 		}
 	}
 
-	// spans
 	allSpans := spans.Ended()
 	var sawPublish, sawHandle bool
 	for _, s := range allSpans {

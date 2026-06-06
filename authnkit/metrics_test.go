@@ -22,7 +22,6 @@ func TestMetricsEmitted(t *testing.T) {
 	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 
 	jwt := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "test-secret", AccessTTL: time.Minute})
-	// signed → ok
 	tok, err := jwt.Sign(map[string]any{"sub": "u1"}, time.Minute)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
@@ -30,7 +29,6 @@ func TestMetricsEmitted(t *testing.T) {
 	if _, err := jwt.Parse(tok); err != nil {
 		t.Fatalf("parse ok: %v", err)
 	}
-	// malformed → malformed
 	if _, err := jwt.Parse("not.a.token"); err == nil {
 		t.Fatal("expected error on malformed token")
 	}
