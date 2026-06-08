@@ -14,7 +14,7 @@
 
 ## Как вместо этого
 
-✅ Утверждение в настоящем времени: «module path — `git.sftbmb.ru/sftbmb-core/golibinfra`».
+✅ Утверждение в настоящем времени: «module path — `git.stit.tech/stit-core/golibinfra`».
 ✅ Условие применимости вместо ссылки на прошлый замер: «`outbox_lag_seconds` эмитится, если приложение подключило `LagReporter`».
 ✅ Триггер пересмотра как forward-факт: «пересмотр — при изменении корп obs-инвариантов».
 

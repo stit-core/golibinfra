@@ -5,7 +5,7 @@ description: Выпустить новую версию golibinfra — semver-т
 
 # Skill: release
 
-Версия golibinfra — git-тег `vX.Y.Z`. Реестр модулей — сам Gitea (`git.sftbmb.ru`);
+Версия golibinfra — git-тег `vX.Y.Z`. Реестр модулей — сам Gitea (`git.stit.tech`);
 отдельной сборки/артефакта нет — консьюмеры тянут модуль по тегу.
 
 ## Когда применять
@@ -34,13 +34,13 @@ description: Выпустить новую версию golibinfra — semver-т
 4. **Следующий шаг — консьюмеру.** Напечатай блок обновления для `<org>/backend`
    (форк `go-backend-template`):
    ```bash
-   go get git.sftbmb.ru/sftbmb-core/golibinfra@vX.Y.Z
+   go get git.stit.tech/stit-core/golibinfra@vX.Y.Z
    go mod tidy
    make check        # обязательный gate в консьюмере
    ```
 5. **Если менялись эмитимые сигналы** (метрики/labels/span-attrs) — напомни обновить
    инвентарь observability на стороне control-plane (`corp-infra-template`: managed —
-   инстанс на `*.sftbmb.ru`, self-hosted — форк).
+   инстанс на `*.stit.tech`, self-hosted — форк).
 
 ## Нет тупика
 

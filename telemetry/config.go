@@ -12,7 +12,7 @@ type Config struct {
 	ExportTimeout  time.Duration `envconfig:"OTEL_EXPORT_TIMEOUT" default:"10s"`
 
 	// Tenant идентифицирует проект в корп observability-стеке
-	// (otel.sftbmb.ru): экспортируется как resource-атрибут
+	// (otel.stit.tech): экспортируется как resource-атрибут
 	// service.namespace и как свободный атрибут `tenant`, по которому
 	// корп otel-collector раскладывает сигналы по per-tenant
 	// Loki/Tempo/VM-потокам. Пусто — для локальной разработки или

@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/cachekit"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/cachekit"
+	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
 func TestRedisCache_GetSet(t *testing.T) {

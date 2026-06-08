@@ -19,7 +19,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 )
 
 type Config struct {

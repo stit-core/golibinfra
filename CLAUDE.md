@@ -2,7 +2,7 @@
 
 Набор инфраструктурных Go-библиотек («кит'ов») для сервисов sftbmb: observability,
 auth, БД, messaging, кэш, аудит и т.д. Не сервис и не stack — модули, которые
-импортирует бизнес-репо (`go get git.sftbmb.ru/sftbmb-core/golibinfra@vX.Y.Z`).
+импортирует бизнес-репо (`go get git.stit.tech/stit-core/golibinfra@vX.Y.Z`).
 
 Этот файл — **ядро (always-on) + роутер**. Полная human-доку — `README.md`
 (использование, observability, стабильность API, версионирование). Контекстные
@@ -44,7 +44,7 @@ otelpgx), `natskit` (NATS/JetStream), `outboxkit` (outbox + lag-reporter),
 1. **`service.name` / `service.version` / `deployment.environment.name`** — выставляет
    приложение через `telemetry.Config`. Без них дашборды Apps/* теряют `$service`/`$env`.
 2. **`tenant` / `service.namespace`** — приложение **не** выставляет; их ставит корп
-   `otel-collector` (managed — инстанс на `*.sftbmb.ru`; self-hosted — ваш форк
+   `otel-collector` (managed — инстанс на `*.stit.tech`; self-hosted — ваш форк
    `corp-infra-template`). Выставишь сам — будет молча перезатёрто.
 3. **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
    business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).

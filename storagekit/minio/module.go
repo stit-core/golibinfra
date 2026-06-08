@@ -8,7 +8,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/fx"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/storagekit"
+	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
 
 func NewClient(cfg storagekit.Config) (*miniogo.Client, error) {

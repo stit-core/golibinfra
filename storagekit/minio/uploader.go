@@ -12,7 +12,7 @@ import (
 
 	miniogo "github.com/minio/minio-go/v7"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/storagekit"
+	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
 
 type Uploader struct {

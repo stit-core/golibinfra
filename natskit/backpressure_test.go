@@ -8,9 +8,9 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/logkit"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/natskit"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/natskit"
+	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
 func TestBus_PanicRecovery(t *testing.T) {

@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/auditkit"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit/audittest"
+	"git.stit.tech/stit-core/golibinfra/auditkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/audittest"
 )
 
 var _ auditkit.Logger = (*audittest.Recorder)(nil)

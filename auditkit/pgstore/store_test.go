@@ -9,9 +9,9 @@ import (
 	"testing"
 	"time"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/auditkit"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/auditkit/pgstore"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/auditkit"
+	"git.stit.tech/stit-core/golibinfra/auditkit/pgstore"
+	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
 func extractMigrations(t *testing.T) string {

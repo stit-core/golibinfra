@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/storagekit"
+	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
 
 func newMem() *storagekit.MemoryStorage {

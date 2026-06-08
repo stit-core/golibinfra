@@ -1,4 +1,4 @@
-module git.sftbmb.ru/sftbmb-core/golibinfra
+module git.stit.tech/stit-core/golibinfra
 
 go 1.26
 

@@ -11,7 +11,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 )
 
 func TestMetrics_CounterAndHistogram(t *testing.T) {

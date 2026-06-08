@@ -6,7 +6,7 @@ import (
 
 	"github.com/google/uuid"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/storagekit"
+	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
 
 func TestNewKey_ExtByContentType(t *testing.T) {

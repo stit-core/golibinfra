@@ -3,8 +3,8 @@ package authntest_test
 import (
 	"testing"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/authnkit"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/testkit/authntest"
+	"git.stit.tech/stit-core/golibinfra/authnkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/authntest"
 )
 
 var _ authnkit.Hasher = authntest.DeterministicHasher{}

@@ -10,7 +10,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // Module не provide'ит httpkit.Config — caller обязан зарегистрировать

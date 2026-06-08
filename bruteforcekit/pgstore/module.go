@@ -3,7 +3,7 @@ package pgstore
 import (
 	"go.uber.org/fx"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/bruteforcekit"
+	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
 )
 
 var Module = fx.Module(

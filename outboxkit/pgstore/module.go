@@ -6,8 +6,8 @@ import (
 
 	"go.uber.org/fx"
 
-	"git.sftbmb.ru/sftbmb-core/golibinfra/outboxkit"
-	"git.sftbmb.ru/sftbmb-core/golibinfra/timerkit"
+	"git.stit.tech/stit-core/golibinfra/outboxkit"
+	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
 // Module wires:

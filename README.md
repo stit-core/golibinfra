@@ -10,7 +10,7 @@ auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Mod
 бизнес-репозиториев.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
-[![Часть sftbmb](https://img.shields.io/badge/sftbmb-открытые_шаблоны-6366f1)](https://git.sftbmb.ru/sftbmb-core/sftbmb-public)
+[![Часть sftbmb](https://img.shields.io/badge/sftbmb-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/sftbmb-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
 [![Kits](https://img.shields.io/badge/kits-18-0ea5e9)](#пакеты)
@@ -18,56 +18,56 @@ auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Mod
 </div>
 
 ```go
-import "git.sftbmb.ru/sftbmb-core/golibinfra/pgkit"
-import "git.sftbmb.ru/sftbmb-core/golibinfra/httpkit"
-import "git.sftbmb.ru/sftbmb-core/golibinfra/telemetry"
-import "git.sftbmb.ru/sftbmb-core/golibinfra/config"
-import "git.sftbmb.ru/sftbmb-core/golibinfra/testkit"
+import "git.stit.tech/stit-core/golibinfra/pgkit"
+import "git.stit.tech/stit-core/golibinfra/httpkit"
+import "git.stit.tech/stit-core/golibinfra/telemetry"
+import "git.stit.tech/stit-core/golibinfra/config"
+import "git.stit.tech/stit-core/golibinfra/testkit"
 ```
 
 ## Где это в экосистеме
 
 `golibinfra` — общая Go-lib экосистемы sftbmb (5 форкаемых шаблонов + 2 общие
 библиотеки). Её импортирует
-[`go-backend-template`](https://git.sftbmb.ru/sftbmb-core/go-backend-template)
+[`go-backend-template`](https://git.stit.tech/stit-core/go-backend-template)
 (форк `<org>/backend`); телеметрия из коробки попадает на стандартные дашборды
 корп-Grafana. Карта всех репо — на
-[витрине sftbmb](https://git.sftbmb.ru/sftbmb-core/sftbmb-public). Каноническая
+[витрине sftbmb](https://git.stit.tech/stit-core/sftbmb-public). Каноническая
 карта контрактов (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow)
-— [`corp-infra-template/docs/ecosystem.md`](https://git.sftbmb.ru/sftbmb-core/corp-infra-template/src/branch/main/docs/ecosystem.md).
+— [`corp-infra-template/docs/ecosystem.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/ecosystem.md).
 
 ## Доступ к репозиторию
 
-Репо лежит на собственной Gitea (`git.sftbmb.ru`), не на публичном Go-proxy.
+Репо лежит на собственной Gitea (`git.stit.tech`), не на публичном Go-proxy.
 Чтобы `go get` / `go mod tidy` мог его подтянуть, настройте `GOPRIVATE` (чтобы Go
 не шёл через `proxy.golang.org`/`sum.golang.org`); для авторизованного доступа —
 git-аутентификацию SSH-ключом или токеном.
 
 ```bash
-# 1. SSH-ключ в Gitea (если нет): ssh-keygen -t ed25519 -C "you@sftbmb.ru"
-#    залить ~/.ssh/id_ed25519.pub в https://git.sftbmb.ru/-/user/settings/keys
-ssh -T git@git.sftbmb.ru                                   # проверить
+# 1. SSH-ключ в Gitea (если нет): ssh-keygen -t ed25519 -C "you@stit.tech"
+#    залить ~/.ssh/id_ed25519.pub в https://git.stit.tech/-/user/settings/keys
+ssh -T git@git.stit.tech                                   # проверить
 
-# 2. GOPRIVATE: git.sftbmb.ru — приватный
-go env -w GOPRIVATE='git.sftbmb.ru/*'
+# 2. GOPRIVATE: git.stit.tech — приватный
+go env -w GOPRIVATE='git.stit.tech/*'
 
 # 3. SSH вместо HTTPS для модулей
-git config --global url."git@git.sftbmb.ru:".insteadOf "https://git.sftbmb.ru/"
+git config --global url."git@git.stit.tech:".insteadOf "https://git.stit.tech/"
 ```
 
 **Альтернатива (CI без ssh-agent):** HTTPS + токен в `~/.netrc`:
 ```bash
 # Gitea → Settings → Applications → Generate Token (scope: read:repository)
-printf 'machine git.sftbmb.ru\nlogin %s\npassword %s\n' "$USER" "$GITEA_TOKEN" >> ~/.netrc
+printf 'machine git.stit.tech\nlogin %s\npassword %s\n' "$USER" "$GITEA_TOKEN" >> ~/.netrc
 chmod 600 ~/.netrc
 ```
 
-Проверка: `go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.24.0` скачивает без ошибок.
+Проверка: `go get git.stit.tech/stit-core/golibinfra@v0.24.0` скачивает без ошибок.
 
 ## Использование в проекте
 
 ```
-require git.sftbmb.ru/sftbmb-core/golibinfra v0.24.0
+require git.stit.tech/stit-core/golibinfra v0.24.0
 ```
 
 `go mod tidy` подтянет.
@@ -163,7 +163,7 @@ Database / Bus / Outbox / Logs / Traces** — без правок.
 | `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) |
 
 `tenant` и `service.namespace` приложение **не** выставляет — их ставит/перезатирает
-корп otel-collector (managed на `*.sftbmb.ru` или self-hosted форк
+корп otel-collector (managed на `*.stit.tech` или self-hosted форк
 `corp-infra-template`). Инвариант `service_namespace == tenant`: ваши логи всегда
 найдутся через `{service_namespace="<tenant>"}` в Loki.
 
@@ -178,9 +178,9 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 ```
 
 `Apps · Business` автоматически рендерит панели для всех `biz_*_total`. Полный
-гайд — [`corp-infra-template/docs/observability-app-guide.md`](https://git.sftbmb.ru/sftbmb-core/corp-infra-template/src/branch/main/docs/observability-app-guide.md);
+гайд — [`corp-infra-template/docs/observability-app-guide.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/observability-app-guide.md);
 инвентарь метрик —
-[`observability-metrics-inventory.md`](https://git.sftbmb.ru/sftbmb-core/corp-infra-template/src/branch/main/docs/observability-metrics-inventory.md).
+[`observability-metrics-inventory.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/observability-metrics-inventory.md).
 
 ### Что эмитит каждый пакет (короткий reference)
 
@@ -223,7 +223,7 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 Семвер, теги `v0.x.y`. До `v1.0.0` API нестабилен — breaking changes допустимы в
 minor. Релиз — skill `/release` (`git tag vX.Y.Z` + push). В проектах после релиза:
 ```bash
-go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.24.0 && go mod tidy
+go get git.stit.tech/stit-core/golibinfra@v0.24.0 && go mod tidy
 ```
 
 ## Локальная разработка с правкой golibinfra
@@ -231,15 +231,15 @@ go get git.sftbmb.ru/sftbmb-core/golibinfra@v0.24.0 && go mod tidy
 Правите `golibinfra` параллельно с продуктом — временный `replace` в `go.mod`
 продукта (**не коммитить**, перед мержем убрать и поднять версию через `go get`):
 ```
-replace git.sftbmb.ru/sftbmb-core/golibinfra => ../golibinfra
+replace git.stit.tech/stit-core/golibinfra => ../golibinfra
 ```
 
 ## Часть экосистемы sftbmb
 
 Это одна из открытых библиотек sftbmb (Apache-2.0). Карта всех шаблонов и точка
-входа — **[витрина sftbmb](https://git.sftbmb.ru/sftbmb-core/sftbmb-public)**.
+входа — **[витрина sftbmb](https://git.stit.tech/stit-core/sftbmb-public)**.
 Нужна команда, стандарт или поддержка —
-**[наш подход и контакты (vision)](https://git.sftbmb.ru/sftbmb/vision)**.
+**[наш подход и контакты (vision)](https://git.stit.tech/sftbmb/vision)**.
 
 ## Лицензия
 
