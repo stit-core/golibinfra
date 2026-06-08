@@ -1,6 +1,6 @@
 # golibinfra — гайд для агентов
 
-Набор инфраструктурных Go-библиотек («кит'ов») для сервисов sftbmb: observability,
+Набор инфраструктурных Go-библиотек («кит'ов») для сервисов stit: observability,
 auth, БД, messaging, кэш, аудит и т.д. Не сервис и не stack — модули, которые
 импортирует бизнес-репо (`go get git.stit.tech/stit-core/golibinfra@vX.Y.Z`).
 

@@ -4,13 +4,13 @@
 
 ### Инфраструктурные Go-kit'ы с observability из коробки
 
-Набор переиспользуемых Go-библиотек для сервисов экосистемы sftbmb: телеметрия,
+Набор переиспользуемых Go-библиотек для сервисов экосистемы stit: телеметрия,
 auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Module`,
 инструментирован OTel, подключается независимо. Импортируется как Go-модуль из
 бизнес-репозиториев.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
-[![Часть sftbmb](https://img.shields.io/badge/sftbmb-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/sftbmb-public)
+[![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/sftbmb-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
 [![Kits](https://img.shields.io/badge/kits-18-0ea5e9)](#пакеты)
@@ -27,12 +27,12 @@ import "git.stit.tech/stit-core/golibinfra/testkit"
 
 ## Где это в экосистеме
 
-`golibinfra` — общая Go-lib экосистемы sftbmb (5 форкаемых шаблонов + 2 общие
+`golibinfra` — общая Go-lib экосистемы stit (5 форкаемых шаблонов + 2 общие
 библиотеки). Её импортирует
 [`go-backend-template`](https://git.stit.tech/stit-core/go-backend-template)
 (форк `<org>/backend`); телеметрия из коробки попадает на стандартные дашборды
 корп-Grafana. Карта всех репо — на
-[витрине sftbmb](https://git.stit.tech/stit-core/sftbmb-public). Каноническая
+[витрине stit](https://git.stit.tech/stit-core/sftbmb-public). Каноническая
 карта контрактов (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow)
 — [`corp-infra-template/docs/ecosystem.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/ecosystem.md).
 
@@ -234,12 +234,12 @@ go get git.stit.tech/stit-core/golibinfra@v0.24.0 && go mod tidy
 replace git.stit.tech/stit-core/golibinfra => ../golibinfra
 ```
 
-## Часть экосистемы sftbmb
+## Часть экосистемы stit
 
-Это одна из открытых библиотек sftbmb (Apache-2.0). Карта всех шаблонов и точка
-входа — **[витрина sftbmb](https://git.stit.tech/stit-core/sftbmb-public)**.
+Это одна из открытых библиотек stit (Apache-2.0). Карта всех шаблонов и точка
+входа — **[витрина stit](https://git.stit.tech/stit-core/sftbmb-public)**.
 Нужна команда, стандарт или поддержка —
-**[наш подход и контакты (vision)](https://git.stit.tech/sftbmb/vision)**.
+**[наш подход и контакты (vision)](https://git.stit.tech/stit/vision)**.
 
 ## Лицензия
 
