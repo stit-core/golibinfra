@@ -10,7 +10,7 @@ auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Mod
 бизнес-репозиториев.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
-[![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/sftbmb-public)
+[![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
 [![Kits](https://img.shields.io/badge/kits-18-0ea5e9)](#пакеты)
@@ -32,7 +32,7 @@ import "git.stit.tech/stit-core/golibinfra/testkit"
 [`go-backend-template`](https://git.stit.tech/stit-core/go-backend-template)
 (форк `<org>/backend`); телеметрия из коробки попадает на стандартные дашборды
 корп-Grafana. Карта всех репо — на
-[витрине stit](https://git.stit.tech/stit-core/sftbmb-public). Каноническая
+[витрине stit](https://git.stit.tech/stit-core/stit-public). Каноническая
 карта контрактов (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow)
 — [`corp-infra-template/docs/ecosystem.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/ecosystem.md).
 
@@ -237,7 +237,7 @@ replace git.stit.tech/stit-core/golibinfra => ../golibinfra
 ## Часть экосистемы stit
 
 Это одна из открытых библиотек stit (Apache-2.0). Карта всех шаблонов и точка
-входа — **[витрина stit](https://git.stit.tech/stit-core/sftbmb-public)**.
+входа — **[витрина stit](https://git.stit.tech/stit-core/stit-public)**.
 Нужна команда, стандарт или поддержка —
 **[наш подход и контакты (vision)](https://git.stit.tech/stit/vision)**.
 
