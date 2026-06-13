@@ -92,8 +92,11 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner, маппинг pg-ошибок, `DBProbe` health-probe; `ReadWriteDB` для read-replica (`PG_REPLICA_DSN`) |
 | [`storagekit`](storagekit/) | S3/object storage: `Storage` (`Put`/`Delete`), `URLBuilder`, in-memory адаптер для тестов, `minio`-подпакет; `Config` + `NewKey` (content-addressed) |
 | [`httpkit`](httpkit/) | Huma bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, HumaAuth, **SecurityHeaders**, **Idempotency**; `APIError`, `MapErr`, `MapSentinel` |
+| [`grpckit`](grpckit/) | gRPC-сервер: `*grpc.Server` + интерсепторы (recovery/request-id/access-log/опц. `Authenticator`-порт), otel (StatsHandler), health + опц. reflection, сервисы через fx-group `grpc.services` |
 | [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus`, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
 | [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel и автопередачей `X-Request-ID` |
+| [`claudekit`](claudekit/) | Клиент Claude (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, прайс-таблица), Managed Agents через `Raw()`; `testkit/claudetest` |
+| [`grpcclient`](grpcclient/) | gRPC-клиент: `*grpc.ClientConn` + otel (StatsHandler), access-log, keepalive, `PerRPCCredentials` (bearer-токен из env) |
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
@@ -125,6 +128,9 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `STORAGE_S3_ENDPOINT` | `storagekit` | S3 / MinIO object storage |
 | `NATS_URL` | `natskit` | NATS / JetStream |
 | `REDIS_URL` | `cachekit` | Redis (cache + idempotency store) |
+| `CLAUDE_BASE_URL` | `claudekit` | Anthropic API host (default `api.anthropic.com`); ключ — `CLAUDE_API_KEY` (Vault) |
+| `GRPC_ADDR` | `grpckit` | bind gRPC-сервера (HTTP/2; default `:9090`) |
+| `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`, Vault) |
 
 `outboxkit` **не** имеет своего эндпоинта — он co-located с pg-хостом: outbox
 пишется в той же транзакции, что и доменные данные (атомарность), поэтому живёт
@@ -190,6 +196,8 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 | `logkit` | `log_messages_total{level}` | — (slog инжектит `trace_id`/`span_id`) |
 | `httpkit` | `http_requests_total`, `http_request_duration_seconds`, `http_panics_total`, `http_max_body_rejections_total`, `http_idempotency_total` | server span (`otelhttp`) |
 | `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*`, `http_client_retry_attempts_total` | client span |
+| `claudekit` | `claude_api_calls_total{model,status}`, `claude_api_latency_seconds`, `claude_api_tokens_total{model,kind}`, `claude_api_cost_micros_total{model}` | — (HTTP-span ведёт SDK) |
+| `grpckit` / `grpcclient` | `rpc.server.*` / `rpc.client.*` (otelgrpc: duration, msg-sizes) | server / client span (`otelgrpc` StatsHandler) |
 | `pgkit` | `db_pool_*` (9 метрик) | per-query span (`otelpgx`) |
 | `storagekit` | — | — |
 | `natskit` | `nats_messages_*`, `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
@@ -215,6 +223,7 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 `httpkit.IdempotencyConfig`, `telemetry.Config`, `logkit.Config`,
 `logkit.RedactConfig`, `authnkit.Argon2idParams`, `cachekit.Config`,
 `flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
+`claudekit.Config`, `grpckit.Config`, `grpcclient.Config`,
 `config.VaultClientConfig`) — **part of public API**. Менять имена/типы полей или
 их envconfig-теги = breaking change, идёт мажорным апгрейдом.
 

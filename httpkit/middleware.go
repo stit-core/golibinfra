@@ -36,6 +36,13 @@ func RequestIDFrom(ctx context.Context) string {
 	return ""
 }
 
+// ContextWithRequestID кладёт request-id в ctx под общим ключом httpkit, чтобы
+// RequestIDFrom и зарегистрированный logkit-attr видели его независимо от
+// транспорта: HTTP-middleware и gRPC-интерсептор (grpckit) пишут один ключ.
+func ContextWithRequestID(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, requestIDKey{}, id)
+}
+
 func RequestID() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -44,7 +51,7 @@ func RequestID() func(http.Handler) http.Handler {
 				id = uuid.NewString()
 			}
 			w.Header().Set(HeaderRequestID, id)
-			ctx := context.WithValue(r.Context(), requestIDKey{}, id)
+			ctx := ContextWithRequestID(r.Context(), id)
 			next.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}

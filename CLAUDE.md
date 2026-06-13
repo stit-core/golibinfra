@@ -31,7 +31,9 @@ go build ./...                    # build
 
 Полный список с эмитимыми сигналами — `README.md § Пакеты`. Кратко: `telemetry`
 (OTel bootstrap), `logkit` (slog + PII-redact + trace-id), `httpkit` (huma/chi
-server + middleware), `httpclient` (retry + circuit breaker), `pgkit` (pgx pool +
+server + middleware), `httpclient` (retry + circuit breaker), `claudekit` (Claude
+API: Messages + usage/cost), `grpckit` (gRPC-сервер) + `grpcclient` (gRPC-клиент),
+`pgkit` (pgx pool +
 otelpgx), `natskit` (NATS/JetStream), `outboxkit` (outbox + lag-reporter),
 `authnkit` (JWT/Argon2id/TOTP/RBAC), `cachekit` (Redis + idempotency), `bizmetric`
 (business-метрики), `auditkit`, `bruteforcekit`, `flagkit`, `clockkit`, `timerkit`,
