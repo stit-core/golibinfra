@@ -95,6 +95,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | [`grpckit`](grpckit/) | gRPC-сервер: `*grpc.Server` + интерсепторы (recovery/request-id/access-log/опц. `Authenticator`-порт), otel (StatsHandler), health + опц. reflection, сервисы через fx-group `grpc.services` |
 | [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus`, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
 | [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel и автопередачей `X-Request-ID` |
+| [`amocrmkit`](amocrmkit/) | Транспорт к amoCRM: REST v4 (Bearer) + amoJo Chat (HMAC-SHA1) + Drive + OAuth2; per-account rate-limit (7 rps), таксономия ошибок (`ErrAuth/ErrRateLimited/…`), `TokenSource`; обёртка над `httpclient`/`clockkit`/`logkit` |
 | [`claudekit`](claudekit/) | Клиент Claude (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, прайс-таблица), Managed Agents через `Raw()`; `testkit/claudetest` |
 | [`grpcclient`](grpcclient/) | gRPC-клиент: `*grpc.ClientConn` + otel (StatsHandler), access-log, keepalive, `PerRPCCredentials` (bearer-токен из env) |
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
@@ -196,6 +197,7 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 | `logkit` | `log_messages_total{level}` | — (slog инжектит `trace_id`/`span_id`) |
 | `httpkit` | `http_requests_total`, `http_request_duration_seconds`, `http_panics_total`, `http_max_body_rejections_total`, `http_idempotency_total` | server span (`otelhttp`) |
 | `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*`, `http_client_retry_attempts_total` | client span |
+| `amocrmkit` | `amocrm_api_calls_total{endpoint,status}`, `amocrm_api_duration_seconds{endpoint}`, `amocrm_rate_limited_total{account}`, `amocrm_oauth_refresh_total{status}` | client span (наследует `httpclient`) |
 | `claudekit` | `claude_api_calls_total{model,status}`, `claude_api_latency_seconds`, `claude_api_tokens_total{model,kind}`, `claude_api_cost_micros_total{model}` | — (HTTP-span ведёт SDK) |
 | `grpckit` / `grpcclient` | `rpc.server.*` / `rpc.client.*` (otelgrpc: duration, msg-sizes) | server / client span (`otelgrpc` StatsHandler) |
 | `pgkit` | `db_pool_*` (9 метрик) | per-query span (`otelpgx`) |
