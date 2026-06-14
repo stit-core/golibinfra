@@ -1,4 +1,4 @@
-package claudekit
+package anthropickit
 
 // USDMicros — деньги целочисленно: микро-доллары (1 USD = 1_000_000). Float для
 // денег не используем. Все ставки таблицы — в USDMicros за 1M токенов (per-MTok),

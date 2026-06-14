@@ -1,4 +1,4 @@
-package claudekit
+package anthropickit
 
 import (
 	"context"
@@ -11,43 +11,43 @@ import (
 )
 
 type instruments struct {
-	calls   metric.Int64Counter     // claude_api_calls_total{model,status}
-	latency metric.Float64Histogram // claude_api_latency_seconds{model}
-	tokens  metric.Int64Counter     // claude_api_tokens_total{model,kind}
-	cost    metric.Int64Counter     // claude_api_cost_micros_total{model}
+	calls   metric.Int64Counter     // anthropic_api_calls_total{model,status}
+	latency metric.Float64Histogram // anthropic_api_latency_seconds{model}
+	tokens  metric.Int64Counter     // anthropic_api_tokens_total{model,kind}
+	cost    metric.Int64Counter     // anthropic_api_cost_micros_total{model}
 }
 
 func newInstruments() *instruments {
-	m := otel.Meter("git.stit.tech/stit-core/golibinfra/claudekit")
+	m := otel.Meter("git.stit.tech/stit-core/golibinfra/anthropickit")
 
 	calls, err := m.Int64Counter(
-		"claude_api_calls_total",
+		"anthropic_api_calls_total",
 		metric.WithDescription("Claude API calls by model and status"),
 	)
 	if err != nil {
-		panic(fmt.Sprintf("claudekit: counter calls: %v", err))
+		panic(fmt.Sprintf("anthropickit: counter calls: %v", err))
 	}
 	lat, err := m.Float64Histogram(
-		"claude_api_latency_seconds",
+		"anthropic_api_latency_seconds",
 		metric.WithDescription("Claude API call latency"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
-		panic(fmt.Sprintf("claudekit: histogram latency: %v", err))
+		panic(fmt.Sprintf("anthropickit: histogram latency: %v", err))
 	}
 	toks, err := m.Int64Counter(
-		"claude_api_tokens_total",
+		"anthropic_api_tokens_total",
 		metric.WithDescription("Claude tokens by model and kind"),
 	)
 	if err != nil {
-		panic(fmt.Sprintf("claudekit: counter tokens: %v", err))
+		panic(fmt.Sprintf("anthropickit: counter tokens: %v", err))
 	}
 	cost, err := m.Int64Counter(
-		"claude_api_cost_micros_total",
+		"anthropic_api_cost_micros_total",
 		metric.WithDescription("Claude spend in micro-USD by model"),
 	)
 	if err != nil {
-		panic(fmt.Sprintf("claudekit: counter cost: %v", err))
+		panic(fmt.Sprintf("anthropickit: counter cost: %v", err))
 	}
 
 	return &instruments{calls: calls, latency: lat, tokens: toks, cost: cost}

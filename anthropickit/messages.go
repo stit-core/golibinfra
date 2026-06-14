@@ -1,4 +1,4 @@
-package claudekit
+package anthropickit
 
 import (
 	"context"
@@ -133,7 +133,7 @@ type ToolChoice struct {
 	Name string // только для Type == ToolChoiceTool
 }
 
-// Request — нативный вход claudekit (декаплинг потребителя от SDK).
+// Request — нативный вход anthropickit (декаплинг потребителя от SDK).
 type Request struct {
 	Model      string // "" → Config.DefaultModel
 	System     []TextBlock
@@ -144,6 +144,7 @@ type Request struct {
 	Thinking   ThinkingMode
 	Effort     Effort
 	StopSeqs   []string
+	JSONSchema map[string]any // structured output → output_config.format (json_schema); nil = свободный вывод
 }
 
 // Response — нативный ответ с нормализованным Usage и посчитанной стоимостью.
@@ -300,8 +301,15 @@ func (c *Client) toParams(req Request, defaultMax int64) (anthropic.MessageNewPa
 		params.Thinking = anthropic.ThinkingConfigParamUnion{OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{}}
 	}
 
-	if req.Effort != "" {
-		params.OutputConfig = anthropic.OutputConfigParam{Effort: anthropic.OutputConfigEffort(req.Effort)}
+	if req.Effort != "" || req.JSONSchema != nil {
+		oc := anthropic.OutputConfigParam{}
+		if req.Effort != "" {
+			oc.Effort = anthropic.OutputConfigEffort(req.Effort)
+		}
+		if req.JSONSchema != nil {
+			oc.Format = anthropic.JSONOutputFormatParam{Schema: req.JSONSchema}
+		}
+		params.OutputConfig = oc
 	}
 
 	return params, model, nil

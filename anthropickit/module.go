@@ -1,4 +1,4 @@
-package claudekit
+package anthropickit
 
 import (
 	"github.com/kelseyhightower/envconfig"
@@ -8,10 +8,10 @@ import (
 )
 
 // Module не provide'ит Config (asymmetry note в pgkit/module.go). Дешёвый mode:
-// fx.Provide(claudekit.NewConfig). Опции (WithPriceTable и т.п.) — через свой
+// fx.Provide(anthropickit.NewConfig). Опции (WithPriceTable и т.п.) — через свой
 // конструктор поверх New, если нужны.
 var Module = fx.Module(
-	"claudekit",
+	"anthropickit",
 	fx.Provide(
 		fx.Annotate(newClient, fx.As(new(API))),
 	),

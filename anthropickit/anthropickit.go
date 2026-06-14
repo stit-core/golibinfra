@@ -1,11 +1,11 @@
-// Package claudekit — клиент Claude поверх anthropic-sdk-go: синхронный и
+// Package anthropickit — клиент Claude поверх anthropic-sdk-go: синхронный и
 // стриминговый Messages, нормализованный учёт токенов (Usage) и стоимость (Cost)
 // по прайс-таблице, предполётный CountTokens. Managed Agents и экзотику — через
-// Raw(). Эмитит claude_api_calls_total{model,status},
-// claude_api_latency_seconds{model}, claude_api_tokens_total{model,kind},
-// claude_api_cost_micros_total{model}. Без БД: хранение/леджер/агрегации — на
+// Raw(). Эмитит anthropic_api_calls_total{model,status},
+// anthropic_api_latency_seconds{model}, anthropic_api_tokens_total{model,kind},
+// anthropic_api_cost_micros_total{model}. Без БД: хранение/леджер/агрегации — на
 // стороне потребителя.
-package claudekit
+package anthropickit
 
 import (
 	"context"
@@ -39,7 +39,7 @@ var _ API = (*Client)(nil)
 
 func New(cfg Config, log logkit.Logger, opts ...Option) (*Client, error) {
 	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("%w: CLAUDE_API_KEY is required", ErrConfig)
+		return nil, fmt.Errorf("%w: ANTHROPIC_API_KEY is required", ErrConfig)
 	}
 	if log == nil {
 		log = logkit.Nop()

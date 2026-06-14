@@ -1,4 +1,4 @@
-package claudekit
+package anthropickit
 
 import (
 	"context"

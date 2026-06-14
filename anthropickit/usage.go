@@ -1,4 +1,4 @@
-package claudekit
+package anthropickit
 
 import "github.com/anthropics/anthropic-sdk-go"
 

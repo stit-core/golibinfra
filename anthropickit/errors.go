@@ -1,4 +1,4 @@
-package claudekit
+package anthropickit
 
 import (
 	"errors"
@@ -11,13 +11,13 @@ import (
 // типах/строках SDK. Refusal — НЕ ошибка: это успешный 200 с StopReason=refusal
 // (см. Response.IsRefusal), здесь только транспортные/протокольные сбои API.
 var (
-	ErrConfig         = errors.New("claudekit: invalid config")
-	ErrAuth           = errors.New("claudekit: authentication failed")
-	ErrInvalidRequest = errors.New("claudekit: invalid request")
-	ErrNotFound       = errors.New("claudekit: not found")
-	ErrRateLimited    = errors.New("claudekit: rate limited")
-	ErrOverloaded     = errors.New("claudekit: overloaded")
-	ErrServer         = errors.New("claudekit: server error")
+	ErrConfig         = errors.New("anthropickit: invalid config")
+	ErrAuth           = errors.New("anthropickit: authentication failed")
+	ErrInvalidRequest = errors.New("anthropickit: invalid request")
+	ErrNotFound       = errors.New("anthropickit: not found")
+	ErrRateLimited    = errors.New("anthropickit: rate limited")
+	ErrOverloaded     = errors.New("anthropickit: overloaded")
+	ErrServer         = errors.New("anthropickit: server error")
 )
 
 // classify мапит ошибку SDK на sentinel по HTTP-статусу, сохраняя оригинал
