@@ -54,6 +54,55 @@ func TestStreamBus_Disabled(t *testing.T) {
 	}
 }
 
+func TestStreamBus_WildcardSubjectInContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	url := startJetStreamNATS(t)
+	nc, err := natsgo.Connect(url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	conn := natskit.ExportConn(nc)
+
+	cfg := natskit.Config{
+		JetStream: natskit.JetStreamConfig{
+			Enabled:     true,
+			StreamNames: []string{"ORDERS"},
+			Retention:   "limits",
+			MaxAge:      time.Hour,
+			MaxInFlight: 32,
+			AckWait:     5 * time.Second,
+		},
+	}
+	sb, err := natskit.NewStreamBus(conn, logkit.Nop(), cfg)
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+
+	gotSubject := make(chan string, 1)
+	if err := sb.SubscribeStream(context.Background(), "ORDERS", "ORDERS.>", "orders-wild", func(ctx context.Context, _ []byte) error {
+		gotSubject <- natskit.SubjectFromContext(ctx)
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	if err := sb.PublishStream(context.Background(), "ORDERS.created", []byte("{}")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	select {
+	case s := <-gotSubject:
+		if s != "ORDERS.created" {
+			t.Fatalf("SubjectFromContext = %q, want ORDERS.created", s)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timeout waiting for jetstream message")
+	}
+}
+
 func TestStreamBus_PublishSubscribe(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skipping integration test in short mode")
