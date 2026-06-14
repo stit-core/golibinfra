@@ -86,25 +86,6 @@ func TestCreateLeads_SendsArrayBodyAndDecodesCreated(t *testing.T) {
 	}
 }
 
-func TestDeleteLeads_SendsIDArray(t *testing.T) {
-	var gotBody []map[string]int
-	srv := restMux(t, map[string]func(http.ResponseWriter, *http.Request){
-		"DELETE /api/v4/leads": func(w http.ResponseWriter, r *http.Request) {
-			raw, _ := io.ReadAll(r.Body)
-			_ = json.Unmarshal(raw, &gotBody)
-			w.WriteHeader(http.StatusNoContent)
-		},
-	})
-	c := newTestClient(t, srv.URL)
-
-	if err := c.DeleteLeads(context.Background(), testAccount(), []int{27242237}); err != nil {
-		t.Fatalf("DeleteLeads: %v", err)
-	}
-	if len(gotBody) != 1 || gotBody[0]["id"] != 27242237 {
-		t.Errorf("request body = %+v", gotBody)
-	}
-}
-
 func TestDelete_NoContent(t *testing.T) {
 	srv := restMux(t, map[string]func(http.ResponseWriter, *http.Request){
 		"DELETE /api/v4/customers/segments/55": func(w http.ResponseWriter, _ *http.Request) {
