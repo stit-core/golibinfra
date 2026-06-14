@@ -78,6 +78,15 @@ func (c *Client) UpdateLeads(ctx context.Context, acc Account, in []LeadInput) (
 	return sendBatch[LeadInput, CreatedEntity](ctx, c, acc, http.MethodPatch, "leads.update", "/api/v4/leads", "leads", in)
 }
 
+// DeleteLeads — DELETE /api/v4/leads (batch; тело — массив {id}). amoCRM переносит в корзину.
+func (c *Client) DeleteLeads(ctx context.Context, acc Account, ids []int) error {
+	body := make([]idRef, len(ids))
+	for i, id := range ids {
+		body[i] = idRef{ID: id}
+	}
+	return c.sendNoContent(ctx, acc, http.MethodDelete, "leads.delete", "/api/v4/leads", body)
+}
+
 // --- Unsorted (неразобранное) ---
 
 // Unsorted — объект неразобранного.
