@@ -12,6 +12,10 @@ import (
 type Config struct {
 	Timeout time.Duration `envconfig:"AMOCRM_TIMEOUT" default:"10s"`
 	RateRPS int           `envconfig:"AMOCRM_RATE_RPS" default:"7"` // потолок amoCRM на аккаунт
+	// HostOverride — если задан, REST-вызовы идут на этот scheme://host вместо
+	// https://<subdomain>.amocrm.<tld> (путь/заголовки/подпись сохраняются). Для
+	// sandbox/proxy/e2e против fake-amo. Пусто в проде — host из subdomain/tld.
+	HostOverride string `envconfig:"AMOCRM_HOST_OVERRIDE" default:""`
 }
 
 // NewConfig читает Config из окружения. Asymmetry note (см. pgkit/module.go):

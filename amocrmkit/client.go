@@ -28,10 +28,11 @@ type Client struct {
 	rl    *accountLimiter
 	instr *instruments
 
-	// hostOverride — тест-сид: если задан, все запросы идут на этот scheme://host
-	// (httptest), путь/заголовки/подпись сохраняются. В продакшене пуст (host
-	// берётся из subdomain/tld). httpclient не принимает кастомный transport,
-	// поэтому редирект хоста — единственный способ дотянуться до httptest.
+	// hostOverride — если задан, все запросы идут на этот scheme://host вместо
+	// https://<subdomain>.amocrm.<tld> (путь/заголовки/подпись сохраняются). Источник —
+	// Config.HostOverride (sandbox/proxy/e2e) либо прямой тест-сид. В продакшене пуст.
+	// httpclient не принимает кастомный transport, поэтому редирект хоста — единственный
+	// способ дотянуться до fake-сервера.
 	hostOverride string
 }
 
@@ -50,12 +51,13 @@ func New(cfg Config, hc *httpclient.Client, clock clockkit.Clock, log logkit.Log
 		log = logkit.Nop()
 	}
 	return &Client{
-		cfg:   cfg,
-		hc:    hc,
-		clock: clock,
-		log:   log,
-		rl:    newAccountLimiter(cfg.RateRPS),
-		instr: newInstruments(),
+		cfg:          cfg,
+		hc:           hc,
+		clock:        clock,
+		log:          log,
+		rl:           newAccountLimiter(cfg.RateRPS),
+		instr:        newInstruments(),
+		hostOverride: cfg.HostOverride,
 	}, nil
 }
 
