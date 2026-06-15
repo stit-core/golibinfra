@@ -78,6 +78,58 @@ func (c *Client) UpdateLeads(ctx context.Context, acc Account, in []LeadInput) (
 	return sendBatch[LeadInput, CreatedEntity](ctx, c, acc, http.MethodPatch, "leads.update", "/api/v4/leads", "leads", in)
 }
 
+// LeadComplexInput — тело POST /api/v4/leads/complex: сделка + ≤1 контакт + ≤1 компания одним
+// запросом с контролем дублей. Поля сделки — как у LeadInput; вложенные сущности — в _embedded.
+type LeadComplexInput struct {
+	Name               string               `json:"name,omitempty"`
+	Price              *int                 `json:"price,omitempty"`
+	StatusID           int                  `json:"status_id,omitempty"`
+	PipelineID         int                  `json:"pipeline_id,omitempty"`
+	ResponsibleUserID  int                  `json:"responsible_user_id,omitempty"`
+	CustomFieldsValues []CustomFieldValue   `json:"custom_fields_values,omitempty"`
+	TagsToAdd          []TagRef             `json:"tags_to_add,omitempty"`
+	RequestID          string               `json:"request_id,omitempty"`
+	Embedded           *LeadComplexEmbedded `json:"_embedded,omitempty"`
+}
+
+// LeadComplexEmbedded — вложенные сущности /complex: до 1 контакта и 1 компании на сделку (лимит amo),
+// metadata — для неразобранного (category forms/sip).
+type LeadComplexEmbedded struct {
+	Contacts  []ComplexContact `json:"contacts,omitempty"`
+	Companies []ComplexCompany `json:"companies,omitempty"`
+	Metadata  map[string]any   `json:"metadata,omitempty"`
+}
+
+// ComplexContact — контакт внутри /complex (first/last/name + доп-поля; телефон/почта — через custom_fields).
+type ComplexContact struct {
+	Name               string             `json:"name,omitempty"`
+	FirstName          string             `json:"first_name,omitempty"`
+	LastName           string             `json:"last_name,omitempty"`
+	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values,omitempty"`
+}
+
+// ComplexCompany — компания внутри /complex.
+type ComplexCompany struct {
+	Name string `json:"name,omitempty"`
+}
+
+// ComplexResult — элемент ответа /complex. contact_id/company_id = null, если не создавались;
+// request_id — массив (несколько при нескольких дублях одной сделки); merged=true — склейка с дублем.
+type ComplexResult struct {
+	ID        int      `json:"id"`
+	ContactID *int     `json:"contact_id"`
+	CompanyID *int     `json:"company_id"`
+	RequestID []string `json:"request_id"`
+	Merged    bool     `json:"merged"`
+}
+
+// CreateLeadsComplex — POST /api/v4/leads/complex (batch до 50; ответ — top-level массив, не _embedded).
+func (c *Client) CreateLeadsComplex(ctx context.Context, acc Account, in []LeadComplexInput) ([]ComplexResult, error) {
+	var out []ComplexResult
+	err := c.doREST(ctx, restReq{acc: acc, method: http.MethodPost, path: "/api/v4/leads/complex", body: in, endpoint: "leads.complex"}, &out)
+	return out, err
+}
+
 // --- Unsorted (неразобранное) ---
 
 // Unsorted — объект неразобранного.

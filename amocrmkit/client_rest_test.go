@@ -86,6 +86,100 @@ func TestCreateLeads_SendsArrayBodyAndDecodesCreated(t *testing.T) {
 	}
 }
 
+func TestCreateLeadsComplex_SendsEmbeddedAndDecodesResult(t *testing.T) {
+	var gotBody []LeadComplexInput
+	srv := restMux(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v4/leads/complex": func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &gotBody)
+			_, _ = w.Write([]byte(`[{"id":15198335,"contact_id":19663157,"company_id":19663155,"request_id":["qweasd"],"merged":false}]`))
+		},
+	})
+	c := newTestClient(t, srv.URL)
+
+	out, err := c.CreateLeadsComplex(context.Background(), testAccount(), []LeadComplexInput{{
+		Name:       "Сделка",
+		PipelineID: 3383152,
+		Embedded: &LeadComplexEmbedded{
+			Contacts:  []ComplexContact{{FirstName: "Екатерина"}},
+			Companies: []ComplexCompany{{Name: "ООО Рога и Копыта"}},
+		},
+	}})
+	if err != nil {
+		t.Fatalf("CreateLeadsComplex: %v", err)
+	}
+	if len(gotBody) != 1 || gotBody[0].Embedded == nil ||
+		len(gotBody[0].Embedded.Contacts) != 1 || gotBody[0].Embedded.Contacts[0].FirstName != "Екатерина" ||
+		len(gotBody[0].Embedded.Companies) != 1 || gotBody[0].Embedded.Companies[0].Name != "ООО Рога и Копыта" {
+		t.Errorf("request body = %+v", gotBody)
+	}
+	if len(out) != 1 || out[0].ID != 15198335 ||
+		out[0].ContactID == nil || *out[0].ContactID != 19663157 ||
+		out[0].CompanyID == nil || *out[0].CompanyID != 19663155 ||
+		out[0].Merged || len(out[0].RequestID) != 1 || out[0].RequestID[0] != "qweasd" {
+		t.Errorf("result = %+v", out)
+	}
+}
+
+func TestLinkEntities_SendsBodyAndDecodesLinks(t *testing.T) {
+	var gotBody []LinkInput
+	srv := restMux(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v4/leads/14158851/link": func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &gotBody)
+			_, _ = w.Write([]byte(`{"_embedded":{"links":[{"to_entity_id":457282,"to_entity_type":"contacts","metadata":{"main_contact":true}}]}}`))
+		},
+	})
+	c := newTestClient(t, srv.URL)
+
+	main := true
+	out, err := c.LinkEntities(context.Background(), testAccount(), "leads", 14158851, []LinkInput{
+		{ToEntityID: 457282, ToEntityType: "contacts", Metadata: &LinkMetadata{IsMain: &main}},
+	})
+	if err != nil {
+		t.Fatalf("LinkEntities: %v", err)
+	}
+	if len(gotBody) != 1 || gotBody[0].ToEntityID != 457282 || gotBody[0].ToEntityType != "contacts" ||
+		gotBody[0].Metadata == nil || gotBody[0].Metadata.IsMain == nil || !*gotBody[0].Metadata.IsMain {
+		t.Errorf("request body = %+v", gotBody)
+	}
+	if len(out) != 1 || out[0].ToEntityID != 457282 || out[0].ToEntityType != "contacts" {
+		t.Errorf("links = %+v", out)
+	}
+}
+
+func TestUnlinkEntities_NoContent(t *testing.T) {
+	var gotBody []LinkInput
+	srv := restMux(t, map[string]func(http.ResponseWriter, *http.Request){
+		"POST /api/v4/leads/7593303/unlink": func(w http.ResponseWriter, r *http.Request) {
+			raw, _ := io.ReadAll(r.Body)
+			_ = json.Unmarshal(raw, &gotBody)
+			w.WriteHeader(http.StatusNoContent)
+		},
+	})
+	c := newTestClient(t, srv.URL)
+
+	err := c.UnlinkEntities(context.Background(), testAccount(), "leads", 7593303, []LinkInput{
+		{ToEntityID: 10, ToEntityType: "catalog_elements", Metadata: &LinkMetadata{CatalogID: 1026}},
+	})
+	if err != nil {
+		t.Fatalf("UnlinkEntities: %v", err)
+	}
+	if len(gotBody) != 1 || gotBody[0].ToEntityID != 10 || gotBody[0].Metadata == nil || gotBody[0].Metadata.CatalogID != 1026 {
+		t.Errorf("request body = %+v", gotBody)
+	}
+}
+
+func TestLinkEntities_RejectsOutOfMatrix(t *testing.T) {
+	c := newTestClient(t, "http://unused")
+	_, err := c.LinkEntities(context.Background(), testAccount(), "leads", 1, []LinkInput{
+		{ToEntityID: 2, ToEntityType: "customers"},
+	})
+	if err == nil {
+		t.Fatal("ожидалась ошибка для leads↔customers (вне матрицы)")
+	}
+}
+
 func TestDelete_NoContent(t *testing.T) {
 	srv := restMux(t, map[string]func(http.ResponseWriter, *http.Request){
 		"DELETE /api/v4/customers/segments/55": func(w http.ResponseWriter, _ *http.Request) {
