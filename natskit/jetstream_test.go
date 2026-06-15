@@ -2,6 +2,7 @@ package natskit_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -152,5 +153,84 @@ func TestStreamBus_PublishSubscribe(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("timeout waiting for jetstream message")
+	}
+}
+
+func TestStreamBus_PublishBatchDedup(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	url := startJetStreamNATS(t)
+	nc, err := natsgo.Connect(url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	conn := natskit.ExportConn(nc)
+
+	cfg := natskit.Config{
+		JetStream: natskit.JetStreamConfig{
+			Enabled:     true,
+			StreamNames: []string{"ORDERS"},
+			Retention:   "limits",
+			MaxAge:      time.Hour,
+			Duplicates:  time.Minute,
+			MaxInFlight: 32,
+			AckWait:     5 * time.Second,
+		},
+	}
+	sb, err := natskit.NewStreamBus(conn, logkit.Nop(), cfg)
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+
+	type order struct {
+		ID int `json:"id"`
+	}
+	got := make(chan int, 8)
+	if err := natskit.SubscribeStreamJSON(sb, context.Background(), "ORDERS", "ORDERS.created", "orders-batch",
+		func(_ context.Context, m order) error {
+			got <- m.ID
+			return nil
+		}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	payload := func(id int) []byte { return fmt.Appendf(nil, `{"id":%d}`, id) }
+	batch := []natskit.StreamMsg{
+		{Subject: "ORDERS.created", Payload: payload(1), MsgID: "1"},
+		{Subject: "ORDERS.created", Payload: payload(1), MsgID: "1"}, // дубль по MsgID — стрим не сохранит
+		{Subject: "ORDERS.created", Payload: payload(2), MsgID: "2"},
+	}
+	results, err := sb.PublishStreamBatch(context.Background(), batch)
+	if err != nil {
+		t.Fatalf("PublishStreamBatch: %v", err)
+	}
+	if len(results) != len(batch) {
+		t.Fatalf("results len = %d, want %d", len(results), len(batch))
+	}
+	for i, e := range results {
+		if e != nil {
+			t.Fatalf("results[%d] = %v, want nil (дубль — это PubAck, не ошибка)", i, e)
+		}
+	}
+
+	seen := map[int]int{}
+	deadline := time.After(10 * time.Second)
+	for len(seen) < 2 {
+		select {
+		case id := <-got:
+			seen[id]++
+		case <-deadline:
+			t.Fatalf("timeout; seen=%v, want {1:1, 2:1}", seen)
+		}
+	}
+	select {
+	case extra := <-got:
+		t.Fatalf("лишняя доставка id=%d — дедуп не сработал: seen=%v", extra, seen)
+	case <-time.After(1 * time.Second):
+	}
+	if seen[1] != 1 || seen[2] != 1 {
+		t.Fatalf("seen = %v, want {1:1, 2:1}", seen)
 	}
 }

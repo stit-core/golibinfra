@@ -14,6 +14,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/semaphore"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -21,9 +22,37 @@ import (
 
 var ErrJetStreamDisabled = errors.New("natskit: jetstream is disabled")
 
+// StreamMsg — единица батч-публикации в JetStream. MsgID (опц.) ставит
+// Nats-Msg-Id: в пределах окна StreamConfig.Duplicates сообщения с тем же id
+// дедуплицируются стримом (effectively-once персист при ретраях продьюсера).
+type StreamMsg struct {
+	Subject string
+	Payload []byte
+	MsgID   string
+}
+
 type StreamBus interface {
-	PublishStream(ctx context.Context, subject string, payload []byte) error
+	PublishStream(ctx context.Context, subject string, payload []byte, opts ...PublishOption) error
+	PublishStreamBatch(ctx context.Context, msgs []StreamMsg) (results []error, err error)
 	SubscribeStream(ctx context.Context, stream, subject, durable string, handler func(ctx context.Context, payload []byte) error) error
+}
+
+type PublishOption func(*publishOptions)
+
+type publishOptions struct {
+	msgID string
+}
+
+// WithMsgID ставит Nats-Msg-Id для дедупа на стороне стрима (см. StreamMsg).
+func WithMsgID(id string) PublishOption {
+	return func(o *publishOptions) { o.msgID = id }
+}
+
+func pubOpts(po publishOptions) []jetstream.PublishOpt {
+	if po.msgID == "" {
+		return nil
+	}
+	return []jetstream.PublishOpt{jetstream.WithMsgID(po.msgID)}
 }
 
 type jsBus struct {
@@ -38,8 +67,12 @@ type jsBus struct {
 
 type disabledStreamBus struct{}
 
-func (disabledStreamBus) PublishStream(context.Context, string, []byte) error {
+func (disabledStreamBus) PublishStream(context.Context, string, []byte, ...PublishOption) error {
 	return ErrJetStreamDisabled
+}
+
+func (disabledStreamBus) PublishStreamBatch(context.Context, []StreamMsg) ([]error, error) {
+	return nil, ErrJetStreamDisabled
 }
 
 func (disabledStreamBus) SubscribeStream(context.Context, string, string, string, func(ctx context.Context, payload []byte) error) error {
@@ -89,17 +122,25 @@ func (b *jsBus) ensureStreams(ctx context.Context, cfg Config) error {
 	if maxAge <= 0 {
 		maxAge = 7 * 24 * time.Hour
 	}
+	dup := cfg.JetStream.Duplicates
+	if dup <= 0 {
+		dup = 2 * time.Minute
+	}
+	if dup > maxAge {
+		dup = maxAge // JetStream требует Duplicates ≤ MaxAge
+	}
 	for _, name := range cfg.JetStream.StreamNames {
 		name = strings.TrimSpace(name)
 		if name == "" {
 			continue
 		}
 		scfg := jetstream.StreamConfig{
-			Name:      name,
-			Subjects:  []string{name + ".>"},
-			Retention: retention,
-			MaxAge:    maxAge,
-			Storage:   jetstream.FileStorage,
+			Name:       name,
+			Subjects:   []string{name + ".>"},
+			Retention:  retention,
+			MaxAge:     maxAge,
+			Storage:    jetstream.FileStorage,
+			Duplicates: dup,
 		}
 		_, err := b.js.CreateStream(ctx, scfg)
 		if err == nil {
@@ -129,22 +170,92 @@ func parseRetention(s string) (jetstream.RetentionPolicy, error) {
 	}
 }
 
-func (b *jsBus) PublishStream(ctx context.Context, subject string, payload []byte) error {
+func (b *jsBus) PublishStream(ctx context.Context, subject string, payload []byte, opts ...PublishOption) error {
 	if !b.enabled {
 		return ErrJetStreamDisabled
+	}
+	var po publishOptions
+	for _, o := range opts {
+		o(&po)
 	}
 
 	msg, _, span := b.instr.startPublishSpan(ctx, subject, payload)
 	start := time.Now()
+	_, pubErr := b.js.PublishMsg(ctx, msg, pubOpts(po)...)
+	b.recordPublish(ctx, subject, time.Since(start).Seconds(), pubErr, span)
 
-	_, pubErr := b.js.PublishMsg(ctx, msg)
-	dur := time.Since(start).Seconds()
-
-	status := "ok"
 	if pubErr != nil {
+		return fmt.Errorf("natskit: jetstream publish: %w", pubErr)
+	}
+	return nil
+}
+
+// PublishStreamBatch публикует msgs async'ом и ждёт PubAck по каждому.
+// results[i] == nil — сообщение подтверждено персистом; внешняя ошибка —
+// сбой всего батча (jetstream disabled / отмена ctx). Порядок персиста —
+// best-effort: при частичном сбое неподтверждённые уходят на ретрай и могут
+// получить более поздний sequence; дедуп по MsgID гарантирует отсутствие дублей.
+func (b *jsBus) PublishStreamBatch(ctx context.Context, msgs []StreamMsg) ([]error, error) {
+	if !b.enabled {
+		return nil, ErrJetStreamDisabled
+	}
+	if len(msgs) == 0 {
+		return nil, nil
+	}
+
+	errs := make([]error, len(msgs))
+	futures := make([]jetstream.PubAckFuture, len(msgs))
+	spans := make([]trace.Span, len(msgs))
+	starts := make([]time.Time, len(msgs))
+
+	for i, m := range msgs {
+		msg, _, span := b.instr.startPublishSpan(ctx, m.Subject, m.Payload)
+		spans[i] = span
+		starts[i] = time.Now()
+
+		f, err := b.js.PublishMsgAsync(msg, pubOpts(publishOptions{msgID: m.MsgID})...)
+		if err != nil {
+			errs[i] = err
+			b.recordPublish(ctx, m.Subject, time.Since(starts[i]).Seconds(), err, span)
+			spans[i] = nil
+			continue
+		}
+		futures[i] = f
+	}
+
+	select {
+	case <-b.js.PublishAsyncComplete():
+	case <-ctx.Done():
+		for i := range futures {
+			if futures[i] != nil && errs[i] == nil {
+				errs[i] = ctx.Err()
+				b.recordPublish(ctx, msgs[i].Subject, time.Since(starts[i]).Seconds(), ctx.Err(), spans[i])
+			}
+		}
+		return errs, fmt.Errorf("natskit: jetstream batch: %w", ctx.Err())
+	}
+
+	for i := range futures {
+		if futures[i] == nil {
+			continue
+		}
+		select {
+		case <-futures[i].Ok():
+			b.recordPublish(ctx, msgs[i].Subject, time.Since(starts[i]).Seconds(), nil, spans[i])
+		case err := <-futures[i].Err():
+			errs[i] = err
+			b.recordPublish(ctx, msgs[i].Subject, time.Since(starts[i]).Seconds(), err, spans[i])
+		}
+	}
+	return errs, nil
+}
+
+func (b *jsBus) recordPublish(ctx context.Context, subject string, dur float64, err error, span trace.Span) {
+	status := "ok"
+	if err != nil {
 		status = "error"
-		span.RecordError(pubErr)
-		span.SetStatus(codes.Error, pubErr.Error())
+		span.RecordError(err)
+		span.SetStatus(codes.Error, err.Error())
 	}
 	span.End()
 
@@ -156,11 +267,6 @@ func (b *jsBus) PublishStream(ctx context.Context, subject string, payload []byt
 	b.instr.publishDuration.Record(ctx, dur,
 		metric.WithAttributes(attribute.String("subject", subject), attribute.String("transport", "jetstream")),
 	)
-
-	if pubErr != nil {
-		return fmt.Errorf("natskit: jetstream publish: %w", pubErr)
-	}
-	return nil
 }
 
 func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable string, handler func(ctx context.Context, payload []byte) error) error {

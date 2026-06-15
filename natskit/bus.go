@@ -1,5 +1,6 @@
 // Package natskit — pub/sub поверх NATS: интерфейс Bus, типизированные
-// helper'ы PublishJSON[T]/SubscribeJSON[T], опц. JetStream, panic
+// helper'ы PublishJSON[T]/SubscribeJSON[T], опц. JetStream (StreamBus:
+// батч-async публикация + дедуп по Nats-Msg-Id), panic
 // recovery в subscriber'ах и backpressure через семафор
 // (NATS_MAX_IN_FLIGHT). W3C trace-context инжектится в nats.Header,
 // чтобы consumer-спан был child'ом producer-спана. Субъект сообщения доступен

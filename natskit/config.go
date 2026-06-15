@@ -11,6 +11,7 @@ type JetStreamConfig struct {
 	StreamNames []string      `envconfig:"NATS_JS_STREAM_NAMES" default:""`
 	Retention   string        `envconfig:"NATS_JS_RETENTION" default:"limits"`
 	MaxAge      time.Duration `envconfig:"NATS_JS_MAX_AGE" default:"168h"`
+	Duplicates  time.Duration `envconfig:"NATS_JS_DUPLICATES" default:"2m"`
 	MaxInFlight int           `envconfig:"NATS_JS_MAX_IN_FLIGHT" default:"100"`
 	AckWait     time.Duration `envconfig:"NATS_JS_ACK_WAIT" default:"30s"`
 }
