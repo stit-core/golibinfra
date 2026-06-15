@@ -2,7 +2,9 @@ package natskit_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -235,6 +237,77 @@ func TestStreamBus_PublishBatchDedup(t *testing.T) {
 	}
 	if seen[1] != 1 || seen[2] != 1 {
 		t.Fatalf("seen = %v, want {1:1, 2:1}", seen)
+	}
+}
+
+func TestStreamBus_MaxDeliverDLQ(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	url := startJetStreamNATS(t)
+	nc, err := natsgo.Connect(url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	conn := natskit.ExportConn(nc)
+
+	cfg := natskit.Config{
+		JetStream: natskit.JetStreamConfig{
+			Enabled:     true,
+			StreamNames: []string{"ORDERS"},
+			Retention:   "limits",
+			MaxAge:      time.Hour,
+			MaxInFlight: 8,
+			AckWait:     2 * time.Second,
+			MaxDeliver:  3,
+			DLQSubject:  "DLQ.orders",
+		},
+	}
+	sb, err := natskit.NewStreamBus(conn, logkit.Nop(), cfg)
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+	coreBus := natskit.NewBus(conn, logkit.Nop(), cfg)
+
+	// DLQ-консьюмер (core): принимает «мёртвое» сообщение и читает заголовки.
+	dlq := make(chan natsgo.Header, 1)
+	if err := coreBus.Subscribe(context.Background(), "DLQ.orders", func(ctx context.Context, _ []byte) error {
+		dlq <- natskit.HeadersFromContext(ctx)
+		return nil
+	}); err != nil {
+		t.Fatalf("dlq subscribe: %v", err)
+	}
+
+	var attempts int32
+	if err := sb.SubscribeStream(context.Background(), "ORDERS", "ORDERS.created", "orders-poison",
+		func(context.Context, []byte) error {
+			atomic.AddInt32(&attempts, 1)
+			return errors.New("boom")
+		}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	if err := sb.PublishStream(context.Background(), "ORDERS.created", []byte(`{}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	select {
+	case h := <-dlq:
+		if h.Get("Natskit-Dlq-Origin") != "ORDERS.created" {
+			t.Fatalf("DLQ origin = %q, want ORDERS.created", h.Get("Natskit-Dlq-Origin"))
+		}
+		if h.Get("Natskit-Dlq-Error") == "" {
+			t.Fatal("DLQ error header пустой")
+		}
+	case <-time.After(20 * time.Second):
+		t.Fatalf("сообщение не дошло до DLQ; attempts=%d", atomic.LoadInt32(&attempts))
+	}
+
+	// после Term ределивери прекращается — попыток ровно MaxDeliver.
+	time.Sleep(3 * time.Second)
+	if got := atomic.LoadInt32(&attempts); got != 3 {
+		t.Fatalf("attempts = %d, want 3 (MaxDeliver)", got)
 	}
 }
 

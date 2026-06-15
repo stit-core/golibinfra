@@ -57,11 +57,15 @@ func pubOpts(po publishOptions) []jetstream.PublishOpt {
 
 type jsBus struct {
 	js          jetstream.JetStream
+	conn        *nats.Conn
 	log         logkit.Logger
 	sem         *semaphore.Weighted
 	enabled     bool
 	ackWait     time.Duration
 	maxInFlight int
+	maxDeliver  int
+	nakBackoff  time.Duration
+	dlqSubject  string
 	instr       *natsInstruments
 }
 
@@ -97,11 +101,15 @@ func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error) 
 	}
 	b := &jsBus{
 		js:          js,
+		conn:        conn.raw(),
 		log:         log,
 		sem:         semaphore.NewWeighted(int64(maxInFlight)),
 		enabled:     true,
 		ackWait:     ackWait,
 		maxInFlight: maxInFlight,
+		maxDeliver:  cfg.JetStream.MaxDeliver,
+		nakBackoff:  cfg.JetStream.NakBackoff,
+		dlqSubject:  cfg.JetStream.DLQSubject,
 		instr:       newNatsInstruments(),
 	}
 	if err := b.ensureStreams(context.Background(), cfg); err != nil {
@@ -273,13 +281,17 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 	if !b.enabled {
 		return ErrJetStreamDisabled
 	}
-	cons, err := b.js.CreateOrUpdateConsumer(ctx, stream, jetstream.ConsumerConfig{
+	ccfg := jetstream.ConsumerConfig{
 		Durable:       durable,
 		AckPolicy:     jetstream.AckExplicitPolicy,
 		FilterSubject: subject,
 		AckWait:       b.ackWait,
 		MaxAckPending: b.maxInFlight,
-	})
+	}
+	if b.maxDeliver > 0 {
+		ccfg.MaxDeliver = b.maxDeliver // server-side backstop; client-side Term ниже
+	}
+	cons, err := b.js.CreateOrUpdateConsumer(ctx, stream, ccfg)
 	if err != nil {
 		return fmt.Errorf("natskit: jetstream consumer: %w", err)
 	}
@@ -312,45 +324,88 @@ func (b *jsBus) handleStreamOne(msg jetstream.Msg, handler func(ctx context.Cont
 	natsMsg := &nats.Msg{Subject: subject, Data: msg.Data(), Header: msg.Headers()}
 	ctx, span := b.instr.startConsumerSpan(context.Background(), natsMsg)
 	start := time.Now()
+
+	handlerErr, panicked := b.invoke(ctx, subject, handler, msg.Data())
+
 	status := "ok"
+	if handlerErr != nil {
+		span.RecordError(handlerErr)
+		span.SetStatus(codes.Error, handlerErr.Error())
+		status = b.failStream(ctx, msg, subject, handlerErr, panicked)
+	} else if err := msg.Ack(); err != nil {
+		b.log.Error(ctx, "natskit: jetstream ack error", "subject", subject, "err", err)
+	}
 
+	span.End()
+	b.instr.consumedTotal.Add(context.Background(), 1, metric.WithAttributes(
+		attribute.String("subject", subject),
+		attribute.String("status", status),
+		attribute.String("transport", "jetstream"),
+	))
+	b.instr.handleDuration.Record(context.Background(), time.Since(start).Seconds(), subjAttr)
+}
+
+func (b *jsBus) invoke(ctx context.Context, subject string, handler func(ctx context.Context, payload []byte) error, data []byte) (err error, panicked bool) {
 	defer func() {
-		dur := time.Since(start).Seconds()
 		if rec := recover(); rec != nil {
-			status = "panic"
-			err := fmt.Errorf("natskit: jetstream handler panic: %v", rec)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			err = fmt.Errorf("natskit: jetstream handler panic: %v", rec)
+			panicked = true
 			b.log.Error(ctx, "natskit: jetstream handler panic",
-				"subject", subject,
-				"panic", rec,
-				"stack", string(debug.Stack()),
+				"subject", subject, "panic", rec, "stack", string(debug.Stack()),
 			)
-			_ = msg.Nak()
 		}
-		span.End()
-		b.instr.consumedTotal.Add(context.Background(), 1, metric.WithAttributes(
-			attribute.String("subject", subject),
-			attribute.String("status", status),
-			attribute.String("transport", "jetstream"),
-		))
-		b.instr.handleDuration.Record(context.Background(), dur, subjAttr)
 	}()
+	return handler(ctx, data), false
+}
 
-	if err := handler(ctx, msg.Data()); err != nil {
-		status = "handler_error"
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
-		b.log.Error(ctx, "natskit: jetstream handler error",
-			"subject", subject, "err", err,
-		)
+// failStream решает судьбу неуспешного сообщения: при исчерпании MaxDeliver —
+// DLQ (если задан) + Term (стоп ределивери); иначе NAK с опциональным backoff.
+func (b *jsBus) failStream(ctx context.Context, msg jetstream.Msg, subject string, cause error, panicked bool) string {
+	if b.terminal(msg) {
+		b.deadLetter(ctx, msg, cause)
+		if err := msg.Term(); err != nil {
+			b.log.Error(ctx, "natskit: jetstream term error", "subject", subject, "err", err)
+		}
+		return "dead"
+	}
+
+	if b.nakBackoff > 0 {
+		_ = msg.NakWithDelay(b.nakBackoff)
+	} else {
 		_ = msg.Nak()
+	}
+	if !panicked && !errors.Is(cause, context.Canceled) {
+		b.log.Error(ctx, "natskit: jetstream handler error", "subject", subject, "err", cause)
+	}
+	if panicked {
+		return "panic"
+	}
+	return "handler_error"
+}
+
+func (b *jsBus) terminal(msg jetstream.Msg) bool {
+	if b.maxDeliver <= 0 {
+		return false
+	}
+	md, err := msg.Metadata()
+	if err != nil {
+		return false
+	}
+	return md.NumDelivered >= uint64(b.maxDeliver)
+}
+
+func (b *jsBus) deadLetter(ctx context.Context, msg jetstream.Msg, cause error) {
+	if b.dlqSubject == "" {
 		return
 	}
-	if err := msg.Ack(); err != nil {
-		b.log.Error(ctx, "natskit: jetstream ack error",
-			"subject", subject, "err", err,
-		)
+	h := nats.Header{}
+	for k, v := range msg.Headers() {
+		h[k] = v
+	}
+	h.Set("Natskit-Dlq-Origin", msg.Subject())
+	h.Set("Natskit-Dlq-Error", cause.Error())
+	if err := b.conn.PublishMsg(&nats.Msg{Subject: b.dlqSubject, Data: msg.Data(), Header: h}); err != nil {
+		b.log.Error(ctx, "natskit: dlq publish", "subject", b.dlqSubject, "err", err)
 	}
 }
 

@@ -12,6 +12,49 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
+func TestBus_QueueGroupLoadBalances(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fix := testkit.StartNATS(t)
+	conn := connect(t, fix.URL)
+	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	ctx := context.Background()
+
+	const n = 12
+	got := make(chan struct{}, n*2)
+	h := func(_ context.Context, _ []byte) error { got <- struct{}{}; return nil }
+	for i := 0; i < 2; i++ {
+		if err := bus.SubscribeQueue(ctx, "work.items", "workers", h); err != nil {
+			t.Fatalf("subscribe queue: %v", err)
+		}
+	}
+
+	for i := 0; i < n; i++ {
+		if err := bus.Publish(ctx, "work.items", i); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+
+	count := 0
+	deadline := time.After(5 * time.Second)
+	for count < n {
+		select {
+		case <-got:
+			count++
+		case <-deadline:
+			t.Fatalf("got %d/%d", count, n)
+		}
+	}
+	// queue-group: каждое сообщение ровно одному подписчику → не больше n.
+	select {
+	case <-got:
+		t.Fatal("дубликат доставки — queue-group не балансирует")
+	case <-time.After(500 * time.Millisecond):
+	}
+}
+
 func connect(t *testing.T, url string) *natskit.Conn {
 	t.Helper()
 	nc, err := natsgo.Connect(url)

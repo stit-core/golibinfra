@@ -103,6 +103,7 @@ func (in *natsInstruments) startConsumerSpan(parent context.Context, msg *nats.M
 		parent = in.prop.Extract(parent, natsHeaderCarrier(msg.Header))
 	}
 	parent = withSubject(parent, msg.Subject)
+	parent = withHeaders(parent, msg.Header)
 	return in.tracer.Start(parent, "natskit.handle "+msg.Subject,
 		trace.WithSpanKind(trace.SpanKindConsumer),
 		trace.WithAttributes(

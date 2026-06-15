@@ -1,12 +1,13 @@
-// Package natskit — pub/sub поверх NATS: интерфейс Bus, типизированные
-// helper'ы PublishJSON[T]/SubscribeJSON[T], опц. JetStream (StreamBus:
-// батч-async публикация + дедуп по Nats-Msg-Id), panic
-// recovery в subscriber'ах и backpressure через семафор
-// (NATS_MAX_IN_FLIGHT). W3C trace-context инжектится в nats.Header,
-// чтобы consumer-спан был child'ом producer-спана. Субъект сообщения доступен
-// handler'у через SubjectFromContext(ctx) (для wildcard-подписок). Эмитит
-// nats_messages_{published,consumed}_total, nats_{publish,handle}_duration_seconds,
-// nats_inflight_messages.
+// Package natskit — pub/sub поверх NATS: интерфейс Bus (Subscribe/SubscribeQueue),
+// типизированные helper'ы PublishJSON[T]/SubscribeJSON[T], опц. JetStream
+// (StreamBus: батч-async публикация + дедуп по Nats-Msg-Id; poison-обработка
+// consumer'а — MaxDeliver→DLQ/Term, NAK c backoff), panic recovery в
+// subscriber'ах и backpressure через семафор (NATS_MAX_IN_FLIGHT). W3C
+// trace-context инжектится в nats.Header, чтобы consumer-спан был child'ом
+// producer-спана. Subject и Header сообщения доступны handler'у через
+// SubjectFromContext(ctx)/HeadersFromContext(ctx). Эмитит
+// nats_messages_{published,consumed}_total (consumed status: ok|handler_error|
+// panic|dead), nats_{publish,handle}_duration_seconds, nats_inflight_messages.
 package natskit
 
 import (
@@ -29,6 +30,10 @@ import (
 type Bus interface {
 	Publish(ctx context.Context, subject string, payload any) error
 	Subscribe(ctx context.Context, subject string, handler func(ctx context.Context, payload []byte) error) error
+	// SubscribeQueue — load-balanced подписка: сообщение получает один инстанс
+	// из queue-группы (горизонтальное масштабирование Core-консьюмеров), в
+	// отличие от Subscribe (fan-out — каждому инстансу).
+	SubscribeQueue(ctx context.Context, subject, queue string, handler func(ctx context.Context, payload []byte) error) error
 }
 
 type natsBus struct {
@@ -87,7 +92,15 @@ func (b *natsBus) Publish(ctx context.Context, subject string, payload any) erro
 }
 
 func (b *natsBus) Subscribe(_ context.Context, subject string, handler func(ctx context.Context, payload []byte) error) error {
-	_, err := b.conn.Subscribe(subject, func(msg *nats.Msg) {
+	return b.subscribe(subject, "", handler)
+}
+
+func (b *natsBus) SubscribeQueue(_ context.Context, subject, queue string, handler func(ctx context.Context, payload []byte) error) error {
+	return b.subscribe(subject, queue, handler)
+}
+
+func (b *natsBus) subscribe(subject, queue string, handler func(ctx context.Context, payload []byte) error) error {
+	cb := func(msg *nats.Msg) {
 		if err := b.sem.Acquire(context.Background(), 1); err != nil {
 			b.log.Error(context.Background(), "natskit: semaphore acquire", "subject", subject, "err", err)
 			return
@@ -96,7 +109,14 @@ func (b *natsBus) Subscribe(_ context.Context, subject string, handler func(ctx 
 			defer b.sem.Release(1)
 			b.handleOne(msg, subject, handler)
 		}()
-	})
+	}
+
+	var err error
+	if queue == "" {
+		_, err = b.conn.Subscribe(subject, cb)
+	} else {
+		_, err = b.conn.QueueSubscribe(subject, queue, cb)
+	}
 	if err != nil {
 		return fmt.Errorf("natskit: subscribe: %w", err)
 	}
@@ -150,11 +170,19 @@ func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T) error
 }
 
 func SubscribeJSON[T any](b Bus, ctx context.Context, subject string, h func(ctx context.Context, msg T) error) error {
-	return b.Subscribe(ctx, subject, func(ctx context.Context, payload []byte) error {
+	return b.Subscribe(ctx, subject, decodeJSON(h))
+}
+
+func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string, h func(ctx context.Context, msg T) error) error {
+	return b.SubscribeQueue(ctx, subject, queue, decodeJSON(h))
+}
+
+func decodeJSON[T any](h func(ctx context.Context, msg T) error) func(ctx context.Context, payload []byte) error {
+	return func(ctx context.Context, payload []byte) error {
 		var v T
 		if err := json.Unmarshal(payload, &v); err != nil {
 			return fmt.Errorf("natskit: unmarshal: %w", err)
 		}
 		return h(ctx, v)
-	})
+	}
 }
