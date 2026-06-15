@@ -26,16 +26,37 @@ type OutMsg struct {
 }
 
 type streamTransport struct {
-	sb natskit.StreamBus
+	sb        natskit.StreamBus
+	namespace string
 }
 
 // NewStreamTransport адаптирует natskit JetStream (StreamBus) под Transport.
+// Nats-Msg-Id = id строки — корректно, пока outbox-таблица одна (BIGSERIAL
+// глобально уникален). Несколько таблиц на один стрим → NewStreamTransportFor.
 func NewStreamTransport(sb natskit.StreamBus) Transport {
 	return streamTransport{sb: sb}
 }
 
+// NewStreamTransportFor namespace'ит Nats-Msg-Id ("<namespace>:<id>") для
+// нескольких outbox-инстансов, делящих один JetStream-стрим. Per-domain таблицы
+// имеют независимый BIGSERIAL — голый id повторяется между таблицами, а
+// stream-дедуп идёт по Msg-Id (не по subject) и молча уронил бы второй факт.
+// Per-row дедуп ретраев сохраняется (та же строка → тот же Msg-Id). namespace
+// обычно = имя Outbox-инстанса (outboxkit.New).
+func NewStreamTransportFor(sb natskit.StreamBus, namespace string) Transport {
+	return streamTransport{sb: sb, namespace: namespace}
+}
+
+func (t streamTransport) msgID(id int64) string {
+	s := strconv.FormatInt(id, 10)
+	if t.namespace == "" {
+		return s
+	}
+	return t.namespace + ":" + s
+}
+
 func (t streamTransport) Publish(ctx context.Context, m OutMsg) error {
-	return t.sb.PublishStream(ctx, m.Subject, m.Payload, natskit.WithMsgID(strconv.FormatInt(m.ID, 10)))
+	return t.sb.PublishStream(ctx, m.Subject, m.Payload, natskit.WithMsgID(t.msgID(m.ID)))
 }
 
 func (t streamTransport) PublishBatch(ctx context.Context, msgs []OutMsg) ([]error, error) {
@@ -44,7 +65,7 @@ func (t streamTransport) PublishBatch(ctx context.Context, msgs []OutMsg) ([]err
 		sm[i] = natskit.StreamMsg{
 			Subject: m.Subject,
 			Payload: m.Payload,
-			MsgID:   strconv.FormatInt(m.ID, 10),
+			MsgID:   t.msgID(m.ID),
 		}
 	}
 	return t.sb.PublishStreamBatch(ctx, sm)
