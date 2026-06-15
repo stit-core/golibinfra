@@ -105,7 +105,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | [`logkit`](logkit/) | `Logger` поверх slog; trace_id correlation; авто-атрибуты `service/env/version`; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
 | [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
-| [`outboxkit`](outboxkit/) | Transactional outbox: Worker публикует в JetStream (`MarkPublished` батчем после PubAck; `OUTBOX_PUBLISH_MODE` batch\|ordered), Bus, core+pgstore split, `LagReporter` для `outbox_lag_seconds`. `Module` — один инстанс (таблица `outbox`); `outboxkit.New` + `pgstore.NewStoreFor(db, table)` — несколько (таблица на инстанс) |
+| [`outboxkit`](outboxkit/) | Transactional outbox: Worker публикует в JetStream (`MarkPublished` батчем после PubAck; `OUTBOX_PUBLISH_MODE` batch\|ordered), poison→dead после `OUTBOX_MAX_ATTEMPTS`, retention партиций `OUTBOX_RETENTION_MONTHS`, `BacklogReporter` для `outbox_lag_seconds`/`outbox_pending_count`. `Module` — один инстанс (таблица `outbox`); `outboxkit.New` + `pgstore.NewStoreFor(db, table)` — несколько (таблица на инстанс) |
 | [`auditkit`](auditkit/) | Audit-log: `Entry`/`Recorder`, core+pgstore split |
 | [`bruteforcekit`](bruteforcekit/) | Brute-force guard: per-subject + per-IP счётчики, `LockState`, core+pgstore split |
 | [`clockkit`](clockkit/) | `Clock` + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
@@ -203,7 +203,7 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 | `pgkit` | `db_pool_*` (9 метрик) | per-query span (`otelpgx`) |
 | `storagekit` | — | — |
 | `natskit` | `nats_messages_*`, `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
-| `outboxkit` | `outbox_events_*`, `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds` (opt-in) | worker span |
+| `outboxkit` | `outbox_events_*` (incl. `_dead_total`), `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds`/`outbox_pending_count` (opt-in) | worker span |
 | `authnkit` | `jwt_verifications_total`, `password_*_duration_seconds`, `totp_verifications_total` | — |
 | `bizmetric` | `biz_<domain>_<event>_total\|_seconds\|<gauge>` | — |
 

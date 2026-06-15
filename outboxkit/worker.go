@@ -10,21 +10,28 @@ import (
 )
 
 type Worker struct {
-	repo      Repository
-	tr        Transport
-	batchSize int
-	mode      PublishMode
-	instr     *outboxInstruments
+	repo        Repository
+	tr          Transport
+	batchSize   int
+	mode        PublishMode
+	maxAttempts int
+	instr       *outboxInstruments
 }
 
 func NewWorker(repo Repository, tr Transport, cfg Config) *Worker {
 	return &Worker{
-		repo:      repo,
-		tr:        tr,
-		batchSize: cfg.BatchSize,
-		mode:      cfg.PublishMode,
-		instr:     newOutboxInstruments(),
+		repo:        repo,
+		tr:          tr,
+		batchSize:   cfg.BatchSize,
+		mode:        cfg.PublishMode,
+		maxAttempts: cfg.MaxAttempts,
+		instr:       newOutboxInstruments(),
 	}
+}
+
+type failedMsg struct {
+	msg Message
+	err error
 }
 
 func (w *Worker) Run(ctx context.Context) error {
@@ -46,14 +53,18 @@ func (w *Worker) Run(ctx context.Context) error {
 	}
 
 	var acked []Message
+	var failed []failedMsg
 	var firstErr error
 	if w.mode == PublishOrdered {
-		acked, firstErr = w.publishOrdered(ctx, msgs, out)
+		acked, failed, firstErr = w.publishOrdered(ctx, msgs, out)
 	} else {
-		acked, firstErr = w.publishBatch(ctx, msgs, out)
+		acked, failed, firstErr = w.publishBatch(ctx, msgs, out)
 	}
 
 	if err := w.markAll(ctx, acked); err != nil && firstErr == nil {
+		firstErr = err
+	}
+	if err := w.recordFailures(ctx, failed); err != nil && firstErr == nil {
 		firstErr = err
 	}
 	w.instr.batchDuration.Record(ctx, time.Since(start).Seconds())
@@ -61,33 +72,35 @@ func (w *Worker) Run(ctx context.Context) error {
 }
 
 // publishBatch — async-батч: все улетают разом, метятся только подтверждённые
-// PubAck'ом; неподтверждённые остаются на ретрай (дедуп по MsgID — без дублей).
-func (w *Worker) publishBatch(ctx context.Context, msgs []Message, out []OutMsg) ([]Message, error) {
+// PubAck'ом; неподтверждённые уходят на ретрай (дедуп по MsgID — без дублей).
+func (w *Worker) publishBatch(ctx context.Context, msgs []Message, out []OutMsg) ([]Message, []failedMsg, error) {
 	pubStart := time.Now()
 	results, err := w.tr.PublishBatch(ctx, out)
 	w.instr.publishDuration.Record(ctx, time.Since(pubStart).Seconds())
 	if err != nil {
-		return nil, fmt.Errorf("outboxkit worker: publish batch: %w", err)
+		return nil, nil, fmt.Errorf("outboxkit worker: publish batch: %w", err)
 	}
 
 	var acked []Message
+	var failed []failedMsg
 	var firstErr error
 	for i, m := range msgs {
-		if results[i] != nil {
+		if perr := results[i]; perr != nil {
 			w.processed(ctx, m.Subject, "publish_error")
+			failed = append(failed, failedMsg{m, perr})
 			if firstErr == nil {
-				firstErr = fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, results[i])
+				firstErr = fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, perr)
 			}
 			continue
 		}
 		acked = append(acked, m)
 	}
-	return acked, firstErr
+	return acked, failed, firstErr
 }
 
 // publishOrdered — последовательная публикация со стопом на первой ошибке,
 // чтобы не персистить более позднее событие раньше неудавшегося.
-func (w *Worker) publishOrdered(ctx context.Context, msgs []Message, out []OutMsg) ([]Message, error) {
+func (w *Worker) publishOrdered(ctx context.Context, msgs []Message, out []OutMsg) ([]Message, []failedMsg, error) {
 	pubStart := time.Now()
 	defer func() { w.instr.publishDuration.Record(ctx, time.Since(pubStart).Seconds()) }()
 
@@ -95,11 +108,11 @@ func (w *Worker) publishOrdered(ctx context.Context, msgs []Message, out []OutMs
 	for i, m := range msgs {
 		if err := w.tr.Publish(ctx, out[i]); err != nil {
 			w.processed(ctx, m.Subject, "publish_error")
-			return acked, fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, err)
+			return acked, []failedMsg{{m, err}}, fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, err)
 		}
 		acked = append(acked, m)
 	}
-	return acked, nil
+	return acked, nil, nil
 }
 
 func (w *Worker) markAll(ctx context.Context, acked []Message) error {
@@ -122,9 +135,36 @@ func (w *Worker) markAll(ctx context.Context, acked []Message) error {
 	return nil
 }
 
+func (w *Worker) recordFailures(ctx context.Context, failed []failedMsg) error {
+	if len(failed) == 0 {
+		return nil
+	}
+	fs := make([]Failure, len(failed))
+	for i, f := range failed {
+		dead := w.maxAttempts > 0 && f.msg.Attempts+1 >= w.maxAttempts
+		fs[i] = Failure{ID: f.msg.ID, Err: truncErr(f.err), Dead: dead}
+		if dead {
+			w.instr.deadTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("subject", f.msg.Subject)))
+		}
+	}
+	if err := w.repo.RecordFailures(ctx, fs); err != nil {
+		return fmt.Errorf("outboxkit worker: record failures: %w", err)
+	}
+	return nil
+}
+
 func (w *Worker) processed(ctx context.Context, subject, status string) {
 	w.instr.processedTotal.Add(ctx, 1, metric.WithAttributes(
 		attribute.String("subject", subject),
 		attribute.String("status", status),
 	))
+}
+
+func truncErr(err error) string {
+	const max = 1000
+	s := err.Error()
+	if len(s) > max {
+		return s[:max]
+	}
+	return s
 }

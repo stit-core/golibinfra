@@ -32,23 +32,23 @@ var Module = fx.Module(
 			fx.ResultTags(`group:"timer.job"`),
 		),
 	),
-	fx.Invoke(registerLagGaugeIfReporter),
+	fx.Invoke(registerBacklogGaugesIfReporter),
 )
 
-// lagParams — optional LagReporter: подключается только если репозиторий
+// backlogParams — optional BacklogReporter: подключается только если репозиторий
 // его реализует (см. outboxkit/pgstore.Store). Без него — no-op,
-// `outbox_lag_seconds` просто не эмитится.
-type lagParams struct {
+// `outbox_lag_seconds`/`outbox_pending_count` просто не эмитятся.
+type backlogParams struct {
 	fx.In
 	LC       fx.Lifecycle
-	Reporter LagReporter `optional:"true"`
+	Reporter BacklogReporter `optional:"true"`
 }
 
-func registerLagGaugeIfReporter(p lagParams) error {
+func registerBacklogGaugesIfReporter(p backlogParams) error {
 	if p.Reporter == nil {
 		return nil
 	}
-	reg, err := RegisterLagGauge(p.Reporter)
+	reg, err := RegisterBacklogGauges(p.Reporter)
 	if err != nil {
 		return err
 	}

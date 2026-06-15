@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 
+	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
@@ -41,6 +42,61 @@ func extractMigrations(t *testing.T) string {
 type sample struct {
 	Foo string `json:"foo"`
 	N   int    `json:"n"`
+}
+
+func TestStore_PoisonAndBacklog(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	migDir := extractMigrations(t)
+	fx := testkit.StartPostgres(t, migDir)
+	db := fx.DB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	s := pgstore.NewStore(db)
+	if err := s.Insert(ctx, "evt", sample{N: 1}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	if err := s.Insert(ctx, "evt", sample{N: 2}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	msgs, err := s.ListUnpublished(ctx, 10)
+	if err != nil || len(msgs) != 2 {
+		t.Fatalf("list: %v len=%d", err, len(msgs))
+	}
+
+	// одно — dead, другое — транзиентный фейл.
+	if err := s.RecordFailures(ctx, []outboxkit.Failure{
+		{ID: msgs[0].ID, Err: "boom", Dead: true},
+		{ID: msgs[1].ID, Err: "transient", Dead: false},
+	}); err != nil {
+		t.Fatalf("record failures: %v", err)
+	}
+
+	left, err := s.ListUnpublished(ctx, 10)
+	if err != nil {
+		t.Fatalf("list2: %v", err)
+	}
+	if len(left) != 1 || left[0].ID != msgs[1].ID {
+		t.Fatalf("dead не исключён: %+v", left)
+	}
+	if left[0].Attempts != 1 {
+		t.Fatalf("attempts = %d, want 1", left[0].Attempts)
+	}
+
+	backlog, err := s.Backlog(ctx)
+	if err != nil {
+		t.Fatalf("backlog: %v", err)
+	}
+	if len(backlog) != 1 || backlog[0].Subject != "evt" || backlog[0].Pending != 1 {
+		t.Fatalf("backlog = %+v, want 1 pending for evt", backlog)
+	}
+	if backlog[0].Oldest <= 0 {
+		t.Fatalf("backlog oldest = %v, want > 0", backlog[0].Oldest)
+	}
 }
 
 func TestStore_CustomTable(t *testing.T) {

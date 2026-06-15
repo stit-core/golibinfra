@@ -5,11 +5,13 @@
 // OUTBOX_PUBLISH_MODE выбирает компромисс: batch (async, best-effort порядок)
 // или ordered (строгий порядок, стоп на первой ошибке). Гарантия —
 // at-least-once; id строки уходит как Nats-Msg-Id, поэтому переотправка на
-// ретрае дедуплицируется стримом. Core-абстракция (Repository) отделена от
+// ретрае дедуплицируется стримом. OUTBOX_MAX_ATTEMPTS>0 помечает строку dead
+// после N неудач (не блокирует очередь в ordered-режиме); retention партиций —
+// OUTBOX_RETENTION_MONTHS (pgstore). Core-абстракция (Repository) отделена от
 // pgstore-реализации, чтобы доменный код не зависел от Postgres. Эмитит
 // outbox_events_{inserted,processed}_total, outbox_batch_{size,duration_seconds},
-// outbox_publish_duration_seconds; outbox_lag_seconds — opt-in через
-// LagReporter + RegisterLagGauge.
+// outbox_publish_duration_seconds, outbox_events_dead_total; outbox_lag_seconds
+// и outbox_pending_count — opt-in через BacklogReporter + RegisterBacklogGauges.
 package outboxkit
 
 import (
@@ -18,13 +20,23 @@ import (
 )
 
 type Message struct {
-	ID      int64
-	Subject string
-	Payload json.RawMessage
+	ID       int64
+	Subject  string
+	Payload  json.RawMessage
+	Attempts int
+}
+
+// Failure — результат неудачной публикации события: Dead=true помечает строку
+// мёртвой (исчерпан MaxAttempts) — она больше не вычитывается на ретрай.
+type Failure struct {
+	ID   int64
+	Err  string
+	Dead bool
 }
 
 type Repository interface {
 	Insert(ctx context.Context, subject string, payload any) error
 	ListUnpublished(ctx context.Context, limit int) ([]Message, error)
 	MarkPublished(ctx context.Context, ids []int64) error
+	RecordFailures(ctx context.Context, failures []Failure) error
 }

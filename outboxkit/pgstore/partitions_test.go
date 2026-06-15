@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
@@ -23,6 +24,48 @@ func TestSchemaSQL_NotEmpty(t *testing.T) {
 	if pgstore.SchemaSQL("outbox") == "" {
 		t.Fatal("schema sql is empty")
 	}
+}
+
+func TestStore_DropOldPartitions(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	migDir := extractMigrations(t)
+	fx := testkit.StartPostgres(t, migDir)
+	db := fx.DB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	s := pgstore.NewStore(db)
+
+	// Заводим партицию 10 месяцев назад (вне диапазона миграции current..+3).
+	old := time.Now().UTC().AddDate(0, -10, 0)
+	oldName, oldSQL := pgstore.PartitionSQL("outbox", old)
+	if _, err := db.Exec(ctx, oldSQL); err != nil {
+		t.Fatalf("create old partition: %v", err)
+	}
+
+	if err := s.DropOldPartitions(ctx, 3); err != nil {
+		t.Fatalf("drop old partitions: %v", err)
+	}
+
+	if partitionExists(t, ctx, db, oldName) {
+		t.Fatalf("старая партиция %s не удалена", oldName)
+	}
+	curName, _ := pgstore.PartitionSQL("outbox", time.Now().UTC())
+	if !partitionExists(t, ctx, db, curName) {
+		t.Fatalf("текущая партиция %s удалена по ошибке", curName)
+	}
+}
+
+func partitionExists(t *testing.T, ctx context.Context, db *pgkit.DB, name string) bool {
+	t.Helper()
+	var exists bool
+	if err := db.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM pg_class WHERE relname = $1)", name).Scan(&exists); err != nil {
+		t.Fatalf("partition exists check: %v", err)
+	}
+	return exists
 }
 
 func TestNewStoreFor_Validation(t *testing.T) {

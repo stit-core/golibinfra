@@ -9,17 +9,26 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
-// LagReporter — optional интерфейс для Repository: реализующие его
-// store'ы (см. outboxkit/pgstore) экспонируют отставание самого старого
-// неопубликованного события для каждого subject'а. Через RegisterLagGauge
-// эти данные подключаются как ObservableGauge.
-type LagReporter interface {
-	LagBySubject(ctx context.Context) (map[string]time.Duration, error)
+// SubjectBacklog — снимок очереди неопубликованных событий по subject'у:
+// возраст самого старого (Oldest) и количество (Pending).
+type SubjectBacklog struct {
+	Subject string
+	Oldest  time.Duration
+	Pending int64
+}
+
+// BacklogReporter — optional интерфейс для Repository: реализующие его store'ы
+// (см. outboxkit/pgstore) экспонируют backlog по subject'ам. Через
+// RegisterBacklogGauges это становится `outbox_lag_seconds` и
+// `outbox_pending_count` (ObservableGauge).
+type BacklogReporter interface {
+	Backlog(ctx context.Context) ([]SubjectBacklog, error)
 }
 
 type outboxInstruments struct {
 	insertedTotal   metric.Int64Counter
 	processedTotal  metric.Int64Counter
+	deadTotal       metric.Int64Counter
 	batchSize       metric.Int64Histogram
 	batchDuration   metric.Float64Histogram
 	publishDuration metric.Float64Histogram
@@ -32,6 +41,9 @@ func newOutboxInstruments() *outboxInstruments {
 	)
 	processed, _ := m.Int64Counter("outbox_events_processed_total",
 		metric.WithDescription("Events processed by outbox worker"),
+	)
+	dead, _ := m.Int64Counter("outbox_events_dead_total",
+		metric.WithDescription("Events marked dead after exhausting MaxAttempts"),
 	)
 	batchSize, _ := m.Int64Histogram("outbox_batch_size",
 		metric.WithDescription("Batch size pulled per worker tick"),
@@ -47,34 +59,42 @@ func newOutboxInstruments() *outboxInstruments {
 	return &outboxInstruments{
 		insertedTotal:   inserted,
 		processedTotal:  processed,
+		deadTotal:       dead,
 		batchSize:       batchSize,
 		batchDuration:   batchDur,
 		publishDuration: pubDur,
 	}
 }
 
-// RegisterLagGauge регистрирует ObservableGauge `outbox_lag_seconds{subject}`
-// поверх LagReporter. Возвращает Registration — вызвать Unregister на shutdown.
-func RegisterLagGauge(reporter LagReporter) (metric.Registration, error) {
+// RegisterBacklogGauges регистрирует ObservableGauge'и `outbox_lag_seconds{subject}`
+// и `outbox_pending_count{subject}` поверх BacklogReporter. Возвращает
+// Registration — вызвать Unregister на shutdown.
+func RegisterBacklogGauges(reporter BacklogReporter) (metric.Registration, error) {
 	m := otel.Meter("git.stit.tech/stit-core/golibinfra/outboxkit")
-	gauge, err := m.Float64ObservableGauge("outbox_lag_seconds",
+	lag, err := m.Float64ObservableGauge("outbox_lag_seconds",
 		metric.WithDescription("Age of oldest unpublished event per subject"),
 		metric.WithUnit("s"),
 	)
 	if err != nil {
 		return nil, err
 	}
+	pending, err := m.Int64ObservableGauge("outbox_pending_count",
+		metric.WithDescription("Number of unpublished events per subject"),
+	)
+	if err != nil {
+		return nil, err
+	}
 	return m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		lags, err := reporter.LagBySubject(ctx)
+		backlog, err := reporter.Backlog(ctx)
 		if err != nil {
 			// Тихо пропускаем — observability не должна валить процесс.
 			return nil
 		}
-		for subj, lag := range lags {
-			o.ObserveFloat64(gauge, lag.Seconds(),
-				metric.WithAttributes(attribute.String("subject", subj)),
-			)
+		for _, b := range backlog {
+			attrs := metric.WithAttributes(attribute.String("subject", b.Subject))
+			o.ObserveFloat64(lag, b.Oldest.Seconds(), attrs)
+			o.ObserveInt64(pending, b.Pending, attrs)
 		}
 		return nil
-	}, gauge)
+	}, lag, pending)
 }

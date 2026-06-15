@@ -23,10 +23,11 @@ type Store struct {
 	db    *pgkit.DB
 	table string
 
-	insertSQL string
-	listSQL   string
-	markSQL   string
-	lagSQL    string
+	insertSQL  string
+	listSQL    string
+	markSQL    string
+	failSQL    string
+	backlogSQL string
 }
 
 // NewStore строит Store на таблицу DefaultTable (single-instance путь, fx Module).
@@ -50,11 +51,19 @@ func newStore(db *pgkit.DB, table string) (*Store, error) {
 		db:        db,
 		table:     table,
 		insertSQL: fmt.Sprintf(`INSERT INTO %s (subject, payload, created_at) VALUES ($1, $2, NOW())`, table),
-		listSQL:   fmt.Sprintf(`SELECT id, subject, payload FROM %s WHERE published_at IS NULL ORDER BY created_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`, table),
+		listSQL:   fmt.Sprintf(`SELECT id, subject, payload, attempts FROM %s WHERE published_at IS NULL AND dead_at IS NULL ORDER BY created_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`, table),
 		markSQL:   fmt.Sprintf(`UPDATE %s SET published_at = $1 WHERE id = ANY($2)`, table),
-		lagSQL: fmt.Sprintf(`SELECT subject, EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))::float8 AS lag_seconds
+		failSQL: fmt.Sprintf(`UPDATE %s o SET
+    attempts = o.attempts + 1,
+    last_error = f.err,
+    dead_at = CASE WHEN f.dead THEN NOW() ELSE o.dead_at END
+FROM unnest($1::bigint[], $2::text[], $3::bool[]) AS f(id, err, dead)
+WHERE o.id = f.id`, table),
+		backlogSQL: fmt.Sprintf(`SELECT subject,
+    EXTRACT(EPOCH FROM (NOW() - MIN(created_at)))::float8 AS lag_seconds,
+    COUNT(*) AS pending
 FROM %s
-WHERE published_at IS NULL
+WHERE published_at IS NULL AND dead_at IS NULL
 GROUP BY subject`, table),
 	}, nil
 }
@@ -79,7 +88,7 @@ func (s *Store) ListUnpublished(ctx context.Context, limit int) ([]outboxkit.Mes
 	var msgs []outboxkit.Message
 	for rows.Next() {
 		var m outboxkit.Message
-		if err := rows.Scan(&m.ID, &m.Subject, &m.Payload); err != nil {
+		if err := rows.Scan(&m.ID, &m.Subject, &m.Payload, &m.Attempts); err != nil {
 			return nil, fmt.Errorf("outboxkit: scan: %w", err)
 		}
 		msgs = append(msgs, m)
@@ -100,24 +109,45 @@ func (s *Store) MarkPublished(ctx context.Context, ids []int64) error {
 	return nil
 }
 
-// LagBySubject реализует outboxkit.LagReporter — возвращает возраст
-// самого старого неопубликованного события для каждого subject'а.
-// Используется outboxkit.RegisterLagGauge для экспонирования
-// `outbox_lag_seconds{subject}` как ObservableGauge.
-func (s *Store) LagBySubject(ctx context.Context) (map[string]time.Duration, error) {
-	rows, err := s.db.Query(ctx, s.lagSQL)
+// RecordFailures инкрементит attempts/last_error для неудачных публикаций и
+// помечает dead_at у тех, кто исчерпал MaxAttempts (Failure.Dead). Одним
+// UPDATE через unnest. Мёртвые строки далее не вычитываются ListUnpublished.
+func (s *Store) RecordFailures(ctx context.Context, failures []outboxkit.Failure) error {
+	if len(failures) == 0 {
+		return nil
+	}
+	ids := make([]int64, len(failures))
+	errs := make([]string, len(failures))
+	dead := make([]bool, len(failures))
+	for i, f := range failures {
+		ids[i] = f.ID
+		errs[i] = f.Err
+		dead[i] = f.Dead
+	}
+	if _, err := s.db.Exec(ctx, s.failSQL, ids, errs, dead); err != nil {
+		return fmt.Errorf("outboxkit: record failures: %w", err)
+	}
+	return nil
+}
+
+// Backlog реализует outboxkit.BacklogReporter — возраст самого старого и
+// количество неопубликованных (не-dead) событий по каждому subject'у.
+// Питает `outbox_lag_seconds`/`outbox_pending_count` через RegisterBacklogGauges.
+func (s *Store) Backlog(ctx context.Context) ([]outboxkit.SubjectBacklog, error) {
+	rows, err := s.db.Query(ctx, s.backlogSQL)
 	if err != nil {
-		return nil, fmt.Errorf("outboxkit: lag query: %w", err)
+		return nil, fmt.Errorf("outboxkit: backlog query: %w", err)
 	}
 	defer rows.Close()
-	out := make(map[string]time.Duration)
+	var out []outboxkit.SubjectBacklog
 	for rows.Next() {
-		var subj string
+		var b outboxkit.SubjectBacklog
 		var seconds float64
-		if err := rows.Scan(&subj, &seconds); err != nil {
-			return nil, fmt.Errorf("outboxkit: lag scan: %w", err)
+		if err := rows.Scan(&b.Subject, &seconds, &b.Pending); err != nil {
+			return nil, fmt.Errorf("outboxkit: backlog scan: %w", err)
 		}
-		out[subj] = time.Duration(seconds * float64(time.Second))
+		b.Oldest = time.Duration(seconds * float64(time.Second))
+		out = append(out, b)
 	}
 	return out, rows.Err()
 }

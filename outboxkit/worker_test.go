@@ -12,6 +12,7 @@ import (
 type fakeRepo struct {
 	unpublished []outboxkit.Message
 	marked      []int64
+	failures    []outboxkit.Failure
 	markErr     error
 }
 
@@ -30,6 +31,21 @@ func (r *fakeRepo) MarkPublished(_ context.Context, ids []int64) error {
 	}
 	r.marked = append(r.marked, ids...)
 	return nil
+}
+
+func (r *fakeRepo) RecordFailures(_ context.Context, failures []outboxkit.Failure) error {
+	r.failures = append(r.failures, failures...)
+	return nil
+}
+
+func deadIDs(fs []outboxkit.Failure) []int64 {
+	var ids []int64
+	for _, f := range fs {
+		if f.Dead {
+			ids = append(ids, f.ID)
+		}
+	}
+	return ids
 }
 
 type fakeTransport struct {
@@ -145,6 +161,41 @@ func TestWorkerMarkErrorSurfaces(t *testing.T) {
 	}
 	if len(repo.marked) != 0 {
 		t.Fatalf("marked = %v, want none", repo.marked)
+	}
+}
+
+func TestWorkerPoisonGoesDeadAfterMaxAttempts(t *testing.T) {
+	repo := &fakeRepo{unpublished: []outboxkit.Message{
+		{ID: 1, Subject: "boom", Payload: json.RawMessage(`{}`), Attempts: 1}, // след. попытка — 2-я
+		{ID: 2, Subject: "young", Payload: json.RawMessage(`{}`), Attempts: 0},
+	}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak"), "young": errors.New("nak")}}
+	w := outboxkit.NewWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, MaxAttempts: 2})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected error on publish failure")
+	}
+	if len(repo.failures) != 2 {
+		t.Fatalf("failures = %d, want 2", len(repo.failures))
+	}
+	// id=1 достиг 2 попыток → dead; id=2 (1-я попытка) — нет.
+	if got := deadIDs(repo.failures); len(got) != 1 || got[0] != 1 {
+		t.Fatalf("dead = %v, want {1}", got)
+	}
+}
+
+func TestWorkerUnlimitedAttemptsNeverDead(t *testing.T) {
+	repo := &fakeRepo{unpublished: []outboxkit.Message{
+		{ID: 1, Subject: "boom", Payload: json.RawMessage(`{}`), Attempts: 99},
+	}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
+	w := outboxkit.NewWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, MaxAttempts: 0})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected error")
+	}
+	if got := deadIDs(repo.failures); len(got) != 0 {
+		t.Fatalf("dead = %v, want none (MaxAttempts=0 → unlimited)", got)
 	}
 }
 

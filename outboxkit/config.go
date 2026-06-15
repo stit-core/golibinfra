@@ -24,6 +24,9 @@ type Config struct {
 	BatchSize   int           `envconfig:"OUTBOX_BATCH_SIZE"   default:"100"`
 	Interval    time.Duration `envconfig:"OUTBOX_INTERVAL"     default:"1s"`
 	PublishMode PublishMode   `envconfig:"OUTBOX_PUBLISH_MODE" default:"batch"`
+	// MaxAttempts <= 0 — без ограничения (ретрай вечно, как раньше); иначе после
+	// N неудачных попыток строка помечается dead и больше не публикуется.
+	MaxAttempts int `envconfig:"OUTBOX_MAX_ATTEMPTS" default:"0"`
 }
 
 func NewConfig() (Config, error) {
