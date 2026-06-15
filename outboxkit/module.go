@@ -12,11 +12,14 @@ import (
 // Repository — внешняя зависимость; caller подключает отдельно: либо
 // `outboxkit/pgstore.Module`, либо собственный store-адаптер.
 // Конфиг тоже не provide'ится — caller добавляет `fx.Provide(outboxkit.NewConfig)`.
+// Worker публикует в JetStream через natskit.StreamBus — требует
+// NATS_JETSTREAM_ENABLED=true и стрим, покрывающий subject'ы outbox'а.
 var Module = fx.Module(
 	"outboxkit",
 	fx.Provide(
 		NewBus,
 		func(b *Bus) Publisher { return b },
+		NewStreamTransport,
 		NewWorker,
 		fx.Annotate(
 			func(w *Worker, cfg Config) timerkit.Job {

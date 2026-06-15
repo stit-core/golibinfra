@@ -26,7 +26,7 @@ var Module = fx.Module(
 
 func PartitionKeeperJob(s *Store) timerkit.Job {
 	return timerkit.Job{
-		Name:     "outboxkit.partition-keeper",
+		Name:     "outboxkit.partition-keeper." + s.table,
 		Interval: 24 * time.Hour,
 		Run:      func(ctx context.Context) error { return s.EnsurePartitions(ctx, 1) },
 	}

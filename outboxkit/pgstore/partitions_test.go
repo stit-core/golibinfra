@@ -10,8 +10,8 @@ import (
 )
 
 func TestPartitionSQL_Naming(t *testing.T) {
-	name, sql := pgstore.PartitionSQL(time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC))
-	if name != "outbox_2026_05" {
+	name, sql := pgstore.PartitionSQL("outbox_orders", time.Date(2026, 5, 15, 0, 0, 0, 0, time.UTC))
+	if name != "outbox_orders_2026_05" {
 		t.Fatalf("name: %s", name)
 	}
 	if sql == "" {
@@ -20,8 +20,19 @@ func TestPartitionSQL_Naming(t *testing.T) {
 }
 
 func TestSchemaSQL_NotEmpty(t *testing.T) {
-	if pgstore.SchemaSQL() == "" {
+	if pgstore.SchemaSQL("outbox") == "" {
 		t.Fatal("schema sql is empty")
+	}
+}
+
+func TestNewStoreFor_Validation(t *testing.T) {
+	if _, err := pgstore.NewStoreFor(nil, "outbox_orders"); err != nil {
+		t.Fatalf("valid table rejected: %v", err)
+	}
+	for _, bad := range []string{"", "Orders", "outbox orders", "1outbox", "outbox;drop"} {
+		if _, err := pgstore.NewStoreFor(nil, bad); err == nil {
+			t.Fatalf("invalid table %q accepted", bad)
+		}
 	}
 }
 
@@ -52,7 +63,7 @@ func TestStore_PartitionedDrain(t *testing.T) {
 		t.Fatalf("want 5 unpublished, got %d", len(msgs))
 	}
 	for _, m := range msgs {
-		if err := s.MarkPublished(ctx, m.ID); err != nil {
+		if err := s.MarkPublished(ctx, []int64{m.ID}); err != nil {
 			t.Fatalf("MarkPublished: %v", err)
 		}
 	}

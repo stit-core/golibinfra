@@ -41,7 +41,7 @@ func newOutboxInstruments() *outboxInstruments {
 		metric.WithUnit("s"),
 	)
 	pubDur, _ := m.Float64Histogram("outbox_publish_duration_seconds",
-		metric.WithDescription("Time to publish + mark single event"),
+		metric.WithDescription("Duration of the batch publish phase per worker tick"),
 		metric.WithUnit("s"),
 	)
 	return &outboxInstruments{

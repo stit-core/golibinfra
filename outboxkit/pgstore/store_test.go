@@ -43,6 +43,51 @@ type sample struct {
 	N   int    `json:"n"`
 }
 
+func TestStore_CustomTable(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	migDir := extractMigrations(t)
+	fx := testkit.StartPostgres(t, migDir)
+	db := fx.DB(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const table = "outbox_orders"
+	if _, err := db.Exec(ctx, pgstore.SchemaSQL(table)); err != nil {
+		t.Fatalf("schema: %v", err)
+	}
+	s, err := pgstore.NewStoreFor(db, table)
+	if err != nil {
+		t.Fatalf("NewStoreFor: %v", err)
+	}
+	if err := s.EnsurePartitions(ctx, 1); err != nil {
+		t.Fatalf("ensure partitions: %v", err)
+	}
+
+	if err := s.Insert(ctx, "order.created", sample{Foo: "x", N: 1}); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	msgs, err := s.ListUnpublished(ctx, 10)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(msgs) != 1 || msgs[0].Subject != "order.created" {
+		t.Fatalf("unexpected msgs: %+v", msgs)
+	}
+	if err := s.MarkPublished(ctx, []int64{msgs[0].ID}); err != nil {
+		t.Fatalf("mark: %v", err)
+	}
+	left, err := s.ListUnpublished(ctx, 10)
+	if err != nil {
+		t.Fatalf("list after mark: %v", err)
+	}
+	if len(left) != 0 {
+		t.Fatalf("want 0 unpublished, got %d", len(left))
+	}
+}
+
 func TestStore_HappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
@@ -72,7 +117,7 @@ func TestStore_HappyPath(t *testing.T) {
 		t.Fatalf("subject mismatch: %s", msgs[0].Subject)
 	}
 
-	if err := s.MarkPublished(ctx, msgs[0].ID); err != nil {
+	if err := s.MarkPublished(ctx, []int64{msgs[0].ID}); err != nil {
 		t.Fatalf("MarkPublished: %v", err)
 	}
 
