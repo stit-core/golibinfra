@@ -1,5 +1,5 @@
 // Package timerkit — periodic jobs через fx group: сервис регистрирует
-// Job (Name, Interval, Run) в группу `timerkit.job`, а Module
+// Job (Name, Interval, Run) в группу `timer.job`, а Module
 // подхватывает их в fx.Lifecycle, запускает каждый по тикеру и ловит
 // panic'и без падения процесса.
 package timerkit

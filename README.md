@@ -13,7 +13,7 @@ auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Mod
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
-[![Kits](https://img.shields.io/badge/kits-18-0ea5e9)](#пакеты)
+[![Kits](https://img.shields.io/badge/kits-22-0ea5e9)](#пакеты)
 
 </div>
 
@@ -82,10 +82,13 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 
 ## Пакеты
 
-Per-kit `README.md` в каталогах китов осознанно **не заводим**: единый источник
-правды по каждому киту — эта таблица (ответственность) + § Стабильность API
-(public-конфиги) + § Что эмитит каждый пакет (телеметрия). Ссылка
-`[<kit>](<kit>/)` ведёт прямо в исходники.
+У каждого кита — собственный `README.md` рядом с его кодом: назначение, быстрый
+старт, конфигурация, observability, API, инварианты. Это и есть единый источник
+правды по киту. У сложных китов (`amocrmkit`, `anthropickit`, `authnkit`,
+`grpckit`, `httpkit`, `natskit`, `outboxkit`, `pgkit`) сверх README есть каталог
+`docs/` (`architecture.md`, `configuration.md`, `observability.md`, `usage.md`,
+`testing.md`). Таблица ниже — тонкий индекс: ответственность + ссылка
+`[<kit>](<kit>/)` открывает README кита.
 
 | Пакет | Ответственность |
 |---|---|
@@ -96,7 +99,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus`, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
 | [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel и автопередачей `X-Request-ID` |
 | [`amocrmkit`](amocrmkit/) | Транспорт к amoCRM: REST v4 (Bearer) + amoJo Chat (HMAC-SHA1) + Drive + OAuth2; per-account rate-limit (7 rps), таксономия ошибок (`ErrAuth/ErrRateLimited/…`), `TokenSource`; обёртка над `httpclient`/`clockkit`/`logkit` |
-| [`claudekit`](claudekit/) | Клиент Claude (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, прайс-таблица), Managed Agents через `Raw()`; `testkit/claudetest` |
+| [`anthropickit`](anthropickit/) | Клиент Anthropic (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, прайс-таблица), Managed Agents через `Raw()`; `testkit/anthropictest` |
 | [`grpcclient`](grpcclient/) | gRPC-клиент: `*grpc.ClientConn` + otel (StatsHandler), access-log, keepalive, `PerRPCCredentials` (bearer-токен из env) |
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
@@ -106,8 +109,8 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
 | [`outboxkit`](outboxkit/) | Transactional outbox: Worker публикует в JetStream (`MarkPublished` батчем после PubAck; `OUTBOX_PUBLISH_MODE` batch\|ordered), poison→dead после `OUTBOX_MAX_ATTEMPTS`, retention партиций `OUTBOX_RETENTION_MONTHS`, `BacklogReporter` для `outbox_lag_seconds`/`outbox_pending_count`. `Module` — один инстанс (таблица `outbox`); `outboxkit.New` + `pgstore.NewStoreFor(db, table)` + `NewStreamTransportFor(sb, namespace)` — несколько (таблица на инстанс, namespaced Msg-Id) |
-| [`auditkit`](auditkit/) | Audit-log: `Entry`/`Recorder`, core+pgstore split |
-| [`bruteforcekit`](bruteforcekit/) | Brute-force guard: per-subject + per-IP счётчики, `LockState`, core+pgstore split |
+| [`auditkit`](auditkit/) | Audit-log: `Entry`/`Logger`, core+pgstore split |
+| [`bruteforcekit`](bruteforcekit/) | Brute-force guard: счётчик попыток по паре (subject, IP), `LockState`, core+pgstore split |
 | [`clockkit`](clockkit/) | `Clock` + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers; per-kit subpackages |
@@ -129,7 +132,7 @@ Per-kit `README.md` в каталогах китов осознанно **не �
 | `STORAGE_S3_ENDPOINT` | `storagekit` | S3 / MinIO object storage |
 | `NATS_URL` | `natskit` | NATS / JetStream |
 | `REDIS_URL` | `cachekit` | Redis (cache + idempotency store) |
-| `CLAUDE_BASE_URL` | `claudekit` | Anthropic API host (default `api.anthropic.com`); ключ — `CLAUDE_API_KEY` (Vault) |
+| `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host (default `api.anthropic.com`); ключ — `ANTHROPIC_API_KEY` (Vault) |
 | `GRPC_ADDR` | `grpckit` | bind gRPC-сервера (HTTP/2; default `:9090`) |
 | `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`, Vault) |
 
@@ -177,7 +180,7 @@ Database / Bus / Outbox / Logs / Traces** — без правок.
 ### Business-метрики (`biz_*`)
 
 Свои метрики бизнес-уровня — через `bizmetric` (форсит конвенцию
-`biz_<domain>_<event>_total|_seconds|_<gauge>`, panic при нарушении):
+`biz_<domain>_<event>_total|_seconds|<gauge>`, panic при нарушении):
 
 ```go
 logins := bizmetric.Counter(meter, "auth", "login_attempts")  // → biz_auth_login_attempts_total
@@ -189,26 +192,13 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 инвентарь метрик —
 [`observability-metrics-inventory.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/observability-metrics-inventory.md).
 
-### Что эмитит каждый пакет (короткий reference)
+### Что эмитит каждый пакет
 
-| Пакет | Метрики | Спаны |
-|---|---|---|
-| `telemetry` | runtime (`go_*`, `process_*` ≈ 200 метрик) | — |
-| `logkit` | `log_messages_total{level}` | — (slog инжектит `trace_id`/`span_id`) |
-| `httpkit` | `http_requests_total`, `http_request_duration_seconds`, `http_panics_total`, `http_max_body_rejections_total`, `http_idempotency_total` | server span (`otelhttp`) |
-| `httpclient` | `http_client_request_duration_seconds`, `http_client_breaker_*`, `http_client_retry_attempts_total` | client span |
-| `amocrmkit` | `amocrm_api_calls_total{endpoint,status}`, `amocrm_api_duration_seconds{endpoint}`, `amocrm_rate_limited_total{account}`, `amocrm_oauth_refresh_total{status}` | client span (наследует `httpclient`) |
-| `claudekit` | `claude_api_calls_total{model,status}`, `claude_api_latency_seconds`, `claude_api_tokens_total{model,kind}`, `claude_api_cost_micros_total{model}` | — (HTTP-span ведёт SDK) |
-| `grpckit` / `grpcclient` | `rpc.server.*` / `rpc.client.*` (otelgrpc: duration, msg-sizes) | server / client span (`otelgrpc` StatsHandler) |
-| `pgkit` | `db_pool_*` (9 метрик) | per-query span (`otelpgx`) |
-| `storagekit` | — | — |
-| `natskit` | `nats_messages_*`, `nats_{publish,handle}_duration_seconds`, `nats_inflight_messages` | producer + consumer spans (trace-propagation) |
-| `outboxkit` | `outbox_events_*` (incl. `_dead_total`), `outbox_batch_*`, `outbox_publish_duration_seconds`, `outbox_lag_seconds`/`outbox_pending_count` (opt-in) | worker span |
-| `authnkit` | `jwt_verifications_total`, `password_*_duration_seconds`, `totp_verifications_total` | — |
-| `bizmetric` | `biz_<domain>_<event>_total\|_seconds\|<gauge>` | — |
-
-Все labels автоматически дополняются resource attrs otel-collector'ом
-(`resource_to_telemetry_conversion: true`).
+Точный перечень сигналов кита (метрики — имена, типы, labels; спаны) живёт в его
+README § Observability — у сложных китов в `docs/observability.md`. Там же
+помечено, что эмитится opt-in (например `outbox_lag_seconds` / `outbox_pending_count`
+— только при подключённом `BacklogReporter`). Все labels автоматически дополняются
+resource attrs otel-collector'ом (`resource_to_telemetry_conversion: true`).
 
 ### Anti-patterns
 
@@ -220,14 +210,10 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 
 ## Стабильность API
 
-Публичные структуры конфигов (`pgkit.PoolConfig`, `pgkit.ReplicaConfig`,
-`storagekit.Config`, `httpkit.Config`, `httpkit.SecurityHeadersConfig`,
-`httpkit.IdempotencyConfig`, `telemetry.Config`, `logkit.Config`,
-`logkit.RedactConfig`, `authnkit.Argon2idParams`, `cachekit.Config`,
-`flagkit.Config`, `natskit.Config`, `httpclient.BreakerConfig`,
-`claudekit.Config`, `grpckit.Config`, `grpcclient.Config`,
-`config.VaultClientConfig`) — **part of public API**. Менять имена/типы полей или
-их envconfig-теги = breaking change, идёт мажорным апгрейдом.
+Публичные конфиг-структуры китов (их поля и envconfig-теги) — **part of public
+API**: менять имена/типы полей или теги = breaking change, идёт мажорным
+апгрейдом. Полный перечень полей с пометкой стабильности — в README каждого кита
+§ Конфигурация (у сложных китов — `docs/configuration.md`).
 
 ## Версионирование
 

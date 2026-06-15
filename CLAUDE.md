@@ -11,7 +11,8 @@ auth, БД, messaging, кэш, аудит и т.д. Не сервис и не st
 ## Точка входа
 
 - **Добавить новый kit** — skill `/add-kit` (scaffold пакета по конвенциям:
-  `Module`/fx, observability-by-default, envconfig, строка в README, testkit-сабпакет).
+  `Module`/fx, observability-by-default, envconfig, README кита (+ `docs/` у
+  сложного), строка-индекс в корневом README, testkit-сабпакет).
 - **Выпустить версию** — skill `/release` (`git tag vX.Y.Z` + push + гайд апдейта консьюмера).
 - Точечная правка существующего kit'а — прямой Edit; scaffold не нужен.
 
@@ -29,9 +30,11 @@ go build ./...                    # build
 
 ## Карта пакетов
 
-Полный список с эмитимыми сигналами — `README.md § Пакеты`. Кратко: `telemetry`
+Полный список — `README.md § Пакеты` (тонкий индекс). Назначение, конфиг и
+эмитимые сигналы каждого кита — в его `README.md` рядом с кодом (у сложных китов
+ещё `docs/`); это единый источник правды по киту. Кратко: `telemetry`
 (OTel bootstrap), `logkit` (slog + PII-redact + trace-id), `httpkit` (huma/chi
-server + middleware), `httpclient` (retry + circuit breaker), `claudekit` (Claude
+server + middleware), `httpclient` (retry + circuit breaker), `anthropickit` (Anthropic
 API: Messages + usage/cost), `grpckit` (gRPC-сервер) + `grpcclient` (gRPC-клиент),
 `pgkit` (pgx pool +
 otelpgx), `natskit` (NATS/JetStream), `outboxkit` (outbox + lag-reporter),
@@ -78,8 +81,10 @@ otelpgx), `natskit` (NATS/JetStream), `outboxkit` (outbox + lag-reporter),
 
 ### Делать всегда
 - Перед claim «готово» — `golangci-lint run` + `go test -short -race` + `go build` зелёные.
-- Новый kit — через `/add-kit`; строка в `README.md § Пакеты` обязательна.
-- Тронул эмитимые метрики/labels/span-attrs — обнови `README.md § Что эмитит каждый пакет`.
+- Новый kit — через `/add-kit`; собственный `README.md` кита (+ `docs/` у сложного)
+  и строка-индекс в `README.md § Пакеты` обязательны.
+- Тронул конфиг / эмитимые метрики / labels / span-attrs — обнови `README.md`
+  (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability).
 
 ### Сначала спросить
 - Менять public конфиг-структуры (имена полей, envconfig-теги, типы) — breaking, нужен major.

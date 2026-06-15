@@ -1,6 +1,6 @@
 ---
 name: add-kit
-description: Добавить новый kit (пакет) в golibinfra по конвенциям библиотеки — package-doc, fx Module, опц. envconfig-конфиг, observability-by-default, тесты, testkit-сабпакет, строка в README и карте CLAUDE.md. Активируй когда юзер говорит "/add-kit", "добавь kit", "новый пакет в golibinfra", "заведи <name>kit", "нужен переиспользуемый примитив X". Для правки существующего kit'а скилл НЕ нужен — это прямой Edit.
+description: Добавить новый kit (пакет) в golibinfra по конвенциям библиотеки — package-doc, fx Module, опц. envconfig-конфиг, observability-by-default, тесты, testkit-сабпакет, README кита (+ docs/ у сложного) и строка-индекс в корневом README и карте CLAUDE.md. Активируй когда юзер говорит "/add-kit", "добавь kit", "новый пакет в golibinfra", "заведи <name>kit", "нужен переиспользуемый примитив X". Для правки существующего kit'а скилл НЕ нужен — это прямой Edit.
 ---
 
 # Skill: add-kit
@@ -38,8 +38,13 @@ description: Добавить новый kit (пакет) в golibinfra по к�
    `testkit/<name>test/`, где `<name>` — имя кита **без** суффикса `kit`
    (`cachekit` → `testkit/cachetest/`; см. соседние `authntest` от `authnkit`,
    `bruteforcetest` от `bruteforcekit`).
-6. **Документация.** Добавь строку в `README.md § Пакеты` (slug + ответственность +
-   что эмитит) и в карту пакетов в `CLAUDE.md`. Без этого kit «невидим».
+6. **Документация.** Заведи `<kit>/README.md` (назначение, импорт, быстрый старт,
+   конфигурация, observability, API, инварианты) — это единый источник правды по
+   киту. Для сложного кита разнеси детали по `<kit>/docs/` (`architecture.md`,
+   `configuration.md`, `observability.md`, `usage.md`, `testing.md`), оставив README
+   компактным со ссылками. Плюс строка-индекс в `README.md § Пакеты` (slug +
+   ответственность + ссылка `[<kit>](<kit>/)`) и в карту пакетов в `CLAUDE.md`. Без
+   README kit «невидим».
 7. **Gate.** `golangci-lint run ./...` + `go test -short -race ./...` + `go build ./...`
    зелёные перед claim «готово».
 

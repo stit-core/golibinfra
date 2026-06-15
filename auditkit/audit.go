@@ -1,5 +1,5 @@
 // Package auditkit — append-only audit-log: core-абстракция (Entry,
-// Recorder) отделена от pgstore-реализации. Кит фиксирует кто/когда/что
+// Logger) отделена от pgstore-реализации. Кит фиксирует кто/когда/что
 // сделал над каким ресурсом (actor_id, action, resource, metadata),
 // чтобы compliance и forensics-запросы не приходилось склеивать из
 // разрозненных логов.
