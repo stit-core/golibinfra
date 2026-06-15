@@ -53,6 +53,9 @@ func TestStreamBus_Disabled(t *testing.T) {
 	if err := sb.PublishStream(context.Background(), "x.y", []byte("{}")); err == nil {
 		t.Fatal("expected ErrJetStreamDisabled")
 	}
+	if _, err := sb.PublishStreamBatch(context.Background(), []natskit.StreamMsg{{Subject: "x.y", Payload: []byte("{}")}}); err == nil {
+		t.Fatal("expected ErrJetStreamDisabled from batch")
+	}
 }
 
 func TestStreamBus_WildcardSubjectInContext(t *testing.T) {
@@ -232,5 +235,72 @@ func TestStreamBus_PublishBatchDedup(t *testing.T) {
 	}
 	if seen[1] != 1 || seen[2] != 1 {
 		t.Fatalf("seen = %v, want {1:1, 2:1}", seen)
+	}
+}
+
+func TestStreamBus_PublishBatchPartialError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+	url := startJetStreamNATS(t)
+	nc, err := natsgo.Connect(url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	conn := natskit.ExportConn(nc)
+
+	cfg := natskit.Config{
+		JetStream: natskit.JetStreamConfig{
+			Enabled:     true,
+			StreamNames: []string{"ORDERS"},
+			Retention:   "limits",
+			MaxAge:      time.Hour,
+			MaxInFlight: 32,
+			AckWait:     5 * time.Second,
+		},
+	}
+	sb, err := natskit.NewStreamBus(conn, logkit.Nop(), cfg)
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+
+	delivered := make(chan struct{}, 8)
+	if err := sb.SubscribeStream(context.Background(), "ORDERS", "ORDERS.created", "orders-partial",
+		func(context.Context, []byte) error {
+			delivered <- struct{}{}
+			return nil
+		}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+
+	oversized := make([]byte, 2<<20) // > server max_payload (1 MiB) → ErrMaxPayload
+	batch := []natskit.StreamMsg{
+		{Subject: "ORDERS.created", Payload: []byte(`{"id":1}`)},
+		{Subject: "ORDERS.created", Payload: oversized},
+		{Subject: "ORDERS.created", Payload: []byte(`{"id":3}`)},
+	}
+	results, err := sb.PublishStreamBatch(context.Background(), batch)
+	if err != nil {
+		t.Fatalf("PublishStreamBatch: %v", err)
+	}
+	if results[0] != nil || results[2] != nil {
+		t.Fatalf("валидные сообщения зафейлились: results=%v", results)
+	}
+	if results[1] == nil {
+		t.Fatal("oversized должно было зафейлиться (results[1] == nil)")
+	}
+
+	for i := 0; i < 2; i++ {
+		select {
+		case <-delivered:
+		case <-time.After(10 * time.Second):
+			t.Fatal("timeout waiting for valid deliveries")
+		}
+	}
+	select {
+	case <-delivered:
+		t.Fatal("лишняя доставка — oversized всё-таки опубликовалось")
+	case <-time.After(1 * time.Second):
 	}
 }

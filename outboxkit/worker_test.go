@@ -12,6 +12,7 @@ import (
 type fakeRepo struct {
 	unpublished []outboxkit.Message
 	marked      []int64
+	markErr     error
 }
 
 func (r *fakeRepo) Insert(context.Context, string, any) error { return nil }
@@ -24,6 +25,9 @@ func (r *fakeRepo) ListUnpublished(_ context.Context, limit int) ([]outboxkit.Me
 }
 
 func (r *fakeRepo) MarkPublished(_ context.Context, ids []int64) error {
+	if r.markErr != nil {
+		return r.markErr
+	}
 	r.marked = append(r.marked, ids...)
 	return nil
 }
@@ -121,6 +125,26 @@ func TestWorkerOrderedStopsAtFirstFailure(t *testing.T) {
 	}
 	if len(tr.published) != 1 || tr.published[0] != "a" {
 		t.Fatalf("published = %v, want [a] (stop before id=3)", tr.published)
+	}
+}
+
+func TestWorkerMarkErrorSurfaces(t *testing.T) {
+	repo := &fakeRepo{
+		unpublished: []outboxkit.Message{
+			{ID: 1, Subject: "a", Payload: json.RawMessage(`{}`)},
+		},
+		markErr: errors.New("db down"),
+	}
+	tr := &fakeTransport{}
+	w := outboxkit.NewWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
+
+	// Публикация прошла, mark упал → ошибка наружу, строка остаётся unpublished
+	// (переотправится; дедуп по MsgID убережёт от дубля в стриме).
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected error when MarkPublished fails")
+	}
+	if len(repo.marked) != 0 {
+		t.Fatalf("marked = %v, want none", repo.marked)
 	}
 }
 

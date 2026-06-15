@@ -69,10 +69,6 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 		t.Fatal("handler not invoked")
 	}
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatal(err)
-	}
 	want := map[string]bool{
 		"nats_messages_published_total": false,
 		"nats_publish_duration_seconds": false,
@@ -80,12 +76,32 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 		"nats_handle_duration_seconds":  false,
 		"nats_inflight_messages":        false,
 	}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if _, ok := want[m.Name]; ok {
-				want[m.Name] = true
+	// consumed/handle-метрики пишутся в defer хендлера — уже после wg.Done,
+	// поэтому собираем с ретраем, не ловя гонку «хендлер вызван, defer ещё нет».
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		var rm metricdata.ResourceMetrics
+		if err := reader.Collect(context.Background(), &rm); err != nil {
+			t.Fatal(err)
+		}
+		for _, sm := range rm.ScopeMetrics {
+			for _, m := range sm.Metrics {
+				if _, ok := want[m.Name]; ok {
+					want[m.Name] = true
+				}
 			}
 		}
+		missing := false
+		for _, found := range want {
+			if !found {
+				missing = true
+				break
+			}
+		}
+		if !missing || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	for name, found := range want {
 		if !found {
