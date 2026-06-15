@@ -37,6 +37,13 @@ func Conn(ctx context.Context, pool *pgxpool.Pool) DBTX {
 	return pool
 }
 
+// InTx сообщает, несёт ли ctx активную транзакцию (открытую Transactor.WithTx).
+// Нужно коду, которому важна атомарность с бизнес-записью (напр. outbox-insert).
+func InTx(ctx context.Context) bool {
+	_, ok := ctx.Value(txCtxKey{}).(pgx.Tx)
+	return ok
+}
+
 func (t *PoolTransactor) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	if _, ok := ctx.Value(txCtxKey{}).(pgx.Tx); ok {
 		return fn(ctx)

@@ -44,6 +44,49 @@ type sample struct {
 	N   int    `json:"n"`
 }
 
+func TestStore_RequireTx_NoTxErrors(t *testing.T) {
+	s := pgstore.NewStore(nil, pgstore.WithRequireTx())
+	if err := s.Insert(context.Background(), "evt", sample{N: 1}); err == nil {
+		t.Fatal("expected error: Insert вне транзакции при WithRequireTx")
+	}
+}
+
+func TestStore_RequireTx_WithinTx(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	migDir := extractMigrations(t)
+	fix := testkit.StartPostgres(t, migDir)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	pool, err := pgxpool.New(ctx, fix.DSN)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	s := pgstore.NewStore(pgkit.NewDB(pool), pgstore.WithRequireTx())
+	tr := pgkit.NewPoolTransactor(pool)
+
+	// вне транзакции — отказ.
+	if err := s.Insert(ctx, "evt", sample{N: 1}); err == nil {
+		t.Fatal("expected error outside tx")
+	}
+
+	// внутри WithTx — успех, строка коммитится атомарно.
+	if err := tr.WithTx(ctx, func(ctx context.Context) error {
+		return s.Insert(ctx, "evt", sample{N: 2})
+	}); err != nil {
+		t.Fatalf("insert within tx: %v", err)
+	}
+
+	msgs, err := s.ListUnpublished(ctx, 10)
+	if err != nil || len(msgs) != 1 {
+		t.Fatalf("list: %v len=%d (ожидалась только запись из tx)", err, len(msgs))
+	}
+}
+
 func TestStore_PoisonAndBacklog(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")

@@ -8,6 +8,7 @@ import (
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
@@ -20,7 +21,7 @@ import (
 var Module = fx.Module(
 	"outboxkit/pgstore",
 	fx.Provide(
-		NewStore,
+		newStoreFromConfig,
 		NewConfig,
 		fx.Annotate(func(s *Store) outboxkit.Repository { return s }),
 		fx.Annotate(PartitionKeeperJob, fx.ResultTags(`group:"timer.job"`)),
@@ -32,12 +33,21 @@ var Module = fx.Module(
 )
 
 type Config struct {
-	RetentionMonths int `envconfig:"OUTBOX_RETENTION_MONTHS" default:"0"`
+	RetentionMonths int  `envconfig:"OUTBOX_RETENTION_MONTHS" default:"0"`
+	RequireTx       bool `envconfig:"OUTBOX_REQUIRE_TX" default:"false"`
 }
 
 func NewConfig() (Config, error) {
 	var c Config
 	return c, envconfig.Process("", &c)
+}
+
+func newStoreFromConfig(db *pgkit.DB, cfg Config) *Store {
+	var opts []StoreOption
+	if cfg.RequireTx {
+		opts = append(opts, WithRequireTx())
+	}
+	return NewStore(db, opts...)
 }
 
 func PartitionKeeperJob(s *Store) timerkit.Job {

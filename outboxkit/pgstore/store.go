@@ -20,8 +20,9 @@ const DefaultTable = "outbox"
 var tableNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 
 type Store struct {
-	db    *pgkit.DB
-	table string
+	db        *pgkit.DB
+	table     string
+	requireTx bool
 
 	insertSQL  string
 	listSQL    string
@@ -30,24 +31,33 @@ type Store struct {
 	backlogSQL string
 }
 
+type StoreOption func(*Store)
+
+// WithRequireTx требует, чтобы Insert вызывался внутри транзакции (pgkit
+// Transactor.WithTx) — иначе ошибка. Защищает инвариант outbox: событие
+// пишется атомарно с бизнес-стейтом, а не отдельным коннектом из пула.
+func WithRequireTx() StoreOption {
+	return func(s *Store) { s.requireTx = true }
+}
+
 // NewStore строит Store на таблицу DefaultTable (single-instance путь, fx Module).
-func NewStore(db *pgkit.DB) *Store {
-	s, _ := newStore(db, DefaultTable) // DefaultTable валиден по построению
+func NewStore(db *pgkit.DB, opts ...StoreOption) *Store {
+	s, _ := newStore(db, DefaultTable, opts...) // DefaultTable валиден по построению
 	return s
 }
 
 // NewStoreFor строит Store на произвольную таблицу — для нескольких независимых
 // outbox-инстансов в одном приложении (таблица на инстанс). Имя валидируется;
 // схему/партиции под кастомную таблицу заводит caller (SchemaSQL/PartitionSQL).
-func NewStoreFor(db *pgkit.DB, table string) (*Store, error) {
-	return newStore(db, table)
+func NewStoreFor(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error) {
+	return newStore(db, table, opts...)
 }
 
-func newStore(db *pgkit.DB, table string) (*Store, error) {
+func newStore(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error) {
 	if !tableNameRe.MatchString(table) {
 		return nil, fmt.Errorf("outboxkit: invalid table name %q", table)
 	}
-	return &Store{
+	s := &Store{
 		db:        db,
 		table:     table,
 		insertSQL: fmt.Sprintf(`INSERT INTO %s (subject, payload, created_at) VALUES ($1, $2, NOW())`, table),
@@ -65,10 +75,17 @@ WHERE o.id = f.id`, table),
 FROM %s
 WHERE published_at IS NULL AND dead_at IS NULL
 GROUP BY subject`, table),
-	}, nil
+	}
+	for _, o := range opts {
+		o(s)
+	}
+	return s, nil
 }
 
 func (s *Store) Insert(ctx context.Context, subject string, payload any) error {
+	if s.requireTx && !pgkit.InTx(ctx) {
+		return fmt.Errorf("outboxkit: Insert требует активной транзакции (WithRequireTx) — оберни в pgkit Transactor.WithTx")
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return fmt.Errorf("outboxkit: marshal: %w", err)

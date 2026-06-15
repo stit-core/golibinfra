@@ -4,11 +4,14 @@ CREATE TABLE outbox (
     payload      JSONB        NOT NULL,
     created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
     published_at TIMESTAMPTZ,
+    attempts     INT          NOT NULL DEFAULT 0,
+    last_error   TEXT,
+    dead_at      TIMESTAMPTZ,
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
 CREATE INDEX outbox_unpublished_idx
-    ON outbox (created_at, id) WHERE published_at IS NULL;
+    ON outbox (created_at, id) WHERE published_at IS NULL AND dead_at IS NULL;
 
 DO $$
 DECLARE
