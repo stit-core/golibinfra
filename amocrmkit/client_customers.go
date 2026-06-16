@@ -29,6 +29,30 @@ type Customer struct {
 	AverageCheck       int                `json:"average_check"`
 	AccountID          int                `json:"account_id"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values"`
+	Embedded           *CustomerEmbedded  `json:"_embedded,omitempty"`
+}
+
+// CustomerEmbedded — _embedded покупателя (по with=contacts,companies,catalog_elements).
+type CustomerEmbedded struct {
+	Tags            []Tag               `json:"tags,omitempty"`
+	Contacts        []ContactRef        `json:"contacts,omitempty"`
+	Companies       []CompanyRef        `json:"companies,omitempty"`
+	Segments        []SegmentRef        `json:"segments,omitempty"`
+	CatalogElements []CatalogElementRef `json:"catalog_elements,omitempty"`
+}
+
+// SegmentRef — элемент _embedded.segments покупателя.
+type SegmentRef struct {
+	ID int `json:"id"`
+}
+
+// CatalogElementRef — элемент _embedded.catalog_elements: id товара + metadata{catalog_id, quantity}.
+type CatalogElementRef struct {
+	ID       int `json:"id"`
+	Metadata struct {
+		CatalogID int `json:"catalog_id"`
+		Quantity  int `json:"quantity"`
+	} `json:"metadata"`
 }
 
 // CustomerInput — тело POST/PATCH /customers.
@@ -48,17 +72,23 @@ type CustomerInput struct {
 
 // Transaction — объект покупки.
 type Transaction struct {
-	ID          int    `json:"id"`
-	Price       int    `json:"price"`
-	Comment     string `json:"comment"`
-	CompletedAt int64  `json:"completed_at"`
-	CustomerID  int    `json:"customer_id"`
-	CreatedBy   int    `json:"created_by"`
-	UpdatedBy   int    `json:"updated_by"`
-	CreatedAt   int64  `json:"created_at"`
-	UpdatedAt   int64  `json:"updated_at"`
-	IsDeleted   bool   `json:"is_deleted"`
-	AccountID   int    `json:"account_id"`
+	ID          int                  `json:"id"`
+	Price       int                  `json:"price"`
+	Comment     string               `json:"comment"`
+	CompletedAt int64                `json:"completed_at"`
+	CustomerID  int                  `json:"customer_id"`
+	CreatedBy   int                  `json:"created_by"`
+	UpdatedBy   int                  `json:"updated_by"`
+	CreatedAt   int64                `json:"created_at"`
+	UpdatedAt   int64                `json:"updated_at"`
+	IsDeleted   bool                 `json:"is_deleted"`
+	AccountID   int                  `json:"account_id"`
+	Embedded    *TransactionEmbedded `json:"_embedded,omitempty"`
+}
+
+// TransactionEmbedded — _embedded транзакции: catalog_elements (привязанные товары).
+type TransactionEmbedded struct {
+	CatalogElements []CatalogElementRef `json:"catalog_elements,omitempty"`
 }
 
 // TransactionInput — тело POST /customers/{customer_id}/transactions.
@@ -71,9 +101,21 @@ type TransactionInput struct {
 	Embedded           map[string]any     `json:"_embedded,omitempty"` // catalog_elements при привязке товаров
 }
 
-// BonusPointsInput — тело POST /customers/{id}/bonus_points (RU-only).
+// BonusPointsInput — тело POST /customers/{id}/bonus_points (RU-only). earn XOR redeem.
 type BonusPointsInput struct {
-	Points int `json:"points"`
+	Earn   int `json:"earn,omitempty"`
+	Redeem int `json:"redeem,omitempty"`
+}
+
+// BonusPointsResult — ответ POST /bonus_points: новый баланс баллов лояльности.
+type BonusPointsResult struct {
+	BonusPoints int `json:"bonus_points"`
+}
+
+// CustomersMode — тело и ответ PATCH /api/v4/customers/mode: режим (segments|periodicity) + флаг включения модуля.
+type CustomersMode struct {
+	Mode      string `json:"mode"`
+	IsEnabled bool   `json:"is_enabled"`
 }
 
 // ListCustomers — GET /api/v4/customers.
@@ -107,8 +149,14 @@ func (c *Client) DeleteTransaction(ctx context.Context, acc Account, id int) err
 	return c.sendNoContent(ctx, acc, http.MethodDelete, "transactions.delete", fmt.Sprintf("/api/v4/customers/transactions/%d", id), nil)
 }
 
-// AdjustBonusPoints — POST /api/v4/customers/{id}/bonus_points (RU-only).
-func (c *Client) AdjustBonusPoints(ctx context.Context, acc Account, customerID int, in BonusPointsInput) (Customer, error) {
+// AdjustBonusPoints — POST /api/v4/customers/{id}/bonus_points (RU-only). Возвращает новый баланс баллов.
+func (c *Client) AdjustBonusPoints(ctx context.Context, acc Account, customerID int, in BonusPointsInput) (BonusPointsResult, error) {
 	path := fmt.Sprintf("/api/v4/customers/%d/bonus_points", customerID)
-	return sendOne[Customer](ctx, c, acc, http.MethodPost, "customers.bonus_points", path, in)
+	return sendOne[BonusPointsResult](ctx, c, acc, http.MethodPost, "customers.bonus_points", path, in)
+}
+
+// SetCustomersMode — PATCH /api/v4/customers/mode: включить/выключить модуль покупателей и задать режим
+// (segments|periodicity). Требует прав администратора аккаунта.
+func (c *Client) SetCustomersMode(ctx context.Context, acc Account, in CustomersMode) (CustomersMode, error) {
+	return sendOne[CustomersMode](ctx, c, acc, http.MethodPatch, "customers.mode", "/api/v4/customers/mode", in)
 }
