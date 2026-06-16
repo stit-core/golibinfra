@@ -112,6 +112,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`auditkit`](auditkit/) | Audit-log: `Entry`/`Logger`, core+pgstore split |
 | [`bruteforcekit`](bruteforcekit/) | Brute-force guard: счётчик попыток по паре (subject, IP), `LockState`, core+pgstore split |
 | [`clockkit`](clockkit/) | `Clock` + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
+| [`ptrkit`](ptrkit/) | Generic-хелперы указателей: `Ptr` (nil-on-zero), `Deref` (nil-safe); без I/O |
 | [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers; per-kit subpackages |
 
