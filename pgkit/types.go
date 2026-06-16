@@ -35,3 +35,11 @@ func NullableTime(t pgtype.Timestamptz) *time.Time {
 	v := t.Time
 	return &v
 }
+
+// Timestamptz — обратное к NullableTime: nil → невалидный (NULL), иначе valid.
+func Timestamptz(t *time.Time) pgtype.Timestamptz {
+	if t == nil {
+		return pgtype.Timestamptz{}
+	}
+	return pgtype.Timestamptz{Time: *t, Valid: true}
+}
