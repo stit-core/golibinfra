@@ -13,7 +13,7 @@ auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Mod
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
-[![Kits](https://img.shields.io/badge/kits-22-0ea5e9)](#пакеты)
+[![Kits](https://img.shields.io/badge/kits-29-0ea5e9)](#пакеты)
 
 </div>
 
@@ -100,6 +100,10 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel и автопередачей `X-Request-ID` |
 | [`amocrmkit`](amocrmkit/) | Транспорт к amoCRM: REST v4 (Bearer) + amoJo Chat (HMAC-SHA1) + Drive + OAuth2; per-account rate-limit (7 rps), таксономия ошибок (`ErrAuth/ErrRateLimited/…`), `TokenSource`; обёртка над `httpclient`/`clockkit`/`logkit` |
 | [`anthropickit`](anthropickit/) | Клиент Anthropic (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, прайс-таблица), Managed Agents через `Raw()`; `testkit/anthropictest` |
+| [`openaikit`](openaikit/) | Клиент OpenAI (`openai-go/v3`): `API` (Responses + Chat + Embeddings + Images + Audio STT/TTS + Moderation), нормализованный `Usage` + `Cost` (**`USDMicros`**, прайс-таблица), экзотика через `Raw()`; `testkit/openaitest` |
+| [`googleaikit`](googleaikit/) | Клиент Google Gemini (`google.golang.org/genai`, dual-backend AI-Studio/Vertex): `API` (GenerateContent + Stream + Embeddings + Images + Video + Speech), нормализованный `Usage` + `Cost` (**`USDMicros`**, прайс-таблица), `Raw()`; `testkit/googletest` |
+| [`yandexaikit`](yandexaikit/) | Клиент Yandex FM (raw REST, IAM-JWT + async-операции): `API` (Completion sync/async + Stream + Embeddings + YandexART), нормализованный `Usage` + `Cost` (**`RUBMicros`**, sync/async прайс-таблицы), `Raw()`; `testkit/yandextest` |
+| [`sberaikit`](sberaikit/) | Клиент Sber GigaChat (raw HTTP, OAuth2 + Russian-Trusted CA): `API` (Chat + Stream + Embeddings + Files), нормализованный `Usage` + `Cost` (**`RUBMicros`**, `CurrencyRUB`, прайс-таблица), `Raw()`; `testkit/sbertest` |
 | [`grpcclient`](grpcclient/) | gRPC-клиент: `*grpc.ClientConn` + otel (StatsHandler), access-log, keepalive, `PerRPCCredentials` (bearer-токен из env) |
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
@@ -136,6 +140,10 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | `NATS_URL` | `natskit` | NATS / JetStream |
 | `REDIS_URL` | `cachekit` | Redis (cache + idempotency store) |
 | `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host (default `api.anthropic.com`); ключ — `ANTHROPIC_API_KEY` (Vault) |
+| `OPENAI_BASE_URL` | `openaikit` | OpenAI API host (default `api.openai.com/v1`); ключ — `OPENAI_API_KEY` (Vault) |
+| `GOOGLE_BASE_URL` | `googleaikit` | Gemini API host (бэкенд — `GOOGLE_BACKEND` aistudio\|vertex); ключ — `GOOGLE_API_KEY` (Vault, AI-Studio) или ADC (Vertex) |
+| `YANDEX_BASE_URL` | `yandexaikit` | Yandex FM host (default `llm.api.cloud.yandex.net`); auth — `YANDEX_API_KEY` / service-account-JWT (Vault) |
+| `SBER_BASE_URL` | `sberaikit` | GigaChat host (OAuth via `SBER_OAUTH_URL`); ключ — `SBER_AUTH_KEY` (Vault) |
 | `GRPC_ADDR` | `grpckit` | bind gRPC-сервера (HTTP/2; default `:9090`) |
 | `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`, Vault) |
 
