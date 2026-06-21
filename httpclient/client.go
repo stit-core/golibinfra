@@ -32,6 +32,7 @@ type Config struct {
 type Client struct {
 	cfg     Config
 	c       *http.Client
+	streamC *http.Client // для SSE/long-lived стримов: Timeout=0 (живёт пока ctx жив), без retry/breaker
 	breaker *gobreaker.CircuitBreaker[*http.Response]
 	instr   *httpClientInstruments
 }
@@ -43,6 +44,12 @@ func New(cfg Config) *Client {
 		cfg: cfg,
 		c: &http.Client{
 			Timeout:   cfg.Timeout,
+			Transport: transport,
+		},
+		// Общий transport (пул соединений) с обычным клиентом, но БЕЗ Timeout —
+		// иначе cfg.Timeout оборвал бы тело SSE-стрима на середине (см. Stream).
+		streamC: &http.Client{
+			Timeout:   0,
 			Transport: transport,
 		},
 		breaker: newBreaker(cfg.Breaker, instr),
