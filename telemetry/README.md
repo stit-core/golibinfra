@@ -18,8 +18,9 @@ pipeline:
 - **OTLP-экспорт по HTTP** — трейсы, метрики и логи уходят на
   `OTEL_EXPORTER_OTLP_ENDPOINT` (per-concern endpoint коллектора). Для корп
   ingest добавляется `Authorization: Bearer <OTEL_TOKEN>`.
-- **stdout-fallback** — при `OTEL_STDOUT_ONLY=true` все три сигнала идут в stdout
-  (local-dev без коллектора).
+- **Метрики и трейсы — только OTLP.** В stdout они не пишутся никогда. Без живого
+  коллектора экспорт молча дропается (по бэкоффу). stdout-копию даёт только
+  `logkit` — для логов (см. `logkit/README.md`).
 - **Resource-атрибуты** — `service.name`, `service.version`,
   `deployment.environment.name` берутся из `Config` (их ставит приложение).
   `tenant` / `service.namespace` приложение **не** выставляет — их ставит корп
@@ -119,7 +120,6 @@ func Span(ctx context.Context, name string, attrs ...attribute.KeyValue) (contex
 | `OTEL_EXPORT_TIMEOUT` | `ExportTimeout` | `time.Duration` | `10s` | batch-timeout трейсов, интервал periodic-reader метрик, min-интервал чтения runtime memstats |
 | `OTEL_TENANT` | `Tenant` | `string` | `""` | local-dev: выставляет `service.namespace` + `tenant`. В проде ставит коллектор — не задавать (см. § Инварианты) |
 | `OTEL_TOKEN` | `OTLPBearerToken` | `string` | `""` | если задан — `Authorization: Bearer <token>` к каждому OTLP-запросу (обязателен для корп ingest) |
-| `OTEL_STDOUT_ONLY` | `StdoutOnly` | `bool` | `false` | `true` → все три сигнала в stdout, без OTLP (local-dev / тесты) |
 
 ## Observability
 
@@ -185,12 +185,11 @@ otel-collector; инвариант `service.namespace == tenant` гаранти�
 
 ## Тестирование
 
-`OTEL_STDOUT_ONLY=true` поднимает все три сигнала через stdout-exporters с
-simple-процессорами (flush на каждую запись, без батча) — pipeline работает без
-живого коллектора. Глобальные providers и propagator выставляются так же, как в
-OTLP-ветке, поэтому `otelhttp` / `otelpgx` и прочая инструментация пишут в тот же
-stdout, а не в no-op default. Это режим для local-dev и интеграционных тестов:
-видно, что сигналы реально формируются и экспортируются.
+Метрики и трейсы всегда идут в OTLP — в stdout их нет, в том числе в local-dev.
+Без живого коллектора экспорт молча дропается; чтобы наблюдать сигналы локально,
+поднимите коллектор (`otel-collector` / Tempo / VictoriaMetrics) и нацельте на
+него `OTEL_EXPORTER_OTLP_ENDPOINT`. Логи видны в консоли через `logkit`
+(`LOG_STDOUT=true` по умолчанию) — для них коллектор не нужен.
 
 Юнит-тест пакета (`init_test.go`) покрывает сборку OTLP-заголовков из
 `OTLPBearerToken`. Запуск, как в CI:

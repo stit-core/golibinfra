@@ -55,6 +55,45 @@ func TestNewNotNil(t *testing.T) {
 	}
 }
 
+func TestStdoutSinkWritesJSONWithTrace(t *testing.T) {
+	lp := sdklog.NewLoggerProvider()
+	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
+
+	var buf bytes.Buffer
+	l := &slogLogger{l: newSlog(Config{Level: "debug", Stdout: true}, lp, &buf)}
+
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
+		SpanID:     trace.SpanID{1, 2, 3, 4, 5, 6, 7, 8},
+		TraceFlags: trace.FlagsSampled,
+	})
+	l.Info(trace.ContextWithSpanContext(context.Background(), sc), "stdout sink")
+
+	var m map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &m); err != nil {
+		t.Fatalf("stdout output is not valid JSON: %v\nraw: %s", err, buf.String())
+	}
+	if m["msg"] != "stdout sink" {
+		t.Errorf("msg = %v, want %q", m["msg"], "stdout sink")
+	}
+	if _, ok := m["trace_id"]; !ok {
+		t.Error("missing trace_id in stdout output")
+	}
+}
+
+func TestStdoutDisabledNoOutput(t *testing.T) {
+	lp := sdklog.NewLoggerProvider()
+	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
+
+	var buf bytes.Buffer
+	l := &slogLogger{l: newSlog(Config{Level: "debug", Stdout: false}, lp, &buf)}
+	l.Info(context.Background(), "should not reach buf")
+
+	if buf.Len() != 0 {
+		t.Errorf("stdout sink disabled but buf got: %s", buf.String())
+	}
+}
+
 func TestNewWithWriterJSONOutput(t *testing.T) {
 	var buf bytes.Buffer
 	l := NewWithWriter(Config{Level: "debug"}, &buf)

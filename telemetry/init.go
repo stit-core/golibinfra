@@ -1,11 +1,12 @@
 // Package telemetry — bootstrap OTel SDK: tracer/meter/logger providers,
-// OTLP HTTP-экспортёры (с Bearer-токеном для корп ingest) или
-// stdout-fallback для local-dev. Выставляет resource-атрибуты
-// service.name, service.version, deployment.environment.name из Config;
-// tenant/service.namespace выставляются только если Config.Tenant
-// задан (типично local-dev) — в проде их force-сетит корп
-// otel-collector из X-Scope-OrgID (корп obs-контракт). Включает стандартную
-// runtime-инструментацию (go_*, process_*) через contrib/instrumentation/runtime.
+// OTLP HTTP-экспортёры (с Bearer-токеном для корп ingest) всех трёх
+// сигналов. Выставляет resource-атрибуты service.name, service.version,
+// deployment.environment.name из Config; tenant/service.namespace
+// выставляются только если Config.Tenant задан (типично local-dev) — в
+// проде их force-сетит корп otel-collector из X-Scope-OrgID (корп
+// obs-контракт). Включает стандартную runtime-инструментацию (go_*,
+// process_*) через contrib/instrumentation/runtime. Метрики и трейсы идут
+// только в OTLP — в stdout их нет; stdout-копию логов даёт logkit.
 package telemetry
 
 import (
@@ -19,9 +20,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutlog"
-	"go.opentelemetry.io/otel/exporters/stdout/stdoutmetric"
-	"go.opentelemetry.io/otel/exporters/stdout/stdouttrace"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -74,10 +72,6 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 	))
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: resource: %w", err)
-	}
-
-	if cfg.StdoutOnly {
-		return initStdout(res)
 	}
 
 	tp, err := newTracerProvider(ctx, cfg, res)
@@ -183,46 +177,4 @@ func buildOTLPURL(cfg Config, signalPath string) string {
 		scheme = "http"
 	}
 	return scheme + "://" + cfg.OTLPEndpoint + "/" + signalPath
-}
-
-// initStdout — dev-режим: все три сигнала идут в stdout через OTel
-// stdout-exporters. SimpleProcessor / SimpleSpanProcessor — flush на
-// каждую запись (для dev удобно: видим сразу, без 5s батча). Глобальные
-// providers + propagator выставляются как в OTLP-ветке — чтобы
-// otelhttp / otelpgx писали в наш stdout pipeline, а не в no-op default.
-func initStdout(res *resource.Resource) (*Providers, error) {
-	tExp, err := stdouttrace.New()
-	if err != nil {
-		return nil, fmt.Errorf("telemetry stdout: trace exporter: %w", err)
-	}
-	mExp, err := stdoutmetric.New()
-	if err != nil {
-		return nil, fmt.Errorf("telemetry stdout: metric exporter: %w", err)
-	}
-	lExp, err := stdoutlog.New()
-	if err != nil {
-		return nil, fmt.Errorf("telemetry stdout: log exporter: %w", err)
-	}
-
-	tp := sdktrace.NewTracerProvider(
-		sdktrace.WithSpanProcessor(sdktrace.NewSimpleSpanProcessor(tExp)),
-		sdktrace.WithResource(res),
-	)
-	mp := sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(mExp)),
-		sdkmetric.WithResource(res),
-	)
-	lp := sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewSimpleProcessor(lExp)),
-		sdklog.WithResource(res),
-	)
-
-	otel.SetTracerProvider(tp)
-	otel.SetMeterProvider(mp)
-	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
-		propagation.TraceContext{},
-		propagation.Baggage{},
-	))
-
-	return &Providers{TracerProvider: tp, MeterProvider: mp, LoggerProvider: lp}, nil
 }

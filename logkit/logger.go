@@ -1,9 +1,11 @@
 // Package logkit — структурный logger поверх slog с OTel-bridge'ом:
-// каждый record уходит в OTel LoggerProvider (OTLP HTTP → corp Loki) и
-// автоматически получает trace_id/span_id из ctx. Поддерживает
-// PII-redact'инг (regex-фильтры через RedactConfig, LOG_REDACT_ENABLED)
-// и user-registered attrs (RegisterAttr) для проброса полей вроде
-// request_id из httpkit. Эмитит log_messages_total{level}.
+// каждый record уходит в OTel LoggerProvider (OTLP HTTP → corp Loki) и,
+// при LOG_STDOUT (default), дублируется в JSON-stdout; автоматически
+// получает trace_id/span_id из ctx. Метрики/трейсы в stdout не идут — это
+// только log pipeline. Поддерживает PII-redact'инг (regex-фильтры через
+// RedactConfig, LOG_REDACT_ENABLED) и user-registered attrs (RegisterAttr)
+// для проброса полей вроде request_id из httpkit. Эмитит
+// log_messages_total{level}.
 package logkit
 
 import "context"

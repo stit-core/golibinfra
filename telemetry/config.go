@@ -23,6 +23,4 @@ type Config struct {
 	// `Authorization: Bearer ...` к каждому запросу OTLP-экспортёра.
 	// Обязателен для корп otel ingest, локально игнорируется.
 	OTLPBearerToken string `envconfig:"OTEL_TOKEN"`
-
-	StdoutOnly bool `envconfig:"OTEL_STDOUT_ONLY" default:"false"`
 }

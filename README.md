@@ -109,7 +109,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
 | [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
-| [`logkit`](logkit/) | `Logger` поверх slog; trace_id correlation; авто-атрибуты `service/env/version`; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
+| [`logkit`](logkit/) | `Logger` поверх slog; fan-out OTLP→Loki + JSON-stdout (`LOG_STDOUT`); trace_id correlation; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
 | [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
 | [`outboxkit`](outboxkit/) | Transactional outbox: Worker публикует в JetStream (`MarkPublished` батчем после PubAck; `OUTBOX_PUBLISH_MODE` batch\|ordered), poison→dead после `OUTBOX_MAX_ATTEMPTS`, retention партиций `OUTBOX_RETENTION_MONTHS`, `BacklogReporter` для `outbox_lag_seconds`/`outbox_pending_count`. `Module` — один инстанс (таблица `outbox`); `outboxkit.New` + `pgstore.NewStoreFor(db, table)` + `NewStreamTransportFor(sb, namespace)` — несколько (таблица на инстанс, namespaced Msg-Id) |
@@ -132,7 +132,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 
 | Env | Кит | Назначение |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP-ingest коллектора (пусто / `OTEL_STDOUT_ONLY=true` → stdout) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP-ingest коллектора (host:port; без коллектора экспорт молча дропается — метрики/трейсы в stdout не пишутся) |
 | `VAULT_ADDR` | `config` | Vault как secret-source |
 | `PG_DSN` | `pgkit` | Postgres (primary) |
 | `PG_REPLICA_DSN` | `pgkit` | Postgres read-replica (опц.; `ReadWriteDB`) |

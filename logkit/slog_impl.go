@@ -2,8 +2,10 @@ package logkit
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
+	"os"
 
 	"go.opentelemetry.io/contrib/bridges/otelslog"
 	"go.opentelemetry.io/otel"
@@ -15,6 +17,9 @@ import (
 
 type Config struct {
 	Level string `envconfig:"LOG_LEVEL" default:"info"`
+	// Stdout по умолчанию через envconfig=true; в struct-литерале zero-value
+	// false — задавайте явно, как у telemetry.Config.OTLPInsecure.
+	Stdout bool `envconfig:"LOG_STDOUT" default:"true"`
 }
 
 // logMessagesCounter — единственный counter per-level. Lazy-init на
@@ -43,9 +48,8 @@ type slogLogger struct {
 	l *slog.Logger
 }
 
-// New создаёт OTLP-bound Logger: запись идёт в LoggerProvider, дальше его
-// processors/exporters решают куда отправить (OTLP HTTP, stdoutlog, etc).
-// stdout-JSON путь — только через [NewWithWriter] для тестов.
+// New создаёт Logger с fan-out: запись идёт в OTel LoggerProvider (OTLP →
+// Loki) и, при cfg.Stdout, в JSON-stdout. Метрики/трейсы в stdout не идут.
 func New(cfg Config, lp *sdklog.LoggerProvider) Logger {
 	return &slogLogger{l: NewSlog(cfg, lp)}
 }
@@ -53,14 +57,28 @@ func New(cfg Config, lp *sdklog.LoggerProvider) Logger {
 // NewSlog возвращает *slog.Logger c тем же chain, что и [New]. Для consumer'ов
 // которые принимают *slog.Logger напрямую (timerkit и пр.).
 func NewSlog(cfg Config, lp *sdklog.LoggerProvider) *slog.Logger {
-	base := otelslog.NewHandler("backend", otelslog.WithLoggerProvider(lp))
-	// На прод-пути trace_id/span_id уже embedded в LogRecord самим otelslog
-	// (вычитывает из ctx), service/env/version — в resource attrs telemetry.Init.
-	// attrHandler добавляет только user-registered (RegisterAttr) attrs — например,
-	// request_id из httpkit middleware.
-	return slog.New(&attrHandler{
-		Handler: &levelHandler{level: parseLevel(cfg.Level), inner: base},
-	})
+	return newSlog(cfg, lp, os.Stdout)
+}
+
+// newSlog — общий конструктор chain'а; stdoutW параметризован для тестов.
+func newSlog(cfg Config, lp *sdklog.LoggerProvider, stdoutW io.Writer) *slog.Logger {
+	level := parseLevel(cfg.Level)
+
+	// otelslog сам embed'ит trace_id/span_id из ctx; service/env/version — в
+	// resource attrs telemetry.Init. attrHandler добавляет только
+	// user-registered (RegisterAttr) attrs, например request_id из httpkit.
+	sinks := []slog.Handler{
+		&attrHandler{Handler: otelslog.NewHandler("backend", otelslog.WithLoggerProvider(lp))},
+	}
+	if cfg.Stdout {
+		// raw JSONHandler trace context из ctx не читает — traceHandler
+		// добавляет trace_id/span_id + те же RegisterAttr attrs.
+		sinks = append(sinks, &traceHandler{
+			Handler: slog.NewJSONHandler(stdoutW, &slog.HandlerOptions{Level: level}),
+		})
+	}
+
+	return slog.New(&levelHandler{level: level, inner: fanoutHandler{handlers: sinks}})
 }
 
 // NewWithWriter — test-only: JSON в произвольный writer, без OTel SDK.
@@ -106,6 +124,51 @@ func (s *slogLogger) Error(ctx context.Context, msg string, kv ...any) {
 
 func (s *slogLogger) With(kv ...any) Logger {
 	return &slogLogger{l: s.l.With(kv...)}
+}
+
+// fanoutHandler рассылает запись по всем sink'ам (OTLP + stdout). Record
+// клонируется на каждый sink: AddAttrs (trace_id в traceHandler) не должен
+// течь в соседний sink через общий backing-массив attrs.
+type fanoutHandler struct {
+	handlers []slog.Handler
+}
+
+func (h fanoutHandler) Enabled(ctx context.Context, level slog.Level) bool {
+	for _, hh := range h.handlers {
+		if hh.Enabled(ctx, level) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h fanoutHandler) Handle(ctx context.Context, r slog.Record) error {
+	var errs []error
+	for _, hh := range h.handlers {
+		if !hh.Enabled(ctx, r.Level) {
+			continue
+		}
+		if err := hh.Handle(ctx, r.Clone()); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+func (h fanoutHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, hh := range h.handlers {
+		next[i] = hh.WithAttrs(attrs)
+	}
+	return fanoutHandler{handlers: next}
+}
+
+func (h fanoutHandler) WithGroup(name string) slog.Handler {
+	next := make([]slog.Handler, len(h.handlers))
+	for i, hh := range h.handlers {
+		next[i] = hh.WithGroup(name)
+	}
+	return fanoutHandler{handlers: next}
 }
 
 // levelHandler фильтрует записи по slog.Level перед передачей inner.

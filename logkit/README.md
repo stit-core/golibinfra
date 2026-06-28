@@ -1,8 +1,10 @@
 # logkit
 
 Структурный `Logger` поверх `log/slog` с OTel-bridge'ом, trace-correlation и
-PII-redact'ингом. На прод-пути каждый record уходит в OTel `LoggerProvider`
-(OTLP HTTP → корп Loki) и автоматически получает `trace_id`/`span_id` из `ctx`.
+PII-redact'ингом. Каждый record уходит в OTel `LoggerProvider` (OTLP HTTP → корп
+Loki) и, при `LOG_STDOUT` (вкл по умолчанию), дублируется в JSON-stdout; оба
+sink'а автоматически получают `trace_id`/`span_id` из `ctx`. Метрики и трейсы в
+stdout не попадают — это только log pipeline.
 
 ## Назначение
 
@@ -12,6 +14,10 @@ PII-redact'ингом. На прод-пути каждый record уходит �
 
 Чем kit ценен:
 
+- **dual-sink.** Каждая запись идёт в OTLP (`LoggerProvider` → корп Loki) и,
+  при `LOG_STDOUT`, в JSON-stdout — видно и в Grafana, и в `kubectl logs` /
+  локальной консоли. Метрики и трейсы при этом в stdout не валятся (их пишет
+  только OTLP-pipeline в `telemetry`).
 - **trace-correlation.** Запись вычитывает trace context из `ctx` и кладёт
   `trace_id`/`span_id` в каждый log record — лог сшивается с трейсом в Grafana.
 - **resource attrs из telemetry.** `service.name`/`service.version`/
@@ -121,6 +127,7 @@ log.Info(ctx, "user login", "email", "john.doe@example.com")
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `LOG_LEVEL` | `Level` | `string` | `info` | Минимальный уровень записи (`debug`/`info`/`warn`/`error`). Парсится `slog.Level.UnmarshalText`; невалидное значение → `info`. |
+| `LOG_STDOUT` | `Stdout` | `bool` | `true` | Дублировать записи в JSON-stdout (вдобавок к OTLP). `false` — только OTLP. Default действует через `envconfig`; в struct-литерале zero-value `false` — задавайте поле явно. |
 
 ### `ServiceConfig`
 
@@ -162,18 +169,21 @@ Counter регистрируется через `otel.Meter("git.stit.tech/stit-
 
 ### trace_id / span_id
 
-На прод-пути (`New`/`NewSlog`, через `otelslog`-bridge) `trace_id`/`span_id`
-embedding'ит сам `otelslog` — он читает span context из `ctx`. На test-пути
-(`NewWithWriter`/`NewWithRedact`, raw `slog.JSONHandler`) их добавляет внутренний
-`traceHandler`. Поля появляются только при валидном span context в `ctx`.
+В OTLP-sink (`New`/`NewSlog`, через `otelslog`-bridge) `trace_id`/`span_id`
+embedding'ит сам `otelslog` — он читает span context из `ctx`. В stdout-sink
+(raw `slog.JSONHandler`) и на test-пути (`NewWithWriter`/`NewWithRedact`) их
+добавляет внутренний `traceHandler`. Поля появляются только при валидном span
+context в `ctx`.
 
 ### Resource attrs (service / env / version)
 
-`service.name` / `service.version` / `deployment.environment.name` на прод-пути —
-это OTel **resource attrs**, их выставляет `telemetry.Init` из `telemetry.Config`.
-В сам log record kit их **не** кладёт: иначе они бы шли дважды в каждый OTLP-record.
-`ServiceConfig` + `registerServiceAttrs` существуют для test-сценариев (где raw
-JSON-handler resource attrs не получает) и модулем не вызываются.
+`service.name` / `service.version` / `deployment.environment.name` — это OTel
+**resource attrs**, их выставляет `telemetry.Init` из `telemetry.Config`. В сам
+log record kit их **не** кладёт: иначе они бы шли дважды в каждый OTLP-record.
+Следствие: stdout-записи (raw JSON-handler resource attrs не получает) полей
+`service`/`env`/`version` не содержат — идентичность сервиса там определяется
+средой запуска (pod/namespace). `ServiceConfig` + `registerServiceAttrs`
+существуют для test-сценариев и модулем не вызываются.
 
 Спаны kit не эмитит.
 
@@ -194,7 +204,7 @@ type Logger interface {
 Конструкторы:
 
 ```go
-// Прод-путь: запись идёт в OTel LoggerProvider (OTLP → Loki).
+// Прод-путь: fan-out в OTel LoggerProvider (OTLP → Loki) + JSON-stdout (LOG_STDOUT).
 func New(cfg Config, lp *sdklog.LoggerProvider) Logger
 func NewSlog(cfg Config, lp *sdklog.LoggerProvider) *slog.Logger
 
