@@ -25,7 +25,7 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
-	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 )
 
 type Providers struct {
@@ -58,7 +58,7 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 	attrs := []attribute.KeyValue{
 		semconv.ServiceName(cfg.ServiceName),
 		semconv.ServiceVersion(cfg.ServiceVersion),
-		semconv.DeploymentEnvironmentName(cfg.Environment),
+		semconv.DeploymentEnvironmentNameKey.String(cfg.Environment),
 	}
 	if cfg.Tenant != "" {
 		attrs = append(
