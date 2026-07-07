@@ -21,6 +21,7 @@ func NewClient(cfg storagekit.Config) (*miniogo.Client, error) {
 	client, err := miniogo.New(cfg.Endpoint, &miniogo.Options{
 		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
 		Secure: cfg.UseSSL,
+		Region: cfg.Region,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("storagekit/minio: new client: %w", err)
@@ -49,5 +50,6 @@ var Module = fx.Module(
 		NewClient,
 		NewUploader,
 		func(u *Uploader) storagekit.Storage { return u },
+		func(u *Uploader) storagekit.Presigner { return u },
 	),
 )

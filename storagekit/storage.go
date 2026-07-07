@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"time"
 
 	"github.com/google/uuid"
 )
@@ -26,6 +27,14 @@ type Storage interface {
 	// Тело больше declared size — ErrUploadFailed.
 	Put(ctx context.Context, r io.Reader, contentType string, size int64) (Ref, error)
 	Delete(ctx context.Context, key string) error
+}
+
+// Presigner выдаёт краткоживущую presigned-GET ссылку на объект (bucket+key),
+// не требующую авторизации у читателя. TTL ограничивает окно доступа. bucket
+// передаётся явно: потребитель может подписывать объекты вне сконфигуренного
+// (upload-)бакета.
+type Presigner interface {
+	PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration) (string, error)
 }
 
 // NewKey — `<uuidv7>.<ext>`; ext выводится из contentType. uuidv7 даёт

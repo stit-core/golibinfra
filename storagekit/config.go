@@ -7,6 +7,7 @@ type Config struct {
 	AccessKey     string `envconfig:"STORAGE_S3_ACCESS_KEY"`
 	SecretKey     string `envconfig:"STORAGE_S3_SECRET_KEY"`
 	Bucket        string `envconfig:"STORAGE_S3_BUCKET"`
+	Region        string `envconfig:"STORAGE_S3_REGION"`
 	UseSSL        bool   `default:"false"                  envconfig:"STORAGE_S3_USE_SSL"`
 	PublicBaseURL string `envconfig:"STORAGE_PUBLIC_BASE_URL"`
 }

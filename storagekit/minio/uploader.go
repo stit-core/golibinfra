@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"time"
 
 	miniogo "github.com/minio/minio-go/v7"
 
@@ -51,6 +52,20 @@ func (u *Uploader) Put(ctx context.Context, r io.Reader, contentType string, siz
 		ContentType: contentType,
 		Size:        int64(len(data)),
 	}, nil
+}
+
+// PresignedGet подписывает GET-ссылку на bucket/key со сроком ttl. Операция
+// локальная (HMAC над кредами) — сеть не дёргается, если у клиента задан Region
+// (иначе minio-go разово резолвит bucket-location).
+func (u *Uploader) PresignedGet(ctx context.Context, bucket, key string, ttl time.Duration) (string, error) {
+	if bucket == "" || key == "" {
+		return "", fmt.Errorf("%w: bucket and key required", storagekit.ErrPresignFailed)
+	}
+	signed, err := u.client.PresignedGetObject(ctx, bucket, key, ttl, nil)
+	if err != nil {
+		return "", fmt.Errorf("%w: %q/%q: %w", storagekit.ErrPresignFailed, bucket, key, err)
+	}
+	return signed.String(), nil
 }
 
 func (u *Uploader) Delete(ctx context.Context, key string) error {

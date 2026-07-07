@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
@@ -48,6 +49,20 @@ func TestMemoryStorage_PutRejectsOversizeBody(t *testing.T) {
 	_, err := m.Put(context.Background(), bytes.NewReader(body), "application/pdf", 4)
 	if !errors.Is(err, storagekit.ErrUploadFailed) {
 		t.Fatalf("Put oversize: err = %v, want ErrUploadFailed", err)
+	}
+}
+
+func TestMemoryStorage_PresignedGet(t *testing.T) {
+	m := newMem()
+	url, err := m.PresignedGet(context.Background(), "ignored-bucket", "obj.ogg", 30*time.Second)
+	if err != nil {
+		t.Fatalf("PresignedGet: %v", err)
+	}
+	if want := "https://cdn.example.com/media/obj.ogg?x-presigned-ttl=30"; url != want {
+		t.Errorf("url = %q, want %q", url, want)
+	}
+	if _, err := m.PresignedGet(context.Background(), "b", "", time.Second); !errors.Is(err, storagekit.ErrPresignFailed) {
+		t.Fatalf("empty key: err = %v, want ErrPresignFailed", err)
 	}
 }
 

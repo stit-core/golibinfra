@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"sync"
+	"time"
 )
 
 // MemoryStorage — in-memory Storage для тестов и локального dev.
@@ -54,6 +55,15 @@ func (m *MemoryStorage) Delete(_ context.Context, key string) error {
 	}
 	delete(m.objs, key)
 	return nil
+}
+
+// PresignedGet — test-double: детерминированная псевдо-подписанная ссылка
+// (bucket игнорируется, схема ключа совпадает с боевым URLBuilder).
+func (m *MemoryStorage) PresignedGet(_ context.Context, _, key string, ttl time.Duration) (string, error) {
+	if key == "" {
+		return "", fmt.Errorf("%w: key required", ErrPresignFailed)
+	}
+	return fmt.Sprintf("%s?x-presigned-ttl=%d", m.urls.Build(key), int64(ttl.Seconds())), nil
 }
 
 // Get — тест-хелпер: вернуть сохранённые байты.
