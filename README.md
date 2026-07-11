@@ -13,7 +13,7 @@ auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Mod
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
-[![Kits](https://img.shields.io/badge/kits-29-0ea5e9)](#пакеты)
+[![Kits](https://img.shields.io/badge/kits-30-0ea5e9)](#пакеты)
 
 </div>
 
@@ -111,6 +111,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
 | [`logkit`](logkit/) | `Logger` поверх slog; fan-out OTLP→Loki + JSON-stdout (`LOG_STDOUT`); trace_id correlation; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
 | [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
+| [`oidckit`](oidckit/) | Authentik/OIDC BFF: `Verifier` (discovery, JWKS lazy-refresh, verify iss/aud/exp/nonce, PKCE S256), huma-роуты login/callback/me/logout, cookie-сессия HS256 (`authnkit`), `Extractor` → `httpkit.AuthExtractor`, `StateStore` (Redis/in-memory), `Hooks` (SessionClaims/OnLogin) |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
 | [`outboxkit`](outboxkit/) | Transactional outbox: Worker публикует в JetStream (`MarkPublished` батчем после PubAck; `OUTBOX_PUBLISH_MODE` batch\|ordered), poison→dead после `OUTBOX_MAX_ATTEMPTS`, retention партиций `OUTBOX_RETENTION_MONTHS`, `BacklogReporter` для `outbox_lag_seconds`/`outbox_pending_count`. `Module` — один инстанс (таблица `outbox`); `outboxkit.New` + `pgstore.NewStoreFor(db, table)` + `NewStreamTransportFor(sb, namespace)` — несколько (таблица на инстанс, namespaced Msg-Id) |
 | [`auditkit`](auditkit/) | Audit-log: `Entry`/`Logger`, core+pgstore split |
@@ -139,6 +140,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | `STORAGE_S3_ENDPOINT` | `storagekit` | S3 / MinIO object storage |
 | `NATS_URL` | `natskit` | NATS / JetStream |
 | `REDIS_URL` | `cachekit` | Redis (cache + idempotency store) |
+| `OIDC_ISSUER` | `oidckit` | OIDC-провайдер (Authentik): discovery, token endpoint, JWKS |
 | `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host (default `api.anthropic.com`); ключ — `ANTHROPIC_API_KEY` (Vault) |
 | `OPENAI_BASE_URL` | `openaikit` | OpenAI API host (default `api.openai.com/v1`); ключ — `OPENAI_API_KEY` (Vault) |
 | `GOOGLE_BASE_URL` | `googleaikit` | Gemini API host (бэкенд — `GOOGLE_BACKEND` aistudio\|vertex); ключ — `GOOGLE_API_KEY` (Vault, AI-Studio) или ADC (Vertex) |
