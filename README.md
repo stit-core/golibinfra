@@ -105,6 +105,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`yandexaikit`](yandexaikit/) | Клиент Yandex FM (raw REST, IAM-JWT + async-операции): `API` (Completion sync/async + Stream + Embeddings + YandexART), нормализованный `Usage` + `Cost` (**`RUBMicros`**, sync/async прайс-таблицы), `Raw()`; `testkit/yandextest` |
 | [`sberaikit`](sberaikit/) | Клиент Sber GigaChat (raw HTTP, OAuth2 + Russian-Trusted CA): `API` (Chat + Stream + Embeddings + Files), нормализованный `Usage` + `Cost` (**`RUBMicros`**, `CurrencyRUB`, прайс-таблица), `Raw()`; `testkit/sbertest` |
 | [`grpcclient`](grpcclient/) | gRPC-клиент: `*grpc.ClientConn` + otel (StatsHandler), access-log, keepalive, `PerRPCCredentials` (bearer-токен из env) |
+| [`webpushkit`](webpushkit/) | Web Push доставка: VAPID (RFC 8292) + aes128gcm-шифрование payload (RFC 8291/8188) + POST на endpoint (RFC 8030); `Sender.Send`, `Subscription`, `GenerateVAPIDKeys`, `ErrSubscriptionGone` (404/410 → чистка подписки). Подписки хранит потребитель |
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
@@ -148,6 +149,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | `SBER_BASE_URL` | `sberaikit` | GigaChat host (OAuth via `SBER_OAUTH_URL`); ключ — `SBER_AUTH_KEY` (Vault) |
 | `GRPC_ADDR` | `grpckit` | bind gRPC-сервера (HTTP/2; default `:9090`) |
 | `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`, Vault) |
+| `WEBPUSH_VAPID_PRIVATE_KEY` | `webpushkit` | VAPID private (raw ES256, Vault); public — `WEBPUSH_VAPID_PUBLIC_KEY`, контакт — `WEBPUSH_SUBJECT` |
 
 `outboxkit` **не** имеет своего эндпоинта — он co-located с pg-хостом: outbox
 пишется в той же транзакции, что и доменные данные (атомарность), поэтому живёт
