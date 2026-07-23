@@ -1,0 +1,112 @@
+package client_test
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	"git.stit.tech/stit-core/golibinfra/hubkit/client"
+)
+
+func newClient(t *testing.T, h http.HandlerFunc) *client.Client {
+	t.Helper()
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+	return client.New(client.Config{BaseURL: srv.URL, ServiceToken: "tok", ServiceName: "deal"}, srv.Client())
+}
+
+func TestGetCompany_OK(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("нет Bearer-заголовка: %q", r.Header.Get("Authorization"))
+		}
+		if r.URL.Path != "/api/companies/c1" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"id": "c1", "name": "Acme", "slug": "acme", "updated_seq": 7},
+		})
+	})
+	got, err := c.GetCompany(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("GetCompany: %v", err)
+	}
+	if got.ID != "c1" || got.Name != "Acme" || got.UpdatedSeq != 7 {
+		t.Fatalf("company=%+v", got)
+	}
+}
+
+func TestErrorMapping(t *testing.T) {
+	cases := []struct {
+		status int
+		want   error
+	}{
+		{http.StatusNotFound, client.ErrNotFound},
+		{http.StatusConflict, client.ErrConflict},
+		{http.StatusUnauthorized, client.ErrUnauthorized},
+		{http.StatusForbidden, client.ErrUnauthorized},
+		{http.StatusInternalServerError, client.ErrUnavailable},
+		{http.StatusBadGateway, client.ErrUnavailable},
+	}
+	for _, tc := range cases {
+		c := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+			w.WriteHeader(tc.status)
+		})
+		_, err := c.GetCompany(context.Background(), "x")
+		if !errors.Is(err, tc.want) {
+			t.Errorf("status %d: ожидали %v, получили %v", tc.status, tc.want, err)
+		}
+	}
+}
+
+func TestTransportError_Unavailable(t *testing.T) {
+	// Клиент на несуществующий адрес — транспортная ошибка маппится в Unavailable.
+	c := client.New(client.Config{BaseURL: "http://127.0.0.1:0"}, http.DefaultClient)
+	if _, err := c.GetCompany(context.Background(), "x"); !errors.Is(err, client.ErrUnavailable) {
+		t.Fatalf("ожидали ErrUnavailable, получили %v", err)
+	}
+}
+
+func TestSyncFeed_RoutesAndParses(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/sync/companies" {
+			t.Errorf("path=%s", r.URL.Path)
+		}
+		if r.URL.Query().Get("after") != "5" || r.URL.Query().Get("limit") != "100" {
+			t.Errorf("query=%s", r.URL.RawQuery)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data":       []map[string]any{{"id": "c6", "updated_seq": 6}},
+			"next_after": 6,
+		})
+	})
+	page, err := c.SyncFeed(context.Background(), client.ResourceCompanies, 5, 100)
+	if err != nil {
+		t.Fatalf("SyncFeed: %v", err)
+	}
+	if page.NextAfter != 6 || len(page.Data) != 1 {
+		t.Fatalf("page=%+v", page)
+	}
+}
+
+func TestSetVisibility(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/visibility/deal/company/c1" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		var body struct {
+			Hidden bool `json:"hidden"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if !body.Hidden {
+			t.Error("hidden не передан")
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	if err := c.SetVisibility(context.Background(), "deal", "company", "c1", true); err != nil {
+		t.Fatalf("SetVisibility: %v", err)
+	}
+}
