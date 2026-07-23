@@ -13,7 +13,7 @@ auth, БД, messaging, кэш, аудит, storage, AI-клиенты. Кажд�
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#observability)
-[![Kits](https://img.shields.io/badge/kits-29-0ea5e9)](#пакеты)
+[![Kits](https://img.shields.io/badge/kits-30-0ea5e9)](#пакеты)
 
 </div>
 
@@ -105,6 +105,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
+| [`telemetry`](telemetry/) | Opt-in bootstrap OTel SDK: tracer/meter/logger providers + OTLP HTTP-экспортёры (endpoint/Bearer из env); resource-атрибуты `service.*`, опц. `tenant`; runtime-инструментация. Без него kit-инструментация no-op |
 | [`logkit`](logkit/) | `Logger` поверх slog; JSON-stdout (`LOG_STDOUT`) или произвольный writer (`NewWithWriter`); `log_messages_total`; trace_id correlation; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
 | [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`oidckit`](oidckit/) | Authentik/OIDC BFF: `Verifier` (discovery, JWKS lazy-refresh, verify iss/aud/exp/nonce, PKCE S256), huma-роуты login/callback/me/logout, cookie-сессия HS256 (`authnkit`), `Extractor` → `httpkit.AuthExtractor`, `StateStore` (Redis/in-memory), `Hooks` (SessionClaims/OnLogin) |
@@ -154,8 +155,9 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 через **глобальные** OTel-провайдеры (`otel.Meter`/`otel.Tracer`), а `logkit`
 пишет структурный лог в stdout. Пока приложение не зарегистрирует
 `MeterProvider`/`TracerProvider`, инструменты — **no-op** (записи молча
-отбрасываются, kit не падает). Экспорт (OTLP/Prometheus/…) и бэкенд —
-ответственность потребителя: настраивается его собственной проводкой OTel SDK.
+отбрасываются, kit не падает). Экспорт и бэкенд — ответственность
+потребителя: либо готовый opt-in кит `telemetry` (OTLP HTTP-экспортёры всех
+трёх сигналов, endpoint/Bearer из env), либо собственная проводка OTel SDK.
 
 Подключение fx-модулей golibinfra даёт RED + DB-pool + bus + logs «из коробки» на
 уровне инструментов:

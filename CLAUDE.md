@@ -33,7 +33,7 @@ go build ./...                    # build
 Полный список — `README.md § Пакеты` (тонкий индекс). Назначение, конфиг и
 эмитимые сигналы каждого кита — в его `README.md` рядом с кодом (у сложных китов
 ещё `docs/`); это единый источник правды по киту. Кратко:
-`logkit` (slog + PII-redact + trace-id, JSON в stdout), `httpkit` (huma/chi
+`telemetry` (opt-in OTel bootstrap) · `logkit` (slog + PII-redact + trace-id, JSON в stdout), `httpkit` (huma/chi
 server + middleware), `httpclient` (retry + circuit breaker), provider-киты `anthropickit` / `openaikit`
 / `googleaikit` (SDK) + `yandexaikit` / `sberaikit` (raw HTTP) — LLM-вызовы
 (chat/embeddings/images/audio) с нормализованным `Usage`+`Cost` (USD у
