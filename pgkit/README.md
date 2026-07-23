@@ -23,7 +23,6 @@ import "git.stit.tech/stit-core/golibinfra/pgkit"
 
 ```go
 fx.New(
-    telemetry.Module, // даёт metric.Meter → включает db_pool_*
     pgkit.Module,     // *pgxpool.Pool, *pgkit.DB, pgkit.Transactor, *pgkit.ReadWriteDB
     fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig),
 

@@ -89,16 +89,17 @@ WHY in-process и статично: это базовый guard для роле�
 singleton (`metrics.go`, `getInstruments` под `sync.Once`). WHY singleton:
 повторные `NewHS256JWT` / `NewArgon2idHasher` не пытаются заново
 зарегистрировать одни и те же имена инструментов и не ловят «instrument already
-exists» в OTel SDK. Следствие-инвариант: `MeterProvider` должен быть установлен
-**до** первого вызова функций кита (в fx-сборке это обеспечивает `telemetry.Module`).
-Полный справочник сигналов — [observability.md](observability.md).
+exists» в OTel SDK. Следствие-инвариант: если потребитель регистрирует свой
+`MeterProvider`, он должен быть установлен **до** первого вызова функций кита;
+иначе инструменты биндятся к глобальному no-op провайдеру (метрики молча
+отбрасываются). Полный справочник сигналов — [observability.md](observability.md).
 
 ## fx и конфигурация
 
 `Module` (`module.go`) провайдит `Hasher`, `*HS256JWT` и его интерфейсы
 (`JWTSigner`, `JWTParser`). `Module` **не** провайдит сами `Argon2idParams` и
 `JWTConfig` — их регистрирует приложение (типично через App-структуру),
-однородно с `httpkit`/`pgkit`/`telemetry`. Для приложений без App-pattern есть
+однородно с `httpkit`/`pgkit`. Для приложений без App-pattern есть
 envconfig-конструкторы `NewArgon2idParams` / `NewJWTConfig` (читают ENV через
 `kelseyhightower/envconfig`). `TOTPGenerator` и RBAC в граф fx не входят —
 issuer и набор ролей доменно-специфичны, их создаёт потребитель напрямую.

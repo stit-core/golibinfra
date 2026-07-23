@@ -30,10 +30,10 @@ description: Добавить новый kit (пакет) в golibinfra по к�
    - `<kit>_test.go` — тесты (unit; testcontainers — через `testkit`, если нужен I/O).
 3. **Конфиг (если есть env-параметры).** Структура с `envconfig`-тегами — это
    **public API**: имена полей/тегов попадут в `README.md § Стабильность API`.
-   Грузится через `config`-композицию (ENV + Vault), не хардкодь значения.
-4. **Observability by default.** Если kit делает I/O или несёт нагрузку — эмить
-   метрики/спаны через otel-go SDK, читая resource attrs из `telemetry.Config`
-   (через fx). Не выставляй `tenant`/`service.namespace` — их ставит control-plane.
+   Грузится через `config`-композицию (ENV), не хардкодь значения.
+4. **Логирование.** Логгер бери из fx-графа (`logkit`, slog). Метрики/спаны —
+   опционально через vendor-neutral OTel-API (`otel.Meter`/`otel.Tracer`):
+   инертны (no-op) без провайдера на стороне потребителя.
 5. **testkit-сабпакет (опц.).** Нужны helpers для тестов консьюмера — заведи
    `testkit/<name>test/`, где `<name>` — имя кита **без** суффикса `kit`
    (`cachekit` → `testkit/cachetest/`; см. соседние `authntest` от `authnkit`,

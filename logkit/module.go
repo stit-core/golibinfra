@@ -9,10 +9,9 @@ import (
 // зарегистрировать их сам (см. asymmetry note в pgkit/module.go).
 // Дешёвый mode: `fx.Provide(logkit.NewConfig, logkit.NewServiceConfig)`.
 //
-// service.name / service.version / deployment.environment.name НЕ дублируются
-// как record attrs — они уже в OTel resource attrs (telemetry.Init).
-// registerServiceAttrs остаётся как helper для test-сценариев, но не зовётся
-// модулем — иначе attrs шли бы дважды в каждый OTLP log record.
+// service.name / service.version / deployment.environment.name НЕ пишутся
+// как record attrs модулем. registerServiceAttrs остаётся как helper для
+// caller'ов/тестов, которым нужны эти поля в каждой записи.
 var Module = fx.Module(
 	"logkit",
 	fx.Provide(

@@ -38,7 +38,7 @@ fx.New(
     fx.Provide(storagekit.NewConfig), // Config из ENV (STORAGE_S3_*)
     storagekit.Module,                // → *storagekit.URLBuilder
     skminio.Module,                   // → storagekit.Storage (MinIO/S3)
-    // ... telemetry.Module, logkit.Module и пр.
+    // ... logkit.Module и пр.
 )
 ```
 

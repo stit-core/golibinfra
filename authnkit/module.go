@@ -7,7 +7,7 @@ import (
 
 // Module не provide'ит Argon2idParams и JWTConfig — caller обязан
 // зарегистрировать их сам (типично через App-структуру). Однородно с
-// httpkit/pgkit/telemetry. Если приложение не использует App-pattern,
+// httpkit/pgkit. Если приложение не использует App-pattern,
 // добавь `fx.Provide(authnkit.NewArgon2idParams, authnkit.NewJWTConfig)`.
 var Module = fx.Module("authnkit",
 	fx.Provide(

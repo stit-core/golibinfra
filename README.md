@@ -4,23 +4,22 @@
 
 ### Инфраструктурные Go-kit'ы с observability из коробки
 
-Набор переиспользуемых Go-библиотек для сервисов экосистемы stit: телеметрия,
-auth, БД, messaging, кэш, аудит, storage. Каждый kit — `fx.Module`,
+Набор переиспользуемых Go-библиотек для сервисов экосистемы stit:
+auth, БД, messaging, кэш, аудит, storage, AI-клиенты. Каждый kit — `fx.Module`,
 инструментирован OTel, подключается независимо. Импортируется как Go-модуль из
 бизнес-репозиториев.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
-[![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#minimum-viable-observability)
-[![Kits](https://img.shields.io/badge/kits-30-0ea5e9)](#пакеты)
+[![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#observability)
+[![Kits](https://img.shields.io/badge/kits-29-0ea5e9)](#пакеты)
 
 </div>
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/pgkit"
 import "git.stit.tech/stit-core/golibinfra/httpkit"
-import "git.stit.tech/stit-core/golibinfra/telemetry"
 import "git.stit.tech/stit-core/golibinfra/config"
 import "git.stit.tech/stit-core/golibinfra/testkit"
 ```
@@ -30,11 +29,8 @@ import "git.stit.tech/stit-core/golibinfra/testkit"
 `golibinfra` — общая Go-lib экосистемы stit (5 форкаемых шаблонов + 2 общие
 библиотеки). Её импортирует
 [`go-backend-template`](https://git.stit.tech/stit-core/go-backend-template)
-(форк `<org>/backend`); телеметрия из коробки попадает на стандартные дашборды
-корп-Grafana. Карта всех репо — на
-[витрине stit](https://git.stit.tech/stit-core/stit-public). Каноническая
-карта контрактов (tenant = `<p>-<env>`, AppRole `projects-<p>-<env>`, OTLP-flow)
-— [`corp-infra-template/docs/ecosystem.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/ecosystem.md).
+(форк `<org>/backend`). Карта всех репо — на
+[витрине stit](https://git.stit.tech/stit-core/stit-public).
 
 ## Доступ к репозиторию
 
@@ -109,8 +105,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
-| [`telemetry`](telemetry/) | OTel init (trace/meter/log), OTLP exporters, `Span(ctx, name)` |
-| [`logkit`](logkit/) | `Logger` поверх slog; fan-out OTLP→Loki + JSON-stdout (`LOG_STDOUT`); trace_id correlation; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
+| [`logkit`](logkit/) | `Logger` поверх slog; JSON-stdout (`LOG_STDOUT`) или произвольный writer (`NewWithWriter`); `log_messages_total`; trace_id correlation; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
 | [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
 | [`oidckit`](oidckit/) | Authentik/OIDC BFF: `Verifier` (discovery, JWKS lazy-refresh, verify iss/aud/exp/nonce, PKCE S256), huma-роуты login/callback/me/logout, cookie-сессия HS256 (`authnkit`), `Extractor` → `httpkit.AuthExtractor`, `StateStore` (Redis/in-memory), `Hooks` (SessionClaims/OnLogin) |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
@@ -121,50 +116,53 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`ptrkit`](ptrkit/) | Generic-хелперы указателей: `Ptr` (nil-on-zero), `Deref` (nil-safe); без I/O |
 | [`mapkit`](mapkit/) | Декодеры `map[string]any`: `String/Int/Int64/Float/Strings/Map/IntPtr/BoolPtr`; nil-safe, без I/O |
 | [`idkit`](idkit/) | Внутренние id: `NewV7()` — UUID v7 строкой (time-sortable, PK-локальность); без I/O |
-| [`config`](config/) | Загрузчик: env + Vault, провайдит `[]Source` для приложения |
+| [`config`](config/) | Загрузчик конфигурации из env, провайдит `[]Source` для приложения |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers; per-kit subpackages |
 
 ## Per-concern endpoints (multi-host)
 
 Каждый кит читает свой эндпоинт из ENV — **разное значение = разный хост**. Это
-«шов» для split-топологии: telemetry / storage / Postgres / NATS / Redis можно
+«шов» для split-топологии: storage / Postgres / NATS / Redis можно
 развести по отдельным серверам, **не трогая код**. Репликация / HA / failover —
 дело потребителя (швы и скиллы — в `corp-infra-template` и
 `project-infra-template-compose`).
 
 | Env | Кит | Назначение |
 |---|---|---|
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP-ingest коллектора (host:port; без коллектора экспорт молча дропается — метрики/трейсы в stdout не пишутся) |
-| `VAULT_ADDR` | `config` | Vault как secret-source |
 | `PG_DSN` | `pgkit` | Postgres (primary) |
 | `PG_REPLICA_DSN` | `pgkit` | Postgres read-replica (опц.; `ReadWriteDB`) |
 | `STORAGE_S3_ENDPOINT` | `storagekit` | S3 / MinIO object storage |
 | `NATS_URL` | `natskit` | NATS / JetStream |
 | `REDIS_URL` | `cachekit` | Redis (cache + idempotency store) |
 | `OIDC_ISSUER` | `oidckit` | OIDC-провайдер (Authentik): discovery, token endpoint, JWKS |
-| `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host (default `api.anthropic.com`); ключ — `ANTHROPIC_API_KEY` (Vault) |
-| `OPENAI_BASE_URL` | `openaikit` | OpenAI API host (default `api.openai.com/v1`); ключ — `OPENAI_API_KEY` (Vault) |
-| `GOOGLE_BASE_URL` | `googleaikit` | Gemini API host (бэкенд — `GOOGLE_BACKEND` aistudio\|vertex); ключ — `GOOGLE_API_KEY` (Vault, AI-Studio) или ADC (Vertex) |
-| `YANDEX_BASE_URL` | `yandexaikit` | Yandex FM host (default `llm.api.cloud.yandex.net`); auth — `YANDEX_API_KEY` / service-account-JWT (Vault) |
-| `SBER_BASE_URL` | `sberaikit` | GigaChat host (OAuth via `SBER_OAUTH_URL`); ключ — `SBER_AUTH_KEY` (Vault) |
+| `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host (default `api.anthropic.com`); ключ — `ANTHROPIC_API_KEY` |
+| `OPENAI_BASE_URL` | `openaikit` | OpenAI API host (default `api.openai.com/v1`); ключ — `OPENAI_API_KEY` |
+| `GOOGLE_BASE_URL` | `googleaikit` | Gemini API host (бэкенд — `GOOGLE_BACKEND` aistudio\|vertex); ключ — `GOOGLE_API_KEY` (AI-Studio) или ADC (Vertex) |
+| `YANDEX_BASE_URL` | `yandexaikit` | Yandex FM host (default `llm.api.cloud.yandex.net`); auth — `YANDEX_API_KEY` / service-account-JWT |
+| `SBER_BASE_URL` | `sberaikit` | GigaChat host (OAuth via `SBER_OAUTH_URL`); ключ — `SBER_AUTH_KEY` |
 | `GRPC_ADDR` | `grpckit` | bind gRPC-сервера (HTTP/2; default `:9090`) |
-| `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`, Vault) |
-| `WEBPUSH_VAPID_PRIVATE_KEY` | `webpushkit` | VAPID private (raw ES256, Vault); public — `WEBPUSH_VAPID_PUBLIC_KEY`, контакт — `WEBPUSH_SUBJECT` |
+| `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`) |
+| `WEBPUSH_VAPID_PRIVATE_KEY` | `webpushkit` | VAPID private (raw ES256); public — `WEBPUSH_VAPID_PUBLIC_KEY`, контакт — `WEBPUSH_SUBJECT` |
 
 `outboxkit` **не** имеет своего эндпоинта — он co-located с pg-хостом: outbox
 пишется в той же транзакции, что и доменные данные (атомарность), поэтому живёт
 на том же Postgres, что `PG_DSN`.
 
-## Minimum viable observability
+## Observability
 
-Подключение fx-модулей golibinfra даёт **автоматический** RED + DB-pool + bus +
-logs + traces. Минимальный набор для сервиса, который сразу попадает на
-стандартные дашборды корп-Grafana (папка **Apps**):
+Киты инструментированы OTel: HTTP/gRPC/DB/bus/AI-вызовы эмитят метрики и спаны
+через **глобальные** OTel-провайдеры (`otel.Meter`/`otel.Tracer`), а `logkit`
+пишет структурный лог в stdout. Пока приложение не зарегистрирует
+`MeterProvider`/`TracerProvider`, инструменты — **no-op** (записи молча
+отбрасываются, kit не падает). Экспорт (OTLP/Prometheus/…) и бэкенд —
+ответственность потребителя: настраивается его собственной проводкой OTel SDK.
+
+Подключение fx-модулей golibinfra даёт RED + DB-pool + bus + logs «из коробки» на
+уровне инструментов:
 
 ```go
 fx.New(
-  telemetry.Module,   // OTLP exporter + runtime (go_*, process_*)
-  logkit.Module,      // log_messages_total{level}, slog с trace_id
+  logkit.Module,      // log_messages_total{level}, slog с trace_id в stdout
   httpkit.Module,     // http_requests_total, http_request_duration_seconds
   pgkit.Module,       // db_pool_* (acquired/idle/max/wait), pg traces
   natskit.Module,     // nats_messages_*, nats_handle_duration_seconds
@@ -173,24 +171,6 @@ fx.New(
   ...
 )
 ```
-
-После запуска приложение видно на дашбордах **Apps · Service Overview / HTTP /
-Database / Bus / Outbox / Logs / Traces** — без правок.
-
-### Обязательные resource attrs
-
-| Attr | Значение | Кто ставит |
-|---|---|---|
-| `service.name` | `"backend"` (или другое) | приложение (`telemetry.Config`) |
-| `service.version` | semver / git short-sha | приложение |
-| `deployment.environment.name` | `prod` / `staging` / `smoke` | приложение |
-| `tenant` | имя tenant'а | **корп otel-collector** (из `X-Scope-OrgID`) |
-| `service.namespace` | == `tenant` (инвариант) | **корп otel-collector** (force-upsert) |
-
-`tenant` и `service.namespace` приложение **не** выставляет — их ставит/перезатирает
-корп otel-collector (managed на `*.stit.tech` или self-hosted форк
-`corp-infra-template`). Инвариант `service_namespace == tenant`: ваши логи всегда
-найдутся через `{service_namespace="<tenant>"}` в Loki.
 
 ### Business-метрики (`biz_*`)
 
@@ -202,26 +182,15 @@ logins := bizmetric.Counter(meter, "auth", "login_attempts")  // → biz_auth_lo
 logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 ```
 
-`Apps · Business` автоматически рендерит панели для всех `biz_*_total`. Полный
-гайд — [`corp-infra-template/docs/observability-app-guide.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/observability-app-guide.md);
-инвентарь метрик —
-[`observability-metrics-inventory.md`](https://git.stit.tech/stit-core/corp-infra-template/src/branch/main/docs/observability-metrics-inventory.md).
+Единый префикс `biz_` держит конвенцию имён бизнес-метрик; не плодите их в обход
+`bizmetric.Counter/Histogram/Gauge`.
 
 ### Что эмитит каждый пакет
 
 Точный перечень сигналов кита (метрики — имена, типы, labels; спаны) живёт в его
 README § Observability — у сложных китов в `docs/observability.md`. Там же
 помечено, что эмитится opt-in (например `outbox_lag_seconds` / `outbox_pending_count`
-— только при подключённом `BacklogReporter`). Все labels автоматически дополняются
-resource attrs otel-collector'ом (`resource_to_telemetry_conversion: true`).
-
-### Anti-patterns
-
-- **Не парсить тело Loki через `| json`** — OTel→Loki экспортер уже распарсил
-  resource/log attrs в stream labels. Фильтр по level — `detected_level=~"error"`.
-- **Не выставлять `service.namespace` руками** — otel-collector force-сетит = tenant.
-- **Не выпускать `:latest` Docker tag** для проектного API — `<sha>` или `<semver>`.
-- **Не плодить biz-метрики обходя `bizmetric.Counter`** — helper форсит конвенцию.
+— только при подключённом `BacklogReporter`).
 
 ## Стабильность API
 

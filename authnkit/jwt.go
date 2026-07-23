@@ -9,7 +9,7 @@ import (
 )
 
 type JWTConfig struct {
-	Secret     string        `envconfig:"JWT_SECRET" vault:"jwt_secret" required:"true"`
+	Secret     string        `envconfig:"JWT_SECRET" required:"true"`
 	AccessTTL  time.Duration `envconfig:"JWT_ACCESS_TTL" default:"15m"`
 	RefreshTTL time.Duration `envconfig:"JWT_REFRESH_TTL" default:"720h"`
 }

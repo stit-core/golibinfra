@@ -30,7 +30,6 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/grpckit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
-	"git.stit.tech/stit-core/golibinfra/telemetry"
 )
 
 // newGreeterRegistrar отдаёт стаб во fx-group; реализация — в сервис-репо.
@@ -40,7 +39,6 @@ func newGreeterRegistrar(svc *greeterServer) grpckit.ServiceRegistrar {
 
 func main() {
 	fx.New(
-		telemetry.Module, // даёт meter/tracer для otelgrpc
 		logkit.Module,
 		grpckit.Module,
 		fx.Provide(grpckit.NewConfig), // Config из ENV (envconfig)

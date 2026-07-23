@@ -1,13 +1,13 @@
 package googleaikit
 
 // Config — публичный контракт env. Имена полей/тегов стабильны (попадают в
-// README § Стабильность API). Грузится через config-композицию (ENV + Vault).
+// README § Стабильность API). Грузится через config-композицию (ENV).
 //
 // Dual-backend: Backend == "vertex" → Vertex AI (Project+Location, ADC/OAuth2);
 // иначе Gemini Developer API (AI-Studio, APIKey). На AI-Studio APIKey обязателен;
 // на Vertex обязательны Project+Location, креды берутся из ADC.
 type Config struct {
-	APIKey       string `envconfig:"GOOGLE_API_KEY" vault:"google_api_key"`
+	APIKey       string `envconfig:"GOOGLE_API_KEY"`
 	Backend      string `envconfig:"GOOGLE_BACKEND" default:"aistudio"`
 	Project      string `envconfig:"GOOGLE_PROJECT"`
 	Location     string `envconfig:"GOOGLE_LOCATION"`

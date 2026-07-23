@@ -4,7 +4,7 @@
 `NewConfig() (Config, error)` читает окружение через `envconfig.Process("", &c)`
 — для приложений без App-pattern достаточно `fx.Provide(httpkit.NewConfig)`
 рядом с `httpkit.Module`. `Module` сам `Config` **не** provide'ит (та же
-asymmetry, что в `pgkit`/`telemetry`).
+asymmetry, что в `pgkit`).
 
 ## Config
 

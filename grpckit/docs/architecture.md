@@ -53,9 +53,9 @@ Auth стоит **после** request-id и access-log намеренно: от
 
 Observability подключается одним `grpc.StatsHandler(otelgrpc.NewServerHandler())`
 — не интерсептором. Handler сам ведёт server-span и эмитит метрику длительности
-RPC (`rpc.server.*`), читая meter/tracer из глобальных провайдеров, которые
-поднимает `telemetry`. Конкретные имена и единицы — в
-[observability.md](observability.md).
+RPC (`rpc.server.*`), читая meter/tracer из глобальных OTel-провайдеров (без
+зарегистрированного провайдера — no-op; экспорт настраивает потребитель).
+Конкретные имена и единицы — в [observability.md](observability.md).
 
 ## fx value-group `grpc.services`
 

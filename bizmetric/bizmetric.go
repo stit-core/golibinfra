@@ -5,11 +5,11 @@
 //   - Histogram (seconds) → суффикс `_seconds`
 //   - Gauge → без суффикса
 //
-// Resource-attrs (service.name, tenant, environment) добавляются OTel
-// SDK автоматически — повторно их в labels класть не нужно.
+// Метрики эмитятся через глобальный otel.Meter (no-op, пока приложение
+// не зарегистрирует MeterProvider).
 //
-// Префикс `biz_` нужен чтобы дашборд "Apps/business" мог использовать
-// автодискавер `{__name__=~"biz_.*"}` без ручного списка метрик.
+// Префикс `biz_` группирует бизнес-метрики под единым namespace'ом
+// `biz_*` для последующей выборки.
 package bizmetric
 
 import (

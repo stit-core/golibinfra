@@ -3,7 +3,7 @@ package grpckit
 import "time"
 
 // Config — публичный env-контракт сервера. Имена полей/тегов стабильны
-// (README § Стабильность API). Грузится через config-композицию (ENV + Vault).
+// (README § Стабильность API). Грузится через config-композицию (ENV).
 type Config struct {
 	Addr          string        `envconfig:"GRPC_ADDR" default:":9090"`
 	MaxRecvMiB    int           `envconfig:"GRPC_MAX_RECV_MIB" default:"4"`

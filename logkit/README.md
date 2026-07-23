@@ -1,38 +1,37 @@
 # logkit
 
-Структурный `Logger` поверх `log/slog` с OTel-bridge'ом, trace-correlation и
-PII-redact'ингом. Каждый record уходит в OTel `LoggerProvider` (OTLP HTTP → корп
-Loki) и, при `LOG_STDOUT` (вкл по умолчанию), дублируется в JSON-stdout; оба
-sink'а автоматически получают `trace_id`/`span_id` из `ctx`. Метрики и трейсы в
-stdout не попадают — это только log pipeline.
+Структурный `Logger` поверх `log/slog` с trace-correlation и PII-redact'ингом.
+Каждый record сериализуется в JSON и пишется в stdout (при `LOG_STDOUT`, вкл по
+умолчанию) — либо в произвольный `io.Writer` через `NewWithWriter` (file-sink на
+стороне потребителя). `trace_id`/`span_id` подхватываются из `ctx`
+автоматически.
 
 ## Назначение
 
-`logkit` — корп observability-инвариант. Это единая точка логирования для
-сервисов stit: структурный JSON-лог, который корп-стек собирает в Loki и
-коррелирует с трейсами по `trace_id`.
+`logkit` — единая точка логирования для сервисов stit: структурный JSON-лог с
+консистентным набором полей, который собирает окружение запуска (`docker logs` /
+файловый сборщик).
 
 Чем kit ценен:
 
-- **dual-sink.** Каждая запись идёт в OTLP (`LoggerProvider` → корп Loki) и,
-  при `LOG_STDOUT`, в JSON-stdout — видно и в Grafana, и в `kubectl logs` /
-  локальной консоли. Метрики и трейсы при этом в stdout не валятся (их пишет
-  только OTLP-pipeline в `telemetry`).
+- **structured JSON в stdout.** Каждая запись — JSON-объект с `msg`, `level`,
+  `time` и переданными парами ключ-значение; при `LOG_STDOUT` пишется в stdout,
+  при `false` — отбрасывается (`io.Discard`). Для файла/иного sink'а —
+  `NewWithWriter(cfg, w)`.
 - **trace-correlation.** Запись вычитывает trace context из `ctx` и кладёт
-  `trace_id`/`span_id` в каждый log record — лог сшивается с трейсом в Grafana.
-- **resource attrs из telemetry.** `service.name`/`service.version`/
-  `deployment.environment.name` приходят как OTel resource attrs (их ставит
-  `telemetry.Init`), а не дублируются в каждый record.
+  `trace_id`/`span_id` в каждый log record (если в `ctx` есть активный span).
 - **`RegisterAttr`.** Глобально регистрируемые поля, которые kit достаёт из `ctx`
   на каждую запись — так `httpkit` middleware пробрасывает `request_id`, не зная
   про конкретный logger.
 - **PII-redact.** `NewWithRedact` + `RedactConfig` маскируют чувствительные данные
-  (email/телефон/карта) regex-фильтрами до отправки.
-- **`log_messages_total{level}`** — счётчик записей по уровню.
+  (email/телефон/карта) regex-фильтрами до записи.
+- **`log_messages_total{level}`** — счётчик записей по уровню (эмитится через
+  глобальный `otel.Meter`; без зарегистрированного `MeterProvider` — no-op, сам
+  лог при этом пишется как обычно).
 
 В production логировать только через `logkit.Logger` (или `*slog.Logger` из того
 же chain — `NewSlog`). `fmt.Print*` и `slog.Default()` в прод-коде запрещены: они
-проходят мимо OTLP-bridge'а, trace-correlation, redact'а и метрики.
+проходят мимо trace-correlation, redact'а, метрики и единого формата.
 
 ## Импорт
 
@@ -48,20 +47,17 @@ import "git.stit.tech/stit-core/golibinfra/logkit"
 ### Через fx
 
 `Module` provide'ит `logkit.Logger` и `*slog.Logger`, но **не** конфиги — их
-регистрирует caller (как и в `pgkit`). Дешёвый способ — `logkit.NewConfig` /
-`logkit.NewServiceConfig`, читающие ENV через envconfig. `*sdklog.LoggerProvider`
-в граф поставляет `telemetry`.
+регистрирует caller (как и в `pgkit`). Дешёвый способ — `logkit.NewConfig`,
+читающий ENV через envconfig.
 
 ```go
 import (
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
-	"git.stit.tech/stit-core/golibinfra/telemetry"
 )
 
 fx.New(
-	telemetry.Module,                   // даёт *sdklog.LoggerProvider + resource attrs
 	logkit.Module,                      // даёт logkit.Logger и *slog.Logger
 	fx.Provide(logkit.NewConfig),       // logkit.Config из ENV
 	fx.Invoke(func(log logkit.Logger) {
@@ -73,7 +69,7 @@ fx.New(
 ### Логирование с ctx и trace_id
 
 `trace_id`/`span_id` появятся в записи автоматически, если в `ctx` есть активный
-span (его кладёт `telemetry`/`httpkit`/`grpckit` через OTel):
+span:
 
 ```go
 func (h *Handler) Do(ctx context.Context, log logkit.Logger) {
@@ -118,7 +114,7 @@ log.Info(ctx, "user login", "email", "john.doe@example.com")
 
 ## Конфигурация
 
-Все три конфиг-структуры читаются через `envconfig`. Имена полей и envconfig-теги —
+Конфиг-структуры читаются через `envconfig`. Имена полей и envconfig-теги —
 **part of public API**: менять их = breaking change (корневой README
 § Стабильность API; для logkit это `Config` и `RedactConfig`).
 
@@ -127,19 +123,10 @@ log.Info(ctx, "user login", "email", "john.doe@example.com")
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `LOG_LEVEL` | `Level` | `string` | `info` | Минимальный уровень записи (`debug`/`info`/`warn`/`error`). Парсится `slog.Level.UnmarshalText`; невалидное значение → `info`. |
-| `LOG_STDOUT` | `Stdout` | `bool` | `true` | Дублировать записи в JSON-stdout (вдобавок к OTLP). `false` — только OTLP. Default действует через `envconfig`; в struct-литерале zero-value `false` — задавайте поле явно. |
+| `LOG_STDOUT` | `Stdout` | `bool` | `true` | Писать записи в JSON-stdout. `false` — записи отбрасываются (`io.Discard`). Default действует через `envconfig`; в struct-литерале zero-value `false` — задавайте поле явно. |
 
-### `ServiceConfig`
-
-Источник идентичности сервиса. На прод-пути значения уходят в OTel resource attrs
-через `telemetry`, поэтому в каждый log record kit их **не** дублирует (см.
-§ Observability).
-
-| Env | Поле | Тип | Default | Назначение |
-|---|---|---|---|---|
-| `OTEL_SERVICE_NAME` | `Service` | `string` | *(пусто)* | Имя сервиса. |
-| `APP_ENV` | `Env` | `string` | `dev` | Окружение (`prod`/`staging`/`dev`/…). |
-| `OTEL_SERVICE_VERSION` | `Version` | `string` | `dev` | Версия сервиса (semver / git short-sha). |
+Для записи в файл или иной sink используйте `NewWithWriter(cfg, w)` с нужным
+`io.Writer` (ротацию/файл предоставляет потребитель).
 
 ### `RedactConfig`
 
@@ -154,38 +141,12 @@ log.Info(ctx, "user login", "email", "john.doe@example.com")
 
 ## Observability
 
-Единый источник правды о том, что эмитит kit, — этот раздел (он сходится с
-корневым README § Что эмитит).
-
-### Метрика
-
-| Метрика | Тип | Labels | Когда |
-|---|---|---|---|
-| `log_messages_total` | counter | `level` (`debug`/`info`/`warn`/`error`) | Инкремент на каждом вызове `Debug`/`Info`/`Warn`/`Error`. |
-
-Counter регистрируется через `otel.Meter("git.stit.tech/stit-core/golibinfra/logkit")`.
-Если глобальный meter ещё не инициализирован (нет OTel SDK) — инструмент `nil`, и
-запись метрики становится no-op; сам лог при этом пишется как обычно.
-
-### trace_id / span_id
-
-В OTLP-sink (`New`/`NewSlog`, через `otelslog`-bridge) `trace_id`/`span_id`
-embedding'ит сам `otelslog` — он читает span context из `ctx`. В stdout-sink
-(raw `slog.JSONHandler`) и на test-пути (`NewWithWriter`/`NewWithRedact`) их
-добавляет внутренний `traceHandler`. Поля появляются только при валидном span
-context в `ctx`.
-
-### Resource attrs (service / env / version)
-
-`service.name` / `service.version` / `deployment.environment.name` — это OTel
-**resource attrs**, их выставляет `telemetry.Init` из `telemetry.Config`. В сам
-log record kit их **не** кладёт: иначе они бы шли дважды в каждый OTLP-record.
-Следствие: stdout-записи (raw JSON-handler resource attrs не получает) полей
-`service`/`env`/`version` не содержат — идентичность сервиса там определяется
-средой запуска (pod/namespace). `ServiceConfig` + `registerServiceAttrs`
-существуют для test-сценариев и модулем не вызываются.
-
-Спаны kit не эмитит.
+`log_messages_total` (counter, label `level`) регистрируется через
+`otel.Meter("git.stit.tech/stit-core/golibinfra/logkit")` и инкрементируется на
+каждом `Debug`/`Info`/`Warn`/`Error`. Если глобальный `MeterProvider` не
+установлен — инструмент `nil`, запись метрики становится no-op; сам лог при этом
+пишется как обычно. `trace_id`/`span_id` добавляются в record при валидном span
+context в `ctx`. Спаны kit не эмитит.
 
 ## API
 
@@ -204,16 +165,16 @@ type Logger interface {
 Конструкторы:
 
 ```go
-// Прод-путь: fan-out в OTel LoggerProvider (OTLP → Loki) + JSON-stdout (LOG_STDOUT).
-func New(cfg Config, lp *sdklog.LoggerProvider) Logger
-func NewSlog(cfg Config, lp *sdklog.LoggerProvider) *slog.Logger
+// Прод-путь: JSON в stdout (LOG_STDOUT), иначе io.Discard.
+func New(cfg Config) Logger
+func NewSlog(cfg Config) *slog.Logger
+
+// В произвольный writer (file-sink, тесты).
+func NewWithWriter(cfg Config, w io.Writer) Logger
+func NewSlogWithWriter(cfg Config, w io.Writer) *slog.Logger
 
 // PII-redact: JSON в произвольный writer, redact по RedactConfig.
 func NewWithRedact(cfg Config, redactCfg RedactConfig, w io.Writer) Logger
-
-// Test-only: JSON в writer без OTel SDK.
-func NewWithWriter(cfg Config, w io.Writer) Logger
-func NewSlogWithWriter(cfg Config, w io.Writer) *slog.Logger
 
 // No-op Logger (тесты, заглушки).
 func Nop() Logger
@@ -262,14 +223,12 @@ func NewConfig() (Config, error)         // envconfig.Process для Config
 func NewServiceConfig() (ServiceConfig, error)  // envconfig.Process для ServiceConfig
 ```
 
-`Module` не provide'ит конфиги и `*sdklog.LoggerProvider` — их регистрирует caller
-(provider'ы конфигов — `NewConfig`/`NewServiceConfig`; `LoggerProvider` — из
-`telemetry`).
+`Module` не provide'ит конфиги — их регистрирует caller
+(`NewConfig`/`NewServiceConfig`).
 
 ## Тестирование
 
-Для unit-тестов LoggerProvider избыточен — используйте writer-конструкторы и
-парсите JSON-вывод:
+Для unit-тестов используйте writer-конструкторы и парсите JSON-вывод:
 
 ```go
 var buf bytes.Buffer
@@ -298,13 +257,9 @@ log.Info(ctx, "user login", "email", "john.doe@example.com")
 ## Инварианты и подводные камни
 
 - **В production только `logkit.Logger`.** `fmt.Print*` и `slog.Default()` в
-  прод-коде запрещены — они обходят OTLP-bridge, trace-correlation, PII-redact и
-  метрику `log_messages_total`. Где нужен `*slog.Logger` (сторонний consumer) —
-  берите его из `NewSlog`, а не из `slog.Default()`.
-
-- **resource attrs не дублировать в record.** `service`/`env`/`version`
-  приходят как OTel resource attrs от `telemetry`. Не регистрируйте их через
-  `RegisterAttr` на прод-пути — поедут дважды в каждый OTLP-record.
+  прод-коде запрещены — они обходят trace-correlation, PII-redact, метрику
+  `log_messages_total` и единый формат. Где нужен `*slog.Logger` (сторонний
+  consumer) — берите его из `NewSlog`, а не из `slog.Default()`.
 
 - **PII-redact выключен по умолчанию.** `RedactConfig.Enabled == false` — записи
   идут без маскирования. Включайте на путях, где в логи могут попасть PII. Redact
@@ -316,10 +271,5 @@ log.Info(ctx, "user login", "email", "john.doe@example.com")
   складывается. Зовите при старте; повторные регистрации того же поля добавят его
   несколько раз.
 
-- **`log_messages_total` no-op без meter.** Без инициализированного OTel SDK
+- **`log_messages_total` no-op без meter.** Без установленного `MeterProvider`
   counter не создаётся, инкремент превращается в no-op; лог при этом пишется.
-
-- **Loki не парсить через `| json`.** OTel→Loki экспортер уже разложил
-  resource/log attrs в stream labels — повторный `| json` лишний. Фильтр по
-  уровню — `detected_level=~"error"` (а не по полю из тела). См. корневой README
-  § Anti-patterns.

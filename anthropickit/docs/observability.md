@@ -50,8 +50,7 @@ Meter: `git.stit.tech/stit-core/golibinfra/anthropickit`. Инструменты
 ## Resource attributes
 
 `anthropickit` **не** выставляет resource attrs (`service.name`,
-`service.version`, `deployment.environment.name`, `tenant`,
-`service.namespace`). Их ставит приложение через `telemetry.Config`
-(`service.*`/`environment`) и корп `otel-collector` (`tenant`/
-`service.namespace`). Кит лишь читает meter из глобального otel-провайдера
-(`otel.Meter`).
+`service.version`, `deployment.environment.name`) — их несёт OTel-resource,
+настроенный потребителем в его проводке OTel SDK. Кит лишь читает meter из
+глобального otel-провайдера (`otel.Meter`); без зарегистрированного
+`MeterProvider` — no-op.

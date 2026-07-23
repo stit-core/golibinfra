@@ -3,7 +3,8 @@
 Единый источник правды по сигналам кита. `grpckit` не создаёт собственных
 otel-инструментов: метрики и спаны эмитит `otelgrpc` StatsHandler
 (`grpc.StatsHandler(otelgrpc.NewServerHandler())`), читая meter/tracer из
-глобальных провайдеров, которые поднимает `telemetry`. Access-log пишет `logkit`.
+глобальных OTel-провайдеров (без зарегистрированного провайдера — no-op; экспорт
+настраивает потребитель). Access-log пишет `logkit`.
 
 ## Метрики (otelgrpc StatsHandler)
 
@@ -28,8 +29,8 @@ StatsHandler эмитит метрику длительности RPC. Имя з
 
 `rpc.system=grpc`, `rpc.service` (полное имя сервиса), `rpc.method`,
 `rpc.response.status_code` (канонический gRPC status). Resource attrs
-(`service.name`, `service.version`, `deployment.environment.name`, `tenant`,
-`service.namespace`) добавляет otel-collector — см. корневой README.
+(`service.name`, `service.version`, `deployment.environment.name`) и экспорт
+настраивает потребитель в своей проводке OTel SDK.
 
 ## Спаны (otelgrpc StatsHandler)
 
@@ -55,8 +56,7 @@ Access-log-интерсептор пишет одну запись на вызо
 логируется отдельной записью `Error` с полями `method`, `panic`, `stack` и
 конвертируется в `codes.Internal`.
 
-## Сводка для дашбордов
+## Сводка
 
-В строке корневого README § Что эмитит каждый пакет `grpckit` представлен как
-`rpc.server.*` (otelgrpc StatsHandler) + server span. Точный метрик-выход сервера
-— одна гистограмма длительности (имя по конвенции выше).
+`grpckit` эмитит `rpc.server.*` (otelgrpc StatsHandler) + server span. Точный
+метрик-выход сервера — одна гистограмма длительности (имя по конвенции выше).

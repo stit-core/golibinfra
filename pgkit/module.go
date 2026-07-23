@@ -14,7 +14,7 @@ import (
 // Config внутренне. Caller обязан регистрировать Config'и сам (типично
 // через App-структуру в app-config модуле). Дешёвый mode без
 // App-pattern — `fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig)`.
-// Это однородно с httpkit/telemetry/authnkit/cachekit/flagkit/natskit/
+// Это однородно с httpkit/authnkit/cachekit/flagkit/natskit/
 // logkit/httpclient — у каждого Config-фабрика exported, но не в Module.
 var Module = fx.Module("pgkit",
 	fx.Provide(
@@ -26,7 +26,7 @@ var Module = fx.Module("pgkit",
 	fx.Invoke(instrumentPoolFx),
 )
 
-// instrumentParams — optional Meter: если в DI нет telemetry.Module,
+// instrumentParams — optional Meter: если Meter не provide'ен в DI,
 // pgkit не должен падать на старте. Тогда инструментация — no-op.
 type instrumentParams struct {
 	fx.In

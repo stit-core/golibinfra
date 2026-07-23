@@ -46,10 +46,9 @@ Meter: `git.stit.tech/stit-core/golibinfra/authnkit`. Спанов кит не �
 
 Инструменты создаются один раз через `sync.Once` (`getInstruments`) и
 привязываются к тому `MeterProvider`, который активен на момент **первого**
-вызова любой функции кита. Установи `MeterProvider` до первого хэша/подписи/
-верификации — иначе сигналы уйдут в no-op provider и на дашбордах их не будет. В
-fx-сборке это гарантирует подключённый `telemetry.Module`.
+вызова любой функции кита. Если потребитель регистрирует свой `MeterProvider`,
+сделай это до первого хэша/подписи/верификации — иначе сигналы уйдут в no-op
+provider.
 
-Все labels автоматически дополняются resource attrs корп otel-collector'ом
-(`resource_to_telemetry_conversion: true`) — `service.name`, `tenant` и пр.
-выставлять в самом ките не нужно.
+Resource attrs (`service.name` и пр.) несёт OTel-resource, настроенный
+потребителем в его проводке OTel SDK; в самом ките их выставлять не нужно.

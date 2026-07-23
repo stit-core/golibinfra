@@ -66,11 +66,11 @@ func main() {
 
 Минимальный ENV: `SBER_AUTH_KEY`. Полный контракт — в `Config` (`config.go`).
 
-## Конфигурация (ENV / Vault)
+## Конфигурация (ENV)
 
 | ENV | Назначение | Default |
 |---|---|---|
-| `SBER_AUTH_KEY` | Authorization key = `base64(client_id:client_secret)` (vault: `sber_auth_key`) | — (required) |
+| `SBER_AUTH_KEY` | Authorization key = `base64(client_id:client_secret)` | — (required) |
 | `SBER_SCOPE` | тариф: `GIGACHAT_API_PERS` / `_B2B` / `_CORP` | `GIGACHAT_API_PERS` |
 | `SBER_BASE_URL` | API plane | `https://gigachat.devices.sberbank.ru/api/v1` |
 | `SBER_OAUTH_URL` | OAuth plane (порт 9443) | `https://ngw.devices.sberbank.ru:9443/api/v2/oauth` |

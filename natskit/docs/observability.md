@@ -73,11 +73,7 @@ fx.Provide(fx.Annotate(natskit.Probe, fx.ResultTags(`group:"health"`)))
 ## Resource attributes
 
 `natskit` **не** выставляет resource attrs (`service.name`, `service.version`,
-`deployment.environment.name`, `tenant`, `service.namespace`). Их ставит
-приложение через `telemetry.Config` (`service.*`/`environment`) и корп
-`otel-collector` (`tenant`/`service.namespace`). Кит читает meter/tracer/
-propagator из глобального otel-провайдера (`otel.Meter`/`otel.Tracer`/
-`otel.GetTextMapPropagator`).
-
-Все labels автоматически дополняются resource attrs otel-collector'ом
-(`resource_to_telemetry_conversion: true`).
+`deployment.environment.name`) — их несёт OTel-resource, настроенный потребителем
+в его проводке OTel SDK. Кит читает meter/tracer/propagator из глобального
+otel-провайдера (`otel.Meter`/`otel.Tracer`/`otel.GetTextMapPropagator`); без
+зарегистрированных провайдеров сигналы — no-op.

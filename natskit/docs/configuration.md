@@ -1,7 +1,7 @@
 # Конфигурация natskit
 
 `natskit.Config` (с вложенными `BackpressureConfig` и `JetStreamConfig`) —
-публичный env-контракт. Загружается через config-композицию (ENV + Vault) либо
+публичный env-контракт. Загружается через config-композицию (ENV) либо
 напрямую `natskit.NewConfig()` (`envconfig.Process("", &c)`).
 
 > **Public API.** Имена полей и их `envconfig`/`default`-теги — часть стабильного

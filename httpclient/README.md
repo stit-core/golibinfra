@@ -38,7 +38,6 @@ import "git.stit.tech/stit-core/golibinfra/httpclient"
 
 ```go
 fx.New(
-    telemetry.Module, // meter/tracer для метрик и спанов клиента
     fx.Provide(httpclient.NewConfig),
     httpclient.Module, // provide: *httpclient.Client
     fx.Invoke(func(c *httpclient.Client) {
@@ -125,9 +124,8 @@ HTTP-спан и context-propagation работают автоматически
 | `http_client_breaker_open` | Int64 UpDownCounter | `name` | `1`, пока breaker открыт; `0` в Closed/Half-Open. Ведётся дельтами по `OnStateChange` |
 | client span | OTel span (`otelhttp`) | — | Клиентский HTTP-спан; несёт W3C trace-context в upstream |
 
-Reference по всем китам — корневой [`README.md` § Что эмитит каждый пакет](../README.md#что-эмитит-каждый-пакет-короткий-reference).
-Resource attrs (`service.*`, `tenant`, `service.namespace`) к этим метрикам
-добавляет otel-collector — см. там же.
+Метрики и спан эмитятся через глобальные OTel-провайдеры; без зарегистрированного
+провайдера — no-op (экспорт настраивает потребитель своей проводкой OTel SDK).
 
 ## API
 

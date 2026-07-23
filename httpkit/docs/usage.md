@@ -22,7 +22,6 @@
 
 ```go
 app := fx.New(
-    telemetry.Module,              // metric.Meter → включает Metrics middleware
     logkit.Module,                 // logkit.Logger
     httpkit.Module,                // *Server + huma.API
     fx.Provide(httpkit.NewConfig), // Config из ENV

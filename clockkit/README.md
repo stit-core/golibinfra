@@ -77,7 +77,7 @@ require.True(t, svc.IsExpired(deadline))
 ## Observability
 
 Кит ничего не эмитит — ни метрик, ни спанов, ни логов, и не зависит от
-`telemetry`. Это чистый примитив над `time`.
+OTel. Это чистый примитив над `time`.
 
 ## API
 

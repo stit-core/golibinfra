@@ -78,8 +78,9 @@ middleware в порядке регистрации — первый в спис
 
 ### Зависимости через fx (optional)
 
-- `metric.Meter` (`optional:"true"`) — есть `telemetry.Module` → добавляется
-  `Metrics`. Нет — middleware пропускается, но спаны всё равно идут через `OTel`.
+- `metric.Meter` (`optional:"true"`) — если потребитель подключил `metric.Meter`
+  в граф → добавляется `Metrics` с этим meter'ом. Нет — прочие instrument'ы берут
+  глобальный `otel.Meter` (no-op без `MeterProvider`), спаны идут через `OTel`.
 - `IdempotencyStore` (`optional:"true"`) — есть в графе (напр.
   `cachekit` provide'ит Redis-store) → добавляется `Idempotency` с дефолтным
   `IdempotencyConfig` (`Header: "Idempotency-Key"`, `TTL: 24h`,

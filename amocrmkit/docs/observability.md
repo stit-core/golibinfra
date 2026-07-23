@@ -7,8 +7,8 @@
 REST v4, amoJo, OAuth и Drive одинаково.
 
 Этот kit **не выставляет** resource-атрибуты (`service.name`/`service.version`/
-`deployment.environment.name`/`tenant`) — они приходят из `telemetry.Config`
-приложения и корп `otel-collector`.
+`deployment.environment.name`) — их несёт OTel-resource, настроенный потребителем
+в его проводке OTel SDK; без зарегистрированного `MeterProvider` метрики — no-op.
 
 ## Метрики
 

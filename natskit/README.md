@@ -36,7 +36,6 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
-	"git.stit.tech/stit-core/golibinfra/telemetry"
 )
 
 type OrderCreated struct {
@@ -45,7 +44,6 @@ type OrderCreated struct {
 
 func main() {
 	fx.New(
-		telemetry.Module,
 		logkit.Module,
 		fx.Provide(natskit.NewConfig), // читает NATS_URL и пр. из ENV
 		natskit.Module,                // *Conn + Bus + StreamBus

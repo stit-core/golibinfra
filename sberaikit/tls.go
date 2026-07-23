@@ -27,7 +27,7 @@ var russianTrustedCAPEM []byte
 func newCertPool(caBundlePath string) (*x509.CertPool, error) {
 	caPEM := russianTrustedCAPEM
 	if caBundlePath != "" {
-		b, err := os.ReadFile(caBundlePath) //nolint:gosec // путь из доверенного Config (env/Vault), не пользовательский ввод
+		b, err := os.ReadFile(caBundlePath) //nolint:gosec // путь из доверенного Config (env), не пользовательский ввод
 		if err != nil {
 			return nil, fmt.Errorf("%w: read CA bundle %s: %w", ErrConfig, caBundlePath, err)
 		}

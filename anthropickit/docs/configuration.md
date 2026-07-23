@@ -3,16 +3,16 @@
 ## Config (ENV)
 
 `anthropickit.Config` — публичный env-контракт. Загружается через
-config-композицию (ENV + Vault) либо напрямую `anthropickit.NewConfig()`
+config-композицию (ENV) либо напрямую `anthropickit.NewConfig()`
 (`envconfig.Process`).
 
-> **Public API.** Имена полей и их `envconfig`/`vault`/`default`/`required`-теги —
+> **Public API.** Имена полей и их `envconfig`/`default`/`required`-теги —
 > часть стабильного контракта. Менять их = breaking change, идёт мажорным
 > апгрейдом (см. [корневой README § Стабильность API](../../README.md)).
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `ANTHROPIC_API_KEY` | `APIKey` | `string` | — (`required`, `vault:"anthropic_api_key"`) | Ключ Anthropic API. Без него `New` возвращает `ErrConfig`. |
+| `ANTHROPIC_API_KEY` | `APIKey` | `string` | — (`required`) | Ключ Anthropic API. Без него `New` возвращает `ErrConfig`. |
 | `ANTHROPIC_BASE_URL` | `BaseURL` | `string` | `https://api.anthropic.com` | Хост Anthropic API. «Шов» под split-топологию / прокси. Можно перекрыть опцией `WithBaseURL`. |
 | `ANTHROPIC_DEFAULT_MODEL` | `DefaultModel` | `string` | `claude-opus-4-8` | Модель по умолчанию при пустом `Request.Model`. |
 | `ANTHROPIC_MAX_RETRIES` | `MaxRetries` | `int` | `2` | Максимум ретраев SDK (передаётся в `option.WithMaxRetries`, только при `> 0`). SDK ретраит 429/5xx с экспоненциальным backoff. |

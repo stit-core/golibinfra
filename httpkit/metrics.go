@@ -16,7 +16,7 @@ var durationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5
 
 // httpInstruments — shared слой для всех middleware'ей. Caller'у не
 // нужно прокидывать Meter в каждый middleware: они сами берут глобальный
-// otel.Meter (telemetry.Init выставляет правильный provider).
+// otel.Meter (no-op, пока приложение не зарегистрирует MeterProvider).
 type httpInstruments struct {
 	reqTotal          metric.Int64Counter
 	reqDuration       metric.Float64Histogram

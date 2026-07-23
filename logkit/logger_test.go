@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"testing"
 
-	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -47,20 +46,15 @@ func TestNopDoesNotPanic(t *testing.T) {
 }
 
 func TestNewNotNil(t *testing.T) {
-	lp := sdklog.NewLoggerProvider()
-	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
-	l := New(Config{Level: "debug"}, lp)
+	l := New(Config{Level: "debug"})
 	if l == nil {
 		t.Fatal("New returned nil")
 	}
 }
 
 func TestStdoutSinkWritesJSONWithTrace(t *testing.T) {
-	lp := sdklog.NewLoggerProvider()
-	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
-
 	var buf bytes.Buffer
-	l := &slogLogger{l: newSlog(Config{Level: "debug", Stdout: true}, lp, &buf)}
+	l := &slogLogger{l: newSlog(Config{Level: "debug", Stdout: true}, &buf)}
 
 	sc := trace.NewSpanContext(trace.SpanContextConfig{
 		TraceID:    trace.TraceID{1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16},
@@ -82,11 +76,8 @@ func TestStdoutSinkWritesJSONWithTrace(t *testing.T) {
 }
 
 func TestStdoutDisabledNoOutput(t *testing.T) {
-	lp := sdklog.NewLoggerProvider()
-	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
-
 	var buf bytes.Buffer
-	l := &slogLogger{l: newSlog(Config{Level: "debug", Stdout: false}, lp, &buf)}
+	l := &slogLogger{l: newSlog(Config{Level: "debug", Stdout: false}, &buf)}
 	l.Info(context.Background(), "should not reach buf")
 
 	if buf.Len() != 0 {

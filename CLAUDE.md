@@ -32,34 +32,28 @@ go build ./...                    # build
 
 Полный список — `README.md § Пакеты` (тонкий индекс). Назначение, конфиг и
 эмитимые сигналы каждого кита — в его `README.md` рядом с кодом (у сложных китов
-ещё `docs/`); это единый источник правды по киту. Кратко: `telemetry`
-(OTel bootstrap), `logkit` (slog + PII-redact + trace-id), `httpkit` (huma/chi
+ещё `docs/`); это единый источник правды по киту. Кратко:
+`logkit` (slog + PII-redact + trace-id, JSON в stdout), `httpkit` (huma/chi
 server + middleware), `httpclient` (retry + circuit breaker), provider-киты `anthropickit` / `openaikit`
 / `googleaikit` (SDK) + `yandexaikit` / `sberaikit` (raw HTTP) — LLM-вызовы
 (chat/embeddings/images/audio) с нормализованным `Usage`+`Cost` (USD у
 anthropic/openai/google, RUB у yandex/sber), `grpckit` (gRPC-сервер) + `grpcclient` (gRPC-клиент),
 `pgkit` (pgx pool +
-otelpgx), `natskit` (NATS/JetStream), `outboxkit` (outbox + lag-reporter),
+otelpgx), `natskit` (NATS/JetStream), `outboxkit` (transactional outbox),
 `authnkit` (JWT/Argon2id/TOTP/RBAC), `oidckit` (OIDC BFF: RP-verify + login-роуты +
 cookie-сессия), `cachekit` (Redis + idempotency), `bizmetric`
 (business-метрики), `auditkit`, `bruteforcekit`, `flagkit`, `clockkit`, `timerkit`,
-`config` (ENV + Vault), `testkit` (testcontainers helpers).
+`config` (ENV-loader), `testkit` (testcontainers helpers).
 
-## Инварианты, на которые завязан корп-стек
+## Observability-инварианты
 
-Полно — `README.md § Minimum viable observability`. Чек-лист:
+Киты инструментированы OTel и эмитят метрики/спаны через **глобальные** провайдеры
+(`otel.Meter`/`otel.Tracer`); без зарегистрированного `MeterProvider`/`TracerProvider`
+инструменты — no-op, kit не падает. Экспорт и бэкенд — проводка OTel SDK на стороне
+потребителя. Подробно — `README.md § Observability`.
 
-1. **`service.name` / `service.version` / `deployment.environment.name`** — выставляет
-   приложение через `telemetry.Config`. Без них дашборды Apps/* теряют `$service`/`$env`.
-2. **`tenant` / `service.namespace`** — приложение **не** выставляет; их ставит корп
-   `otel-collector` (managed — инстанс на `*.stit.tech`; self-hosted — ваш форк
-   `corp-infra-template`). Выставишь сам — будет молча перезатёрто.
-3. **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
-   business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
-
-Правка `telemetry/`, `logkit/`, `bizmetric/` или resource-attrs init-флоу — breaking
-для всех сервисов; сверяйся с корп obs-контрактом (`corp-infra-template/docs/ecosystem.md`
-§ Tenant identity / Observability resource-attrs) перед изменением инвариантов.
+- **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
+  business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 
 ## Стиль (инварианты)
 
@@ -68,8 +62,9 @@ cookie-сессия), `cachekit` (Redis + idempotency), `bizmetric`
   собирает `App` из них. Прямой `New*()` без fx допустим, но менее идиоматичен.
 - **envconfig-теги — часть public API.** Имена полей/тегов конфигов (`README.md §
   Стабильность API`) менять = breaking → новый major.
-- **Observability by default.** Новый kit эмитит метрики/спаны через otel-go SDK,
-  читая resource attrs из `telemetry.Config` (не хардкодить).
+- **Observability by default.** Новый kit эмитит метрики/спаны через otel-go SDK
+  (глобальные `otel.Meter`/`otel.Tracer`, no-op без провайдера); resource attrs и
+  экспорт настраивает потребитель.
 - **Минимум зависимостей.** Перед новым import — проверь stdlib + существующие deps;
   каждый новый import обсуждается с пользователем.
 - **Комментарии — только WHY** (rule `.claude/rules/comments.md`).
@@ -91,11 +86,10 @@ cookie-сессия), `cachekit` (Redis + idempotency), `bizmetric`
 
 ### Сначала спросить
 - Менять public конфиг-структуры (имена полей, envconfig-теги, типы) — breaking, нужен major.
-- Менять `telemetry/`/`bizmetric/`/resource-attrs — затрагивает все сервисы (корп obs-контракт).
+- Менять конвенцию имён метрик (`bizmetric`, `biz_*`) — затрагивает все сервисы.
 - Добавлять новую зависимость в `go.mod`.
 
 ### Не делать никогда
-- Выставлять `tenant`/`service.namespace` дефолтом в `telemetry.Config`.
 - `:latest` в примерах. `fmt.Print*` / `slog.Default()` в production-коде — только `logkit.Logger`.
 - Коммитить product-specific логику — golibinfra общая lib; доменное живёт в сервис-репо.
 

@@ -1,45 +1,13 @@
 package config
 
-import (
-	"context"
+import "go.uber.org/fx"
 
-	vault "github.com/hashicorp/vault/api"
-	"go.uber.org/fx"
-)
-
+// Module провайдит набор Source'ов для config.Load. Единственный источник —
+// env (envconfig); секреты приложений приходят обычными env-переменными.
 var Module = fx.Module("config",
-	fx.Provide(
-		newVaultClientConfig,
-		newVaultPathConfig,
-		NewVaultClient,
-		newSources,
-	),
+	fx.Provide(newSources),
 )
 
-func newVaultClientConfig() (VaultClientConfig, error) {
-	var c VaultClientConfig
-	if err := Env().Apply(context.TODO(), &c); err != nil {
-		return c, err
-	}
-	return c, nil
-}
-
-type VaultPathConfig struct {
-	Path string `envconfig:"VAULT_PATH"`
-}
-
-func newVaultPathConfig() (VaultPathConfig, error) {
-	var c VaultPathConfig
-	if err := Env().Apply(context.TODO(), &c); err != nil {
-		return c, err
-	}
-	return c, nil
-}
-
-func newSources(client *vault.Client, vp VaultPathConfig) []Source {
-	srcs := []Source{Env()}
-	if client != nil && vp.Path != "" {
-		srcs = append(srcs, Vault(client, vp.Path))
-	}
-	return srcs
+func newSources() []Source {
+	return []Source{Env()}
 }

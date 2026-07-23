@@ -148,7 +148,7 @@ W3C trace-context (`traceparent`/`tracestate`) ездит вместе с соо
 
 `SubjectFromContext(ctx)` / `HeadersFromContext(ctx)` дают обработчику доступ к
 конкретному subject (для wildcard-подписок вроде `orders.*`) и к заголовкам
-(`event-type`, `schema-version`, `tenant` и пр.) — без необходимости дублировать
+(`event-type`, `schema-version` и пр.) — без необходимости дублировать
 их в payload.
 
 ## Backpressure

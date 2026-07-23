@@ -182,8 +182,9 @@ WHY роутинг — explicit, а не автоматический: kit не 
 - `instrumentPoolFx` (через `fx.Invoke`) — вешает `db_pool_*` на пул, если в
   графе есть `metric.Meter`.
 
-`Meter` помечен `optional:"true"`: без `telemetry.Module` инструментация
-становится no-op, а не падает на старте.
+`Meter` помечен `optional:"true"`: если `metric.Meter` в графе нет (потребитель
+не подключил свою проводку OTel SDK), инструментация становится no-op, а не
+падает на старте.
 
 **Asymmetry note.** Ни один kit golibinfra не provide'ит свой Config внутри
 `Module` — это делает caller. Идиоматично — через App-структуру в app-config

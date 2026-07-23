@@ -3,7 +3,7 @@
 ## Config (ENV)
 
 `grpckit.Config` — публичный env-контракт сервера. Загружается через
-config-композицию (ENV + Vault) либо напрямую `grpckit.NewConfig()`
+config-композицию (ENV) либо напрямую `grpckit.NewConfig()`
 (`envconfig.Process("", &c)`).
 
 > **Public API.** Имена полей и их `envconfig`/`default`-теги — часть стабильного

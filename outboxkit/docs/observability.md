@@ -1,10 +1,9 @@
 # outboxkit — observability
 
 Единый источник правды по сигналам кита. Meter и инструменты создаются под именем
-`git.stit.tech/stit-core/golibinfra/outboxkit`. Все labels автоматически
-дополняются resource attrs корп otel-collector'ом
-(`resource_to_telemetry_conversion: true`), поэтому `service`/`env`/`tenant`
-ставить руками не нужно.
+`git.stit.tech/stit-core/golibinfra/outboxkit`. Resource attrs (`service`/`env`/…)
+и экспорт настраивает потребитель в своей проводке OTel SDK; без
+зарегистрированного `MeterProvider` инструменты — no-op.
 
 ## Метрики (всегда)
 
@@ -55,8 +54,7 @@ Producer-спан публикации создаёт транспорт `natski
 `PublishStream` / `PublishStreamBatch`), куда `Worker` отдаёт сообщения. Trace
 доставки события прослеживается через спаны `natskit` (producer) и consumer'а.
 
-## Дашборд
+## Opt-in сигналы
 
-При подключённых fx-модулях golibinfra сервис попадает на дашборд **Apps · Outbox**
-корп-Grafana без правок (RED по `outbox_*`). `outbox_lag_seconds` /
-`outbox_pending_count` на дашборде появляются после подключения `BacklogReporter`.
+`outbox_lag_seconds` / `outbox_pending_count` эмитятся только после подключения
+`BacklogReporter` (`RegisterBacklogGauges`); остальные `outbox_*` — всегда.

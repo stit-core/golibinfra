@@ -33,7 +33,7 @@ import "git.stit.tech/stit-core/golibinfra/grpcclient"
 ## Быстрый старт
 
 `Module` провайдит один `*grpc.ClientConn` к `GRPC_CLIENT_TARGET`. Конфиг из ENV
-поднимается через `NewConfig` (или `config`-композицию ENV + Vault). Из `Conn`
+поднимается через `NewConfig` (или `config`-композицию ENV). Из `Conn`
 строится сгенерированный stub.
 
 ```go
@@ -47,16 +47,14 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/grpcclient"
 	"git.stit.tech/stit-core/golibinfra/logkit"
-	"git.stit.tech/stit-core/golibinfra/telemetry"
 
 	pb "example.com/gen/billingpb" // protoc-gen-go-grpc stub
 )
 
 func main() {
 	fx.New(
-		telemetry.Module,
 		logkit.Module,
-		fx.Provide(grpcclient.NewConfig), // Config из ENV (+ Vault через config-композицию)
+		fx.Provide(grpcclient.NewConfig), // Config из ENV
 		grpcclient.Module,                // *grpc.ClientConn к GRPC_CLIENT_TARGET
 		fx.Provide(func(conn *grpc.ClientConn) pb.BillingClient {
 			return pb.NewBillingClient(conn)
@@ -114,7 +112,7 @@ var Module = fx.Module("grpcclient", fx.Provide(newConn))
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `GRPC_CLIENT_TARGET` | `Target` | `string` | — (`required`) | Адрес downstream gRPC-сервиса (gRPC name-resolver target, напр. `dns:///billing:9090`) |
-| `GRPC_CLIENT_TOKEN` | `Token` | `string` | `""` | Bearer-токен в `authorization` на каждый RPC. Пусто → `PerRPCCredentials` не подключается. Vault-key `grpc_client_token` |
+| `GRPC_CLIENT_TOKEN` | `Token` | `string` | `""` | Bearer-токен в `authorization` на каждый RPC. Пусто → `PerRPCCredentials` не подключается |
 | `GRPC_CLIENT_TLS` | `TLS` | `bool` | `false` | `true` → TLS-транспорт (MinVersion 1.2); `false` → `insecure` (plaintext) |
 | `GRPC_CLIENT_KEEPALIVE_TIME` | `Keepalive.Time` | `time.Duration` | `30s` | Интервал HTTP/2 keepalive-ping'ов |
 | `GRPC_CLIENT_KEEPALIVE_TIMEOUT` | `Keepalive.Timeout` | `time.Duration` | `20s` | Сколько ждать ack на ping до признания соединения мёртвым |
@@ -122,8 +120,7 @@ var Module = fx.Module("grpcclient", fx.Provide(newConn))
 `GRPC_CLIENT_TARGET` — per-concern endpoint кита: разное значение = разный
 downstream-хост (README § Per-concern endpoints).
 
-`Token` помечен тегом `vault:"grpc_client_token"` — при загрузке через
-`config`-композицию значение берётся из Vault, а не из открытого ENV.
+`Token` читается из `GRPC_CLIENT_TOKEN`.
 
 ## Observability
 
@@ -139,12 +136,13 @@ downstream-хост (README § Per-concern endpoints).
 Точный набор метрик и атрибутов определяется версией `otelgrpc` из
 [`go.mod`](../go.mod) — он же является источником правды.
 
+Спаны/метрики `rpc.client.*` эмитятся через глобальные OTel-провайдеры; без
+зарегистрированного провайдера — no-op (экспорт настраивает потребитель своей
+проводкой OTel SDK).
+
 Access-log идёт отдельно, через unary-интерсептор и `logkit.Logger`: успешный
 вызов — `Debug` (`method`, `duration_ms`), ошибка — `Error` (`method`, `code`,
 `duration_ms`, `error`). `trace_id`/`span_id` в строки лога инжектит `logkit`.
-
-Все labels автоматически дополняются resource-attrs в корп otel-collector'е
-(`resource_to_telemetry_conversion: true`).
 
 ## API
 
@@ -195,8 +193,7 @@ conn, err := grpcclient.Dial(grpcclient.Config{Target: "passthrough:///x"}, nil)
   `conn.Connect()` + `conn.WaitForStateChange`.
 - **Lifecycle соединения.** Под `Module` закрытие делает fx (`OnStop` → `conn.Close()`).
   При прямом `Dial` закрывать соединение — обязанность вызывающего (`defer conn.Close()`).
-- **Bearer из env/Vault.** Токен берётся из `GRPC_CLIENT_TOKEN`; продакшен-источник
-  — Vault (`vault:"grpc_client_token"`), не открытый ENV. Per-RPC creds
+- **Bearer из env.** Токен берётся из `GRPC_CLIENT_TOKEN`. Per-RPC creds
   подключаются только при непустом токене.
 - **TLS и per-RPC creds.** При `GRPC_CLIENT_TLS=false` транспорт plaintext, а
   `RequireTransportSecurity()` = `false` — bearer едет поверх незашифрованного

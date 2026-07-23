@@ -12,7 +12,6 @@
 
 ```go
 fx.New(
-    telemetry.Module, // даёт metric.Meter → включает db_pool_*
     pgkit.Module,
     fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig),
 
@@ -22,8 +21,9 @@ fx.New(
 )
 ```
 
-Без `telemetry.Module` (нет `metric.Meter` в графе) `Module` поднимается, но
-инструментация пула — no-op.
+`db_pool_*` вешаются, только если в графе есть `metric.Meter` (потребитель
+подключает свою проводку OTel SDK); без него инструментация пула — no-op,
+`Module` при этом поднимается.
 
 ## Базовые запросы
 

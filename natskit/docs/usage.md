@@ -64,7 +64,6 @@ func HeadersFromContext(ctx context.Context) nats.Header // заголовки �
 
 ```go
 fx.New(
-	telemetry.Module,
 	logkit.Module,
 	fx.Provide(natskit.NewConfig),
 	natskit.Module,
@@ -201,8 +200,8 @@ err := bus.Subscribe(ctx, "orders.*", func(ctx context.Context, payload []byte) 
 ```
 
 `HeadersFromContext(ctx)` даёт заголовки сообщения (`event-type`,
-`schema-version`, `tenant` и т.п.). Там же лежит W3C trace-context — это
-нормально, читайте только нужные ключи.
+`schema-version` и т.п.). Там же лежит W3C trace-context — это нормально,
+читайте только нужные ключи.
 
 ## Обработка ошибок и паник
 

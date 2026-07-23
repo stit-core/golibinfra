@@ -6,9 +6,9 @@
 `instrumentPoolFx`, привязывая отписку (`Registration.Unregister`) к `OnStop`.
 
 Kit **не выставляет** resource-атрибуты
-(`service.name`/`service.version`/`deployment.environment.name`/`tenant`) — они
-приходят из `telemetry.Config` приложения и корп `otel-collector`. Labels
-автоматически дополняются resource-атрибутами на коллекторе.
+(`service.name`/`service.version`/`deployment.environment.name`) — их несёт
+OTel-resource, настроенный потребителем в его проводке OTel SDK. `db_pool_*`
+эмитятся только при наличии `metric.Meter` в графе; без него — no-op.
 
 ## Метрики `db_pool_*`
 

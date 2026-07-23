@@ -31,7 +31,7 @@ TOTP и RBAC конфигов не имеют: `TOTPGenerator` принимае�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Маппится из Vault (`vault:"jwt_secret"`). Пустой → `NewJWTConfig` вернёт ошибку. |
+| `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Пустой → `NewJWTConfig` вернёт ошибку. |
 | `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | Семантический срок жизни access-токена для потребителя. |
 | `JWT_REFRESH_TTL` | `RefreshTTL` | `time.Duration` | `720h` | Семантический срок жизни refresh-токена (`720h` = 30 дней). |
 
@@ -40,8 +40,7 @@ TOTP и RBAC конфигов не имеют: `TOTPGenerator` принимае�
 Типичный паттерн — `signer.Sign(claims, cfg.AccessTTL)` для access и
 `signer.Sign(claims, cfg.RefreshTTL)` для refresh; одним signer'ом, разным TTL.
 
-`Secret` помечен `vault:"jwt_secret"` — в стеке stit он подтягивается из Vault
-(через `config`), а не из plain-ENV. Длина секрета для HS256 — не короче размера
+`Secret` читается из `JWT_SECRET`. Длина секрета для HS256 — не короче размера
 выхода хэша (32 байта для SHA-256); короткий секрет ослабляет подпись.
 
 ## Тюнинг стойкости Argon2id

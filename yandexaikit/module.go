@@ -22,14 +22,15 @@ var Module = fx.Module(
 	),
 )
 
-// NewConfig читает Config из ENV (envconfig). Vault-секреты (yandex_api_key,
-// service-account ключ) докладываются caller'ом через config.Load + vault-Source.
+// NewConfig читает Config из ENV (envconfig). Секреты (yandex_api_key,
+// service-account ключ) приходят обычными env-переменными.
 func NewConfig() (Config, error) {
 	var c Config
 	return c, envconfig.Process("", &c)
 }
 
-// LoadConfig — композиция ENV + Vault через golibinfra/config (секреты auth).
+// LoadConfig — композиция ENV + caller-переданных Source'ов через
+// golibinfra/config.
 func LoadConfig(ctx context.Context, sources ...config.Source) (Config, error) {
 	var c Config
 	if err := config.Load(ctx, &c, append([]config.Source{config.Env()}, sources...)...); err != nil {

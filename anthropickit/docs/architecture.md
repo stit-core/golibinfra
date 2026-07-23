@@ -73,7 +73,7 @@ Final() ──► buildResponse(&acc, model) → Response (авторитетн�
 
 ## Ключевые проектные решения (WHY)
 
-- **`Config` vs `Option`.** `Config` — это env-контракт (грузится из ENV+Vault,
+- **`Config` vs `Option`.** `Config` — это env-контракт (грузится из ENV,
   имена тегов = public API). `Option` — программная настройка, которая в ENV не
   выражается: кастомный `*http.Client`, прайс-таблица с наценкой,
   override base URL для тестов. Поэтому base URL живёт и в `Config.BaseURL`, и в

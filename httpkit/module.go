@@ -14,10 +14,9 @@ import (
 )
 
 // Module не provide'ит httpkit.Config — caller обязан зарегистрировать
-// его сам. Это однородно с pgkit/telemetry: все три kit'а ждут свой
-// Config извне (типично через App-структуру в app-config модуле).
-// Если приложение не использует App-pattern — добавить
-// `fx.Provide(httpkit.NewConfig)` рядом с httpkit.Module.
+// его сам. Это однородно с pgkit: kit'ы ждут свой Config извне (типично
+// через App-структуру в app-config модуле). Если приложение не использует
+// App-pattern — добавить `fx.Provide(httpkit.NewConfig)` рядом с httpkit.Module.
 var Module = fx.Module(
 	"httpkit",
 	fx.Provide(
@@ -32,9 +31,9 @@ type idempotencyIn struct {
 	Store IdempotencyStore `optional:"true"`
 }
 
-// meterIn — optional Meter. Если в DI есть telemetry.Module — Meter
-// будет provide'ен; иначе пропустим Metrics middleware (otelhttp всё
-// равно даст спаны через OTel() middleware).
+// meterIn — optional Meter. Если Meter provide'ен в DI — включаем Metrics
+// middleware; иначе пропускаем его (otelhttp всё равно даёт спаны через
+// OTel() middleware).
 type meterIn struct {
 	fx.In
 	Meter metric.Meter `optional:"true"`

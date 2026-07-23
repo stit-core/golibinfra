@@ -12,7 +12,6 @@ func newGreeterRegistrar(svc *greeterServer) grpckit.ServiceRegistrar {
 }
 
 fx.New(
-	telemetry.Module,
 	logkit.Module,
 	grpckit.Module,
 	fx.Provide(grpckit.NewConfig),

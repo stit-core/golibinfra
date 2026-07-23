@@ -25,7 +25,7 @@ VAPID-пара (P-256/ES256) выдаётся один раз на сервис.
 ```go
 pub, priv, err := webpushkit.GenerateVAPIDKeys()
 // pub  → WEBPUSH_VAPID_PUBLIC_KEY  (+ applicationServerKey фронта)
-// priv → WEBPUSH_VAPID_PRIVATE_KEY (секрет; в Vault)
+// priv → WEBPUSH_VAPID_PRIVATE_KEY (секрет)
 ```
 
 Оба значения — base64url без паддинга: public — uncompressed point (65 байт),
@@ -92,7 +92,7 @@ push-сервисами 4096 байт после aes128gcm-накладных.
 | Env | Поле | Default | Назначение |
 |---|---|---|---|
 | `WEBPUSH_VAPID_PUBLIC_KEY` | `Config.VAPIDPublicKey` | — | VAPID public (uncompressed P-256, base64url); опционален — при наличии сверяется с private |
-| `WEBPUSH_VAPID_PRIVATE_KEY` | `Config.VAPIDPrivateKey` | — | VAPID private (raw ES256 scalar, base64url); секрет (Vault) |
+| `WEBPUSH_VAPID_PRIVATE_KEY` | `Config.VAPIDPrivateKey` | — | VAPID private (raw ES256 scalar, base64url); секрет |
 | `WEBPUSH_SUBJECT` | `Config.Subject` | — | `sub` VAPID-JWT: `mailto:` или `https://` контакт отправителя |
 | `WEBPUSH_DEFAULT_TTL` | `Config.DefaultTTL` | `24h` | TTL по умолчанию (переопределяется `WithTTL`) |
 
