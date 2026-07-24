@@ -113,6 +113,17 @@ func (c *Client) SetVisibilityEntry(ctx context.Context, service, kind, id strin
 	return out.Data, err
 }
 
+// --- Tags (tag-backend) ---
+
+// UpsertTag — write-through создания тега в глобальный словарь: {name} →
+// каноническая запись {id, name, norm_name}. Дедуп по norm_name на стороне хаба:
+// существующий тег вернётся как есть (name первого автора не перетирается).
+func (c *Client) UpsertTag(ctx context.Context, name string) (Tag, error) {
+	var out dataEnvelope[Tag]
+	err := c.do(ctx, http.MethodPost, c.tagBase, "/api/tags", TagInput{Name: name}, &out)
+	return out.Data, err
+}
+
 // --- Employees (employee-backend) ---
 
 func (c *Client) ListEmployees(ctx context.Context, p ListParams) ([]Employee, error) {

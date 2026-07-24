@@ -13,6 +13,7 @@ const (
 	ResourceProjects   = "projects"
 	ResourceEmployees  = "employees"
 	ResourceVisibility = "visibility"
+	ResourceTags       = "tags"
 )
 
 // SyncPage — страница change-feed'а: сырые сущности (в порядке возрастания
@@ -24,11 +25,15 @@ type SyncPage struct {
 }
 
 // SyncFeed тянет одну страницу фида ресурса начиная после курсора after.
-// companies/projects/visibility — company-backend; employees — employee-backend.
+// companies/projects/visibility — company-backend; employees — employee-backend;
+// tags — tag-backend.
 func (c *Client) SyncFeed(ctx context.Context, resource string, after int64, limit int) (SyncPage, error) {
 	base := c.companyBase
-	if resource == ResourceEmployees {
+	switch resource {
+	case ResourceEmployees:
 		base = c.employeeBase
+	case ResourceTags:
+		base = c.tagBase
 	}
 	path := "/api/sync/" + resource + "?after=" + strconv.FormatInt(after, 10)
 	if limit > 0 {

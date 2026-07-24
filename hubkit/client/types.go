@@ -86,6 +86,20 @@ type Visibility struct {
 	UpdatedSeq int64  `json:"updated_seq"`
 }
 
+// Tag — каноническая запись глобального словаря тегов (tag-backend,
+// tags.hub.stit.tech). Дедуп по norm_name; name — написание первого автора
+// экосистемы (00-architecture §5).
+type Tag struct {
+	ID       string `json:"id"`
+	Name     string `json:"name"`
+	NormName string `json:"norm_name"`
+}
+
+// TagInput — тело write-through upsert тега (POST /api/tags).
+type TagInput struct {
+	Name string `json:"name"`
+}
+
 // ListParams — общие параметры листингов (пагинация/фильтр архива).
 type ListParams struct {
 	Limit           int

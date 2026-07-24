@@ -1,8 +1,9 @@
 // Package client — типизированный клиент hub API поверх httpclient (retry,
 // circuit breaker, OTel, X-Request-ID).
 //
-// Ресурсы: companies/projects/visibility (company-backend, api.hub.stit.tech) и
-// employees (employee-backend, id.stit.tech). m2m-аутентификация статик-Bearer'ом
+// Ресурсы: companies/projects/visibility (company-backend, api.hub.stit.tech),
+// employees (employee-backend, id.stit.tech) и tags (tag-backend,
+// tags.hub.stit.tech). m2m-аутентификация статик-Bearer'ом
 // (HUB_SERVICE_TOKEN, паттерн telemost). Ошибки типизированы (ErrNotFound /
 // ErrConflict / ErrUnavailable) — продукту нужно отличать «хаб недоступен»
 // (деградация чтения) от бизнес-ошибки.
@@ -42,6 +43,7 @@ type Doer interface {
 type Client struct {
 	companyBase  string
 	employeeBase string
+	tagBase      string
 	token        string
 	service      string
 	http         Doer
@@ -55,6 +57,7 @@ func New(cfg Config, doer Doer) *Client {
 	return &Client{
 		companyBase:  strings.TrimRight(cfg.BaseURL, "/"),
 		employeeBase: strings.TrimRight(cfg.employeeBaseURL(), "/"),
+		tagBase:      strings.TrimRight(cfg.tagBaseURL(), "/"),
 		token:        cfg.ServiceToken,
 		service:      cfg.ServiceName,
 		http:         doer,

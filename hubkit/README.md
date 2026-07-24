@@ -89,7 +89,7 @@ upsert из фида + листинги) — копируются в проду�
 | `HUB_SESSION_NEXT_PRIVATE_KEY[_FILE]` | issuer | next-ключ на период ротации |
 | `HUB_SESSION_COOKIE[_DOMAIN\|_SECURE]`, `HUB_SESSION_TTL` | issuer | cookie-слой |
 | `HUB_REFRESH_TTL`, `HUB_REFRESH_TOMBSTONE_TTL` | issuer | rotating-refresh |
-| `HUB_BASE_URL`, `HUB_EMPLOYEE_BASE_URL` | client | базовые URL company/employee backend |
+| `HUB_BASE_URL`, `HUB_EMPLOYEE_BASE_URL`, `HUB_TAG_BASE_URL` | client | базовые URL company/employee/tag backend (пусто → падают на `HUB_BASE_URL`) |
 | `HUB_SERVICE_TOKEN`, `HUB_SERVICE_NAME` | client | m2m Bearer + имя сервиса |
 | `HUB_SYNC_INTERVAL`, `HUB_SYNC_LIMIT` | sync | период и размер страницы pull-тика |
 

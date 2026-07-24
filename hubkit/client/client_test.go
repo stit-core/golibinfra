@@ -92,6 +92,84 @@ func TestSyncFeed_RoutesAndParses(t *testing.T) {
 	}
 }
 
+func TestUpsertTag_OK(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/tags" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("нет Bearer-заголовка: %q", r.Header.Get("Authorization"))
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Name != "Срочно" {
+			t.Errorf("name=%q", body.Name)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"id": "t1", "name": "Срочно", "norm_name": "срочно"},
+		})
+	})
+	got, err := c.UpsertTag(context.Background(), "Срочно")
+	if err != nil {
+		t.Fatalf("UpsertTag: %v", err)
+	}
+	if got.ID != "t1" || got.Name != "Срочно" || got.NormName != "срочно" {
+		t.Fatalf("tag=%+v", got)
+	}
+}
+
+func TestUpsertTag_ErrorMapping(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	if _, err := c.UpsertTag(context.Background(), "x"); !errors.Is(err, client.ErrUnauthorized) {
+		t.Fatalf("ожидали ErrUnauthorized, получили %v", err)
+	}
+}
+
+// Клиент тегов ходит на HUB_TAG_BASE_URL, а не на company BaseURL.
+func TestTagRouting_UsesTagBase(t *testing.T) {
+	companySrv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("запрос ушёл на company base: %s", r.URL.Path)
+	}))
+	t.Cleanup(companySrv.Close)
+
+	var upsertHit, syncHit bool
+	tagSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/tags":
+			upsertHit = true
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"data": map[string]any{"id": "t1", "name": "a", "norm_name": "a"},
+			})
+		case "/api/sync/tags":
+			syncHit = true
+			_ = json.NewEncoder(w).Encode(map[string]any{"data": []any{}, "next_after": 0})
+		default:
+			t.Errorf("неожиданный path на tag base: %s", r.URL.Path)
+		}
+	}))
+	t.Cleanup(tagSrv.Close)
+
+	c := client.New(client.Config{
+		BaseURL:      companySrv.URL,
+		TagBaseURL:   tagSrv.URL,
+		ServiceToken: "tok",
+	}, tagSrv.Client())
+
+	if _, err := c.UpsertTag(context.Background(), "a"); err != nil {
+		t.Fatalf("UpsertTag: %v", err)
+	}
+	if _, err := c.SyncFeed(context.Background(), client.ResourceTags, 0, 100); err != nil {
+		t.Fatalf("SyncFeed tags: %v", err)
+	}
+	if !upsertHit || !syncHit {
+		t.Fatalf("upsertHit=%v syncHit=%v", upsertHit, syncHit)
+	}
+}
+
 func TestSetVisibility(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPut || r.URL.Path != "/api/visibility/deal/company/c1" {
