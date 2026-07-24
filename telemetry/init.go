@@ -56,6 +56,23 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 }
 
 func Init(ctx context.Context, cfg Config) (*Providers, error) {
+	// OTEL_DISABLED: провайдеры без экспортёров/reader'ов — API китов работает
+	// (tracer/meter/logger non-nil), сигналы дропаются, сеть не трогается.
+	if cfg.Disabled {
+		tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample()))
+		otel.SetTracerProvider(tp)
+		mp := sdkmetric.NewMeterProvider()
+		otel.SetMeterProvider(mp)
+		return &Providers{
+			TracerProvider: tp,
+			MeterProvider:  mp,
+			LoggerProvider: sdklog.NewLoggerProvider(),
+		}, nil
+	}
+	if cfg.ServiceName == "" {
+		return nil, errors.New("telemetry: OTEL_SERVICE_NAME обязателен (либо OTEL_DISABLED=true)")
+	}
+
 	attrs := []attribute.KeyValue{
 		semconv.ServiceName(cfg.ServiceName),
 		semconv.ServiceVersion(cfg.ServiceVersion),

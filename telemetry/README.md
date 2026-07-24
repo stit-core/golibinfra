@@ -57,7 +57,7 @@ import (
 
 func main() {
 	fx.New(
-		// Config из ENV (OTEL_SERVICE_NAME обязателен).
+		// Config из ENV (OTEL_SERVICE_NAME обязателен при включённой телеметрии).
 		fx.Provide(telemetry.NewConfig),
 
 		// Init SDK + OTLP exporters + runtime-метрики; Shutdown на OnStop.
@@ -111,7 +111,8 @@ func Span(ctx context.Context, name string, attrs ...attribute.KeyValue) (contex
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `OTEL_SERVICE_NAME` | `ServiceName` | `string` | — (**required**) | `service.name` — имя сервиса на дашбордах (`$service`) |
+| `OTEL_DISABLED` | `Disabled` | `bool` | `false` | `true` → провайдеры без экспортёров: сигналы дропаются, OTLP-соединений нет |
+| `OTEL_SERVICE_NAME` | `ServiceName` | `string` | — (**required**, если не `OTEL_DISABLED`) | `service.name` — имя сервиса на дашбордах (`$service`) |
 | `OTEL_SERVICE_VERSION` | `ServiceVersion` | `string` | `dev` | `service.version` — semver / git short-sha |
 | `APP_ENV` | `Environment` | `string` | `dev` | `deployment.environment.name` — `prod` / `staging` / `smoke` (`$env`) |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `OTLPEndpoint` | `string` | `localhost:4318` | host:port OTLP-ingest коллектора (per-concern endpoint) |
@@ -205,10 +206,10 @@ go test -short -race ./...
   `tenant`). Выставите сами через `OTEL_TENANT` — значение в проде будет молча
   перезатёрто; `OTEL_TENANT` оставляйте пустым везде, кроме local-dev /
   неаутентифицированного коллектора.
-- **`OTEL_SERVICE_NAME` обязателен.** Поле `required:"true"` — без него
-  `NewConfig` вернёт ошибку. Без корректных `service.name` / `service.version` /
-  `deployment.environment.name` дашборды корп-Grafana (папка **Apps**) теряют
-  `$service` / `$env` и сервис на них не виден.
+- **`OTEL_SERVICE_NAME` обязателен при включённой телеметрии** — `Init`
+  вернёт ошибку (при `OTEL_DISABLED=true` не нужен). Без корректных
+  `service.name` / `service.version` / `deployment.environment.name` дашборды
+  корп-Grafana (папка **Apps**) теряют `$service` / `$env` и сервис на них не виден.
 - **Подключать `telemetry.Module` первым.** Он выставляет глобальные
   OTel-providers; инструментация остальных китов без них пишет в no-op default.
 - **Правка `telemetry` — breaking для всех сервисов.** Это корневой obs-кит и

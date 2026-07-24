@@ -3,7 +3,13 @@ package telemetry
 import "time"
 
 type Config struct {
-	ServiceName    string        `envconfig:"OTEL_SERVICE_NAME" required:"true"`
+	// Disabled — полное отключение телеметрии: Init возвращает провайдеры
+	// без экспортёров (сигналы дропаются, OTLP-соединений нет). ServiceName
+	// при этом не обязателен.
+	Disabled bool `envconfig:"OTEL_DISABLED" default:"false"`
+
+	// ServiceName обязателен при включённой телеметрии (валидирует Init).
+	ServiceName    string        `envconfig:"OTEL_SERVICE_NAME"`
 	ServiceVersion string        `envconfig:"OTEL_SERVICE_VERSION" default:"dev"`
 	Environment    string        `envconfig:"APP_ENV" default:"dev"`
 	OTLPEndpoint   string        `envconfig:"OTEL_EXPORTER_OTLP_ENDPOINT" default:"localhost:4318"`
