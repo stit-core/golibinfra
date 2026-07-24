@@ -96,11 +96,21 @@ func (c *Client) ListVisibility(ctx context.Context, service string) ([]Visibili
 
 // SetVisibility скрывает/показывает сущность для сервиса (PUT idempotent).
 func (c *Client) SetVisibility(ctx context.Context, service, kind, id string, hidden bool) error {
+	_, err := c.SetVisibilityEntry(ctx, service, kind, id, hidden)
+	return err
+}
+
+// SetVisibilityEntry — как SetVisibility, но возвращает обновлённую сущность (со
+// свежим updated_seq). Нужен потребителю для write-through в локальную проекцию:
+// toggle виден в read сразу, не дожидаясь pull-синка.
+func (c *Client) SetVisibilityEntry(ctx context.Context, service, kind, id string, hidden bool) (Visibility, error) {
 	body := struct {
 		Hidden bool `json:"hidden"`
 	}{Hidden: hidden}
 	path := "/api/visibility/" + url.PathEscape(service) + "/" + url.PathEscape(kind) + "/" + url.PathEscape(id)
-	return c.do(ctx, http.MethodPut, c.companyBase, path, body, nil)
+	var out dataEnvelope[Visibility]
+	err := c.do(ctx, http.MethodPut, c.companyBase, path, body, &out)
+	return out.Data, err
 }
 
 // --- Employees (employee-backend) ---

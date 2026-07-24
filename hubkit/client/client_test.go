@@ -110,3 +110,24 @@ func TestSetVisibility(t *testing.T) {
 		t.Fatalf("SetVisibility: %v", err)
 	}
 }
+
+func TestSetVisibilityEntry_ReturnsEntity(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPut || r.URL.Path != "/api/visibility/deal/company/c1" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"service": "deal", "entity_kind": "company", "entity_id": "c1",
+				"hidden": true, "updated_seq": 42,
+			},
+		})
+	})
+	got, err := c.SetVisibilityEntry(context.Background(), "deal", "company", "c1", true)
+	if err != nil {
+		t.Fatalf("SetVisibilityEntry: %v", err)
+	}
+	if got.EntityID != "c1" || !got.Hidden || got.UpdatedSeq != 42 {
+		t.Fatalf("entry = %+v, want c1 hidden seq=42", got)
+	}
+}
