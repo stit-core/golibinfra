@@ -14,6 +14,13 @@ const (
 	ResourceEmployees  = "employees"
 	ResourceVisibility = "visibility"
 	ResourceTags       = "tags"
+	// ResourceEntityTags — глобальная принадлежность тегам hub-сущностей
+	// (company/project); company-backend, snapshot-per-entity replace-семантика
+	// (00-architecture §5). Элементы фида → EntityTagsSnapshot.
+	ResourceEntityTags = "entity-tags"
+	// ResourceDepartments — глобальный справочник департаментов; employee-backend
+	// (00-architecture §2). Элементы фида → Department.
+	ResourceDepartments = "departments"
 )
 
 // SyncPage — страница change-feed'а: сырые сущности (в порядке возрастания
@@ -24,13 +31,13 @@ type SyncPage struct {
 	NextAfter int64             `json:"next_after"`
 }
 
-// SyncFeed тянет одну страницу фида ресурса начиная после курсора after.
-// companies/projects/visibility — company-backend; employees — employee-backend;
-// tags — tag-backend.
+// SyncFeed тянет одну страницу фида ресурса начиная после курсора after. Базы
+// роутятся по ресурсу: companies/projects/visibility/entity-tags — company-backend;
+// employees/departments — employee-backend; tags — tag-backend.
 func (c *Client) SyncFeed(ctx context.Context, resource string, after int64, limit int) (SyncPage, error) {
 	base := c.companyBase
 	switch resource {
-	case ResourceEmployees:
+	case ResourceEmployees, ResourceDepartments:
 		base = c.employeeBase
 	case ResourceTags:
 		base = c.tagBase

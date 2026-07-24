@@ -124,6 +124,62 @@ func (c *Client) UpsertTag(ctx context.Context, name string) (Tag, error) {
 	return out.Data, err
 }
 
+// --- Entity tags (company-backend, глобальная принадлежность тегам) ---
+
+// GetEntityTags — текущий набор канонических имён тегов hub-сущности
+// (kind ∈ {company,project}). Ходит на company base (владелец принадлежности,
+// 00-architecture §5).
+func (c *Client) GetEntityTags(ctx context.Context, kind, id string) ([]string, error) {
+	var out dataEnvelope[[]string]
+	path := "/api/tags/" + url.PathEscape(kind) + "/" + url.PathEscape(id)
+	err := c.do(ctx, http.MethodGet, c.companyBase, path, nil, &out)
+	return out.Data, err
+}
+
+// ReplaceEntityTags — write-through замена набора тегов hub-сущности
+// (PUT, replace-семантика): {tags:[names]} → канонические имена набора. Продукт
+// сразу применяет к своей локальной проекции entity-tags (не ждёт pull-синка).
+// Пустой набор снимает все теги.
+func (c *Client) ReplaceEntityTags(ctx context.Context, kind, id string, names []string) ([]string, error) {
+	body := struct {
+		Tags []string `json:"tags"`
+	}{Tags: names}
+	if body.Tags == nil {
+		body.Tags = []string{}
+	}
+	path := "/api/tags/" + url.PathEscape(kind) + "/" + url.PathEscape(id)
+	var out dataEnvelope[[]string]
+	err := c.do(ctx, http.MethodPut, c.companyBase, path, body, &out)
+	return out.Data, err
+}
+
+// --- Departments (employee-backend) ---
+
+// GetEmployeeDepartments — текущий набор канонических имён департаментов
+// сотрудника. Ходит на employee base (id.stit.tech).
+func (c *Client) GetEmployeeDepartments(ctx context.Context, employeeID string) ([]string, error) {
+	var out dataEnvelope[[]string]
+	path := "/api/employees/" + url.PathEscape(employeeID) + "/departments"
+	err := c.do(ctx, http.MethodGet, c.employeeBase, path, nil, &out)
+	return out.Data, err
+}
+
+// ReplaceEmployeeDepartments — write-through замена набора департаментов
+// сотрудника (PUT, replace-семантика): {departments:[names]} → канонические
+// имена. Free-form: незнакомое имя заводит департамент в словаре хаба.
+func (c *Client) ReplaceEmployeeDepartments(ctx context.Context, employeeID string, names []string) ([]string, error) {
+	body := struct {
+		Departments []string `json:"departments"`
+	}{Departments: names}
+	if body.Departments == nil {
+		body.Departments = []string{}
+	}
+	path := "/api/employees/" + url.PathEscape(employeeID) + "/departments"
+	var out dataEnvelope[[]string]
+	err := c.do(ctx, http.MethodPut, c.employeeBase, path, body, &out)
+	return out.Data, err
+}
+
 // --- Employees (employee-backend) ---
 
 func (c *Client) ListEmployees(ctx context.Context, p ListParams) ([]Employee, error) {

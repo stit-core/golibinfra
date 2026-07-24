@@ -8,7 +8,7 @@
 |---|---|---|
 | `hubkit/sso` | verify hub-session JWT (ES256/JWKS), `Identity` в ctx, `AuthExtractor` для huma | все продукты |
 | `hubkit/issuer` | выпуск hub-session JWT (ES256 + ротация kid), JWKS-handler, cookie-слой, rotating-refresh (Redis) | только employee-backend (`id.stit.tech`) |
-| `hubkit/client` | типизированный HTTP-клиент hub API поверх `httpclient` (companies/projects/employees/visibility/sync) | продукты + движок синка |
+| `hubkit/client` | типизированный HTTP-клиент hub API поверх `httpclient` (companies/projects/employees/visibility/tags/entity-tags/departments + sync) | продукты + движок синка |
 | `hubkit/sync` | движок pull-синка проекций: цикл `after=<cursor>`, порты `ProjectionStore`/`CursorStore`, метрики | продукты с локальными проекциями |
 | `hubkit/projection` | эталон схемы проекций (миграции + sqlc-запросы) как copy-paste-шаблон | продукты (не рантайм) |
 
@@ -54,6 +54,19 @@ Bearer `HUB_SERVICE_TOKEN`. Ошибки типизированы: `ErrNotFound`
 `ErrUnauthorized` / `ErrUnavailable` (последняя = деградация чтения на локальную
 проекцию, не бизнес-ошибка).
 
+Базы роутятся по ресурсу (единый клиент, три backend'а):
+
+| Метод(ы) | Backend (env) | Контракт |
+|---|---|---|
+| `ListCompanies`/`GetCompany`/`CreateCompany`/… `*Project*` / `*Visibility*` | company (`HUB_BASE_URL`) | CRUD + write-through видимости |
+| `GetEntityTags(kind,id)` / `ReplaceEntityTags(kind,id,names)` | company (`HUB_BASE_URL`) | глобальная принадлежность тегам company/project (`GET/PUT /api/tags/{kind}/{id}`, replace) |
+| `ListEmployees`/`GetEmployee` | employee (`HUB_EMPLOYEE_BASE_URL`) | чтение сотрудников; `Employee.DepartmentIDs[]` — snapshot M2M |
+| `GetEmployeeDepartments(id)` / `ReplaceEmployeeDepartments(id,names)` | employee (`HUB_EMPLOYEE_BASE_URL`) | департаменты сотрудника (`GET/PUT /api/employees/{id}/departments`, replace) |
+| `UpsertTag(name)` | tag (`HUB_TAG_BASE_URL`) | write-through в глобальный словарь тегов |
+
+Write-through-методы принадлежности (`ReplaceEntityTags`/`ReplaceEmployeeDepartments`)
+шлют `[]` при `nil` наборе (снятие всех связей), не `null`.
+
 ## Sync (движок проекций)
 
 Продукт реализует порты `ProjectionStore` (upsert батча в проекцию, идемпотентно
@@ -69,6 +82,20 @@ timerkit.Module        // крутит job'ы с graceful shutdown
 
 Тик догоняет фид страницами `after=<cursor>&limit=`; курсор монотонен, catch-up
 после простоя автоматический.
+
+Ресурсы (`client.Resource*`, роутятся на свой backend): `companies` / `projects`
+/ `visibility` / `entity-tags` (company base), `employees` / `departments`
+(employee base), `tags` (tag base). Движок generic по `json.RawMessage` — типа
+элемента не знает; продукт `Upsert`'ит батч, unmarshal'я элемент в нужный тип
+(`Company`, `EntityTagsSnapshot`, `Department`, …). Курсор двигается по
+`updated_seq` (есть у всех ресурсов), так что snapshot-ресурсы работают тем же
+движком без расширений.
+
+**Snapshot-per-entity (`entity-tags`).** Элемент — `EntityTagsSnapshot{EntityKind,
+EntityID, TagIDs[], UpdatedSeq}`: ключ `(kind,id)`, не `id`; **replace-семантика**
+— продукт в `Upsert` заменяет весь набор тегов сущности на `TagIDs` (пустой
+набор `[]` снимает все). `department_ids[]` сотрудника — тоже snapshot (replace
+набора в проекции employees).
 
 ## Projection (эталон схемы)
 

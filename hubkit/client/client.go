@@ -1,9 +1,9 @@
 // Package client — типизированный клиент hub API поверх httpclient (retry,
 // circuit breaker, OTel, X-Request-ID).
 //
-// Ресурсы: companies/projects/visibility (company-backend, api.hub.stit.tech),
-// employees (employee-backend, id.stit.tech) и tags (tag-backend,
-// tags.hub.stit.tech). m2m-аутентификация статик-Bearer'ом
+// Ресурсы: companies/projects/visibility + entity-tags (company-backend,
+// api.hub.stit.tech), employees/departments (employee-backend, id.stit.tech)
+// и tags (tag-backend, tags.hub.stit.tech). m2m-аутентификация статик-Bearer'ом
 // (HUB_SERVICE_TOKEN, паттерн telemost). Ошибки типизированы (ErrNotFound /
 // ErrConflict / ErrUnavailable) — продукту нужно отличать «хаб недоступен»
 // (деградация чтения) от бизнес-ошибки.
