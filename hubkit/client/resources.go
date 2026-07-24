@@ -180,6 +180,17 @@ func (c *Client) ReplaceEmployeeDepartments(ctx context.Context, employeeID stri
 	return out.Data, err
 }
 
+// UpsertDepartment — write-through создания записи в глобальный словарь
+// департаментов (продукты: «+ Новый отдел» с доски task): {name} → каноническая
+// запись {id, name, norm_name}. Ходит на employee base (id.stit.tech). Дедуп по
+// norm_name на стороне хаба: существующий департамент вернётся как есть (name
+// первого автора не перетирается, updated_seq словаря не двигается — идемпотентно).
+func (c *Client) UpsertDepartment(ctx context.Context, name string) (Department, error) {
+	var out dataEnvelope[Department]
+	err := c.do(ctx, http.MethodPost, c.employeeBase, "/api/departments", DepartmentInput{Name: name}, &out)
+	return out.Data, err
+}
+
 // --- Employees (employee-backend) ---
 
 func (c *Client) ListEmployees(ctx context.Context, p ListParams) ([]Employee, error) {

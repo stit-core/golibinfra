@@ -130,6 +130,11 @@ type Department struct {
 	UpdatedSeq int64     `json:"updated_seq"`
 }
 
+// DepartmentInput — тело write-through upsert департамента (POST /api/departments).
+type DepartmentInput struct {
+	Name string `json:"name"`
+}
+
 // ListParams — общие параметры листингов (пагинация/фильтр архива).
 type ListParams struct {
 	Limit           int

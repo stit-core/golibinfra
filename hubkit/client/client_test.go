@@ -248,6 +248,76 @@ func TestReplaceEmployeeDepartments_OK(t *testing.T) {
 	}
 }
 
+func TestUpsertDepartment_OK(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost || r.URL.Path != "/api/departments" {
+			t.Errorf("%s %s", r.Method, r.URL.Path)
+		}
+		if r.Header.Get("Authorization") != "Bearer tok" {
+			t.Errorf("нет Bearer-заголовка: %q", r.Header.Get("Authorization"))
+		}
+		var body struct {
+			Name string `json:"name"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		if body.Name != "Разработка" {
+			t.Errorf("name=%q", body.Name)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"id": "d1", "name": "Разработка", "norm_name": "разработка"},
+		})
+	})
+	got, err := c.UpsertDepartment(context.Background(), "Разработка")
+	if err != nil {
+		t.Fatalf("UpsertDepartment: %v", err)
+	}
+	if got.ID != "d1" || got.Name != "Разработка" || got.NormName != "разработка" {
+		t.Fatalf("department=%+v", got)
+	}
+}
+
+func TestUpsertDepartment_ErrorMapping(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	})
+	if _, err := c.UpsertDepartment(context.Background(), "x"); !errors.Is(err, client.ErrUnauthorized) {
+		t.Fatalf("ожидали ErrUnauthorized, получили %v", err)
+	}
+}
+
+// UpsertDepartment ходит на employee base, а не на company BaseURL.
+func TestUpsertDepartment_UsesEmployeeBase(t *testing.T) {
+	companySrv := httptest.NewServer(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		t.Errorf("запрос ушёл на company base: %s", r.URL.Path)
+	}))
+	t.Cleanup(companySrv.Close)
+
+	var hit bool
+	employeeSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/departments" {
+			t.Errorf("неожиданный path на employee base: %s", r.URL.Path)
+		}
+		hit = true
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"id": "d1", "name": "a", "norm_name": "a"},
+		})
+	}))
+	t.Cleanup(employeeSrv.Close)
+
+	c := client.New(client.Config{
+		BaseURL:         companySrv.URL,
+		EmployeeBaseURL: employeeSrv.URL,
+		ServiceToken:    "tok",
+	}, employeeSrv.Client())
+
+	if _, err := c.UpsertDepartment(context.Background(), "a"); err != nil {
+		t.Fatalf("UpsertDepartment: %v", err)
+	}
+	if !hit {
+		t.Fatal("запрос не дошёл до employee base")
+	}
+}
+
 func TestGetEmployeeDepartments_OK(t *testing.T) {
 	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodGet || r.URL.Path != "/api/employees/e1/departments" {

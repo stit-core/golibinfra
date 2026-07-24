@@ -62,6 +62,7 @@ Bearer `HUB_SERVICE_TOKEN`. Ошибки типизированы: `ErrNotFound`
 | `GetEntityTags(kind,id)` / `ReplaceEntityTags(kind,id,names)` | company (`HUB_BASE_URL`) | глобальная принадлежность тегам company/project (`GET/PUT /api/tags/{kind}/{id}`, replace) |
 | `ListEmployees`/`GetEmployee` | employee (`HUB_EMPLOYEE_BASE_URL`) | чтение сотрудников; `Employee.DepartmentIDs[]` — snapshot M2M |
 | `GetEmployeeDepartments(id)` / `ReplaceEmployeeDepartments(id,names)` | employee (`HUB_EMPLOYEE_BASE_URL`) | департаменты сотрудника (`GET/PUT /api/employees/{id}/departments`, replace) |
+| `UpsertDepartment(name)` | employee (`HUB_EMPLOYEE_BASE_URL`) | write-through в глобальный словарь департаментов (`POST /api/departments`, upsert по norm) |
 | `UpsertTag(name)` | tag (`HUB_TAG_BASE_URL`) | write-through в глобальный словарь тегов |
 
 Write-through-методы принадлежности (`ReplaceEntityTags`/`ReplaceEmployeeDepartments`)
