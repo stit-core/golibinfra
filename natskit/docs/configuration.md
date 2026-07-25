@@ -1,8 +1,10 @@
 # Конфигурация natskit
 
 `natskit.Config` (с вложенными `BackpressureConfig` и `JetStreamConfig`) —
-публичный env-контракт. Загружается через config-композицию (ENV) либо
-напрямую `natskit.NewConfig()` (`envconfig.Process("", &c)`).
+публичный env-контракт. Загружается `natskit.NewConfig()` (голые `NATS_*`) либо
+`natskit.NewConfigPrefixed(prefix)` (`<PREFIX>_NATS_*` — конфиг именованного
+инстанса). Поле `Config.Instance` из ENV не читается: его проставляют
+`New`/`Module`, и оно едет атрибутом `instance` в метрики и спаны.
 
 > **Public API.** Имена полей и их `envconfig`/`default`-теги — часть стабильного
 > контракта. Менять их = breaking change, идёт мажорным апгрейдом (см.
@@ -66,8 +68,20 @@
 ждать ack'и. Слишком низкий `MaxAckPending` ограничит пропускную способность
 даже при свободном CPU.
 
+## Несколько инстансов
+
+`natskit.Module(name)` с непустым именем читает те же переменные под префиксом
+имени: `Module("hub")` → `HUB_NATS_URL`, `HUB_NATS_JETSTREAM_ENABLED`,
+`HUB_NATS_JS_STREAM_NAMES` и т.д. (дефис и точка в имени становятся `_`).
+
+Наборы инстансов изолированы: незаданная префиксная переменная берёт значение из
+колонки Default, а **не** из одноимённой голой `NATS_*`. Инстанс, который только
+публикует в стрим соседней команды, поэтому оставляет
+`<PREFIX>_NATS_JS_STREAM_NAMES` незаданным — и не пытается создать у соседей свои
+стримы.
+
 ## Прямая загрузка
 
-`natskit.NewConfig()` вызывает `envconfig.Process("", &c)` — читает все
-переменные выше из окружения. Через fx — `fx.Provide(natskit.NewConfig)`; кит
-сам не provide'ит `Config` (его собирает приложение).
+`natskit.NewConfig()` / `natskit.NewConfigPrefixed(prefix)` читают переменные
+выше из окружения. Через fx конфиг provide'ит сам `Module(name)` — приложению
+достаточно подключить модуль.

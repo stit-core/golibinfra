@@ -21,7 +21,6 @@ import (
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/sync/semaphore"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -52,7 +51,7 @@ func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus {
 		conn:  conn.raw(),
 		log:   log,
 		sem:   semaphore.NewWeighted(maxInFlight),
-		instr: newNatsInstruments(),
+		instr: newNatsInstruments(cfg.Instance),
 	}
 }
 
@@ -76,14 +75,11 @@ func (b *natsBus) Publish(ctx context.Context, subject string, payload any) erro
 	}
 	span.End()
 
-	attrs := metric.WithAttributes(
+	b.instr.publishedTotal.Add(ctx, 1, b.instr.attrs(
 		attribute.String("subject", subject),
 		attribute.String("status", status),
-	)
-	b.instr.publishedTotal.Add(ctx, 1, attrs)
-	b.instr.publishDuration.Record(ctx, dur,
-		metric.WithAttributes(attribute.String("subject", subject)),
-	)
+	))
+	b.instr.publishDuration.Record(ctx, dur, b.instr.attrs(attribute.String("subject", subject)))
 
 	if pubErr != nil {
 		return fmt.Errorf("natskit: publish: %w", pubErr)
@@ -124,7 +120,7 @@ func (b *natsBus) subscribe(subject, queue string, handler func(ctx context.Cont
 }
 
 func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler func(ctx context.Context, payload []byte) error) {
-	subjAttr := metric.WithAttributes(attribute.String("subject", subject))
+	subjAttr := b.instr.attrs(attribute.String("subject", subject))
 	b.instr.inflight.Add(context.Background(), 1, subjAttr)
 	defer b.instr.inflight.Add(context.Background(), -1, subjAttr)
 
@@ -139,14 +135,15 @@ func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler func(ctx cont
 			err := fmt.Errorf("natskit: handler panic: %v", rec)
 			span.RecordError(err)
 			span.SetStatus(codes.Error, err.Error())
-			b.log.Error(ctx, "natskit: handler panic",
+			b.log.Error(
+				ctx, "natskit: handler panic",
 				"subject", subject,
 				"panic", rec,
 				"stack", string(debug.Stack()),
 			)
 		}
 		span.End()
-		b.instr.consumedTotal.Add(context.Background(), 1, metric.WithAttributes(
+		b.instr.consumedTotal.Add(context.Background(), 1, b.instr.attrs(
 			attribute.String("subject", subject),
 			attribute.String("status", status),
 		))

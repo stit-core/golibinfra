@@ -4,22 +4,28 @@
 (`instrumentation.go`, `bus.go`, `jetstream.go`).
 
 Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit`. Инструменты
-создаются в `newNatsInstruments()` (свой набор у `natsBus` и у `jsBus`); ошибка
-создания инструмента игнорируется (otel-инструмент-no-op, не panic).
+создаются в `newNatsInstruments(instance)` (свой набор у `natsBus` и у `jsBus`);
+ошибка создания инструмента игнорируется (otel-инструмент-no-op, не panic).
 
 ## Метрики
 
 | Метрика | Тип | Labels | Когда / что |
 |---|---|---|---|
-| `nats_messages_published_total` | counter (`Int64Counter`) | `subject`, `status`, `transport`* | +1 на каждую публикацию. `status` ∈ `ok` / `error`. |
-| `nats_publish_duration_seconds` | histogram (`Float64Histogram`, unit `s`) | `subject`, `transport`* | Длительность публикации (Core — вокруг `PublishMsg`; JetStream — до `PubAck`/ошибки). Пишется и при `error`. |
-| `nats_messages_consumed_total` | counter (`Int64Counter`) | `subject`, `status`, `transport`* | +1 на каждое обработанное входящее сообщение. `status` ∈ `ok` / `handler_error` / `panic` / `dead`. |
-| `nats_handle_duration_seconds` | histogram (`Float64Histogram`, unit `s`) | `subject`, `transport`* | Длительность работы обработчика (включая ack/nak). Пишется при любом исходе. |
-| `nats_inflight_messages` | up-down counter (`Int64UpDownCounter`) | `subject`, `transport`* | Сообщения в обработке прямо сейчас (per-subject). +1 на входе в обработчик, −1 на выходе. |
+| `nats_messages_published_total` | counter (`Int64Counter`) | `instance`, `subject`, `status`, `transport`* | +1 на каждую публикацию. `status` ∈ `ok` / `error`. |
+| `nats_publish_duration_seconds` | histogram (`Float64Histogram`, unit `s`) | `instance`, `subject`, `transport`* | Длительность публикации (Core — вокруг `PublishMsg`; JetStream — до `PubAck`/ошибки). Пишется и при `error`. |
+| `nats_messages_consumed_total` | counter (`Int64Counter`) | `instance`, `subject`, `status`, `transport`* | +1 на каждое обработанное входящее сообщение. `status` ∈ `ok` / `handler_error` / `panic` / `dead`. |
+| `nats_handle_duration_seconds` | histogram (`Float64Histogram`, unit `s`) | `instance`, `subject`, `transport`* | Длительность работы обработчика (включая ack/nak). Пишется при любом исходе. |
+| `nats_inflight_messages` | up-down counter (`Int64UpDownCounter`) | `instance`, `subject`, `transport`* | Сообщения в обработке прямо сейчас (per-subject). +1 на входе в обработчик, −1 на выходе. |
 
 \* Label `transport` присутствует **только у JetStream-пути** (`jsBus`) со
 значением `jetstream`. Core-путь (`natsBus`) этот label не ставит — для Core
 серии без `transport`.
+
+### Семантика label `instance`
+
+`instance` — имя инстанса шины (`Module("hub")` → `hub`, дефолтный —
+`default`). Приложение с несколькими шинами (своя + внешняя) иначе складывало бы
+их сигналы в одну серию: по этому label они расходятся.
 
 ### Значения label `status`
 
@@ -46,8 +52,8 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit`. Инструме�
 
 | Спан | Kind | Имя | Атрибуты |
 |---|---|---|---|
-| Producer | `SpanKindProducer` | `natskit.publish <subject>` | `messaging.system=nats`, `messaging.destination.name=<subject>`, `messaging.message.body.size` |
-| Consumer | `SpanKindConsumer` | `natskit.handle <subject>` | те же три атрибута |
+| Producer | `SpanKindProducer` | `natskit.publish <subject>` | `messaging.system=nats`, `messaging.destination.name=<subject>`, `messaging.message.body.size`, `instance` |
+| Consumer | `SpanKindConsumer` | `natskit.handle <subject>` | те же четыре атрибута |
 
 (Семантические соглашения — `semconv/v1.40.0`.)
 
@@ -62,12 +68,14 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit`. Инструме�
 
 ## Health-probe
 
-`natskit.Probe(conn)` возвращает `func(context.Context) error` — проверяет
-`Conn.Healthy()` (статус `nats.CONNECTED`). `Module` его **не** provide'ит
-автоматически (тип коллизит с probe'ами других китов); регистрируйте сами:
+`natskit.Probe(client)` возвращает `func(context.Context) error` — проверяет
+`Client.Healthy()` (статус `nats.CONNECTED`). `Module` его **не** provide'ит
+автоматически (тип коллизит с probe'ами других китов); регистрируется отдельной
+опцией — по инстансу, чьё здоровье должно валить readiness:
 
 ```go
-fx.Provide(fx.Annotate(natskit.Probe, fx.ResultTags(`group:"health"`)))
+natskit.HealthProbe("")      // дефолтный инстанс
+natskit.HealthProbe("hub")   // именованный
 ```
 
 ## Resource attributes

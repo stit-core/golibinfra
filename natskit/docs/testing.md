@@ -29,8 +29,9 @@ func TestSomething(t *testing.T) {
 ```
 
 `natskit.ExportConn(*nats.Conn) *Conn` (в `export_test.go`) оборачивает уже
-открытое соединение в `*natskit.Conn` — это путь без fx-хука `newConn`.
-`logkit.Nop()` гасит логи в тесте.
+открытое соединение в `*natskit.Conn` — путь для тестов кита, когда соединением
+управляет сам тест. Приложению соединение открывает `natskit.New(name, cfg, log)`
+или `Module(name)`. `logkit.Nop()` гасит логи в тесте.
 
 ## JetStream в тестах
 

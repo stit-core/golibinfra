@@ -23,8 +23,10 @@ import "git.stit.tech/stit-core/golibinfra/natskit"
 
 ## Быстрый старт
 
-Идиоматичный путь — `natskit.Module`: fx сам поднимает соединение (`*Conn`),
-`Bus` и `StreamBus`; приложение provide'ит только `Config` и инжектит `Bus`.
+Идиоматичный путь — `natskit.Module(name)`: fx поднимает инстанс шины (`*Client`)
+и provide'ит его `Config`, `Bus` и `StreamBus`; приложение инжектит нужный bus.
+Пустое имя — дефолтный инстанс из `NATS_*`; инстансов может быть несколько (своя
+шина и внешняя — см. [docs/usage.md](docs/usage.md)).
 
 ```go
 package main
@@ -45,8 +47,7 @@ type OrderCreated struct {
 func main() {
 	fx.New(
 		logkit.Module,
-		fx.Provide(natskit.NewConfig), // читает NATS_URL и пр. из ENV
-		natskit.Module,                // *Conn + Bus + StreamBus
+		natskit.Module(""), // конфиг из NATS_*, Client + Bus + StreamBus
 		fx.Invoke(run),
 	).Run()
 }
@@ -67,14 +68,15 @@ func run(bus natskit.Bus) error {
 }
 ```
 
-Минимальный ENV: `NATS_URL`. Сигнатуры дженериков, JetStream и DLQ/NAK — в
-[docs/usage.md](docs/usage.md). Прямой `NewBus(conn, log, cfg)` без fx тоже
-доступен (см. [docs/testing.md](docs/testing.md)), но менее идиоматичен.
+Минимальный ENV: `NATS_URL`. Сигнатуры дженериков, JetStream, DLQ/NAK и рецепт
+двух шин в одном приложении — в [docs/usage.md](docs/usage.md). Без fx инстанс
+собирается напрямую: `natskit.New(name, cfg, log)` (см. также
+[docs/testing.md](docs/testing.md)).
 
 ## Документация
 
 - [docs/architecture.md](docs/architecture.md) — устройство `Bus`/`StreamBus`, consumer reliability, queue-группы, trace-propagation, проектные решения (WHY).
 - [docs/configuration.md](docs/configuration.md) — полный справочник ENV + тюнинг backpressure / DLQ / `MaxDeliver` / NAK-backoff / retention.
 - [docs/observability.md](docs/observability.md) — метрики, labels, спаны (единый источник правды).
-- [docs/usage.md](docs/usage.md) — рецепты: fx Module, `PublishJSON`/`SubscribeJSON`, JetStream, DLQ/NAK, чтение subject/headers из ctx.
+- [docs/usage.md](docs/usage.md) — рецепты: fx Module, несколько шин в одном приложении, `PublishJSON`/`SubscribeJSON`, JetStream, DLQ/NAK, чтение subject/headers из ctx.
 - [docs/testing.md](docs/testing.md) — testcontainers NATS через `testkit.StartNATS`, JetStream-контейнер, `ExportConn`.

@@ -13,7 +13,6 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/semaphore"
 
@@ -110,7 +109,7 @@ func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error) 
 		maxDeliver:  cfg.JetStream.MaxDeliver,
 		nakBackoff:  cfg.JetStream.NakBackoff,
 		dlqSubject:  cfg.JetStream.DLQSubject,
-		instr:       newNatsInstruments(),
+		instr:       newNatsInstruments(cfg.Instance),
 	}
 	if err := b.ensureStreams(context.Background(), cfg); err != nil {
 		return nil, err
@@ -267,14 +266,15 @@ func (b *jsBus) recordPublish(ctx context.Context, subject string, dur float64, 
 	}
 	span.End()
 
-	b.instr.publishedTotal.Add(ctx, 1, metric.WithAttributes(
+	b.instr.publishedTotal.Add(ctx, 1, b.instr.attrs(
 		attribute.String("subject", subject),
 		attribute.String("status", status),
 		attribute.String("transport", "jetstream"),
 	))
-	b.instr.publishDuration.Record(ctx, dur,
-		metric.WithAttributes(attribute.String("subject", subject), attribute.String("transport", "jetstream")),
-	)
+	b.instr.publishDuration.Record(ctx, dur, b.instr.attrs(
+		attribute.String("subject", subject),
+		attribute.String("transport", "jetstream"),
+	))
 }
 
 func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable string, handler func(ctx context.Context, payload []byte) error) error {
@@ -313,7 +313,7 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 
 func (b *jsBus) handleStreamOne(msg jetstream.Msg, handler func(ctx context.Context, payload []byte) error) {
 	subject := msg.Subject()
-	subjAttr := metric.WithAttributes(
+	subjAttr := b.instr.attrs(
 		attribute.String("subject", subject),
 		attribute.String("transport", "jetstream"),
 	)
@@ -337,7 +337,7 @@ func (b *jsBus) handleStreamOne(msg jetstream.Msg, handler func(ctx context.Cont
 	}
 
 	span.End()
-	b.instr.consumedTotal.Add(context.Background(), 1, metric.WithAttributes(
+	b.instr.consumedTotal.Add(context.Background(), 1, b.instr.attrs(
 		attribute.String("subject", subject),
 		attribute.String("status", status),
 		attribute.String("transport", "jetstream"),
@@ -350,7 +350,8 @@ func (b *jsBus) invoke(ctx context.Context, subject string, handler func(ctx con
 		if rec := recover(); rec != nil {
 			err = fmt.Errorf("natskit: jetstream handler panic: %v", rec)
 			panicked = true
-			b.log.Error(ctx, "natskit: jetstream handler panic",
+			b.log.Error(
+				ctx, "natskit: jetstream handler panic",
 				"subject", subject, "panic", rec, "stack", string(debug.Stack()),
 			)
 		}

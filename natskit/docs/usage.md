@@ -14,7 +14,7 @@ type Bus interface {
 	SubscribeQueue(ctx context.Context, subject, queue string, handler func(ctx context.Context, payload []byte) error) error
 }
 
-func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus
+func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus // низкоуровнево; обычный путь — Client.Bus()
 
 // Дженерики: marshal/unmarshal JSON за вызывающего.
 func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T) error
@@ -59,15 +59,15 @@ func HeadersFromContext(ctx context.Context) nats.Header // заголовки �
 
 ## Подключение через fx
 
-`natskit.Module` provide'ит `*Conn`, `Bus` и `StreamBus`. Приложение provide'ит
-`Config` и инжектит нужный bus в свои конструкторы.
+`natskit.Module(name)` поднимает инстанс шины и provide'ит его `Config`,
+`*Client`, `Bus` и `StreamBus`. Пустое имя — дефолтный инстанс: конфиг из
+`NATS_*`, provide без тега.
 
 ```go
 fx.New(
 	logkit.Module,
-	fx.Provide(natskit.NewConfig),
-	natskit.Module,
-	fx.Provide(fx.Annotate(natskit.Probe, fx.ResultTags(`group:"health"`))), // опц. health-probe
+	natskit.Module(""),
+	natskit.HealthProbe(""), // опц. проба инстанса в group:"health"
 	fx.Invoke(func(bus natskit.Bus, sb natskit.StreamBus) error {
 		// регистрация подписчиков на старте
 		return nil
@@ -78,6 +78,42 @@ fx.New(
 Подписки регистрируйте в `fx.Invoke` или в `OnStart`-хуке — до этого граф не
 собран. `Subscribe`/`SubscribeStream` неблокирующие: ставят callback и сразу
 возвращают управление, обработка идёт в фоновых горутинах.
+
+## Несколько шин в одном приложении
+
+Сервису, у которого есть своя шина и внешняя (шина-интегратор соседнего
+продукта), нужны два независимых инстанса. Именованный инстанс читает
+`<NAME>_NATS_*` и provide'ится под fx-тегом `name:"<name>"`:
+
+```go
+fx.New(
+	logkit.Module,
+	natskit.Module(""),      // своя шина:    NATS_URL, NATS_JS_STREAM_NAMES, …
+	natskit.Module("hub"),   // внешняя шина: HUB_NATS_URL, HUB_NATS_JETSTREAM_ENABLED, …
+	fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
+)
+
+func NewAlertPublisher(hub natskit.StreamBus) *AlertPublisher { … }
+```
+
+Переменные инстансов изолированы: `HUB_NATS_JS_STREAM_NAMES` не задан — значит
+список пуст, а не унаследован из `NATS_JS_STREAM_NAMES`. Это защищает от
+публикации в чужую шину и от создания там чужих стримов: инстанс, который только
+публикует в стрим под управлением соседней команды, оставляет
+`<NAME>_NATS_JS_STREAM_NAMES` незаданным.
+
+Имя инстанса едет атрибутом `instance` в метриках и спанах (см.
+[observability.md](observability.md)), поэтому сигналы двух шин не сливаются.
+
+Без fx инстанс собирается напрямую:
+
+```go
+cfg, err := natskit.NewConfigPrefixed("HUB")
+client, err := natskit.New("hub", cfg, log)
+defer client.Close()
+
+err = client.Stream().PublishStream(ctx, "alerts.employee."+id, payload, natskit.WithMsgID(eventID))
+```
 
 ## Core NATS: типобезопасный pub/sub
 

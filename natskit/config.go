@@ -1,6 +1,12 @@
 package natskit
 
-import "time"
+import (
+	"strings"
+	"time"
+)
+
+// DefaultInstance — имя дефолтного (безымянного) инстанса в метриках и спанах.
+const DefaultInstance = "default"
 
 type BackpressureConfig struct {
 	MaxInFlight int `envconfig:"NATS_MAX_IN_FLIGHT" default:"100"`
@@ -32,4 +38,29 @@ type Config struct {
 	MaxReconnects  int           `envconfig:"NATS_MAX_RECONNECTS" default:"60"`
 	Backpressure   BackpressureConfig
 	JetStream      JetStreamConfig
+
+	// Instance — имя инстанса шины: едет атрибутом в метрики и спаны, чтобы
+	// сигналы двух шин в одном процессе не сливались. Из ENV не читается,
+	// проставляется New/Module.
+	Instance string
+}
+
+// NewConfig читает конфиг дефолтного инстанса из `NATS_*`.
+func NewConfig() (Config, error) {
+	return NewConfigPrefixed("")
+}
+
+// NewConfigPrefixed читает конфиг инстанса из `<PREFIX>_NATS_*`. Голые `NATS_*`
+// при этом игнорируются — набор переменных инстанса изолирован.
+func NewConfigPrefixed(prefix string) (Config, error) {
+	var c Config
+	if err := loadEnv(prefix, &c); err != nil {
+		return Config{}, err
+	}
+	return c, nil
+}
+
+// envPrefix — префикс переменных окружения инстанса: `hub` → `HUB_NATS_URL`.
+func envPrefix(instance string) string {
+	return strings.ToUpper(strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(instance))
 }

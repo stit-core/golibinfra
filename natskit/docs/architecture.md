@@ -28,11 +28,13 @@ panic recovery в обработчиках, backpressure через семафо
 |---|---|
 | `bus.go` | `Bus`-интерфейс (`Publish`/`Subscribe`/`SubscribeQueue`), `natsBus` (Core NATS), дженерики `PublishJSON[T]`/`SubscribeJSON[T]`/`SubscribeQueueJSON[T]`, `decodeJSON`. |
 | `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `ensureStreams`, poison-обработка (`failStream`/`terminal`/`deadLetter`), `StreamMsg`, `WithMsgID`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
-| `conn.go` | `Conn` — обёртка над `*nats.Conn`; `newConn` (fx-хук с drain+close), `Healthy`, `Probe` (health-probe). |
-| `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт. |
+| `conn.go` | `Conn` — обёртка над `*nats.Conn`; `NewConn`, `Healthy`, `Close` (drain + close). |
+| `client.go` | `Client` — инстанс шины (соединение + `Bus` + `StreamBus`), `New`, `Probe` (health-probe инстанса). |
+| `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewConfigPrefixed`. |
+| `env.go` | Чтение конфига по тегам `envconfig` с префиксом инстанса — без fallback на беспрефиксные переменные. |
 | `context.go` | `SubjectFromContext` / `HeadersFromContext` — доступ к subject и header'ам входящего сообщения внутри обработчика. |
 | `instrumentation.go` | `natsInstruments` (5 otel-инструментов), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
-| `module.go` | fx `Module` (`newConn` + `Bus` + `StreamBus`), `NewConfig`. |
+| `module.go` | fx `Module(name)` (Config + `*Client` + `Bus` + `StreamBus`), `HealthProbe(name)`. |
 
 ## Bus (Core NATS)
 
@@ -167,19 +169,24 @@ W3C trace-context (`traceparent`/`tracestate`) ездит вместе с соо
 
 ## fx Module
 
-`Module` provide'ит `*Conn` (`newConn`), `Bus` (`fx.Annotate(NewBus, fx.As(...))`)
-и `StreamBus` (`NewStreamBus`). `newConn` вешает `OnStop`-хук с `Drain()` +
-`Close()` — graceful-разрыв на shutdown.
+`Module(name)` provide'ит `Config`, `*Client`, `Bus` и `StreamBus` одного
+инстанса и вешает `OnStop`-хук с `Drain()` + `Close()` — graceful-разрыв на
+shutdown.
 
-`Module` **не** provide'ит `Config` (его собирает приложение — обычно
-`fx.Provide(natskit.NewConfig)`) и **не** provide'ит `Probe`: тип
-`func(context.Context) error` коллизит с health-probe'ами других китов
-(например `cachekit.Probe`), поэтому caller регистрирует его сам с нужной
-аннотацией:
+Пустое имя — дефолтный инстанс: конфиг из `NATS_*`, provide без тега. Непустое —
+конфиг из `<NAME>_NATS_*`, provide под тегом `name:"<name>"`, поэтому инстансы не
+коллизят в графе и приложение с двумя шинами (своя + внешняя) собирается штатно:
 
 ```go
-fx.Provide(fx.Annotate(natskit.Probe, fx.ResultTags(`group:"health"`)))
+natskit.Module(""),     // своя шина
+natskit.Module("hub"),  // внешняя, HUB_NATS_*
+fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
 ```
+
+`Probe` модуль **не** provide'ит: тип `func(context.Context) error` коллизит с
+health-probe'ами других китов (например `cachekit.Probe`), а класть в readiness
+имеет смысл не каждый инстанс. Регистрация — отдельной опцией
+`natskit.HealthProbe(name)`.
 
 ## Ключевые проектные решения (WHY)
 

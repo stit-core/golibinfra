@@ -1,26 +1,87 @@
 package natskit
 
 import (
-	"github.com/kelseyhightower/envconfig"
+	"context"
+	"fmt"
+
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module не provide'ит Config (asymmetry note в pgkit/module.go) и не provide'ит
-// Probe. Probe имеет тип `func(context.Context) error`, который коллизит с
-// cachekit.Probe (и любым другим health-probe). Caller сам регистрирует с нужной
-// аннотацией, обычно `group:"health"`:
-//
-//	fx.Provide(fx.Annotate(natskit.Probe, fx.ResultTags(`group:"health"`)))
-var Module = fx.Module(
-	"natskit",
-	fx.Provide(
-		newConn,
-		fx.Annotate(NewBus, fx.As(new(Bus))),
-		NewStreamBus,
-	),
-)
+// Module поднимает инстанс шины: Config, *Client, Bus и StreamBus. Пустое имя —
+// дефолтный инстанс (конфиг из `NATS_*`, provide без тега). Именованный инстанс
+// читает `<NAME>_NATS_*` и provide'ится под fx-тегом `name:"<name>"` — так в
+// одном графе живут несколько шин.
+func Module(name string) fx.Option {
+	if name == "" {
+		return fx.Module(
+			"natskit",
+			fx.Provide(
+				NewConfig,
+				newDefaultClient,
+				func(c *Client) Bus { return c.Bus() },
+				func(c *Client) StreamBus { return c.Stream() },
+			),
+		)
+	}
 
-func NewConfig() (Config, error) {
-	var c Config
-	return c, envconfig.Process("", &c)
+	tag := nameTag(name)
+	prefix := envPrefix(name)
+	return fx.Module(
+		"natskit:"+name,
+		fx.Provide(
+			fx.Annotate(
+				func() (Config, error) { return NewConfigPrefixed(prefix) },
+				fx.ResultTags(tag),
+			),
+			fx.Annotate(
+				func(lc fx.Lifecycle, cfg Config, log logkit.Logger) (*Client, error) {
+					return newClient(lc, name, cfg, log)
+				},
+				fx.ParamTags(``, tag, ``), fx.ResultTags(tag),
+			),
+			fx.Annotate(
+				func(c *Client) Bus { return c.Bus() },
+				fx.ParamTags(tag), fx.ResultTags(tag),
+			),
+			fx.Annotate(
+				func(c *Client) StreamBus { return c.Stream() },
+				fx.ParamTags(tag), fx.ResultTags(tag),
+			),
+		),
+	)
 }
+
+// HealthProbe регистрирует пробу инстанса в `group:"health"`. Отдельной опцией,
+// потому что тип пробы (`func(context.Context) error`) коллизит с пробами других
+// китов — caller решает, какие инстансы попадают в health.
+func HealthProbe(name string) fx.Option {
+	if name == "" {
+		return fx.Provide(fx.Annotate(Probe, fx.ResultTags(`group:"health"`)))
+	}
+	return fx.Provide(fx.Annotate(
+		Probe,
+		fx.ParamTags(nameTag(name)), fx.ResultTags(`group:"health"`),
+	))
+}
+
+func newDefaultClient(lc fx.Lifecycle, cfg Config, log logkit.Logger) (*Client, error) {
+	return newClient(lc, DefaultInstance, cfg, log)
+}
+
+func newClient(lc fx.Lifecycle, name string, cfg Config, log logkit.Logger) (*Client, error) {
+	c, err := New(name, cfg, log)
+	if err != nil {
+		return nil, err
+	}
+	lc.Append(fx.Hook{
+		OnStop: func(context.Context) error {
+			c.Close()
+			return nil
+		},
+	})
+	return c, nil
+}
+
+func nameTag(name string) string { return fmt.Sprintf(`name:"%s"`, name) }
