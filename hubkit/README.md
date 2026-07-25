@@ -68,6 +68,11 @@ Bearer `HUB_SERVICE_TOKEN`. Ошибки типизированы: `ErrNotFound`
 Write-through-методы принадлежности (`ReplaceEntityTags`/`ReplaceEmployeeDepartments`)
 шлют `[]` при `nil` наборе (снятие всех связей), не `null`.
 
+Реквизиты компании асимметричны: `Company` (read) отдаёт их плоскими полями,
+`CompanyInput` (write) принимает только вложенными — `Requisites
+*CompanyRequisitesInput` → ключ `requisites`. Схема create/update у хаба строгая
+(`additionalProperties:false`), лишнее поле верхнего уровня → 4xx.
+
 ## Sync (движок проекций)
 
 Продукт реализует порты `ProjectionStore` (upsert батча в проекцию, идемпотентно

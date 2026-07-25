@@ -23,17 +23,24 @@ type Company struct {
 	UpdatedSeq   int64          `json:"updated_seq"`
 }
 
-// CompanyInput — тело create/update компании.
-type CompanyInput struct {
-	Name         string         `json:"name"`
+// CompanyRequisitesInput — реквизиты в теле create/update. В read-модели
+// (Company) хаб отдаёт их плоскими, а в input принимает только вложенными.
+type CompanyRequisitesInput struct {
 	LegalName    string         `json:"legal_name,omitempty"`
 	INN          string         `json:"inn,omitempty"`
 	KPP          string         `json:"kpp,omitempty"`
 	OGRN         string         `json:"ogrn,omitempty"`
 	LegalAddress string         `json:"legal_address,omitempty"`
 	BankDetails  map[string]any `json:"bank_details,omitempty"`
-	Contacts     map[string]any `json:"contacts,omitempty"`
-	Links        map[string]any `json:"links,omitempty"`
+}
+
+// CompanyInput — тело create/update компании. Схема хаба строгая
+// (additionalProperties:false): лишнее поле верхнего уровня → 4xx.
+type CompanyInput struct {
+	Name       string                  `json:"name"`
+	Requisites *CompanyRequisitesInput `json:"requisites,omitempty"`
+	Contacts   map[string]any          `json:"contacts,omitempty"`
+	Links      map[string]any          `json:"links,omitempty"`
 	// Version — для оптимистичной блокировки на update (0 — без проверки).
 	Version int64 `json:"version,omitempty"`
 }

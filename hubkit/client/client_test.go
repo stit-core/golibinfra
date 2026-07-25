@@ -41,6 +41,60 @@ func TestGetCompany_OK(t *testing.T) {
 	}
 }
 
+// Хаб принимает реквизиты только вложенным объектом requisites: схема
+// company-backend строгая (additionalProperties:false), плоское поле → 4xx.
+func TestUpdateCompany_RequisitesNested(t *testing.T) {
+	var body map[string]any
+	c := newClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			t.Errorf("decode body: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{"id": "c1", "name": "Acme"},
+		})
+	})
+
+	in := client.CompanyInput{
+		Name: "Acme",
+		Requisites: &client.CompanyRequisitesInput{
+			LegalName:    "ООО «Акме»",
+			INN:          "7701234567",
+			KPP:          "770101001",
+			OGRN:         "1027700132195",
+			LegalAddress: "Москва, ул. Лесная, 5",
+			BankDetails:  map[string]any{"raw": "Сбербанк, р/с 40702810…"},
+		},
+		Version: 3,
+	}
+	if _, err := c.UpdateCompany(context.Background(), "c1", in); err != nil {
+		t.Fatalf("UpdateCompany: %v", err)
+	}
+
+	for _, k := range []string{"legal_name", "inn", "kpp", "ogrn", "legal_address", "bank_details"} {
+		if _, ok := body[k]; ok {
+			t.Errorf("реквизит %q на верхнем уровне тела: %v", k, body)
+		}
+	}
+
+	req, ok := body["requisites"].(map[string]any)
+	if !ok {
+		t.Fatalf("нет объекта requisites в теле: %v", body)
+	}
+	if req["legal_name"] != "ООО «Акме»" || req["inn"] != "7701234567" || req["kpp"] != "770101001" {
+		t.Errorf("requisites=%v", req)
+	}
+	if req["ogrn"] != "1027700132195" || req["legal_address"] != "Москва, ул. Лесная, 5" {
+		t.Errorf("requisites=%v", req)
+	}
+	bank, ok := req["bank_details"].(map[string]any)
+	if !ok || bank["raw"] != "Сбербанк, р/с 40702810…" {
+		t.Errorf("bank_details=%v", req["bank_details"])
+	}
+	if body["name"] != "Acme" || body["version"] != float64(3) {
+		t.Errorf("name/version в теле: %v", body)
+	}
+}
+
 func TestErrorMapping(t *testing.T) {
 	cases := []struct {
 		status int
