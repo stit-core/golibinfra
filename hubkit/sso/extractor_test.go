@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 
 	"git.stit.tech/stit-core/golibinfra/hubkit/sso"
@@ -70,7 +71,7 @@ func TestIdentityCtx(t *testing.T) {
 	}
 	in := sso.Identity{EmployeeID: "e1", Subject: "s1", Role: "admin"}
 	out, ok := sso.IdentityFrom(sso.WithIdentity(t.Context(), in))
-	if !ok || out != in {
+	if !ok || !reflect.DeepEqual(out, in) {
 		t.Fatalf("ожидали %+v, получили %+v (ok=%v)", in, out, ok)
 	}
 }

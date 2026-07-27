@@ -36,11 +36,20 @@ func readPEM(file, inline string) (string, error) {
 
 // CookieConfig — параметры hub-session cookie. Дефолты соответствуют
 // 00-architecture §3: Domain=.stit.tech, HttpOnly, Secure, SameSite=Lax, TTL 15м.
+//
+// Все имена — конфигом, не константой: контуров сессии два (сотрудник и
+// заказчик), и второй issuer поднимается со своими именами
+// (stit_customer/stit_customer_refresh, Path=/auth/customer).
 type CookieConfig struct {
 	Name   string        `default:"stit_session" envconfig:"HUB_SESSION_COOKIE"`
 	Domain string        `default:".stit.tech"   envconfig:"HUB_SESSION_COOKIE_DOMAIN"`
 	Secure bool          `default:"true"         envconfig:"HUB_SESSION_COOKIE_SECURE"`
 	TTL    time.Duration `default:"15m"          envconfig:"HUB_SESSION_TTL"`
+	// RefreshName — имя refresh-cookie.
+	RefreshName string `default:"stit_refresh" envconfig:"HUB_SESSION_REFRESH_COOKIE"`
+	// RefreshPath — Path refresh-cookie: браузер шлёт её только на
+	// refresh/logout-роуты issuer'а, продуктовые сабдомены её не видят.
+	RefreshPath string `default:"/auth" envconfig:"HUB_SESSION_REFRESH_COOKIE_PATH"`
 }
 
 // RefreshConfig — параметры rotating-refresh контура (Redis).

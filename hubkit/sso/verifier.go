@@ -1,14 +1,18 @@
 // Package sso — верификация hub-сессии в продуктах экосистемы stit.
 //
-// Читает cookie stit_session, проверяет ES256-подпись hub-session JWT по JWKS
-// employee-backend (id.stit.tech) с in-memory кэшем ключей и lazy-refresh по
-// неизвестному kid (тот же приём, что в oidckit/verifier.go), сверяет
-// iss/aud/exp и кладёт Identity в ctx через httpkit.AuthExtractor. Ни одного
-// похода по сети на запрос после первичной загрузки JWKS — продукт живёт при
-// недоступном хабе, пока ключи в кэше.
+// Два контура identity, каждый со своим issuer/ключом/cookie: сотрудник
+// (stit_session, employee-backend id.stit.tech) и заказчик (stit_customer,
+// company-backend api.hub.stit.tech). Extractor читает оба слота с приоритетом
+// сотрудника; верификатор слота проверяет ES256-подпись по JWKS своего контура
+// (in-memory кэш ключей + lazy-refresh по неизвестному kid — тот же приём, что в
+// oidckit/verifier.go), iss/aud/exp и claim kind, после чего кладёт Identity в
+// ctx через httpkit.AuthExtractor. Ни одного похода по сети на запрос после
+// первичной загрузки JWKS — продукт живёт при недоступном хабе, пока ключи в
+// кэше. Контур заказчика включается заданием HUB_SSO_CUSTOMER_JWKS_URL.
 //
 // Пара к этому пакету — hubkit/issuer (выпускает те же токены); контракт claim'ов
-// (employee_id/username/name/email/role/sid) фиксируется здесь константами Claim*.
+// (employee_id/username/name/email/role/sid + kind/company_id/account_role/
+// products) фиксируется здесь константами Claim*.
 package sso
 
 import (
@@ -25,22 +29,28 @@ import (
 )
 
 var (
-	ErrConfig       = errors.New("hubkit/sso: HUB_SSO_JWKS_URL required")
-	ErrInvalidToken = errors.New("hubkit/sso: malformed session token")
-	ErrUnknownKey   = errors.New("hubkit/sso: no signing key for kid")
-	ErrNoSubject    = errors.New("hubkit/sso: session token has no subject")
-	ErrNoJWKS       = errors.New("hubkit/sso: jwks endpoint returned no keys")
+	ErrConfig         = errors.New("hubkit/sso: HUB_SSO_JWKS_URL required")
+	ErrCustomerIssuer = errors.New("hubkit/sso: HUB_SSO_CUSTOMER_ISSUER required")
+	ErrInvalidToken   = errors.New("hubkit/sso: malformed session token")
+	ErrUnknownKey     = errors.New("hubkit/sso: no signing key for kid")
+	ErrNoSubject      = errors.New("hubkit/sso: session token has no subject")
+	ErrNoJWKS         = errors.New("hubkit/sso: jwks endpoint returned no keys")
 )
 
 // Claim* — имена нестандартных claim'ов hub-session JWT (часть контракта между
 // hubkit/issuer и hubkit/sso). sub/exp/iat/iss/aud — стандартные RFC 7519.
+// Claim{Kind,CompanyID,AccountRole,Products} — контур заказчика.
 const (
-	ClaimEmployeeID = "employee_id"
-	ClaimUsername   = "username"
-	ClaimName       = "name"
-	ClaimEmail      = "email"
-	ClaimRole       = "role"
-	ClaimSID        = "sid"
+	ClaimEmployeeID  = "employee_id"
+	ClaimUsername    = "username"
+	ClaimName        = "name"
+	ClaimEmail       = "email"
+	ClaimRole        = "role"
+	ClaimSID         = "sid"
+	ClaimKind        = "kind"
+	ClaimCompanyID   = "company_id"
+	ClaimAccountRole = "account_role"
+	ClaimProducts    = "products"
 )
 
 // allowedAlgs — только ES256 (асимметрия): продукт держит лишь публичный ключ,
@@ -53,12 +63,15 @@ type Doer interface {
 	Do(*http.Request) (*http.Response, error)
 }
 
-// Verifier проверяет hub-session JWT по JWKS employee-backend. Ключи грузятся
-// лениво (первый Verify или неизвестный kid), кэшируются в памяти.
+// Verifier проверяет hub-session JWT по JWKS своего контура. Ключи грузятся
+// лениво (первый Verify или неизвестный kid), кэшируются в памяти. Контур
+// (kind) — часть проверки: токен чужого контура отвергается, даже если подпись
+// и iss сошлись.
 type Verifier struct {
 	jwksURL  string
 	issuer   string
 	audience string
+	kind     string
 	http     Doer
 
 	mu     sync.RWMutex
@@ -66,9 +79,10 @@ type Verifier struct {
 	loaded bool
 }
 
-// NewVerifier строит Verifier из Config. JWKS не грузится в конструкторе:
-// discovery ключей не должен блокировать старт приложения и переживает
-// временную недоступность хаба (ключи подтянутся на первом Verify).
+// NewVerifier строит Verifier сотруднического контура из Config. JWKS не
+// грузится в конструкторе: discovery ключей не должен блокировать старт
+// приложения и переживает временную недоступность хаба (ключи подтянутся на
+// первом Verify).
 func NewVerifier(cfg Config, doer Doer) (*Verifier, error) {
 	if cfg.JWKSURL == "" {
 		return nil, ErrConfig
@@ -80,8 +94,33 @@ func NewVerifier(cfg Config, doer Doer) (*Verifier, error) {
 		jwksURL:  cfg.JWKSURL,
 		issuer:   cfg.Issuer,
 		audience: cfg.Audience,
+		kind:     KindEmployee,
 		http:     doer,
 	}, nil
+}
+
+// CustomerVerifier — верификатор контура заказчика (JWKS company-backend,
+// kind=customer). Отдельный тип, чтобы два верификатора одного контракта не
+// путались в DI и в сигнатурах.
+type CustomerVerifier struct{ *Verifier }
+
+// NewCustomerVerifier строит верификатор сессии заказчика. Пустой
+// CustomerJWKSURL → (nil, nil): контур выключен, продукт живёт как без него.
+// iss обязателен: он вместе с kind не даёт токену чужого контура пройти в
+// customer-слот.
+func NewCustomerVerifier(cfg Config, doer Doer) (*CustomerVerifier, error) {
+	if !cfg.CustomerEnabled() {
+		return nil, nil //nolint:nilnil // пустой JWKS-URL = контур выключен, это не ошибка
+	}
+	if cfg.CustomerIssuer == "" {
+		return nil, ErrCustomerIssuer
+	}
+	v, err := NewVerifier(Config{JWKSURL: cfg.CustomerJWKSURL, Issuer: cfg.CustomerIssuer}, doer)
+	if err != nil {
+		return nil, err
+	}
+	v.kind = KindCustomer
+	return &CustomerVerifier{Verifier: v}, nil
 }
 
 // Verify проверяет подпись/claims токена и возвращает Identity.
@@ -100,12 +139,16 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 
 	var claims jwt.Claims
 	var custom struct {
-		EmployeeID string `json:"employee_id"`
-		Username   string `json:"username"`
-		Name       string `json:"name"`
-		Email      string `json:"email"`
-		Role       string `json:"role"`
-		SID        string `json:"sid"`
+		EmployeeID  string   `json:"employee_id"`
+		Username    string   `json:"username"`
+		Name        string   `json:"name"`
+		Email       string   `json:"email"`
+		Role        string   `json:"role"`
+		SID         string   `json:"sid"`
+		Kind        string   `json:"kind"`
+		CompanyID   string   `json:"company_id"`
+		AccountRole string   `json:"account_role"`
+		Products    []string `json:"products"`
 	}
 	if err := tok.Claims(key, &claims, &custom); err != nil {
 		return Identity{}, fmt.Errorf("hubkit/sso: verify signature: %w", err)
@@ -124,15 +167,29 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 	if claims.Subject == "" {
 		return Identity{}, ErrNoSubject
 	}
+	// Контур — до всего остального: подпись и iss могут сойтись (общий ключ в
+	// dev, незаданный HUB_SSO_ISSUER), но токен другого контура в этом слоте
+	// значит подмену принципала, а не «почти то же самое».
+	kind := custom.Kind
+	if kind == "" {
+		kind = KindEmployee // токены, выпущенные до появления второго контура
+	}
+	if kind != v.kind {
+		return Identity{}, fmt.Errorf("%w: %s", ErrWrongKind, kind)
+	}
 
 	return Identity{
-		EmployeeID: custom.EmployeeID,
-		Subject:    claims.Subject,
-		Username:   custom.Username,
-		Name:       custom.Name,
-		Email:      custom.Email,
-		Role:       custom.Role,
-		SID:        custom.SID,
+		EmployeeID:  custom.EmployeeID,
+		Subject:     claims.Subject,
+		Username:    custom.Username,
+		Name:        custom.Name,
+		Email:       custom.Email,
+		Role:        custom.Role,
+		SID:         custom.SID,
+		Kind:        custom.Kind,
+		CompanyID:   custom.CompanyID,
+		AccountRole: custom.AccountRole,
+		Products:    custom.Products,
 	}, nil
 }
 

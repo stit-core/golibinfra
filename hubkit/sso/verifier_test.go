@@ -11,6 +11,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"testing"
 	"time"
 
@@ -121,7 +122,7 @@ func TestVerify_Valid(t *testing.T) {
 		Role:       "employee",
 		SID:        "sess-1",
 	}
-	if id != want {
+	if !reflect.DeepEqual(id, want) {
 		t.Fatalf("identity=%+v, ожидали %+v", id, want)
 	}
 }

@@ -52,8 +52,19 @@ func newVerifier(p verifierParams) (*Verifier, error) {
 	return NewVerifier(p.Config, doer)
 }
 
-// Module — drop-in верификатор hub-сессии: httpkit.AuthExtractor (cookie →
-// Identity в ctx), security-scheme HubSession, user_id в логах.
+// newCustomerVerifier — второй контур; nil в графе означает «выключен»
+// (HUB_SSO_CUSTOMER_JWKS_URL пуст), NewDualExtractor это понимает.
+func newCustomerVerifier(p verifierParams) (*CustomerVerifier, error) {
+	var doer Doer
+	if p.Doer != nil {
+		doer = p.Doer
+	}
+	return NewCustomerVerifier(p.Config, doer)
+}
+
+// Module — drop-in верификатор hub-сессии обоих контуров: httpkit.AuthExtractor
+// (cookie сотрудника или заказчика → Identity в ctx), security-scheme
+// HubSession, user_id в логах.
 //
 // Module не provide'ит Config (asymmetry-нота как в pgkit/oidckit — caller
 // добавляет `fx.Provide(sso.NewConfig)`). httpclient.Client опционален.
@@ -63,7 +74,8 @@ var Module = fx.Module(
 	"hubkit-sso",
 	fx.Provide(
 		newVerifier,
-		NewExtractor,
+		newCustomerVerifier,
+		NewDualExtractor,
 		func(e *Extractor) httpkit.AuthExtractor { return e.Extract },
 		fx.Annotate(NewSecurityScheme, fx.ResultTags(`group:"httpkit.security_scheme"`)),
 	),

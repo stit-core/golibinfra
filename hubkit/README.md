@@ -6,8 +6,8 @@
 
 | Подпакет | Роль | Кто использует |
 |---|---|---|
-| `hubkit/sso` | verify hub-session JWT (ES256/JWKS), `Identity` в ctx, `AuthExtractor` для huma | все продукты |
-| `hubkit/issuer` | выпуск hub-session JWT (ES256 + ротация kid), JWKS-handler, cookie-слой, rotating-refresh (Redis) | только employee-backend (`id.stit.tech`) |
+| `hubkit/sso` | verify hub-session JWT обоих контуров (ES256/JWKS), `Identity` в ctx, `AuthExtractor` для huma | все продукты |
+| `hubkit/issuer` | выпуск hub-session JWT (ES256 + ротация kid), JWKS-handler, cookie-слой, rotating-refresh (Redis) | issuer'ы контуров: employee-backend (`id.stit.tech`), company-backend (`api.hub.stit.tech`) |
 | `hubkit/client` | типизированный HTTP-клиент hub API поверх `httpclient` (companies/projects/employees/visibility/tags/entity-tags/departments + sync) | продукты + движок синка |
 | `hubkit/sync` | движок pull-синка проекций: цикл `after=<cursor>`, порты `ProjectionStore`/`CursorStore`, метрики | продукты с локальными проекциями |
 | `hubkit/projection` | эталон схемы проекций (миграции + sqlc-запросы) как copy-paste-шаблон | продукты (не рантайм) |
@@ -18,19 +18,55 @@
 
 ```go
 fx.Provide(sso.NewConfig)   // HUB_SSO_* из ENV
-sso.Module                  // Verifier + Extractor + security-scheme HubSession
+sso.Module                  // Verifier + CustomerVerifier + Extractor + security-scheme HubSession
 // httpkit подхватит sso.AuthExtractor; операции защищаются
 //   Security: []map[string][]string{{sso.SecuritySchemeName: {}}}
 ```
 
-Cookie `stit_session` → ES256-verify по JWKS `id.stit.tech` (кэш в памяти,
-lazy-refresh по неизвестному kid) → `sso.Identity{EmployeeID, Subject, Username,
-Name, Email, Role, SID}` в ctx. Ни одного похода по сети на запрос после
-первичной загрузки JWKS — продукт живёт при недоступном хабе.
+Cookie слота → ES256-verify по JWKS своего контура (кэш в памяти, lazy-refresh
+по неизвестному kid) → `sso.Identity` в ctx. Ни одного похода по сети на запрос
+после первичной загрузки JWKS — продукт живёт при недоступном хабе.
 
-Login-redirect: `cfg.LoginURLFor(returnURL)` → `https://id.stit.tech/auth/login?rd=…`.
+### Два контура identity
 
-## Issuer (employee-backend)
+| | Сотрудник | Заказчик |
+|---|---|---|
+| `Kind` | `employee` (пустой claim читается так же) | `customer` |
+| Issuer / `iss` | employee-backend, `https://id.stit.tech` | company-backend, `https://api.hub.stit.tech` |
+| JWKS | `HUB_SSO_JWKS_URL` | `HUB_SSO_CUSTOMER_JWKS_URL` |
+| Cookie | `stit_session` (`HUB_SSO_COOKIE`) | `stit_customer` (`HUB_SSO_CUSTOMER_COOKIE`) |
+| Ключ подписи | ES256 employee-backend | свой ES256 company-backend |
+| Поля `Identity` | `EmployeeID`, `Username`, `Role` | `CompanyID`, `AccountRole`, `Products` |
+| Вход | Authentik (OIDC BFF) | логин + пароль на `hub.stit.tech/customer/login` |
+
+Общее: `Domain=.stit.tech`, HttpOnly, Secure, SameSite=Lax, access TTL ~15 мин.
+
+**Приоритет — за сотрудником.** Слоты независимы (сотрудник и заказчик могут
+оказаться в одном браузере — общая cookie молча выбивала бы один вход другим);
+при обеих заполненных выигрывает `stit_session`. Протухший employee-токен не
+отменяет валидную сессию заказчика — берётся customer-слот. Чтобы посмотреть на
+мир глазами заказчика, сотрудник использует отдельный профиль браузера.
+
+**Токен чужого контура не принимается никогда.** Верификатор слота сверяет `iss`
+и claim `kind`: employee-токен в `stit_customer` (и наоборот) отвергается, даже
+если подпись сошлась.
+
+**`Kind` проверяется до применения любой доменной политики** — правила,
+написанные под сотрудника, к заказчику не применимы. Гейты вместо сравнения
+строк руками:
+
+```go
+id, err := sso.RequireEmployee(ctx) // ErrNoIdentity → 401, ErrWrongKind → 403
+id, err := sso.RequireCustomer(ctx)
+if !id.CanUseProduct("deal") { … }  // сотруднику — всегда true
+```
+
+Контур заказчика включается заданием `HUB_SSO_CUSTOMER_JWKS_URL`; пусто —
+продукт работает ровно как без второго контура (продукты входят в него не
+одновременно). Login-redirect: `cfg.LoginURLFor(returnURL)` /
+`cfg.CustomerLoginURLFor(returnURL)` → `…?rd=…`.
+
+## Issuer (employee-backend, company-backend)
 
 ```go
 fx.Provide(issuer.NewKeyConfig, issuer.NewCookieConfig, issuer.NewRefreshConfig,
@@ -39,9 +75,14 @@ issuer.Module                    // Signer + RefreshManager + JWKS-роут
 ```
 
 `Signer.Sign(claims, ttl)` подписывает ES256 активным ключом; `JWKS()` отдаёт
-активный + next (ротация без разрыва сессий). Cookie: `Domain=.stit.tech`,
-HttpOnly, Secure, SameSite=Lax, TTL 15 мин. `RefreshManager`: rotating refresh
-(one-time токены) + tombstone по `sid` на логаут.
+активный + next (ротация без разрыва сессий). `SessionCookie`: `Domain=.stit.tech`,
+HttpOnly, Secure, SameSite=Lax, TTL 15 мин; `RefreshCookie` — host-only (Domain
+пуст) на своём `Path`, чтобы refresh-токен видели только роуты своего issuer'а.
+`RefreshManager`: rotating refresh (one-time токены) + tombstone по `sid` на логаут.
+
+Имена cookie и `Path` refresh'а — из `CookieConfig`, не константы: контуров два,
+и issuer заказчика поднимается со своими (`stit_customer` /
+`stit_customer_refresh`, `Path=/auth/customer`).
 
 ## Client (m2m)
 
@@ -115,12 +156,17 @@ upsert из фида + листинги) — копируются в проду�
 | ENV | Подпакет | Назначение |
 |---|---|---|
 | `HUB_SSO_JWKS_URL` | sso | JWKS employee-backend (обязателен) |
-| `HUB_SSO_COOKIE` | sso | имя cookie сессии (default `stit_session`) |
+| `HUB_SSO_COOKIE` | sso | имя cookie сессии сотрудника (default `stit_session`) |
 | `HUB_SSO_ISSUER` / `HUB_SSO_AUDIENCE` | sso | ожидаемые iss/aud (aud — если задан) |
 | `HUB_SSO_LOGIN_URL` | sso | точка входа для login-redirect |
+| `HUB_SSO_CUSTOMER_JWKS_URL` | sso | JWKS company-backend; **пусто → контур заказчика выключен** |
+| `HUB_SSO_CUSTOMER_COOKIE` | sso | имя cookie сессии заказчика (default `stit_customer`) |
+| `HUB_SSO_CUSTOMER_ISSUER` | sso | ожидаемый iss заказчика (default `https://api.hub.stit.tech`; при включённом контуре обязателен) |
+| `HUB_SSO_CUSTOMER_LOGIN_URL` | sso | экран входа заказчика (default `https://hub.stit.tech/customer/login`) |
 | `HUB_SESSION_PRIVATE_KEY[_FILE]` | issuer | активный ES256-ключ (PEM inline/файл) |
 | `HUB_SESSION_NEXT_PRIVATE_KEY[_FILE]` | issuer | next-ключ на период ротации |
-| `HUB_SESSION_COOKIE[_DOMAIN\|_SECURE]`, `HUB_SESSION_TTL` | issuer | cookie-слой |
+| `HUB_SESSION_COOKIE[_DOMAIN\|_SECURE]`, `HUB_SESSION_TTL` | issuer | cookie-слой access-сессии |
+| `HUB_SESSION_REFRESH_COOKIE[_PATH]` | issuer | имя и `Path` refresh-cookie (default `stit_refresh` / `/auth`) |
 | `HUB_REFRESH_TTL`, `HUB_REFRESH_TOMBSTONE_TTL` | issuer | rotating-refresh |
 | `HUB_BASE_URL`, `HUB_EMPLOYEE_BASE_URL`, `HUB_TAG_BASE_URL` | client | базовые URL company/employee/tag backend (пусто → падают на `HUB_BASE_URL`) |
 | `HUB_SERVICE_TOKEN`, `HUB_SERVICE_NAME` | client | m2m Bearer + имя сервиса |
@@ -136,6 +182,12 @@ upsert из фида + листинги) — копируются в проду�
 
 ## Контракт claim'ов hub-session JWT
 
-`sub` (Authentik subject), `employee_id` (hub UUID), `username`, `name`,
-`email`, `role`, `sid`, стандартные `iss`/`aud`/`exp`/`iat`/`nbf`. Имена
-нестандартных claim'ов — константы `sso.Claim*` (общий контракт issuer↔sso).
+Общие: `sub`, `name`, `email`, `sid`, стандартные `iss`/`aud`/`exp`/`iat`/`nbf`.
+Сотрудник: `sub` — Authentik subject, плюс `employee_id` (hub UUID), `username`,
+`role`. Заказчик: `sub` — `customer_account_id`, плюс `kind=customer`,
+`company_id` (hub UUID компании), `account_role` (`member|admin` внутри своей
+компании), `products` (массив: `deal`, `telemost`, `task`, `calendar`).
+
+`kind` — дискриминатор контура: у заказчика обязателен, у сотрудника
+опционален (пустой = `employee`, чтобы уже выпущенные токены остались валидны).
+Имена нестандартных claim'ов — константы `sso.Claim*` (общий контракт issuer↔sso).
