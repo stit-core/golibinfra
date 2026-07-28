@@ -41,6 +41,72 @@ func TestGetCompany_OK(t *testing.T) {
 	}
 }
 
+// Admin API компаний (GET/PATCH /api/companies/{id}) отдаёт реквизиты вложенным
+// объектом requisites — в отличие от sync-фида с плоскими полями. Читаются обе
+// формы: иначе потребитель, перечитавший компанию после write-through, получает
+// пустые реквизиты и затирает ими свою проекцию.
+func TestGetCompany_RequisitesNested(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": map[string]any{
+				"id": "c1", "name": "Acme", "slug": "acme", "version": 4,
+				"requisites": map[string]any{
+					"legal_name":    "ООО «Акме»",
+					"inn":           "7701234567",
+					"kpp":           "770101001",
+					"ogrn":          "1027700132195",
+					"legal_address": "Москва, ул. Лесная, 5",
+					"bank_details":  map[string]any{"raw": "Сбербанк, р/с 40702810…"},
+				},
+			},
+		})
+	})
+	got, err := c.GetCompany(context.Background(), "c1")
+	if err != nil {
+		t.Fatalf("GetCompany: %v", err)
+	}
+	if got.LegalName != "ООО «Акме»" || got.INN != "7701234567" || got.KPP != "770101001" {
+		t.Errorf("реквизиты не распакованы: %+v", got)
+	}
+	if got.OGRN != "1027700132195" || got.LegalAddress != "Москва, ул. Лесная, 5" {
+		t.Errorf("реквизиты не распакованы: %+v", got)
+	}
+	if got.BankDetails["raw"] != "Сбербанк, р/с 40702810…" {
+		t.Errorf("bank_details=%v", got.BankDetails)
+	}
+	if got.Version != 4 || got.Slug != "acme" {
+		t.Errorf("company=%+v", got)
+	}
+}
+
+// Плоская форма (sync-фид) остаётся рабочей: разбор вложенной не должен её
+// вытеснять — фид и admin API живут одновременно.
+func TestSyncFeed_CompanyRequisitesFlat(t *testing.T) {
+	c := newClient(t, func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{{
+				"id": "c1", "name": "Acme", "legal_name": "ООО «Акме»", "inn": "7701234567",
+				"bank_details": map[string]any{"raw": "Сбербанк"}, "updated_seq": 9,
+			}},
+			"next_after": 9,
+		})
+	})
+	page, err := c.SyncFeed(context.Background(), client.ResourceCompanies, 0, 100)
+	if err != nil {
+		t.Fatalf("SyncFeed: %v", err)
+	}
+	var got client.Company
+	if err := json.Unmarshal(page.Data[0], &got); err != nil {
+		t.Fatalf("unmarshal company: %v", err)
+	}
+	if got.LegalName != "ООО «Акме»" || got.INN != "7701234567" {
+		t.Errorf("плоские реквизиты потеряны: %+v", got)
+	}
+	if got.BankDetails["raw"] != "Сбербанк" || got.UpdatedSeq != 9 {
+		t.Errorf("company=%+v", got)
+	}
+}
+
 // Хаб принимает реквизиты только вложенным объектом requisites: схема
 // company-backend строгая (additionalProperties:false), плоское поле → 4xx.
 func TestUpdateCompany_RequisitesNested(t *testing.T) {

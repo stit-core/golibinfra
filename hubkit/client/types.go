@@ -1,6 +1,9 @@
 package client
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Company — каноническая компания хаба (company-backend, api.hub.stit.tech).
 // Реквизиты — общая правда экосистемы (00-architecture §2).
@@ -23,8 +26,36 @@ type Company struct {
 	UpdatedSeq   int64          `json:"updated_seq"`
 }
 
-// CompanyRequisitesInput — реквизиты в теле create/update. В read-модели
-// (Company) хаб отдаёт их плоскими, а в input принимает только вложенными.
+// UnmarshalJSON читает обе формы реквизитов хаба: плоскую (sync-фид) и вложенную
+// в объект requisites (admin API компаний, GET/PATCH /api/companies/{id}).
+// Присутствие объекта — сигнал admin-формы, и он источник истины целиком: иначе
+// очистка реквизита не отличалась бы от «поля нет». Без этого разбора потребитель,
+// читающий компанию после write-through, получал пустые реквизиты и затирал ими
+// собственную проекцию, а следующей записью — и сам хаб.
+func (c *Company) UnmarshalJSON(data []byte) error {
+	type company Company // без методов — иначе рекурсия на этом же UnmarshalJSON
+	var raw struct {
+		company
+		Requisites *CompanyRequisitesInput `json:"requisites"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	*c = Company(raw.company)
+	if raw.Requisites != nil {
+		c.LegalName = raw.Requisites.LegalName
+		c.INN = raw.Requisites.INN
+		c.KPP = raw.Requisites.KPP
+		c.OGRN = raw.Requisites.OGRN
+		c.LegalAddress = raw.Requisites.LegalAddress
+		c.BankDetails = raw.Requisites.BankDetails
+	}
+	return nil
+}
+
+// CompanyRequisitesInput — реквизиты в теле create/update (и вложенный объект
+// requisites в admin-ответах хаба, см. Company.UnmarshalJSON). Хаб принимает их
+// только вложенными; плоские поля верхнего уровня его строгая схема отвергает.
 type CompanyRequisitesInput struct {
 	LegalName    string         `json:"legal_name,omitempty"`
 	INN          string         `json:"inn,omitempty"`
