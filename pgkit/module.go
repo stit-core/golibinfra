@@ -6,16 +6,11 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/kelseyhightower/envconfig"
-	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
 )
 
-// Asymmetry note (golibinfra ≥ v0.17): ни один kit не provide'ит свой
-// Config внутренне. Caller обязан регистрировать Config'и сам (типично
-// через App-структуру в app-config модуле). Дешёвый mode без
-// App-pattern — `fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig)`.
-// Это однородно с httpkit/authnkit/cachekit/flagkit/natskit/
-// logkit/httpclient — у каждого Config-фабрика exported, но не в Module.
+// Module не provide'ит Config'и: их регистрирует caller (App-структура или
+// `fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig)`), как у всех китов.
 var Module = fx.Module("pgkit",
 	fx.Provide(
 		newPoolWithLifecycle,
@@ -23,31 +18,9 @@ var Module = fx.Module("pgkit",
 		fx.Annotate(NewPoolTransactor, fx.As(new(Transactor))),
 		newReadWriteDB,
 	),
-	fx.Invoke(instrumentPoolFx),
+	// Пулы поднимаются на старте, а не при первом запросе: недоступная БД валит запуск.
+	fx.Invoke(func(*ReadWriteDB) {}),
 )
-
-// instrumentParams — optional Meter: если Meter не provide'ен в DI,
-// pgkit не должен падать на старте. Тогда инструментация — no-op.
-type instrumentParams struct {
-	fx.In
-	LC    fx.Lifecycle
-	Pool  *pgxpool.Pool
-	Meter metric.Meter `optional:"true"`
-}
-
-func instrumentPoolFx(p instrumentParams) error {
-	if p.Meter == nil {
-		return nil
-	}
-	reg, err := InstrumentPool(p.Pool, p.Meter)
-	if err != nil {
-		return fmt.Errorf("pgkit: instrument pool: %w", err)
-	}
-	p.LC.Append(fx.Hook{
-		OnStop: func(_ context.Context) error { return reg.Unregister() },
-	})
-	return nil
-}
 
 func NewPoolConfig() (PoolConfig, error) {
 	var c PoolConfig
@@ -59,41 +32,27 @@ func NewReplicaConfig() (ReplicaConfig, error) {
 	return c, envconfig.Process("", &c)
 }
 
+func newPoolWithLifecycle(lc fx.Lifecycle, cfg PoolConfig) (*pgxpool.Pool, error) {
+	return openPool(lc, cfg, RolePrimary)
+}
+
 func newReadWriteDB(lc fx.Lifecycle, master *DB, repCfg ReplicaConfig, poolCfg PoolConfig) (*ReadWriteDB, error) {
 	if repCfg.ReplicaDSN == "" {
 		return NewReadWriteDB(master, master), nil
 	}
 
-	repPoolCfg := PoolConfig{
-		DSN:             repCfg.ReplicaDSN,
-		MaxConns:        repCfg.MaxConns,
-		MinConns:        poolCfg.MinConns,
-		MaxConnLifetime: poolCfg.MaxConnLifetime,
-		MaxConnIdleTime: poolCfg.MaxConnIdleTime,
-		HealthCheck:     poolCfg.HealthCheck,
-		OTelTrace:       poolCfg.OTelTrace,
-	}
+	repPoolCfg := poolCfg
+	repPoolCfg.DSN = repCfg.ReplicaDSN
+	repPoolCfg.MaxConns = repCfg.MaxConns
 
-	ctx, cancel := context.WithCancel(context.Background())
-	pool, err := NewPool(ctx, repPoolCfg)
+	pool, err := openPool(lc, repPoolCfg, RoleReplica)
 	if err != nil {
-		cancel()
-		return nil, fmt.Errorf("pgkit: replica pool: %w", err)
+		return nil, fmt.Errorf("pgkit: replica: %w", err)
 	}
-
-	lc.Append(fx.Hook{
-		OnStop: func(_ context.Context) error {
-			pool.Close()
-			cancel()
-			return nil
-		},
-	})
-
-	replica := NewDB(pool)
-	return NewReadWriteDB(master, replica), nil
+	return NewReadWriteDB(master, NewDB(pool)), nil
 }
 
-func newPoolWithLifecycle(lc fx.Lifecycle, cfg PoolConfig) (*pgxpool.Pool, error) {
+func openPool(lc fx.Lifecycle, cfg PoolConfig, role string) (*pgxpool.Pool, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pool, err := NewPool(ctx, cfg)
@@ -101,14 +60,15 @@ func newPoolWithLifecycle(lc fx.Lifecycle, cfg PoolConfig) (*pgxpool.Pool, error
 		cancel()
 		return nil, err
 	}
+	reg := InstrumentPool(pool, role)
 
 	lc.Append(fx.Hook{
 		OnStop: func(_ context.Context) error {
+			err := reg.Unregister()
 			pool.Close()
 			cancel()
-			return nil
+			return err
 		},
 	})
-
 	return pool, nil
 }

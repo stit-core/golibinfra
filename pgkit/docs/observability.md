@@ -2,13 +2,15 @@
 
 Единый источник правды по телеметрии kit'а. Пул инструментируется метриками
 `db_pool_*`, а соединения — per-query спанами через `otelpgx`. Метрики
-регистрирует `InstrumentPool(pool, meter)`; в fx-графе это делает
-`instrumentPoolFx`, привязывая отписку (`Registration.Unregister`) к `OnStop`.
+регистрирует `InstrumentPool(pool, role)` через глобальный OTel Meter
+(`otel.Meter("git.stit.tech/stit-core/golibinfra/pgkit")`); в fx-графе это
+делает `Module` для primary и replica, привязывая отписку
+(`Registration.Unregister`) к `OnStop`.
 
 Kit **не выставляет** resource-атрибуты
 (`service.name`/`service.version`/`deployment.environment.name`) — их несёт
-OTel-resource, настроенный потребителем в его проводке OTel SDK. `db_pool_*`
-эмитятся только при наличии `metric.Meter` в графе; без него — no-op.
+OTel-resource, настроенный потребителем в его проводке OTel SDK. Без
+зарегистрированного `MeterProvider` инструменты — no-op.
 
 ## Метрики `db_pool_*`
 
@@ -30,9 +32,12 @@ pgxpool.
 
 ### Labels
 
-Все метрики **attribute-less**, per-pool — без labels на уровне kit'а. Если в
-приложении несколько пулов в одном OTel scope, их значения сложатся. Различай
-пулы через resource-атрибуты или регистрируй каждый под собственным meter-scope.
+| Label | Значения | Откуда |
+|---|---|---|
+| `role` | `primary` \| `replica` | `Module`: primary-пул и пул `PG_REPLICA_DSN`; для `InstrumentPool` вручную — аргумент `role` (`pgkit.RolePrimary`/`pgkit.RoleReplica` или своё значение) |
+
+Несколько пулов с одним `role` в одном процессе складываются в одну серию —
+давай им разные `role`.
 
 ### Чтение
 
@@ -60,5 +65,5 @@ OTel БД. Спаны наследуют контекст вызова чере�
 ## Источник правды по реестру
 
 Сводка по всем китам — корневой [README § Что эмитит каждый пакет](../../README.md):
-`pgkit` → `db_pool_*` (9 метрик) + per-query span (`otelpgx`). Эта страница —
-детальный реестр имён, типов и labels для `pgkit`.
+`pgkit` → `db_pool_*` (9 метрик, label `role`) + per-query span (`otelpgx`). Эта
+страница — детальный реестр имён, типов и labels для `pgkit`.

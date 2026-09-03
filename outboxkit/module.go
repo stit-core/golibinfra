@@ -5,22 +5,21 @@ import (
 
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
-// Module провайдит orchestration-слой outbox (Bus, Publisher, Worker, drain-Job).
-// Repository — внешняя зависимость; caller подключает отдельно: либо
-// `outboxkit/pgstore.Module`, либо собственный store-адаптер.
-// Конфиг тоже не provide'ится — caller добавляет `fx.Provide(outboxkit.NewConfig)`.
-// Worker публикует в JetStream через natskit.StreamBus — требует
-// NATS_JETSTREAM_ENABLED=true и стрим, покрывающий subject'ы outbox'а.
+// Module — orchestration-слой инстанса DefaultInstance; Repository,
+// pgkit.Transactor и Config (`fx.Provide(outboxkit.NewConfig)`) провайдит caller.
 var Module = fx.Module(
 	"outboxkit",
 	fx.Provide(
-		NewBus,
+		func(repo Repository) *Bus { return NewBus(DefaultInstance, repo) },
 		func(b *Bus) Publisher { return b },
 		NewStreamTransport,
-		NewWorker,
+		func(repo Repository, tr Transport, tx pgkit.Transactor, cfg Config) *Worker {
+			return NewWorker(DefaultInstance, repo, tr, tx, cfg)
+		},
 		fx.Annotate(
 			func(w *Worker, cfg Config) timerkit.Job {
 				return timerkit.Job{
@@ -32,27 +31,21 @@ var Module = fx.Module(
 			fx.ResultTags(`group:"timer.job"`),
 		),
 	),
-	fx.Invoke(registerBacklogGaugesIfReporter),
+	fx.Invoke(registerBacklogGauges),
 )
 
-// backlogParams — optional BacklogReporter: подключается только если репозиторий
-// его реализует (см. outboxkit/pgstore.Store). Без него — no-op,
-// `outbox_lag_seconds`/`outbox_pending_count` просто не эмитятся.
-type backlogParams struct {
-	fx.In
-	LC       fx.Lifecycle
-	Reporter BacklogReporter `optional:"true"`
-}
-
-func registerBacklogGaugesIfReporter(p backlogParams) error {
-	if p.Reporter == nil {
+// registerBacklogGauges подключает `outbox_lag_seconds`/`outbox_pending_count`,
+// если репозиторий умеет BacklogReporter (pgstore.Store умеет); иначе no-op.
+func registerBacklogGauges(lc fx.Lifecycle, repo Repository) error {
+	reporter, ok := repo.(BacklogReporter)
+	if !ok {
 		return nil
 	}
-	reg, err := RegisterBacklogGauges(p.Reporter)
+	reg, err := RegisterBacklogGauges(DefaultInstance, reporter)
 	if err != nil {
 		return err
 	}
-	p.LC.Append(fx.Hook{
+	lc.Append(fx.Hook{
 		OnStop: func(_ context.Context) error { return reg.Unregister() },
 	})
 	return nil

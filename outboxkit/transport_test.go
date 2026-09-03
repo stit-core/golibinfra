@@ -21,8 +21,8 @@ func (b *capturingBus) PublishStreamBatch(_ context.Context, msgs []natskit.Stre
 	return make([]error, len(msgs)), nil
 }
 
-func (b *capturingBus) SubscribeStream(context.Context, string, string, string, func(context.Context, []byte) error) error {
-	return nil
+func (b *capturingBus) SubscribeStream(context.Context, string, string, string, natskit.Handler) (natskit.Subscription, error) {
+	return nil, nil
 }
 
 func TestStreamTransport_MsgIDBareByDefault(t *testing.T) {

@@ -20,8 +20,7 @@ type Guard interface {
 
 	RecordSuccess(ctx context.Context, subject, ip string) error
 
-	// Cleanup deletes expired attempt rows (unlocked AND older than
-	// Config.CleanupRetention). Callers typically schedule it via a periodic
-	// job. Idempotent.
+	// Cleanup удаляет разблокированные строки старше Config.CleanupRetention;
+	// идемпотентен, обычно вешается на периодический job.
 	Cleanup(ctx context.Context) error
 }

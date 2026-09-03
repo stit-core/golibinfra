@@ -10,19 +10,39 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+const NATSImage = "nats:2.11-alpine"
+
 type NATSFixture struct {
 	URL       string
 	Container testcontainers.Container
 }
 
-func StartNATS(t *testing.T) *NATSFixture {
+type NATSOption func(*natsOptions)
+
+type natsOptions struct {
+	jetStream bool
+}
+
+// WithJetStream запускает сервер с `-js` — для тестов natskit.StreamBus и outboxkit.
+func WithJetStream() NATSOption {
+	return func(o *natsOptions) { o.jetStream = true }
+}
+
+func StartNATS(t *testing.T, opts ...NATSOption) *NATSFixture {
 	t.Helper()
+	var o natsOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	ctx := context.Background()
 
 	req := testcontainers.ContainerRequest{
-		Image:        "nats:latest",
+		Image:        NATSImage,
 		ExposedPorts: []string{"4222/tcp"},
 		WaitingFor:   wait.ForLog("Server is ready").WithStartupTimeout(60 * time.Second),
+	}
+	if o.jetStream {
+		req.Cmd = []string{"-js"}
 	}
 	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
 		ContainerRequest: req,

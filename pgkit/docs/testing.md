@@ -1,18 +1,21 @@
 # pgkit — тестирование
 
 Интеграционные тесты поднимают реальный Postgres в контейнере через
-`testkit.StartPostgres`. Unit-уровень (`errors.go`, `ReadWriteDB`-роутинг)
-тестируется без контейнера.
+`testkit.StartPostgres`. Unit-уровень (`errors.go`, `ReadWriteDB`-роутинг,
+валидация источников миграций, таймаут коннекта) тестируется без контейнера.
 
 ## `testkit.StartPostgres`
 
 ```go
-func StartPostgres(t *testing.T, migrationsPath string) *PostgresFixture
+func StartPostgres(t *testing.T, opts ...PostgresOption) *PostgresFixture
+
+func WithMigrations(sources ...pgkit.Source) PostgresOption // источники китов/приложения
+func WithMigrationsDir(path string) PostgresOption          // каталог приложения (источник app)
 ```
 
 Поднимает `postgres:17-alpine` на свободном порту, ждёт готовности и регистрирует
-`t.Cleanup` для остановки контейнера. Если `migrationsPath != ""` — сразу
-прогоняет `pgkit.MigrateUp`.
+`t.Cleanup` для остановки контейнера. Переданные источники применяются через
+`pgkit.MigrateUpAll` — так же, как это делает `MigrateModule`.
 
 ```go
 type PostgresFixture struct {
@@ -33,13 +36,14 @@ func TestRepo(t *testing.T) {
     if testing.Short() {
         t.Skip("integration")
     }
-    pg := testkit.StartPostgres(t, "")
+    pg := testkit.StartPostgres(t, testkit.WithMigrationsDir("testdata/migrations"))
     cfg := pgkit.PoolConfig{
         DSN:      pg.DSN,
         MaxConns: 2, MinConns: 1,
         MaxConnLifetime: 5 * time.Minute,
         MaxConnIdleTime: time.Minute,
         HealthCheck:     30 * time.Second,
+        ConnectTimeout:  10 * time.Second,
         StatementTimeout: 7 * time.Second,
     }
     pool, err := pgkit.NewPool(context.Background(), cfg)
@@ -53,41 +57,38 @@ func TestRepo(t *testing.T) {
 
 ## Рецепт: миграции из in-memory FS
 
-`MigrateUpMulti` принимает любой `fs.FS`, поэтому источник можно собрать через
+`Source` принимает любой `fs.FS`, поэтому источник можно собрать через
 `fstest.MapFS` — без файлов на диске:
 
 ```go
-src := fstest.MapFS{
+src := pgkit.Source{Name: "src", Dir: "migrations", FS: fstest.MapFS{
     "migrations/0001_foo.up.sql":   {Data: []byte(`CREATE TABLE foo (id INT PRIMARY KEY);`)},
     "migrations/0001_foo.down.sql": {Data: []byte(`DROP TABLE foo;`)},
-}
-pg := testkit.StartPostgres(t, "")
-cfg := pgkit.MultiSourceConfig{
-    DSN:     pg.DSN,
-    Sources: []pgkit.Source{{Name: "src", FS: src, Prefix: "migrations"}},
-}
-if err := pgkit.MigrateUpMulti(cfg); err != nil {
-    t.Fatalf("MigrateUpMulti: %v", err)
-}
+}}
+pg := testkit.StartPostgres(t, testkit.WithMigrations(src))
+// или вручную:
+err := pgkit.MigrateUp(ctx, pg.DSN, src)
+v, dirty, err := pgkit.MigrateVersion(ctx, pg.DSN, src) // 1, false
+err = pgkit.MigrateDown(ctx, pg.DSN, src)               // один шаг назад
 ```
 
-`MigrateVersionMulti` после этого вернёт число применённых миграций;
-`MigrateDownMulti` откатит один шаг.
+Регрессионный сценарий кита (`migrate_test.go`): к источнику добавляется
+файл `0002`, `MigrateUpAll` применяет его ровно один раз, версия приложения в
+`schema_migrations_app` не меняется.
 
 ## Рецепт: проверка метрик пула
 
-`InstrumentPool` цепляется к любому `metric.Meter`; в тесте подойдёт
-`sdkmetric.NewManualReader`:
+`InstrumentPool` пишет в глобальный Meter — в тесте подменяется
+`otel.SetMeterProvider` с `sdkmetric.NewManualReader`:
 
 ```go
 reader := sdkmetric.NewManualReader()
-mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-reg, err := pgkit.InstrumentPool(pool, mp.Meter("pgkit-test"))
-// ...
+otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+reg := pgkit.InstrumentPool(pool, pgkit.RolePrimary)
 defer reg.Unregister()
 
 var rm metricdata.ResourceMetrics
-_ = reader.Collect(context.Background(), &rm) // → db_pool_* в rm.ScopeMetrics
+_ = reader.Collect(context.Background(), &rm) // → db_pool_*{role="primary"} в rm.ScopeMetrics
 ```
 
 ## Запуск

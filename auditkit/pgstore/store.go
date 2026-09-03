@@ -18,23 +18,19 @@ func NewStore(db *pgkit.DB) *Store {
 	return &Store{db: db}
 }
 
+// Нулевой At → NOW() базы: одни часы для всех записей, как у DEFAULT колонки.
 const insertAuditSQL = `
 INSERT INTO audit_log (actor_id, action, resource, resource_id, metadata, ip, request_id, at)
-VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, NOW()))
 `
 
 func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
-	at := e.At
-	if at.IsZero() {
-		at = time.Now()
-	}
-
 	var metaJSON []byte
 	if len(e.Metadata) > 0 {
 		var err error
 		metaJSON, err = json.Marshal(e.Metadata)
 		if err != nil {
-			return fmt.Errorf("audit: marshal metadata: %w", err)
+			return fmt.Errorf("auditkit: marshal metadata: %w", err)
 		}
 	}
 
@@ -47,10 +43,10 @@ func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 		nullBytes(metaJSON),
 		nullStr(e.IP),
 		nullStr(e.RequestID),
-		at,
+		pgkit.Timestamptz(nullTime(e)),
 	)
 	if err != nil {
-		return fmt.Errorf("audit: insert: %w", err)
+		return fmt.Errorf("auditkit: insert: %w", err)
 	}
 	return nil
 }
@@ -67,4 +63,11 @@ func nullBytes(b []byte) any {
 		return nil
 	}
 	return b
+}
+
+func nullTime(e auditkit.Entry) *time.Time {
+	if e.At.IsZero() {
+		return nil
+	}
+	return &e.At
 }

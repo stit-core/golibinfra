@@ -24,11 +24,13 @@ type Store struct {
 	table     string
 	requireTx bool
 
-	insertSQL  string
-	listSQL    string
-	markSQL    string
-	failSQL    string
-	backlogSQL string
+	insertSQL     string
+	listSkipSQL   string
+	listHeadSQL   string
+	markSQL       string
+	failSQL       string
+	backlogSQL    string
+	pendingSQLFmt string
 }
 
 type StoreOption func(*Store)
@@ -48,7 +50,7 @@ func NewStore(db *pgkit.DB, opts ...StoreOption) *Store {
 
 // NewStoreFor строит Store на произвольную таблицу — для нескольких независимых
 // outbox-инстансов в одном приложении (таблица на инстанс). Имя валидируется;
-// схему/партиции под кастомную таблицу заводит caller (SchemaSQL/PartitionSQL).
+// схему/партиции под кастомную таблицу заводит caller (SchemaSQL/EnsurePartitions).
 func NewStoreFor(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error) {
 	return newStore(db, table, opts...)
 }
@@ -57,12 +59,16 @@ func newStore(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error) {
 	if !tableNameRe.MatchString(table) {
 		return nil, fmt.Errorf("outboxkit: invalid table name %q", table)
 	}
+	const listSQL = `SELECT id, subject, payload, attempts FROM %s
+WHERE published_at IS NULL AND dead_at IS NULL
+ORDER BY created_at, id LIMIT $1 FOR UPDATE %s`
 	s := &Store{
-		db:        db,
-		table:     table,
-		insertSQL: fmt.Sprintf(`INSERT INTO %s (subject, payload, created_at) VALUES ($1, $2, NOW())`, table),
-		listSQL:   fmt.Sprintf(`SELECT id, subject, payload, attempts FROM %s WHERE published_at IS NULL AND dead_at IS NULL ORDER BY created_at, id LIMIT $1 FOR UPDATE SKIP LOCKED`, table),
-		markSQL:   fmt.Sprintf(`UPDATE %s SET published_at = $1 WHERE id = ANY($2)`, table),
+		db:          db,
+		table:       table,
+		insertSQL:   fmt.Sprintf(`INSERT INTO %s (subject, payload, created_at) VALUES ($1, $2, NOW())`, table),
+		listSkipSQL: fmt.Sprintf(listSQL, table, "SKIP LOCKED"),
+		listHeadSQL: fmt.Sprintf(listSQL, table, "NOWAIT"),
+		markSQL:     fmt.Sprintf(`UPDATE %s SET published_at = NOW() WHERE id = ANY($1)`, table),
 		failSQL: fmt.Sprintf(`UPDATE %s o SET
     attempts = o.attempts + 1,
     last_error = f.err,
@@ -75,6 +81,7 @@ WHERE o.id = f.id`, table),
 FROM %s
 WHERE published_at IS NULL AND dead_at IS NULL
 GROUP BY subject`, table),
+		pendingSQLFmt: `SELECT EXISTS (SELECT 1 FROM %s WHERE published_at IS NULL AND dead_at IS NULL)`,
 	}
 	for _, o := range opts {
 		o(s)
@@ -96,10 +103,17 @@ func (s *Store) Insert(ctx context.Context, subject string, payload any) error {
 	return nil
 }
 
-func (s *Store) ListUnpublished(ctx context.Context, limit int) ([]outboxkit.Message, error) {
-	rows, err := s.db.Query(ctx, s.listSQL, limit)
+// ListUnpublished запирает выбранные строки (FOR UPDATE) до конца транзакции
+// вызывающего: batch — SKIP LOCKED, ordered — NOWAIT, где занятая голова очереди
+// становится outboxkit.ErrBusy.
+func (s *Store) ListUnpublished(ctx context.Context, limit int, mode outboxkit.PublishMode) ([]outboxkit.Message, error) {
+	q := s.listSkipSQL
+	if mode == outboxkit.PublishOrdered {
+		q = s.listHeadSQL
+	}
+	rows, err := s.db.Query(ctx, q, limit)
 	if err != nil {
-		return nil, fmt.Errorf("outboxkit: list: %w", err)
+		return nil, listErr(err)
 	}
 	defer rows.Close()
 	var msgs []outboxkit.Message
@@ -111,16 +125,23 @@ func (s *Store) ListUnpublished(ctx context.Context, limit int) ([]outboxkit.Mes
 		msgs = append(msgs, m)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("outboxkit: rows: %w", err)
+		return nil, listErr(err)
 	}
 	return msgs, nil
+}
+
+func listErr(err error) error {
+	if pgkit.IsLockNotAvailable(err) {
+		return outboxkit.ErrBusy
+	}
+	return fmt.Errorf("outboxkit: list: %w", err)
 }
 
 func (s *Store) MarkPublished(ctx context.Context, ids []int64) error {
 	if len(ids) == 0 {
 		return nil
 	}
-	if _, err := s.db.Exec(ctx, s.markSQL, time.Now(), ids); err != nil {
+	if _, err := s.db.Exec(ctx, s.markSQL, ids); err != nil {
 		return fmt.Errorf("outboxkit: mark published: %w", err)
 	}
 	return nil

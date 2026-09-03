@@ -6,6 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
@@ -13,16 +15,15 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
-func TestInstrumentPool_EmitsPoolStats(t *testing.T) {
+func TestInstrumentPool_EmitsPoolStatsPerRole(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")
 	}
-	pg := testkit.StartPostgres(t, "")
+	pg := testkit.StartPostgres(t)
 	cfg := pgkit.PoolConfig{
 		DSN: pg.DSN, MaxConns: 5, MinConns: 1,
 		MaxConnLifetime: 5 * time.Minute, MaxConnIdleTime: time.Minute,
-		HealthCheck:      30 * time.Second,
-		StatementTimeout: 7 * time.Second,
+		HealthCheck: 30 * time.Second, ConnectTimeout: 10 * time.Second,
 	}
 	pool, err := pgkit.NewPool(context.Background(), cfg)
 	if err != nil {
@@ -31,16 +32,15 @@ func TestInstrumentPool_EmitsPoolStats(t *testing.T) {
 	defer pool.Close()
 
 	reader := sdkmetric.NewManualReader()
-	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	meter := mp.Meter("pgkit-test")
+	prev := otel.GetMeterProvider()
+	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	t.Cleanup(func() { otel.SetMeterProvider(prev) })
 
-	reg, err := pgkit.InstrumentPool(pool, meter)
-	if err != nil {
-		t.Fatalf("InstrumentPool: %v", err)
-	}
-	defer reg.Unregister()
+	regPrimary := pgkit.InstrumentPool(pool, pgkit.RolePrimary)
+	defer regPrimary.Unregister()
+	regReplica := pgkit.InstrumentPool(pool, pgkit.RoleReplica)
+	defer regReplica.Unregister()
 
-	// Trigger one acquire to bump counters.
 	if _, err := pool.Exec(context.Background(), "SELECT 1"); err != nil {
 		t.Fatalf("exec: %v", err)
 	}
@@ -55,22 +55,54 @@ func TestInstrumentPool_EmitsPoolStats(t *testing.T) {
 		"db_pool_idle_conns",
 		"db_pool_total_conns",
 		"db_pool_max_conns",
+		"db_pool_constructing_conns",
+		"db_pool_empty_acquire_total",
+		"db_pool_canceled_acquire_total",
 		"db_pool_acquire_total",
 		"db_pool_acquire_duration_seconds_total",
 	}
-	got := map[string]bool{}
+	roles := map[string]map[string]bool{}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
-			got[m.Name] = true
+			for _, role := range dataPointRoles(m) {
+				if roles[m.Name] == nil {
+					roles[m.Name] = map[string]bool{}
+				}
+				roles[m.Name][role] = true
+			}
 		}
 	}
 	for _, w := range want {
-		if !got[w] {
-			names := make([]string, 0, len(got))
-			for n := range got {
+		if !roles[w][pgkit.RolePrimary] || !roles[w][pgkit.RoleReplica] {
+			names := make([]string, 0, len(roles))
+			for n := range roles {
 				names = append(names, n)
 			}
-			t.Fatalf("missing metric %s; got: %s", w, strings.Join(names, ", "))
+			t.Fatalf("metric %s lacks role series (%v); got: %s", w, roles[w], strings.Join(names, ", "))
 		}
 	}
+}
+
+func dataPointRoles(m metricdata.Metrics) []string {
+	var out []string
+	add := func(set attribute.Set) {
+		if v, ok := set.Value("role"); ok {
+			out = append(out, v.AsString())
+		}
+	}
+	switch d := m.Data.(type) {
+	case metricdata.Gauge[int64]:
+		for _, p := range d.DataPoints {
+			add(p.Attributes)
+		}
+	case metricdata.Sum[int64]:
+		for _, p := range d.DataPoints {
+			add(p.Attributes)
+		}
+	case metricdata.Sum[float64]:
+		for _, p := range d.DataPoints {
+			add(p.Attributes)
+		}
+	}
+	return out
 }

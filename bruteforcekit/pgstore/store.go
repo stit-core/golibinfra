@@ -17,14 +17,15 @@ func NewStore(db *pgkit.DB, cfg bruteforcekit.Config) *Store {
 	return &Store{db: db, cfg: cfg}
 }
 
+// Сравнение с NOW() базы, а не с часами процесса: locked_until выставляет база.
 const checkSQL = `
 SELECT locked_until
 FROM bruteforce_attempts
-WHERE subject = $1 AND ip = $2
+WHERE subject = $1 AND ip = $2 AND locked_until > NOW()
 `
 
 func (s *Store) Check(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	var lockedUntil *time.Time
+	var lockedUntil time.Time
 	err := s.db.QueryRow(ctx, checkSQL, subject, ip).Scan(&lockedUntil)
 	if pgkit.IsNoRows(err) {
 		return nil, nil
@@ -32,15 +33,12 @@ func (s *Store) Check(ctx context.Context, subject, ip string) (*bruteforcekit.L
 	if err != nil {
 		return nil, err
 	}
-	if lockedUntil != nil && lockedUntil.After(time.Now()) {
-		return &bruteforcekit.LockState{Until: *lockedUntil}, nil
-	}
-	return nil, nil
+	return &bruteforcekit.LockState{Until: lockedUntil}, nil
 }
 
 const recordFailureSQL = `
-INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt)
-VALUES ($1, $2, 1, NOW())
+INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt, locked_until)
+VALUES ($1, $2, 1, NOW(), CASE WHEN 1 >= $3 THEN NOW() + make_interval(secs => $4) END)
 ON CONFLICT (subject, ip) DO UPDATE
 SET failed_count = bruteforce_attempts.failed_count + 1,
     last_attempt = NOW(),
@@ -52,8 +50,7 @@ SET failed_count = bruteforce_attempts.failed_count + 1,
 `
 
 func (s *Store) RecordFailure(ctx context.Context, subject, ip string) error {
-	lockSecs := int(s.cfg.LockDuration.Seconds())
-	_, err := s.db.Exec(ctx, recordFailureSQL, subject, ip, s.cfg.MaxFailures, lockSecs)
+	_, err := s.db.Exec(ctx, recordFailureSQL, subject, ip, s.cfg.MaxFailures, s.cfg.LockDuration.Seconds())
 	return err
 }
 
@@ -73,7 +70,6 @@ WHERE (locked_until IS NULL OR locked_until < NOW())
 `
 
 func (s *Store) Cleanup(ctx context.Context) error {
-	retentionSecs := int(s.cfg.CleanupRetention.Seconds())
-	_, err := s.db.Exec(ctx, cleanupSQL, retentionSecs)
+	_, err := s.db.Exec(ctx, cleanupSQL, s.cfg.CleanupRetention.Seconds())
 	return err
 }

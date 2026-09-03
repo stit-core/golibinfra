@@ -24,13 +24,15 @@ import "git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
 
 ### fx-проводка
 
-`pgstore.Module` отдаёт `*pgstore.Store` как `bruteforcekit.Guard`. Ему нужны
-`*pgkit.DB` (из `pgkit.Module`) и `bruteforcekit.Config` — конфиг кит **не**
-провайдит сам, его подключает приложение (обычно `fx.Provide(bruteforcekit.NewConfig)`).
+`pgstore.Module` отдаёт `*pgstore.Store` как `bruteforcekit.Guard` и регистрирует
+миграцию кита в группе `pgkit.MigrateModule`. Ему нужны `*pgkit.DB` (из
+`pgkit.Module`) и `bruteforcekit.Config` — конфиг кит **не** провайдит сам, его
+подключает приложение (обычно `fx.Provide(bruteforcekit.NewConfig)`).
 
 ```go
 fx.New(
     pgkit.Module,
+    pgkit.MigrateModule, // применяет pgstore.Migrations
 
     fx.Provide(bruteforcekit.NewConfig), // BRUTEFORCE_* из ENV
     pgstore.Module,                      // *pgstore.Store как bruteforcekit.Guard
@@ -83,7 +85,7 @@ func (s *AuthService) Login(ctx context.Context, email, ip, password string) err
 
 ```go
 if err := guard.Cleanup(ctx); err != nil {
-    log.Error("bruteforce cleanup", "err", err)
+    log.Error(ctx, "bruteforce cleanup", "err", err)
 }
 ```
 
@@ -94,13 +96,13 @@ envconfig-теги менять = breaking change, идёт мажорным а�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `BRUTEFORCE_MAX_FAILURES` | `MaxFailures` | `int` | `5` | Порог: при достижении этого числа неудач по паре `(subject, ip)` строка блокируется |
-| `BRUTEFORCE_LOCK_DURATION` | `LockDuration` | `time.Duration` | `15m` | Длительность блокировки от момента достижения порога (`locked_until = NOW() + LockDuration`) |
-| `BRUTEFORCE_WINDOW` | `Window` | `time.Duration` | `1h` | Окно подсчёта попыток |
-| `BRUTEFORCE_CLEANUP_RETENTION` | `CleanupRetention` | `time.Duration` | `24h` | Возраст строки, после которого `Cleanup` удаляет её (только если она не под активной блокировкой) |
+| `BRUTEFORCE_MAX_FAILURES` | `MaxFailures` | `int` (`>= 1`) | `5` | Порог: при достижении этого числа неудач по паре `(subject, ip)` строка блокируется; `1` — блокировка с первой неудачи |
+| `BRUTEFORCE_LOCK_DURATION` | `LockDuration` | `time.Duration` (`> 0`) | `15m` | Длительность блокировки от момента достижения порога (`locked_until = NOW() + LockDuration`), с точностью до долей секунды |
+| `BRUTEFORCE_CLEANUP_RETENTION` | `CleanupRetention` | `time.Duration` (`>= 0`) | `24h` | Возраст строки по `last_attempt`, после которого `Cleanup` удаляет её (только если она не под активной блокировкой) |
 
-`NewConfig()` читает все теги через `envconfig.Process` и возвращает заполненный
-`Config`.
+`NewConfig()` читает теги через `envconfig.Process` и валидирует значения
+(`Config.Validate`): порог меньше 1, неположительная длительность блокировки или
+отрицательный retention — ошибка.
 
 ## Observability
 
@@ -136,11 +138,12 @@ type Guard interface {
 }
 ```
 
-- `Check` — `nil, nil`, если строки нет или `locked_until` уже в прошлом; иначе
+- `Check` — `nil, nil`, если строки нет или `locked_until` уже в прошлом по часам
+  базы (`locked_until > NOW()` в SQL, часы процесса не участвуют); иначе
   `*LockState{Until}` при активной блокировке.
 - `RecordFailure` — upsert по `(subject, ip)`: инкремент `failed_count`, обновление
-  `last_attempt`; при `failed_count >= MaxFailures` выставляет `locked_until`,
-  иначе сбрасывает его в `NULL`.
+  `last_attempt`; при `failed_count >= MaxFailures` (включая первую вставку при
+  `MaxFailures = 1`) выставляет `locked_until`, иначе сбрасывает его в `NULL`.
 - `RecordSuccess` — удаляет строку `(subject, ip)`, обнуляя историю попыток.
 - `Cleanup` — удаляет строки, которые разблокированы (`locked_until IS NULL` или
   уже в прошлом) **и** старше `CleanupRetention` по `last_attempt`. Идемпотентна.
@@ -153,11 +156,15 @@ func pgstore.NewStore(db *pgkit.DB, cfg bruteforcekit.Config) *Store
 
 Реализация `Guard` на одной таблице `bruteforce_attempts` с составным первичным
 ключом `(subject, ip)`. `pgstore.Module` провайдит `*Store` как
-`bruteforcekit.Guard` (через `fx.Annotate` / `fx.As`).
+`bruteforcekit.Guard` (через `fx.Annotate` / `fx.As`) и регистрирует
+`pgstore.Migrations` в группе `pgkit.migrations`.
 
 ### Миграции
 
-`pgstore.MigrationsFS` (`embed.FS`) содержит `migrations/*.sql`. Таблица:
+`pgstore.Migrations` — `pgkit.Source{Name: "bruteforcekit"}` (таблица версий
+`schema_migrations_bruteforcekit`) с `migrations/*.sql` (embed).
+`pgkit.MigrateModule` применяет его на старте автоматически; без fx —
+`pgkit.MigrateUpAll(ctx, dsn, pgstore.Migrations, ...)`. Таблица:
 
 ```sql
 CREATE TABLE bruteforce_attempts (
@@ -172,34 +179,21 @@ CREATE INDEX bruteforce_attempts_locked_idx
     ON bruteforce_attempts (locked_until) WHERE locked_until IS NOT NULL;
 ```
 
-Прогон миграций — задача приложения / pgkit-runner; `MigrationsFS` отдаёт SQL,
-который раннер монтирует.
-
 ## Тестирование
 
 Интеграционные тесты (`pgstore/store_test.go`) поднимают реальный Postgres через
-`testkit.StartPostgres` (testcontainers) и распаковывают `MigrationsFS` во временный
-каталог. В режиме `-short` они скипаются (`testing.Short()`), поэтому юнит-прогон
-их не запускает; полный прогон требует Docker.
+`testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))`. В режиме
+`-short` они скипаются (`testing.Short()`), поэтому юнит-прогон их не запускает;
+полный прогон требует Docker.
 
-Покрытие: блокировка после `MaxFailures` (`Until` в ожидаемом окне), сброс счётчика
-после `RecordSuccess`, выживание заблокированной строки при `Cleanup` и удаление
-протухшей. Шаблон распаковки миграций для своих тестов:
-
-```go
-dir := t.TempDir()
-_ = fs.WalkDir(pgstore.MigrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
-    if err != nil || d.IsDir() {
-        return err
-    }
-    data, _ := pgstore.MigrationsFS.ReadFile(path)
-    return os.WriteFile(filepath.Join(dir, filepath.Base(path)), data, 0o644)
-})
-fx := testkit.StartPostgres(t, dir)
-```
+Покрытие: блокировка после `MaxFailures` (`Until` в ожидаемом окне), блокировка с
+первой неудачи при `MaxFailures = 1`, `Check` по часам базы (истёкший
+`locked_until` — не блокировка), сброс счётчика после `RecordSuccess`, выживание
+заблокированной строки при `Cleanup` и удаление протухшей, `Config.Validate`.
 
 Для юнит-тестов вызывающего кода без БД core-интерфейс `bruteforcekit.Guard`
-подменяется собственным фейком — `pgstore` для этого не нужен.
+подменяется фейками из [`testkit/bruteforcetest`](../testkit/bruteforcetest/) —
+`pgstore` для этого не нужен.
 
 ## Инварианты и подводные камни
 
@@ -221,11 +215,13 @@ fx := testkit.StartPostgres(t, dir)
 - **Unlock — пассивный, по времени.** Явного «разблокировать» нет: `Check`
   возвращает `nil`, как только `locked_until` оказывается в прошлом. Сама строка
   при этом остаётся до `Cleanup` (или до `RecordSuccess`).
-- **`Window` хранится в `Config`, но в SQL pgstore не участвует.** Подсчёт неудач
-  идёт монотонным `failed_count` в строке без скользящего окна по времени —
-  накопленные неудачи не «истекают» по `Window`, они уходят только через
-  `RecordSuccess` либо `Cleanup`. Эффективное обнуление history для незаблокированных
-  строк даёт `Cleanup` по `CleanupRetention`.
+- **Скользящего окна нет.** Подсчёт неудач идёт монотонным `failed_count` в
+  строке — накопленные неудачи не «истекают» сами, они уходят только через
+  `RecordSuccess` либо `Cleanup`. Эффективное обнуление history для
+  незаблокированных строк даёт `Cleanup` по `CleanupRetention`.
+- **Всё время — часы базы.** `locked_until`, `last_attempt` и их сравнение в
+  `Check`/`Cleanup` считаются через `NOW()` Postgres; рассинхрон часов между
+  инстансами сервиса на блокировки не влияет.
 - **`Cleanup` не трогает активные блокировки.** Удаляются только разблокированные
   строки старше `CleanupRetention`; заблокированная строка переживает `Cleanup`
   независимо от возраста.

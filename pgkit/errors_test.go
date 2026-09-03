@@ -1,6 +1,7 @@
 package pgkit
 
 import (
+	"fmt"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -83,5 +84,28 @@ func TestIsNoRows(t *testing.T) {
 func TestIsRetryableNil(t *testing.T) {
 	if IsRetryable(nil) {
 		t.Fatal("expected IsRetryable false for nil")
+	}
+}
+
+func TestIsLockNotAvailable(t *testing.T) {
+	err := fmt.Errorf("wrapped: %w", pgErr("55P03"))
+	if !IsLockNotAvailable(err) {
+		t.Fatal("expected IsLockNotAvailable true for 55P03")
+	}
+	if IsQueryCanceled(err) || IsRetryable(err) || IsUniqueViolation(err) {
+		t.Fatal("expected others false for 55P03")
+	}
+}
+
+func TestIsQueryCanceled(t *testing.T) {
+	err := fmt.Errorf("wrapped: %w", pgErr("57014"))
+	if !IsQueryCanceled(err) {
+		t.Fatal("expected IsQueryCanceled true for 57014")
+	}
+	if IsLockNotAvailable(err) || IsRetryable(err) {
+		t.Fatal("expected others false for 57014")
+	}
+	if IsQueryCanceled(nil) || IsLockNotAvailable(nil) {
+		t.Fatal("expected false for nil")
 	}
 }

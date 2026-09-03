@@ -3,9 +3,6 @@ package pgstore_test
 import (
 	"context"
 	"errors"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -17,31 +14,38 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
-func extractMigrations(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	err := fs.WalkDir(pgstore.MigrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		data, err := pgstore.MigrationsFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dir, filepath.Base(path)), data, 0o644)
-	})
-	if err != nil {
-		t.Fatalf("extract migrations: %v", err)
-	}
-	return dir
-}
-
 type sample struct {
 	Foo string `json:"foo"`
 	N   int    `json:"n"`
+}
+
+// startStore поднимает Postgres с миграцией кита и отдаёт DB + Transactor на одном пуле.
+func startStore(t *testing.T) (*pgkit.DB, *pgkit.PoolTransactor, context.Context) {
+	t.Helper()
+	fix := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	t.Cleanup(cancel)
+	pool, err := pgxpool.New(ctx, fix.DSN)
+	if err != nil {
+		t.Fatalf("pgxpool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pgkit.NewDB(pool), pgkit.NewPoolTransactor(pool), ctx
+}
+
+// list читает батч в собственной транзакции (как это делает Worker).
+func list(t *testing.T, tr pgkit.Transactor, s *pgstore.Store, ctx context.Context, limit int) []outboxkit.Message {
+	t.Helper()
+	var msgs []outboxkit.Message
+	err := tr.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		msgs, err = s.ListUnpublished(ctx, limit, outboxkit.PublishBatch)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("ListUnpublished: %v", err)
+	}
+	return msgs
 }
 
 func TestStore_RequireTx_NoTxErrors(t *testing.T) {
@@ -55,19 +59,8 @@ func TestStore_RequireTx_WithinTx(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-	migDir := extractMigrations(t)
-	fix := testkit.StartPostgres(t, migDir)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
-	pool, err := pgxpool.New(ctx, fix.DSN)
-	if err != nil {
-		t.Fatalf("pgxpool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	s := pgstore.NewStore(pgkit.NewDB(pool), pgstore.WithRequireTx())
-	tr := pgkit.NewPoolTransactor(pool)
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db, pgstore.WithRequireTx())
 
 	// вне транзакции — отказ.
 	if err := s.Insert(ctx, "evt", sample{N: 1}); err == nil {
@@ -81,9 +74,8 @@ func TestStore_RequireTx_WithinTx(t *testing.T) {
 		t.Fatalf("insert within tx: %v", err)
 	}
 
-	msgs, err := s.ListUnpublished(ctx, 10)
-	if err != nil || len(msgs) != 1 {
-		t.Fatalf("list: %v len=%d (ожидалась только запись из tx)", err, len(msgs))
+	if msgs := list(t, tr, s, ctx, 10); len(msgs) != 1 {
+		t.Fatalf("list len=%d (ожидалась только запись из tx)", len(msgs))
 	}
 }
 
@@ -91,13 +83,7 @@ func TestStore_PoisonAndBacklog(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 	if err := s.Insert(ctx, "evt", sample{N: 1}); err != nil {
 		t.Fatalf("insert: %v", err)
@@ -106,9 +92,9 @@ func TestStore_PoisonAndBacklog(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	msgs, err := s.ListUnpublished(ctx, 10)
-	if err != nil || len(msgs) != 2 {
-		t.Fatalf("list: %v len=%d", err, len(msgs))
+	msgs := list(t, tr, s, ctx, 10)
+	if len(msgs) != 2 {
+		t.Fatalf("list len=%d", len(msgs))
 	}
 
 	// одно — dead, другое — транзиентный фейл.
@@ -119,10 +105,7 @@ func TestStore_PoisonAndBacklog(t *testing.T) {
 		t.Fatalf("record failures: %v", err)
 	}
 
-	left, err := s.ListUnpublished(ctx, 10)
-	if err != nil {
-		t.Fatalf("list2: %v", err)
-	}
+	left := list(t, tr, s, ctx, 10)
 	if len(left) != 1 || left[0].ID != msgs[1].ID {
 		t.Fatalf("dead не исключён: %+v", left)
 	}
@@ -146,12 +129,7 @@ func TestStore_CustomTable(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	db, tr, ctx := startStore(t)
 
 	const table = "outbox_orders"
 	if _, err := db.Exec(ctx, pgstore.SchemaSQL(table)); err != nil {
@@ -168,21 +146,14 @@ func TestStore_CustomTable(t *testing.T) {
 	if err := s.Insert(ctx, "order.created", sample{Foo: "x", N: 1}); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
-	msgs, err := s.ListUnpublished(ctx, 10)
-	if err != nil {
-		t.Fatalf("list: %v", err)
-	}
+	msgs := list(t, tr, s, ctx, 10)
 	if len(msgs) != 1 || msgs[0].Subject != "order.created" {
 		t.Fatalf("unexpected msgs: %+v", msgs)
 	}
 	if err := s.MarkPublished(ctx, []int64{msgs[0].ID}); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
-	left, err := s.ListUnpublished(ctx, 10)
-	if err != nil {
-		t.Fatalf("list after mark: %v", err)
-	}
-	if len(left) != 0 {
+	if left := list(t, tr, s, ctx, 10); len(left) != 0 {
 		t.Fatalf("want 0 unpublished, got %d", len(left))
 	}
 }
@@ -191,24 +162,14 @@ func TestStore_HappyPath(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
+	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	if err := s.Insert(ctx, "user.created", sample{Foo: "bar", N: 7}); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 
-	msgs, err := s.ListUnpublished(ctx, 100)
-	if err != nil {
-		t.Fatalf("ListUnpublished: %v", err)
-	}
+	msgs := list(t, tr, s, ctx, 100)
 	if len(msgs) != 1 {
 		t.Fatalf("want 1 msg, got %d", len(msgs))
 	}
@@ -219,12 +180,15 @@ func TestStore_HappyPath(t *testing.T) {
 	if err := s.MarkPublished(ctx, []int64{msgs[0].ID}); err != nil {
 		t.Fatalf("MarkPublished: %v", err)
 	}
-
-	msgs2, err := s.ListUnpublished(ctx, 100)
-	if err != nil {
-		t.Fatalf("ListUnpublished after publish: %v", err)
+	var publishedAt *time.Time
+	if err := db.QueryRow(ctx, `SELECT published_at FROM outbox WHERE id = $1`, msgs[0].ID).Scan(&publishedAt); err != nil {
+		t.Fatalf("select published_at: %v", err)
 	}
-	if len(msgs2) != 0 {
+	if publishedAt == nil {
+		t.Fatal("published_at not set")
+	}
+
+	if msgs2 := list(t, tr, s, ctx, 100); len(msgs2) != 0 {
 		t.Fatalf("want 0 unpublished after MarkPublished, got %d", len(msgs2))
 	}
 }
@@ -233,25 +197,11 @@ func TestStore_RollbackDropsMessage(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-
-	migDir := extractMigrations(t)
-	f := testkit.StartPostgres(t, migDir)
-
-	pool, err := pgxpool.New(context.Background(), f.DSN)
-	if err != nil {
-		t.Fatalf("pgxpool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-
-	db := pgkit.NewDB(pool)
-	tr := pgkit.NewPoolTransactor(pool)
+	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
 	wantErr := errors.New("business failure")
-	err = tr.WithTx(ctx, func(ctx context.Context) error {
+	err := tr.WithTx(ctx, func(ctx context.Context) error {
 		if err := s.Insert(ctx, "user.created", sample{Foo: "rollback", N: 1}); err != nil {
 			return err
 		}
@@ -261,11 +211,7 @@ func TestStore_RollbackDropsMessage(t *testing.T) {
 		t.Fatalf("WithTx err: got %v, want %v", err, wantErr)
 	}
 
-	msgs, err := s.ListUnpublished(ctx, 100)
-	if err != nil {
-		t.Fatalf("ListUnpublished: %v", err)
-	}
-	if len(msgs) != 0 {
+	if msgs := list(t, tr, s, ctx, 100); len(msgs) != 0 {
 		t.Fatalf("rollback failed — outbox kept message; got %d msgs", len(msgs))
 	}
 
@@ -275,11 +221,56 @@ func TestStore_RollbackDropsMessage(t *testing.T) {
 	if err != nil {
 		t.Fatalf("WithTx commit: %v", err)
 	}
-	msgs2, err := s.ListUnpublished(ctx, 100)
-	if err != nil {
-		t.Fatalf("ListUnpublished: %v", err)
-	}
-	if len(msgs2) != 1 {
+	if msgs2 := list(t, tr, s, ctx, 100); len(msgs2) != 1 {
 		t.Fatalf("want 1 msg after commit, got %d", len(msgs2))
+	}
+}
+
+// Ordered: пока одна транзакция держит голову очереди, вторая получает ErrBusy,
+// а не следующие строки.
+func TestStore_ListOrdered_HeadLockedIsBusy(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+	for i := 0; i < 4; i++ {
+		if err := s.Insert(ctx, "evt", sample{N: i}); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	holder := make(chan struct{})
+	release := make(chan struct{})
+	go func() {
+		_ = tr.WithTx(ctx, func(ctx context.Context) error {
+			if _, err := s.ListUnpublished(ctx, 2, outboxkit.PublishOrdered); err != nil {
+				return err
+			}
+			close(holder)
+			<-release
+			return nil
+		})
+	}()
+	<-holder
+	defer close(release)
+
+	err := tr.WithTx(ctx, func(ctx context.Context) error {
+		_, err := s.ListUnpublished(ctx, 2, outboxkit.PublishOrdered)
+		return err
+	})
+	if !errors.Is(err, outboxkit.ErrBusy) {
+		t.Fatalf("ordered list with locked head: err=%v, want ErrBusy", err)
+	}
+
+	// batch-режим в той же ситуации берёт следующие строки.
+	var got []outboxkit.Message
+	err = tr.WithTx(ctx, func(ctx context.Context) error {
+		var err error
+		got, err = s.ListUnpublished(ctx, 2, outboxkit.PublishBatch)
+		return err
+	})
+	if err != nil || len(got) != 2 {
+		t.Fatalf("batch list: err=%v len=%d, want 2 unlocked rows", err, len(got))
 	}
 }

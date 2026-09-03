@@ -2,10 +2,15 @@ package pgstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 )
+
+// ErrPendingRows — retention пропустил партиции с неопубликованными событиями;
+// текст ошибки перечисляет их.
+var ErrPendingRows = errors.New("outboxkit: partition holds unpublished events")
 
 // SchemaSQL возвращает DDL партиционированной таблицы outbox + индекс для
 // заданного имени — для bootstrap кастомных таблиц multi-instance (caller
@@ -40,8 +45,7 @@ func PartitionSQL(table string, month time.Time) (name, sql string) {
 	return name, sql
 }
 
-// EnsurePartitions создаёт партиции outbox для текущего месяца и далее
-// monthsAhead месяцев вперёд. Идемпотентна.
+// EnsurePartitions создаёт партиции текущего и monthsAhead следующих месяцев; идемпотентна.
 func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 	if monthsAhead < 0 {
 		monthsAhead = 0
@@ -62,9 +66,8 @@ JOIN pg_class c ON c.oid = i.inhrelid
 JOIN pg_class p ON p.oid = i.inhparent
 WHERE p.relname = $1`
 
-// DropOldPartitions удаляет партиции, чей месяц старше keepMonths месяцев до
-// текущего (retention). keepMonths <= 0 — no-op. DROP всей партиции дешевле, чем
-// DELETE строк — ради этого outbox и партиционирован по месяцам.
+// DropOldPartitions дропает партиции старше keepMonths месяцев (<= 0 — no-op);
+// партиции с неопубликованными событиями остаются и перечисляются в ErrPendingRows.
 func (s *Store) DropOldPartitions(ctx context.Context, keepMonths int) error {
 	if keepMonths <= 0 {
 		return nil
@@ -92,11 +95,23 @@ func (s *Store) DropOldPartitions(ctx context.Context, keepMonths int) error {
 		return fmt.Errorf("outboxkit: list partitions: %w", err)
 	}
 
+	var pending []string
 	for _, name := range drop {
 		// name прошёл partitionMonth — это валидный `<table>_YYYY_MM`, безопасно инлайнить.
+		var hasPending bool
+		if err := s.db.QueryRow(ctx, fmt.Sprintf(s.pendingSQLFmt, name)).Scan(&hasPending); err != nil {
+			return fmt.Errorf("outboxkit: check partition %s: %w", name, err)
+		}
+		if hasPending {
+			pending = append(pending, name)
+			continue
+		}
 		if _, err := s.db.Exec(ctx, "DROP TABLE IF EXISTS "+name); err != nil {
 			return fmt.Errorf("outboxkit: drop partition %s: %w", name, err)
 		}
+	}
+	if len(pending) > 0 {
+		return fmt.Errorf("%w: %s", ErrPendingRows, strings.Join(pending, ", "))
 	}
 	return nil
 }

@@ -2,57 +2,46 @@ package pgstore_test
 
 import (
 	"context"
-	"io/fs"
-	"os"
-	"path/filepath"
 	"testing"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
-func extractMigrations(t *testing.T) string {
+func startStore(t *testing.T, cfg bruteforcekit.Config) (*pgstore.Store, *pgkit.DB, context.Context) {
 	t.Helper()
-	dir := t.TempDir()
-	err := fs.WalkDir(pgstore.MigrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		data, err := pgstore.MigrationsFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dir, filepath.Base(path)), data, 0o644)
-	})
-	if err != nil {
-		t.Fatalf("extract migrations: %v", err)
+	fx := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	db := fx.DB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return pgstore.NewStore(db, cfg), db, ctx
+}
+
+func TestConfig_Validate(t *testing.T) {
+	ok := bruteforcekit.Config{MaxFailures: 1, LockDuration: time.Second}
+	if err := ok.Validate(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
 	}
-	return dir
+	for _, bad := range []bruteforcekit.Config{
+		{MaxFailures: 0, LockDuration: time.Second},
+		{MaxFailures: 3, LockDuration: 0},
+		{MaxFailures: 3, LockDuration: time.Second, CleanupRetention: -time.Second},
+	} {
+		if err := bad.Validate(); err == nil {
+			t.Fatalf("invalid config accepted: %+v", bad)
+		}
+	}
 }
 
 func TestStore_LockAfterMaxFailures(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
-	cfg := bruteforcekit.Config{
-		MaxFailures:  3,
-		LockDuration: 15 * time.Minute,
-		Window:       time.Hour,
-	}
-	s := pgstore.NewStore(db, cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	cfg := bruteforcekit.Config{MaxFailures: 3, LockDuration: 15 * time.Minute}
+	s, _, ctx := startStore(t, cfg)
 
 	const subject = "user@example.com"
 	const ip = "10.0.0.1"
@@ -88,25 +77,57 @@ func TestStore_LockAfterMaxFailures(t *testing.T) {
 	}
 }
 
+// MaxFailures=1: блокировка с первой же неудачи (INSERT-ветка upsert'а).
+func TestStore_LockOnFirstFailure(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	s, _, ctx := startStore(t, bruteforcekit.Config{MaxFailures: 1, LockDuration: 90 * time.Second})
+
+	if err := s.RecordFailure(ctx, "one@example.com", "10.0.0.9"); err != nil {
+		t.Fatalf("RecordFailure: %v", err)
+	}
+	st, err := s.Check(ctx, "one@example.com", "10.0.0.9")
+	if err != nil {
+		t.Fatalf("Check: %v", err)
+	}
+	if st == nil {
+		t.Fatal("expected lock after first failure with MaxFailures=1")
+	}
+	if remaining := time.Until(st.Until); remaining < 60*time.Second || remaining > 2*time.Minute {
+		t.Fatalf("Until = %v (remaining %v), want ~90s", st.Until, remaining)
+	}
+}
+
+// Check решает по часам базы: истёкший locked_until — не блокировка.
+func TestStore_CheckUsesDatabaseClock(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	s, db, ctx := startStore(t, bruteforcekit.Config{MaxFailures: 1, LockDuration: time.Second})
+
+	const subject, ip = "clock@example.com", "10.0.0.3"
+	if _, err := db.Exec(ctx, `INSERT INTO bruteforce_attempts (subject, ip, failed_count, locked_until)
+		VALUES ($1, $2, 1, NOW() - interval '1 second')`, subject, ip); err != nil {
+		t.Fatalf("insert expired: %v", err)
+	}
+	if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
+		t.Fatalf("expired lock reported: st=%v err=%v", st, err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE bruteforce_attempts SET locked_until = NOW() + interval '1 hour'
+		WHERE subject = $1 AND ip = $2`, subject, ip); err != nil {
+		t.Fatalf("update future: %v", err)
+	}
+	if st, err := s.Check(ctx, subject, ip); err != nil || st == nil {
+		t.Fatalf("active lock missed: st=%v err=%v", st, err)
+	}
+}
+
 func TestStore_Cleanup(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
-	cfg := bruteforcekit.Config{
-		MaxFailures:      3,
-		LockDuration:     15 * time.Minute,
-		Window:           time.Hour,
-		CleanupRetention: 0,
-	}
-	s := pgstore.NewStore(db, cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	s, _, ctx := startStore(t, bruteforcekit.Config{MaxFailures: 3, LockDuration: 15 * time.Minute, CleanupRetention: 0})
 
 	if err := s.RecordFailure(ctx, "stale@example.com", "1.1.1.1"); err != nil {
 		t.Fatalf("RecordFailure stale: %v", err)
@@ -137,20 +158,7 @@ func TestStore_RecordSuccessResets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
-	cfg := bruteforcekit.Config{
-		MaxFailures:  3,
-		LockDuration: 15 * time.Minute,
-		Window:       time.Hour,
-	}
-	s := pgstore.NewStore(db, cfg)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	s, _, ctx := startStore(t, bruteforcekit.Config{MaxFailures: 3, LockDuration: 15 * time.Minute})
 
 	const subject = "phone:+15555550123"
 	const ip = "10.0.0.2"

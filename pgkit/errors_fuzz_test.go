@@ -22,6 +22,8 @@ func FuzzPgErrCode(f *testing.F) {
 		_ = IsCheckViolation(wrapped)
 		_ = IsNotNullViolation(wrapped)
 		_ = IsRetryable(wrapped)
+		_ = IsLockNotAvailable(wrapped)
+		_ = IsQueryCanceled(wrapped)
 		_ = IsNoRows(wrapped)
 	})
 }

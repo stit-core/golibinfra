@@ -21,9 +21,8 @@ fx.New(
 )
 ```
 
-`db_pool_*` вешаются, только если в графе есть `metric.Meter` (потребитель
-подключает свою проводку OTel SDK); без него инструментация пула — no-op,
-`Module` при этом поднимается.
+`db_pool_*` идут в глобальный `otel.Meter`; без `MeterProvider` (потребитель не
+подключил проводку OTel SDK) инструменты — no-op, `Module` при этом поднимается.
 
 ## Базовые запросы
 
@@ -44,6 +43,7 @@ func (r *Repo) Count(ctx context.Context) (int, error) {
 ```go
 type Transactor interface {
     WithTx(ctx context.Context, fn func(ctx context.Context) error) error
+    WithTxOptions(ctx context.Context, opts pgx.TxOptions, fn func(ctx context.Context) error) error
 }
 ```
 
@@ -71,13 +71,25 @@ func (s *Service) Transfer(ctx context.Context, from, to int, amount int64) erro
 - Вернуть ошибку из `fn` → `Rollback`; ошибка `fn` пробрасывается без обёртки
   (sentinel'ы сохраняются). Ошибка `Commit`/`Rollback` оборачивается
   `pgkit: …`.
-- Вложенный `WithTx` (когда `ctx` уже несёт транзакцию) участвует во внешней
+- Panic внутри `fn` → `Rollback` и re-panic: соединение возвращается в пул,
+  panic ловит вызывающий слой (`httpkit`/`timerkit` recover'ят свои обработчики).
+- Вложенный вызов (когда `ctx` уже несёт транзакцию) участвует во внешней
   транзакции, не открывая новую и не создавая savepoint.
 - `InTx(ctx) bool` — проверить, выполняется ли код внутри транзакции (нужно
   коду, обязанному быть атомарным с бизнес-записью, например outbox-insert).
 
-Изоляция новой транзакции — `ReadCommitted`. Для конфликтов сериализации/дедлоков
-повторяй операцию по `IsRetryable` (см. ниже).
+Изоляция `WithTx` — `ReadCommitted`. Другой уровень или read-only транзакция —
+через `WithTxOptions`:
+
+```go
+err := s.tx.WithTxOptions(ctx, pgx.TxOptions{IsoLevel: pgx.Serializable}, func(ctx context.Context) error {
+    // ...
+    return nil
+})
+```
+
+Для конфликтов сериализации/дедлоков повторяй операцию по `IsRetryable` (см.
+ниже).
 
 ## Обработка pg-ошибок
 
@@ -114,56 +126,65 @@ for attempt := 0; attempt < maxRetries; attempt++ {
 }
 ```
 
+«Кто первый, тот и работает» через `FOR UPDATE NOWAIT`:
+
+```go
+_, err := db.Exec(ctx, `SELECT id FROM jobs WHERE id = $1 FOR UPDATE NOWAIT`, id)
+if pgkit.IsLockNotAvailable(err) {
+    return nil // строку держит другой инстанс — пропускаем
+}
+```
+
+`pgkit.IsQueryCanceled(err)` отличает срабатывание `statement_timeout` от
+прочих сбоев запроса.
+
 ## Миграции
 
 ### На старте приложения (рекомендуемо)
 
-`MigrateModule` прогоняет `MigrateUp` под advisory-lock в `OnStart`-хуке, до
-обслуживания трафика. DSN берётся из `PoolConfig`, путь — из `PG_MIGRATIONS_PATH`
-(default `/migrations`).
+`MigrateModule` в `OnStart` под advisory-lock применяет источники китов из
+fx-группы `pgkit.migrations` (их регистрируют `Module` китов —
+`auditkit/pgstore`, `outboxkit/pgstore`, `bruteforcekit/pgstore`), затем каталог
+приложения из `PG_MIGRATIONS_PATH` (default `/migrations`; пустая строка — у
+приложения своих миграций нет). DSN берётся из `PoolConfig`.
 
 ```go
 fx.New(
     pgkit.Module,
     pgkit.MigrateModule,
-    fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig),
+    fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig, pgkit.NewMigrateRunnerConfig),
+    auditpg.Module, // регистрирует auditkit-миграции в группе pgkit.migrations
     // ...
 )
 ```
 
-Advisory-lock гарантирует, что при одновременном старте нескольких инстансов
-миграции применяет ровно один — остальные ждут, а не падают на гонке.
+У каждого источника своя таблица версий: `schema_migrations_app` для
+приложения, `schema_migrations_<kit>` для китов. Advisory-lock гарантирует, что
+при одновременном старте нескольких инстансов миграции применяет ровно один —
+остальные ждут, а не падают на гонке. `MigrateModule` в списке `fx.New` стоит
+раньше модулей, которым схема нужна в их `OnStart`.
+
+Свой источник в группу (например, миграции внутреннего пакета приложения):
+
+```go
+pgkit.ProvideMigrations(pgkit.Source{Name: "billing", FS: billingFS, Dir: "migrations"})
+```
 
 ### Программно
 
 ```go
-err := pgkit.MigrateUp(pgkit.MigrateConfig{DSN: dsn, Path: "./migrations"})
-v, dirty, err := pgkit.MigrateVersion(pgkit.MigrateConfig{DSN: dsn, Path: "./migrations"})
-err = pgkit.MigrateDown(pgkit.MigrateConfig{DSN: dsn, Path: "./migrations"}) // один шаг назад
+src := pgkit.DirSource(pgkit.AppSourceName, "./migrations")
+err := pgkit.MigrateUp(ctx, dsn, src)
+v, dirty, err := pgkit.MigrateVersion(ctx, dsn, src)
+err = pgkit.MigrateDown(ctx, dsn, src) // один шаг назад
+
+err = pgkit.MigrateUpAll(ctx, dsn, auditpg.Migrations, outboxpg.Migrations, src) // под advisory-lock, по порядку
 ```
 
 `MigrateUp` молча игнорирует «нечего применять». `dirty=true` означает прерванную
 миграцию — нужна ручная починка (функция вернёт ошибку вместе с версией).
-
-### Несколько источников миграций
-
-Когда схему дают и kit (через `embed.FS`), и приложение (`os.DirFS`):
-
-```go
-cfg := pgkit.MultiSourceConfig{
-    DSN: dsn,
-    Sources: []pgkit.Source{
-        {Name: "kit",  FS: kitFS, Prefix: "migrations"},
-        {Name: "app",  FS: os.DirFS(appPath), Prefix: "."},
-    },
-}
-err := pgkit.MigrateUpMulti(cfg)
-```
-
-Composer склеивает все источники в один tmp-каталог с глобальной перенумерацией
-`1..N`. **Порядок `Sources` — append-only**: новый источник добавляется только в
-конец, иначе сдвинутся уже применённые версии в `schema_migrations`. Каждая
-миграция обязана иметь и `.up.sql`, и `.down.sql`.
+Ручная работа через CLI golang-migrate — с параметром
+`x-migrations-table=schema_migrations_<name>` в DSN.
 
 ## Read-replica
 
@@ -195,8 +216,12 @@ func (r *Repo) Create(ctx context.Context, it Item) error {
 ## Health-probe
 
 ```go
-probe := pgkit.DBProbe(db) // func(ctx) error, выполняет SELECT 1
-err := probe(ctx)
+func DBProbe(db *DB) healthkit.Probe // SELECT 1
 ```
 
-Подключай к readiness-эндпоинту потребителя.
+```go
+fx.New(
+    pgkit.Module, httpkit.Module,
+    healthkit.Provide(pgkit.DBProbe), // /ready → 503, если SELECT 1 не проходит
+)
+```

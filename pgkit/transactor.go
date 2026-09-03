@@ -12,6 +12,7 @@ import (
 
 type Transactor interface {
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
+	WithTxOptions(ctx context.Context, opts pgx.TxOptions, fn func(ctx context.Context) error) error
 }
 
 type DBTX interface {
@@ -38,26 +39,33 @@ func Conn(ctx context.Context, pool *pgxpool.Pool) DBTX {
 }
 
 // InTx сообщает, несёт ли ctx активную транзакцию (открытую Transactor.WithTx).
-// Нужно коду, которому важна атомарность с бизнес-записью (напр. outbox-insert).
 func InTx(ctx context.Context) bool {
 	_, ok := ctx.Value(txCtxKey{}).(pgx.Tx)
 	return ok
 }
 
 func (t *PoolTransactor) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
-	if _, ok := ctx.Value(txCtxKey{}).(pgx.Tx); ok {
+	return t.WithTxOptions(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, fn)
+}
+
+// WithTxOptions открывает транзакцию с заданными опциями; вложенный вызов
+// участвует во внешней транзакции, и её опции имеют приоритет.
+func (t *PoolTransactor) WithTxOptions(ctx context.Context, opts pgx.TxOptions, fn func(ctx context.Context) error) error {
+	if InTx(ctx) {
 		return fn(ctx)
 	}
 
-	tx, err := t.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := t.pool.BeginTx(ctx, opts)
 	if err != nil {
 		return fmt.Errorf("pgkit: begin tx: %w", err)
 	}
+	// Откат в defer спасает соединение при panic внутри fn; после Commit/Rollback это no-op.
+	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
 	ctx = context.WithValue(ctx, txCtxKey{}, tx)
 
 	if err := fn(ctx); err != nil {
-		if rbErr := tx.Rollback(ctx); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
+		if rbErr := tx.Rollback(context.WithoutCancel(ctx)); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
 			return fmt.Errorf("pgkit: rollback: %w (after: %w)", rbErr, err)
 		}
 		return err

@@ -26,8 +26,9 @@ import "git.stit.tech/stit-core/golibinfra/auditkit/pgstore"
 
 ### Через fx
 
-`pgstore.Module` провайдит `*pgstore.Store` как порт `auditkit.Logger`. Зависит
-от `*pgkit.DB` — подключайте вместе с `pgkit.Module`.
+`pgstore.Module` провайдит `*pgstore.Store` как порт `auditkit.Logger` и
+регистрирует миграцию кита в группе `pgkit.MigrateModule`. Зависит от
+`*pgkit.DB` — подключайте вместе с `pgkit.Module`.
 
 ```go
 import (
@@ -40,7 +41,8 @@ import (
 
 fx.New(
     pgkit.Module,
-    pgstore.Module, // provides auditkit.Logger (== *pgstore.Store)
+    pgkit.MigrateModule, // применяет pgstore.Migrations (+ миграции приложения)
+    pgstore.Module,      // provides auditkit.Logger (== *pgstore.Store)
 
     fx.Invoke(func(audit auditkit.Logger) {
         // в обработчике доменной операции
@@ -68,24 +70,15 @@ err := audit.Log(ctx, auditkit.Entry{Action: "session.login", Resource: "session
 
 ### Проводка миграций
 
-Таблицу `audit_log` создаёт миграция из `pgstore.MigrationsFS` (`embed.FS`,
-каталог `migrations`). Подключите её как ещё один источник миграций приложения
-через `pgkit`:
+Таблицу `audit_log` создают миграции источника `pgstore.Migrations`
+(`pgkit.Source{Name: "auditkit"}`, таблица версий `schema_migrations_auditkit`).
+`pgstore.Module` кладёт его в fx-группу `pgkit.migrations`, и
+`pgkit.MigrateModule` применяет его на старте вместе с миграциями приложения.
+Без fx:
 
 ```go
-import "git.stit.tech/stit-core/golibinfra/pgkit"
-
-err := pgkit.MigrateUpMulti(pgkit.MultiSourceConfig{
-    DSN: dsn,
-    Sources: []pgkit.Source{
-        // ... другие источники
-        {Name: "auditkit", FS: pgstore.MigrationsFS, Prefix: "migrations"},
-    },
-})
+err := pgkit.MigrateUpAll(ctx, dsn, pgstore.Migrations, pgkit.DirSource(pgkit.AppSourceName, "./migrations"))
 ```
-
-Порядок `Sources` для прод-БД — append-only: новый источник добавляется в конец
-списка (детали — в `pgkit`, тип `pgkit.Source`).
 
 ## Конфигурация
 
@@ -112,7 +105,7 @@ err := pgkit.MigrateUpMulti(pgkit.MultiSourceConfig{
 | `Resource` | `string` | над каким типом ресурса, напр. `user` (`NOT NULL`) |
 | `ResourceID` | `string` | id конкретного ресурса; пусто → `NULL` |
 | `Metadata` | `map[string]any` | произвольный контекст; сериализуется в `JSONB`; пусто → `NULL` |
-| `At` | `time.Time` | момент события; нулевое значение → `time.Now()` на стороне `Store` |
+| `At` | `time.Time` | момент события; нулевое значение → `NOW()` базы данных |
 | `IP` | `string` | IP инициатора; пусто → `NULL` |
 | `RequestID` | `string` | корреляция с HTTP/RPC-запросом; пусто → `NULL` |
 
@@ -134,17 +127,20 @@ type Logger interface {
 - `NewStore(db *pgkit.DB) *Store` — конструктор.
 - `(*Store).Log(ctx, Entry) error` — один `INSERT` в `audit_log`. Пустые
   строковые поля и пустая `Metadata` пишутся как `NULL`; нулевой `At`
-  подставляется как `time.Now()`.
+  подставляется как `NOW()` на стороне базы (`COALESCE`). Ошибки — с префиксом
+  `auditkit:`.
 
 ### `pgstore.Module`
 
 `fx.Module("auditkit/pgstore")` — провайдит `NewStore` под интерфейсом
-`auditkit.Logger` (`fx.As`).
+`auditkit.Logger` (`fx.As`) и регистрирует `pgstore.Migrations` в группе
+`pgkit.migrations`.
 
-### `pgstore.MigrationsFS`
+### `pgstore.Migrations`
 
-`embed.FS` с SQL-миграциями (`migrations/0001_audit_log.{up,down}.sql`).
-Подключается приложением в общий migrate-runner (см. «Проводка миграций»).
+`pgkit.Source` с SQL-миграциями кита (`migrations/*.sql`, embed). Подключается
+`pgkit.MigrateModule` автоматически через `pgstore.Module` (см. «Проводка
+миграций»).
 
 ### Схема `audit_log`
 
@@ -162,27 +158,28 @@ CREATE TABLE audit_log (
 );
 CREATE INDEX audit_log_actor_idx    ON audit_log (actor_id, at DESC);
 CREATE INDEX audit_log_resource_idx ON audit_log (resource, resource_id, at DESC);
+CREATE INDEX audit_log_at_idx       ON audit_log (at DESC);
 ```
 
-Индексы рассчитаны на типовые запросы: «история действий актора» и «история по
-конкретному ресурсу», обе — в обратном хронологическом порядке.
+Индексы рассчитаны на типовые запросы: «история действий актора», «история по
+конкретному ресурсу» и «всё за период» (retention, выгрузки), все — в обратном
+хронологическом порядке.
 
 ## Тестирование
 
 Интеграционный тест поднимает реальный Postgres через
-[`testkit.StartPostgres`](../testkit/) (testcontainers), скармливая ему
-извлечённые из `pgstore.MigrationsFS` миграции:
+[`testkit.StartPostgres`](../testkit/) (testcontainers) с миграцией кита:
 
 ```go
-fx := testkit.StartPostgres(t, migrationsDir) // migrationsDir — распакованный MigrationsFS
+fx := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
 db := fx.DB(t)
 s := pgstore.NewStore(db)
 err := s.Log(ctx, auditkit.Entry{Action: "user.create", Resource: "user"})
 ```
 
-Тесты помечены `testing.Short()` и пропускаются под `go test -short`. Готового
-in-memory фейка кит не поставляет — для unit-тестов бизнес-кода подменяйте
-`auditkit.Logger` своим стабом (интерфейс из одного метода).
+Тесты помечены `testing.Short()` и пропускаются под `go test -short`. Для
+unit-тестов бизнес-кода подменяйте `auditkit.Logger` — готовый in-memory
+recorder есть в [`testkit/audittest`](../testkit/audittest/).
 
 ## Инварианты и подводные камни
 
@@ -192,7 +189,8 @@ in-memory фейка кит не поставляет — для unit-тесто
   бэкенд хранения, не трогая вызывающий код.
 - **Append-only.** Кит только пишет (`INSERT`). Update/delete не предусмотрены —
   это сознательное свойство audit-log. Ротация/архивация старых записей — забота
-  потребителя (партиционирование, retention-джоба), в kit'е её нет.
+  потребителя (партиционирование, retention-джоба по `audit_log_at_idx`), в
+  kit'е её нет.
 - **Синхронная запись.** `Log` делает `INSERT` в текущем `ctx`/соединении и
   возвращает ошибку наружу. Решайте на стороне приложения, фатальна ли ошибка
   аудита для доменной операции (писать в одной транзакции или допускать
@@ -201,8 +199,9 @@ in-memory фейка кит не поставляет — для unit-тесто
   релевантные для compliance/forensics, — не трассировку и не debug-логи. Для
   них есть `logkit` / спаны. `Metadata` — для структурированного контекста
   события, не для дампа payload'а.
-- **Время.** Нулевой `Entry.At` `Store` заменяет на `time.Now()`; колонка —
-  `TIMESTAMPTZ`. Для детерминированных тестов передавайте `At` явно.
+- **Время.** Нулевой `Entry.At` заменяется на `NOW()` базы — единые часы для всех
+  записей независимо от часов инстансов сервиса; колонка — `TIMESTAMPTZ`. Для
+  детерминированных тестов передавайте `At` явно.
 - **PII.** `actor_id`, `ip`, `metadata` могут содержать персональные данные.
   Redact-фильтры `logkit` сюда не применяются — за минимизацией PII в записях
   следит вызывающий код.

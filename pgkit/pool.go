@@ -17,6 +17,7 @@ type PoolConfig struct {
 	MaxConnLifetime time.Duration `envconfig:"PG_MAX_CONN_LIFETIME" default:"30m"`
 	MaxConnIdleTime time.Duration `envconfig:"PG_MAX_CONN_IDLE_TIME" default:"5m"`
 	HealthCheck     time.Duration `envconfig:"PG_HEALTH_CHECK" default:"30s"`
+	ConnectTimeout  time.Duration `envconfig:"PG_CONNECT_TIMEOUT" default:"10s"`
 	OTelTrace       bool          `envconfig:"PG_OTEL_TRACE" default:"true"`
 
 	StatementTimeout       time.Duration `envconfig:"PG_STATEMENT_TIMEOUT" default:"30s"`
@@ -24,6 +25,8 @@ type PoolConfig struct {
 	LockTimeout            time.Duration `envconfig:"PG_LOCK_TIMEOUT" default:"5s"`
 }
 
+// NewPool открывает пул и проверяет его Ping'ом. ctx живёт с пулом (прогрев
+// MinConns идёт в фоне на нём); ConnectTimeout ограничивает каждый коннект и Ping.
 func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 	pcfg, err := pgxpool.ParseConfig(cfg.DSN)
 	if err != nil {
@@ -34,6 +37,9 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 	pcfg.MaxConnLifetime = cfg.MaxConnLifetime
 	pcfg.MaxConnIdleTime = cfg.MaxConnIdleTime
 	pcfg.HealthCheckPeriod = cfg.HealthCheck
+	if cfg.ConnectTimeout > 0 {
+		pcfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
+	}
 	if cfg.OTelTrace {
 		pcfg.ConnConfig.Tracer = otelpgx.NewTracer()
 	}
@@ -52,11 +58,21 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("pgkit: connect: %w", err)
 	}
-	if err := pool.Ping(ctx); err != nil {
+
+	pingCtx, cancel := withOptionalTimeout(ctx, cfg.ConnectTimeout)
+	defer cancel()
+	if err := pool.Ping(pingCtx); err != nil {
 		pool.Close()
 		return nil, fmt.Errorf("pgkit: ping: %w", err)
 	}
 	return pool, nil
+}
+
+func withOptionalTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
+	if d <= 0 {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, d)
 }
 
 func applySessionTimeouts(ctx context.Context, conn *pgx.Conn, cfg PoolConfig) error {

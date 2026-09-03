@@ -39,7 +39,7 @@ import "git.stit.tech/stit-core/golibinfra/testkit/eventbus"
 ## Быстрый старт
 
 Контейнерные helper'ы принимают `*testing.T`, при ошибке вызывают `t.Fatalf`, а
-остановку контейнера вешают на `t.Cleanup` — вручник ничего закрывать не нужно.
+остановку контейнера вешают на `t.Cleanup` — вручную ничего закрывать не нужно.
 
 ```go
 func TestRepository(t *testing.T) {
@@ -47,11 +47,14 @@ func TestRepository(t *testing.T) {
 		t.Skip("integration: needs Docker")
 	}
 
-	pg := testkit.StartPostgres(t, "testdata/migrations") // "" — без миграций
-	db := pg.DB(t)                                         // *pgkit.DB, пул закроется в t.Cleanup
-	_ = pg.DSN                                             // DSN на случай прямого подключения
+	pg := testkit.StartPostgres(t,
+		testkit.WithMigrations(auditpg.Migrations),   // миграции китов — прямо из embed.FS
+		testkit.WithMigrationsDir("testdata/migrations"), // миграции приложения
+	)
+	db := pg.DB(t) // *pgkit.DB, пул закроется в t.Cleanup
+	_ = pg.DSN     // DSN на случай прямого подключения
 
-	nats := testkit.StartNATS(t)
+	nats := testkit.StartNATS(t, testkit.WithJetStream()) // без опции — core NATS
 	_ = nats.URL // nats://host:port
 
 	rdb := testkit.StartRedis(t)
@@ -64,16 +67,22 @@ func TestRepository(t *testing.T) {
 Сигнатуры:
 
 ```go
-func StartPostgres(t *testing.T, migrationsPath string) *PostgresFixture
+func StartPostgres(t *testing.T, opts ...PostgresOption) *PostgresFixture
+func WithMigrations(sources ...pgkit.Source) PostgresOption
+func WithMigrationsDir(path string) PostgresOption
 func (f *PostgresFixture) DB(t *testing.T) *pgkit.DB
-func StartNATS(t *testing.T) *NATSFixture
+
+func StartNATS(t *testing.T, opts ...NATSOption) *NATSFixture
+func WithJetStream() NATSOption
+
 func StartRedis(t *testing.T) *RedisFixture
 ```
 
-`StartPostgres` с непустым `migrationsPath` прогоняет `pgkit.MigrateUp` против
-поднятого инстанса; пустая строка пропускает миграции. `PostgresFixture.DB`
-открывает `pgxpool`, оборачивает в `pgkit.NewDB` и закрывает пул через
-`t.Cleanup`.
+`StartPostgres` применяет переданные источники через `pgkit.MigrateUpAll` — тем
+же путём, что `pgkit.MigrateModule` в приложении (таблица версий на источник);
+без опций миграции не прогоняются. `PostgresFixture.DB` открывает `pgxpool`,
+оборачивает в `pgkit.NewDB` и закрывает пул через `t.Cleanup`. `WithJetStream`
+запускает `nats-server -js` — нужен тестам `natskit.StreamBus` и `outboxkit`.
 
 Юнит-helper из сабпакета — fake без контейнера:
 
@@ -96,10 +105,10 @@ func TestPublishesEvent(t *testing.T) {
 ## Конфигурация
 
 Конфиг-структур (envconfig) у testkit нет — поведение задаётся аргументами
-helper'ов. Образы и порты контейнеров зашиты в helper'ах: `postgres:17-alpine`
-(база/пользователь/пароль `test`), `nats:latest` (`4222/tcp`), `redis:7-alpine`
-(`6379/tcp`). Каждый helper ждёт готовности по логам контейнера с таймаутом старта
-60 секунд.
+helper'ов. Образы и порты контейнеров зашиты в helper'ах: `testkit.PostgresImage`
+= `postgres:17-alpine` (база/пользователь/пароль `test`), `testkit.NATSImage` =
+`nats:2.11-alpine` (`4222/tcp`), `redis:7-alpine` (`6379/tcp`). Каждый helper
+ждёт готовности по логам контейнера с таймаутом старта 60 секунд.
 
 Требования к окружению для контейнерных helper'ов:
 
@@ -122,7 +131,7 @@ helper'ов. Образы и порты контейнеров зашиты в h
 | [`bruteforcetest`](bruteforcetest/) | `bruteforcekit` | `bruteforcekit.Guard`-фейки: `Permissive` (всегда пропускает), `Locked{Until}` (всегда заблокирован), `Recorder` (копит `Failures`/`Successes`). |
 | [`eventbus`](eventbus/) | `outboxkit` | `Recorder` — in-memory `outboxkit.Publisher`; запросы `All`/`Published`/`Last`/`Count` + `Reset`. |
 | [`handlertest`](handlertest/) | `httpkit` (huma) | `NewAPI` поднимает `humatest.TestAPI`; `DecodeAPIError`, `AssertStatus`, `AssertAPIError` для проверки ответов хендлеров. |
-| [`txkit`](txkit/) | `pgkit` | `pgkit.Transactor`-фейки: `Identity` (прогоняет `fn` без транзакции), `Recorder` (то же + счётчик `Calls`). |
+| [`txkit`](txkit/) | `pgkit` | `pgkit.Transactor`-фейки (`WithTx` и `WithTxOptions`): `Identity` (прогоняет `fn` без транзакции), `Recorder` (то же + счётчик `Calls`). |
 
 ## Observability
 
@@ -136,11 +145,14 @@ testkit ничего не эмитит: ни метрик, ни спанов, н
 
 | Символ | Назначение |
 | --- | --- |
-| `StartPostgres(t, migrationsPath) *PostgresFixture` | Контейнер `postgres:17-alpine`; при непустом пути — `pgkit.MigrateUp`. |
+| `StartPostgres(t, opts...) *PostgresFixture` | Контейнер `postgres:17-alpine`; опции применяют миграции. |
+| `WithMigrations(sources...)` / `WithMigrationsDir(path)` | Источники миграций (`pgkit.Source`) / каталог приложения (источник `pgkit.AppSourceName`). |
 | `PostgresFixture{DSN, Container}` | DSN живого инстанса + handle контейнера (`tcpostgres.PostgresContainer`). |
 | `(*PostgresFixture).DB(t) *pgkit.DB` | Пул `pgxpool` поверх `DSN`, обёрнутый в `pgkit.NewDB`; закрывается в `t.Cleanup`. |
-| `StartNATS(t) *NATSFixture` | Контейнер `nats:latest`; `NATSFixture{URL, Container}`. |
+| `StartNATS(t, opts...) *NATSFixture` | Контейнер `nats:2.11-alpine`; `NATSFixture{URL, Container}`. |
+| `WithJetStream()` | Запуск сервера с `-js`. |
 | `StartRedis(t) *RedisFixture` | Контейнер `redis:7-alpine`; `RedisFixture{URL, Container}`. |
+| `PostgresImage`, `NATSImage` | Константы образов — для собственных `ContainerRequest`. |
 
 `Container` в каждой fixture доступен напрямую — для дополнительных операций над
 контейнером поверх готовых helper'ов.
@@ -160,7 +172,7 @@ if testing.Short() {
 ```
 
 - `go test -short ./...` — пропускает тесты, которые сами вызвали `t.Skip` под
-  `testing.Short()` (так гоняет CI на unit-проходе); контейнеры не поднимаются.
+  `testing.Short()`; контейнеры не поднимаются.
 - `go test ./...` — полный прогон, включая контейнерные тесты (нужен Docker).
 
 testkit сам по себе условие `-short` не проверяет — за `t.Skip` отвечает тест
@@ -184,6 +196,7 @@ testkit сам по себе условие `-short` не проверяет —
   закреплён за конкретным интерфейсом кита (`var _ auditkit.Logger =
   (*audittest.Recorder)(nil)` и аналоги) — при изменении интерфейса кита fake
   перестанет компилироваться, что и есть сигнал обновить helper.
-- **Образы и порты зашиты.** Версии (`postgres:17-alpine`, `nats:latest`,
-  `redis:7-alpine`) и таймаут старта (60s) — внутри helper'ов; переопределения
-  через аргументы нет.
+- **Образы и порты зашиты, теги — конкретные.** Версии (`postgres:17-alpine`,
+  `nats:2.11-alpine`, `redis:7-alpine`) и таймаут старта (60s) — внутри
+  helper'ов; `:latest` не используется, чтобы тесты не менялись от обновления
+  registry. Другой образ — свой `ContainerRequest` поверх констант.

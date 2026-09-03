@@ -20,25 +20,20 @@ type Bus struct {
 
 var _ Publisher = (*Bus)(nil)
 
-func NewBus(repo Repository) *Bus {
-	return &Bus{repo: repo, instr: newOutboxInstruments()}
+func NewBus(instance string, repo Repository) *Bus {
+	return &Bus{repo: repo, instr: newOutboxInstruments(instance)}
 }
 
 func (b *Bus) Publish(ctx context.Context, subject string, payload any) error {
-	if err := b.repo.Insert(ctx, subject, payload); err != nil {
-		b.instr.insertedTotal.Add(ctx, 1, metric.WithAttributes(
-			attribute.String("subject", subject),
-			attribute.String("status", "error"),
-		))
-		return err
+	status := "ok"
+	err := b.repo.Insert(ctx, subject, payload)
+	if err != nil {
+		status = "error"
 	}
 	b.instr.insertedTotal.Add(ctx, 1, metric.WithAttributes(
+		b.instr.instance,
 		attribute.String("subject", subject),
-		attribute.String("status", "ok"),
+		attribute.String("status", status),
 	))
-	return nil
-}
-
-func PublishJSON[T any](b *Bus, ctx context.Context, subject string, msg T) error {
-	return b.Publish(ctx, subject, msg)
+	return err
 }

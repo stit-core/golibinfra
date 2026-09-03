@@ -2,12 +2,12 @@ package pgstore_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
-	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
 func TestPartitionSQL_Naming(t *testing.T) {
@@ -30,13 +30,7 @@ func TestStore_DropOldPartitions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+	db, _, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 
 	// Заводим партицию 10 месяцев назад (вне диапазона миграции current..+3).
@@ -56,6 +50,53 @@ func TestStore_DropOldPartitions(t *testing.T) {
 	curName, _ := pgstore.PartitionSQL("outbox", time.Now().UTC())
 	if !partitionExists(t, ctx, db, curName) {
 		t.Fatalf("текущая партиция %s удалена по ошибке", curName)
+	}
+}
+
+// Партиция с неопубликованными событиями переживает retention; остальные старые дропаются.
+func TestStore_DropOldPartitions_KeepsPending(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skip integration test in -short")
+	}
+	db, _, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+
+	pendingMonth := time.Now().UTC().AddDate(0, -10, 0)
+	pendingName, pendingSQL := pgstore.PartitionSQL("outbox", pendingMonth)
+	if _, err := db.Exec(ctx, pendingSQL); err != nil {
+		t.Fatalf("create pending partition: %v", err)
+	}
+	emptyMonth := time.Now().UTC().AddDate(0, -9, 0)
+	emptyName, emptySQL := pgstore.PartitionSQL("outbox", emptyMonth)
+	if _, err := db.Exec(ctx, emptySQL); err != nil {
+		t.Fatalf("create empty partition: %v", err)
+	}
+	deadMonth := time.Now().UTC().AddDate(0, -8, 0)
+	deadName, deadSQL := pgstore.PartitionSQL("outbox", deadMonth)
+	if _, err := db.Exec(ctx, deadSQL); err != nil {
+		t.Fatalf("create dead partition: %v", err)
+	}
+	inMonth := time.Date(pendingMonth.Year(), pendingMonth.Month(), 15, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(ctx, `INSERT INTO outbox (subject, payload, created_at) VALUES ('evt', '{}', $1)`, inMonth); err != nil {
+		t.Fatalf("insert pending: %v", err)
+	}
+	deadAt := time.Date(deadMonth.Year(), deadMonth.Month(), 15, 0, 0, 0, 0, time.UTC)
+	if _, err := db.Exec(ctx, `INSERT INTO outbox (subject, payload, created_at, dead_at) VALUES ('evt', '{}', $1, $1)`, deadAt); err != nil {
+		t.Fatalf("insert dead: %v", err)
+	}
+
+	err := s.DropOldPartitions(ctx, 3)
+	if !errors.Is(err, pgstore.ErrPendingRows) {
+		t.Fatalf("err = %v, want ErrPendingRows", err)
+	}
+	if !partitionExists(t, ctx, db, pendingName) {
+		t.Fatalf("партиция с неопубликованными %s удалена", pendingName)
+	}
+	if partitionExists(t, ctx, db, emptyName) {
+		t.Fatalf("пустая старая партиция %s не удалена", emptyName)
+	}
+	if partitionExists(t, ctx, db, deadName) {
+		t.Fatalf("партиция только с dead-строками %s не удалена", deadName)
 	}
 }
 
@@ -83,13 +124,7 @@ func TestStore_PartitionedDrain(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-
+	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 
 	for i := 0; i < 5; i++ {
@@ -98,10 +133,7 @@ func TestStore_PartitionedDrain(t *testing.T) {
 		}
 	}
 
-	msgs, err := s.ListUnpublished(ctx, 10)
-	if err != nil {
-		t.Fatalf("ListUnpublished: %v", err)
-	}
+	msgs := list(t, tr, s, ctx, 10)
 	if len(msgs) != 5 {
 		t.Fatalf("want 5 unpublished, got %d", len(msgs))
 	}
@@ -110,11 +142,7 @@ func TestStore_PartitionedDrain(t *testing.T) {
 			t.Fatalf("MarkPublished: %v", err)
 		}
 	}
-	left, err := s.ListUnpublished(ctx, 10)
-	if err != nil {
-		t.Fatalf("ListUnpublished after: %v", err)
-	}
-	if len(left) != 0 {
+	if left := list(t, tr, s, ctx, 10); len(left) != 0 {
 		t.Fatalf("want 0, got %d", len(left))
 	}
 
@@ -132,13 +160,8 @@ func TestStore_EnsurePartitions(t *testing.T) {
 	if testing.Short() {
 		t.Skip("skip integration test in -short")
 	}
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
-	db := fx.DB(t)
+	db, _, ctx := startStore(t)
 	s := pgstore.NewStore(db)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
 
 	if err := s.EnsurePartitions(ctx, 6); err != nil {
 		t.Fatalf("EnsurePartitions: %v", err)

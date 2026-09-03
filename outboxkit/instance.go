@@ -1,6 +1,7 @@
 package outboxkit
 
 import (
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
@@ -15,11 +16,11 @@ type Outbox struct {
 	cfg    Config
 }
 
-func New(name string, repo Repository, tr Transport, cfg Config) *Outbox {
+func New(name string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config) *Outbox {
 	return &Outbox{
 		name:   name,
-		bus:    NewBus(repo),
-		worker: NewWorker(repo, tr, cfg),
+		bus:    NewBus(name, repo),
+		worker: NewWorker(name, repo, tr, tx, cfg),
 		cfg:    cfg,
 	}
 }

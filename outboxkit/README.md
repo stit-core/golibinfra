@@ -1,11 +1,11 @@
 # outboxkit
 
 Transactional outbox для сервисов stit. `Bus` вставляет событие в outbox-таблицу
-в той же транзакции, что и доменный state; `Worker` батчами вычитывает
-неопубликованные строки и публикует их в JetStream через `natskit.StreamBus`,
-помечая published только подтверждённые `PubAck`'ом. Гарантия доставки —
-at-least-once; id строки уходит как `Nats-Msg-Id`, поэтому переотправка на ретрае
-дедуплицируется стримом.
+в той же транзакции, что и доменный state; `Worker` тиком — одной транзакцией
+list → publish → mark — вычитывает неопубликованные строки и публикует их в
+JetStream через `natskit.StreamBus`, помечая published только подтверждённые
+`PubAck`'ом. Гарантия доставки — at-least-once; id строки уходит как
+`Nats-Msg-Id`, поэтому переотправка на ретрае дедуплицируется стримом.
 
 Это решает классическую проблему dual-write: «закоммитили в БД, но упали до
 публикации в брокер» (или наоборот). Outbox делает запись факта и его публикацию
@@ -23,18 +23,20 @@ import "git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 ## Быстрый старт
 
 Single-instance путь (одна таблица `outbox`, fx-проводка). Нужны
-`pgkit`, `natskit` (с `NATS_JETSTREAM_ENABLED=true` и стримом, покрывающим
-subject'ы outbox'а) и `timerkit` (он гоняет `Worker.Run` по тикеру).
+`pgkit` (с `MigrateModule` — он применяет миграцию кита), `natskit` (с
+`NATS_JETSTREAM_ENABLED=true` и стримом, покрывающим subject'ы outbox'а) и
+`timerkit` (он гоняет `Worker.Run` по тикеру).
 
 ```go
 fx.New(
     pgkit.Module,
-    natskit.Module,
+    pgkit.MigrateModule, // раньше pgstore.Module: партиции создаются в OnStart поверх схемы
+    natskit.Module(""),
     timerkit.Module,
 
-    pgstore.Module,                  // Store как outboxkit.Repository + partition/retention jobs
-    fx.Provide(outboxkit.NewConfig), // OUTBOX_* конфиг (caller провайдит явно)
-    outboxkit.Module,                // Bus, Publisher, Worker, drain-Job
+    fx.Provide(pgstore.NewConfig, outboxkit.NewConfig), // OUTBOX_* конфиги (caller провайдит явно)
+    pgstore.Module,   // Store как outboxkit.Repository, миграции, партиции, retention
+    outboxkit.Module, // Bus, Publisher, Worker, drain-Job
 
     fx.Invoke(func(p outboxkit.Publisher) { /* положить в доменный сервис */ }),
 )
@@ -54,16 +56,17 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 ## Документация
 
 - [docs/architecture.md](docs/architecture.md) — как устроено: transactional
-  outbox, `Worker`→JetStream, poison→dead, retention партиций, single- vs
-  multi-instance, namespaced `Nats-Msg-Id`, ключевые решения (WHY).
+  outbox, транзакционный тик `Worker`'а и гарантии при нескольких репликах,
+  poison→dead, партиции и retention, single- vs multi-instance, namespaced
+  `Nats-Msg-Id`, ключевые решения (WHY).
 - [docs/configuration.md](docs/configuration.md) — полный справочник ENV,
-  тюнинг publish-mode / max-attempts / retention, миграции и таблицы.
-- [docs/observability.md](docs/observability.md) — метрики, labels, спаны;
-  `outbox_lag_seconds` / `outbox_pending_count` opt-in через `BacklogReporter`.
+  тюнинг publish-mode / max-attempts / tick-timeout / retention, миграции и таблицы.
+- [docs/observability.md](docs/observability.md) — метрики (label `instance`),
+  спаны; `outbox_lag_seconds` / `outbox_pending_count` через `BacklogReporter`.
 - [docs/usage.md](docs/usage.md) — рецепты: single-instance `Module`,
-  multi-instance `New` + `NewStoreFor` + `NewStreamTransportFor`, `MarkPublished`,
+  multi-instance `New` + `NewStoreFor` + `NewStreamTransportFor`, ручной drain,
   `BacklogReporter`.
 - [docs/testing.md](docs/testing.md) — fake `Repository`/`Transport`, testcontainers,
-  поведение в `-short`.
+  тесты конкурентных воркеров, поведение в `-short`.
 
 Источник правды по поведению — код пакета (`outboxkit/*.go`, `outboxkit/pgstore/`).

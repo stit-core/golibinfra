@@ -12,17 +12,12 @@ import (
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
-// Module wires the single-instance (table `outbox`) path:
-//   - Store as outboxkit.Repository (used by outboxkit.Bus/Worker in root Module).
-//   - PartitionKeeperJob — заранее создаёт партиции следующего месяца, чтобы
-//     inserts не падали на смене календаря.
-//   - RetentionKeeperJob — дропает партиции старше OUTBOX_RETENTION_MONTHS
-//     (0 = не дропать). Оба идемпотентны, бегут раз в сутки.
+// Module — single-instance путь (таблица DefaultTable); Config провайдит
+// caller: `fx.Provide(pgstore.NewConfig)`.
 var Module = fx.Module(
 	"outboxkit/pgstore",
 	fx.Provide(
 		newStoreFromConfig,
-		NewConfig,
 		fx.Annotate(func(s *Store) outboxkit.Repository { return s }),
 		fx.Annotate(PartitionKeeperJob, fx.ResultTags(`group:"timer.job"`)),
 		fx.Annotate(
@@ -30,6 +25,8 @@ var Module = fx.Module(
 			fx.ResultTags(`group:"timer.job"`),
 		),
 	),
+	pgkit.ProvideMigrations(Migrations),
+	fx.Invoke(ensurePartitionsOnStart),
 )
 
 type Config struct {
@@ -48,6 +45,14 @@ func newStoreFromConfig(db *pgkit.DB, cfg Config) *Store {
 		opts = append(opts, WithRequireTx())
 	}
 	return NewStore(db, opts...)
+}
+
+// ensurePartitionsOnStart: timer-job впервые срабатывает через сутки, а сервис
+// может не прожить столько — партиции нужны с первого insert'а.
+func ensurePartitionsOnStart(lc fx.Lifecycle, s *Store) {
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error { return s.EnsurePartitions(ctx, 1) },
+	})
 }
 
 func PartitionKeeperJob(s *Store) timerkit.Job {

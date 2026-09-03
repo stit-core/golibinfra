@@ -18,17 +18,40 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
+const PostgresImage = "postgres:17-alpine"
+
 type PostgresFixture struct {
 	DSN       string
 	Container *tcpostgres.PostgresContainer
 }
 
-func StartPostgres(t *testing.T, migrationsPath string) *PostgresFixture {
+type PostgresOption func(*postgresOptions)
+
+type postgresOptions struct {
+	sources []pgkit.Source
+}
+
+// WithMigrations применяет источники (embed.FS китов, каталоги приложения)
+// сразу после старта контейнера — через pgkit.MigrateUpAll, как MigrateModule.
+func WithMigrations(sources ...pgkit.Source) PostgresOption {
+	return func(o *postgresOptions) { o.sources = append(o.sources, sources...) }
+}
+
+// WithMigrationsDir — каталог миграций приложения (источник pgkit.AppSourceName).
+func WithMigrationsDir(path string) PostgresOption {
+	return WithMigrations(pgkit.DirSource(pgkit.AppSourceName, path))
+}
+
+func StartPostgres(t *testing.T, opts ...PostgresOption) *PostgresFixture {
 	t.Helper()
+	var o postgresOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	ctx := context.Background()
 
 	c, err := tcpostgres.Run(
-		ctx, "postgres:17-alpine",
+		ctx, PostgresImage,
 		tcpostgres.WithDatabase("test"),
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
@@ -51,8 +74,10 @@ func StartPostgres(t *testing.T, migrationsPath string) *PostgresFixture {
 		_ = c.Terminate(context.Background())
 	})
 
-	if migrationsPath != "" {
-		if err := pgkit.MigrateUp(pgkit.MigrateConfig{DSN: dsn, Path: migrationsPath}); err != nil {
+	if len(o.sources) > 0 {
+		migCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		if err := pgkit.MigrateUpAll(migCtx, dsn, o.sources...); err != nil {
 			t.Fatalf("testkit: migrate up: %v", err)
 		}
 	}

@@ -3,9 +3,7 @@ package pgstore_test
 import (
 	"context"
 	"encoding/json"
-	"io/fs"
-	"os"
-	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,26 +12,14 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
-func extractMigrations(t *testing.T) string {
-	t.Helper()
-	dir := t.TempDir()
-	err := fs.WalkDir(pgstore.MigrationsFS, "migrations", func(path string, d fs.DirEntry, err error) error {
-		if err != nil {
-			return err
-		}
-		if d.IsDir() {
-			return nil
-		}
-		data, err := pgstore.MigrationsFS.ReadFile(path)
-		if err != nil {
-			return err
-		}
-		return os.WriteFile(filepath.Join(dir, filepath.Base(path)), data, 0o644)
+func TestStore_Log_ErrorPrefix(t *testing.T) {
+	s := pgstore.NewStore(nil)
+	err := s.Log(context.Background(), auditkit.Entry{
+		Action: "x", Resource: "y", Metadata: map[string]any{"bad": make(chan int)},
 	})
-	if err != nil {
-		t.Fatalf("extract migrations: %v", err)
+	if err == nil || !strings.HasPrefix(err.Error(), "auditkit: ") {
+		t.Fatalf("err = %v, want auditkit: prefix", err)
 	}
-	return dir
 }
 
 func TestStore_Log(t *testing.T) {
@@ -41,8 +27,7 @@ func TestStore_Log(t *testing.T) {
 		t.Skip("skip integration test in -short")
 	}
 
-	migDir := extractMigrations(t)
-	fx := testkit.StartPostgres(t, migDir)
+	fx := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
 	db := fx.DB(t)
 
 	s := pgstore.NewStore(db)
@@ -89,5 +74,29 @@ func TestStore_Log(t *testing.T) {
 
 	if !gotAt.Equal(at) {
 		t.Fatalf("at mismatch: got %v want %v", gotAt, at)
+	}
+
+	// Нулевой At — время базы, NULL-полей нет.
+	if err := s.Log(ctx, auditkit.Entry{Action: "session.login", Resource: "session"}); err != nil {
+		t.Fatalf("Log zero At: %v", err)
+	}
+	var dbNow, zeroAt time.Time
+	var actor *string
+	if err := db.QueryRow(ctx, `SELECT NOW(), at, actor_id FROM audit_log WHERE action = 'session.login'`).Scan(&dbNow, &zeroAt, &actor); err != nil {
+		t.Fatalf("scan zero-at row: %v", err)
+	}
+	if zeroAt.IsZero() || dbNow.Sub(zeroAt) > 30*time.Second || zeroAt.After(dbNow) {
+		t.Fatalf("at = %v, want database NOW() (%v)", zeroAt, dbNow)
+	}
+	if actor != nil {
+		t.Fatalf("empty ActorID must be NULL, got %q", *actor)
+	}
+
+	var idx int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM pg_indexes WHERE indexname = 'audit_log_at_idx'`).Scan(&idx); err != nil {
+		t.Fatalf("pg_indexes: %v", err)
+	}
+	if idx != 1 {
+		t.Fatal("audit_log_at_idx missing: миграция 0002 не применилась")
 	}
 }

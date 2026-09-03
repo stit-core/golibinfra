@@ -2,6 +2,8 @@ package pgkit_test
 
 import (
 	"context"
+	"fmt"
+	"net"
 	"testing"
 	"time"
 
@@ -13,7 +15,7 @@ func TestNewPool_AppliesSessionTimeouts(t *testing.T) {
 	if testing.Short() {
 		t.Skip("integration")
 	}
-	pg := testkit.StartPostgres(t, "")
+	pg := testkit.StartPostgres(t)
 	cfg := pgkit.PoolConfig{
 		DSN:                    pg.DSN,
 		MaxConns:               2,
@@ -21,6 +23,7 @@ func TestNewPool_AppliesSessionTimeouts(t *testing.T) {
 		MaxConnLifetime:        5 * time.Minute,
 		MaxConnIdleTime:        time.Minute,
 		HealthCheck:            30 * time.Second,
+		ConnectTimeout:         10 * time.Second,
 		StatementTimeout:       7 * time.Second,
 		IdleInTxSessionTimeout: 11 * time.Second,
 		LockTimeout:            3 * time.Second,
@@ -44,5 +47,38 @@ func TestNewPool_AppliesSessionTimeouts(t *testing.T) {
 		if got != want {
 			t.Errorf("%s: want %q, got %q", setting, want, got)
 		}
+	}
+}
+
+// Сервер, принимающий TCP и молчащий: без ConnectTimeout NewPool висел бы вечно.
+func TestNewPool_ConnectTimeout(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+		}
+	}()
+
+	cfg := pgkit.PoolConfig{
+		DSN:            fmt.Sprintf("postgres://test:test@%s/test?sslmode=disable", ln.Addr()),
+		MaxConns:       1,
+		ConnectTimeout: 300 * time.Millisecond,
+		HealthCheck:    time.Minute,
+	}
+	start := time.Now()
+	_, err = pgkit.NewPool(context.Background(), cfg)
+	if err == nil {
+		t.Fatal("expected connect error")
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Fatalf("NewPool took %v, connect timeout not applied", elapsed)
 	}
 }
