@@ -6,8 +6,6 @@ import (
 	"testing"
 	"time"
 
-	natsgo "github.com/nats-io/nats.go"
-
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
@@ -19,21 +17,14 @@ func TestBus_PanicRecovery(t *testing.T) {
 	}
 
 	fix := testkit.StartNATS(t)
-	nc, err := natsgo.Connect(fix.URL)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(func() { nc.Close() })
-
-	conn := natskit.ExportConn(nc)
-	log := logkit.Nop()
-	bus := natskit.NewBus(conn, log, natskit.Config{})
+	conn := connect(t, fix.URL)
+	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := "test.panic"
 
 	var afterPanic int32
-	if err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
+	if _, err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
 		if string(payload) == `"panic"` {
 			panic("test panic")
 		}
@@ -66,20 +57,13 @@ func TestBus_Backpressure(t *testing.T) {
 	}
 
 	fix := testkit.StartNATS(t)
-	nc, err := natsgo.Connect(fix.URL)
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	t.Cleanup(func() { nc.Close() })
-
-	conn := natskit.ExportConn(nc)
-	log := logkit.Nop()
+	conn := connect(t, fix.URL)
 
 	maxInFlight := 10
 	cfg := natskit.Config{
 		Backpressure: natskit.BackpressureConfig{MaxInFlight: maxInFlight},
 	}
-	bus := natskit.NewBus(conn, log, cfg)
+	bus := natskit.NewBus(conn, logkit.Nop(), cfg)
 
 	ctx := context.Background()
 	subject := "test.backpressure"
@@ -90,7 +74,7 @@ func TestBus_Backpressure(t *testing.T) {
 	// при гонке нескольких worker'ов с одним receiver'ом.
 	done := make(chan struct{}, total)
 
-	if err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
+	if _, err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
 		cur := atomic.AddInt32(&current, 1)
 		for {
 			p := atomic.LoadInt32(&peak)

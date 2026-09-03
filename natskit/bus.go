@@ -2,12 +2,13 @@
 // типизированные helper'ы PublishJSON[T]/SubscribeJSON[T], опц. JetStream
 // (StreamBus: батч-async публикация + дедуп по Nats-Msg-Id; poison-обработка
 // consumer'а — MaxDeliver→DLQ/Term, NAK c backoff), panic recovery в
-// subscriber'ах и backpressure через семафор (NATS_MAX_IN_FLIGHT). W3C
-// trace-context инжектится в nats.Header, чтобы consumer-спан был child'ом
-// producer-спана. Subject и Header сообщения доступны handler'у через
-// SubjectFromContext(ctx)/HeadersFromContext(ctx). Эмитит
-// nats_messages_{published,consumed}_total (consumed status: ok|handler_error|
-// panic|dead), nats_{publish,handle}_duration_seconds, nats_inflight_messages.
+// subscriber'ах, backpressure через семафор (NATS_MAX_IN_FLIGHT) и graceful
+// Close с ожиданием обработчиков. W3C trace-context инжектится в nats.Header,
+// чтобы consumer-спан был child'ом producer-спана. Subject и Header сообщения
+// доступны handler'у через SubjectFromContext(ctx)/HeadersFromContext(ctx).
+// Эмитит nats_messages_{published,consumed}_total (consumed status:
+// ok|handler_error|panic|dead), nats_{publish,handle}_duration_seconds,
+// nats_inflight_messages.
 package natskit
 
 import (
@@ -16,6 +17,7 @@ import (
 	"errors"
 	"fmt"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	"github.com/nats-io/nats.go"
@@ -28,14 +30,16 @@ import (
 
 type Bus interface {
 	Publish(ctx context.Context, subject string, payload any) error
-	Subscribe(ctx context.Context, subject string, handler func(ctx context.Context, payload []byte) error) error
+	// Subscribe — fan-out: сообщение получает каждый инстанс. ctx ограничивает
+	// только регистрацию; время жизни подписки — Subscription и Close инстанса.
+	Subscribe(ctx context.Context, subject string, handler Handler) (Subscription, error)
 	// SubscribeQueue — load-balanced подписка: сообщение получает один инстанс
-	// из queue-группы (горизонтальное масштабирование Core-консьюмеров), в
-	// отличие от Subscribe (fan-out — каждому инстансу).
-	SubscribeQueue(ctx context.Context, subject, queue string, handler func(ctx context.Context, payload []byte) error) error
+	// из queue-группы (горизонтальное масштабирование Core-консьюмеров).
+	SubscribeQueue(ctx context.Context, subject, queue string, handler Handler) (Subscription, error)
 }
 
 type natsBus struct {
+	c     *Conn
 	conn  *nats.Conn
 	log   logkit.Logger
 	sem   *semaphore.Weighted
@@ -43,14 +47,11 @@ type natsBus struct {
 }
 
 func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus {
-	maxInFlight := int64(cfg.Backpressure.MaxInFlight)
-	if maxInFlight <= 0 {
-		maxInFlight = 100
-	}
 	return &natsBus{
+		c:     conn,
 		conn:  conn.raw(),
 		log:   log,
-		sem:   semaphore.NewWeighted(maxInFlight),
+		sem:   semaphore.NewWeighted(int64(intOr(cfg.Backpressure.MaxInFlight, defaultMaxInFlight))),
 		instr: newNatsInstruments(cfg.Instance),
 	}
 }
@@ -87,39 +88,59 @@ func (b *natsBus) Publish(ctx context.Context, subject string, payload any) erro
 	return nil
 }
 
-func (b *natsBus) Subscribe(_ context.Context, subject string, handler func(ctx context.Context, payload []byte) error) error {
-	return b.subscribe(subject, "", handler)
+func (b *natsBus) Subscribe(ctx context.Context, subject string, handler Handler) (Subscription, error) {
+	return b.subscribe(ctx, subject, "", handler)
 }
 
-func (b *natsBus) SubscribeQueue(_ context.Context, subject, queue string, handler func(ctx context.Context, payload []byte) error) error {
-	return b.subscribe(subject, queue, handler)
+func (b *natsBus) SubscribeQueue(ctx context.Context, subject, queue string, handler Handler) (Subscription, error) {
+	return b.subscribe(ctx, subject, queue, handler)
 }
 
-func (b *natsBus) subscribe(subject, queue string, handler func(ctx context.Context, payload []byte) error) error {
-	cb := func(msg *nats.Msg) {
-		if err := b.sem.Acquire(context.Background(), 1); err != nil {
-			b.log.Error(context.Background(), "natskit: semaphore acquire", "subject", subject, "err", err)
-			return
+func (b *natsBus) subscribe(ctx context.Context, subject, queue string, handler Handler) (Subscription, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return b.c.subscribe(func() (*subscription, error) {
+		s := &subscription{conn: b.c, subject: subject}
+		cb := func(msg *nats.Msg) {
+			// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
+			_ = b.sem.Acquire(context.Background(), 1)
+			untrack := s.track()
+			go func() {
+				defer untrack()
+				defer b.sem.Release(1)
+				b.handleOne(msg, subject, handler)
+			}()
 		}
-		go func() {
-			defer b.sem.Release(1)
-			b.handleOne(msg, subject, handler)
-		}()
-	}
 
-	var err error
-	if queue == "" {
-		_, err = b.conn.Subscribe(subject, cb)
-	} else {
-		_, err = b.conn.QueueSubscribe(subject, queue, cb)
-	}
-	if err != nil {
-		return fmt.Errorf("natskit: subscribe: %w", err)
-	}
-	return nil
+		var (
+			sub *nats.Subscription
+			err error
+		)
+		if queue == "" {
+			sub, err = b.conn.Subscribe(subject, cb)
+		} else {
+			sub, err = b.conn.QueueSubscribe(subject, queue, cb)
+		}
+		if err != nil {
+			return nil, fmt.Errorf("natskit: subscribe: %w", err)
+		}
+
+		done := make(chan struct{})
+		var closeOnce sync.Once
+		sub.SetClosedHandler(func(string) { closeOnce.Do(func() { close(done) }) })
+		s.done = done
+		s.stop = func(drain bool) error {
+			if drain {
+				return sub.Drain()
+			}
+			return sub.Unsubscribe()
+		}
+		return s, nil
+	})
 }
 
-func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler func(ctx context.Context, payload []byte) error) {
+func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler Handler) {
 	subjAttr := b.instr.attrs(attribute.String("subject", subject))
 	b.instr.inflight.Add(context.Background(), 1, subjAttr)
 	defer b.instr.inflight.Add(context.Background(), -1, subjAttr)
@@ -154,8 +175,6 @@ func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler func(ctx cont
 		status = "handler_error"
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
-		// Errors are logged at the handler-site if needed; bus log keeps a
-		// trail so we can spot subjects with persistent failures.
 		if !errors.Is(err, context.Canceled) {
 			b.log.Error(ctx, "natskit: handler error", "subject", subject, "err", err)
 		}
@@ -166,15 +185,15 @@ func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T) error
 	return b.Publish(ctx, subject, msg)
 }
 
-func SubscribeJSON[T any](b Bus, ctx context.Context, subject string, h func(ctx context.Context, msg T) error) error {
+func SubscribeJSON[T any](b Bus, ctx context.Context, subject string, h func(ctx context.Context, msg T) error) (Subscription, error) {
 	return b.Subscribe(ctx, subject, decodeJSON(h))
 }
 
-func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string, h func(ctx context.Context, msg T) error) error {
+func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string, h func(ctx context.Context, msg T) error) (Subscription, error) {
 	return b.SubscribeQueue(ctx, subject, queue, decodeJSON(h))
 }
 
-func decodeJSON[T any](h func(ctx context.Context, msg T) error) func(ctx context.Context, payload []byte) error {
+func decodeJSON[T any](h func(ctx context.Context, msg T) error) Handler {
 	return func(ctx context.Context, payload []byte) error {
 		var v T
 		if err := json.Unmarshal(payload, &v); err != nil {

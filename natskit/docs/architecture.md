@@ -15,11 +15,12 @@
    которые нельзя терять.
 
 Поверх обеих моделей кит даёт: типизированные JSON-helper'ы (дженерики),
-panic recovery в обработчиках, backpressure через семафор, W3C trace-propagation
-и метрики `nats_*`.
+panic recovery в обработчиках, backpressure через семафор, handle подписки
+(`Subscription`), graceful `Close` с ожиданием обработчиков, W3C
+trace-propagation и метрики `nats_*`.
 
 Доменное — вне кита: схемы сообщений, идемпотентность по бизнес-ключу,
- retry-политика бизнес-уровня, выбор subject'ов и stream'ов. `natskit` отвечает
+retry-политика бизнес-уровня, выбор subject'ов и stream'ов. `natskit` отвечает
 за доставку байтов и надёжность транспорта, не за смысл сообщений.
 
 ## Компоненты
@@ -27,13 +28,14 @@ panic recovery в обработчиках, backpressure через семафо
 | Файл | Роль |
 |---|---|
 | `bus.go` | `Bus`-интерфейс (`Publish`/`Subscribe`/`SubscribeQueue`), `natsBus` (Core NATS), дженерики `PublishJSON[T]`/`SubscribeJSON[T]`/`SubscribeQueueJSON[T]`, `decodeJSON`. |
-| `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `ensureStreams`, poison-обработка (`failStream`/`terminal`/`deadLetter`), `StreamMsg`, `WithMsgID`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
-| `conn.go` | `Conn` — обёртка над `*nats.Conn`; `NewConn`, `Healthy`, `Close` (drain + close). |
-| `client.go` | `Client` — инстанс шины (соединение + `Bus` + `StreamBus`), `New`, `Probe` (health-probe инстанса). |
+| `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `ensureStreams`/`reconcileStream`, deadline + `InProgress` обработчика (`keepInProgress`), poison-обработка (`failStream`/`terminal`/`deadLetter`), `StreamMsg`, `WithMsgID`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
+| `subscription.go` | `Handler`, `Subscription` (`Unsubscribe`/`Drain`), внутренняя `subscription` и `inflightGroup` — учёт работающих обработчиков. |
+| `conn.go` | `Conn` — соединение + реестр подписок; `NewConn` (handlers nats.go → logkit), `Healthy`, graceful `Close`. |
+| `client.go` | `Client` — инстанс шины (соединение + `Bus` + `StreamBus`), `New`, `Probe` (`healthkit.Probe`). |
 | `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewConfigPrefixed`. |
 | `env.go` | Чтение конфига по тегам `envconfig` с префиксом инстанса — без fallback на беспрефиксные переменные. |
 | `context.go` | `SubjectFromContext` / `HeadersFromContext` — доступ к subject и header'ам входящего сообщения внутри обработчика. |
-| `instrumentation.go` | `natsInstruments` (5 otel-инструментов), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
+| `instrumentation.go` | `natsInstruments` (5 otel-инструментов через `internal/otelkit`), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
 | `module.go` | fx `Module(name)` (Config + `*Client` + `Bus` + `StreamBus`), `HealthProbe(name)`. |
 
 ## Bus (Core NATS)
@@ -48,10 +50,10 @@ Publish(ctx, subject, payload any)
 conn.PublishMsg(msg) ──► nats_messages_published_total{subject,status}
                          nats_publish_duration_seconds{subject}
 
-Subscribe / SubscribeQueue
+Subscribe / SubscribeQueue ──► Subscription (Unsubscribe / Drain)
    │  callback на каждое входящее сообщение
    ▼
-sem.Acquire(1) ──► go handleOne(...)   (backpressure: не более MaxInFlight)
+sem.Acquire(1) ──► track ──► go handleOne(...)   (backpressure: не более MaxInFlight)
    │  inflight +1
    │  startConsumerSpan: extract trace-context → child-span; subject+headers в ctx
    ▼
@@ -71,6 +73,10 @@ Core NATS не подтверждает доставку: при handler-оши�
 **не** переотправляется — оно уже сконсюмлено. Нужна гарантия доставки и
 ретраи — это JetStream.
 
+`ctx` в `Subscribe`/`SubscribeQueue` ограничивает только регистрацию (отменённый
+ctx → ошибка сразу). Время жизни подписки — `Subscription` и `Close` инстанса:
+привязка к ctx ловила бы `OnStart`-хук fx, чей ctx отменяется сразу после старта.
+
 ## StreamBus (JetStream)
 
 `jsBus` активен только при `NATS_JETSTREAM_ENABLED=true`; иначе `NewStreamBus`
@@ -80,21 +86,32 @@ Core NATS не подтверждает доставку: при handler-оши�
 
 ### Декларация стримов
 
-При старте `ensureStreams` создаёт/обновляет стримы из `NATS_JS_STREAM_NAMES`.
-Каждый стрим: subjects `<name>.>`, file-storage, retention/`MaxAge`/`Duplicates`
-из конфига. `Duplicates` поджимается до `MaxAge`, если задан больше (требование
-JetStream: окно дедупа ≤ срок хранения). Существующий стрим обновляется
-(`UpdateStream`), а не падает.
+При старте `ensureStreams` проходит по `NATS_JS_STREAM_NAMES`. Режим задаёт
+`NATS_JS_STREAM_MANAGED`:
+
+- `true` — `reconcileStream`: отсутствующий стрим создаётся целиком (subjects
+  `<name>.>`, file-storage, retention/`MaxAge`/`Duplicates` из конфига;
+  `Duplicates` поджимается до `MaxAge`, если задан больше — требование
+  JetStream). У существующего стрима сверяются только subjects: `<name>.>`
+  доливается объединением, остальные поля (`Replicas`, `MaxBytes`, `MaxAge`,
+  чужие subjects, описание) не трогаются. Гонка двух инстансов на создании
+  (`ErrStreamNameAlreadyInUse`) уходит в ту же сверку subjects.
+- `false` — кит только проверяет, что каждый стрим существует; иначе ошибка
+  старта.
 
 ### Публикация
 
-- `PublishStream` — синхронно: `PublishMsg` + ждёт `PubAck`.
+- `PublishStream` — синхронно: `PublishMsg` + ждёт `PubAck` (в пределах ctx или
+  дефолтного таймаута JetStream API).
 - `PublishStreamBatch` — async: все сообщения уходят `PublishMsgAsync`, затем
   ожидается `PublishAsyncComplete`, после чего собираются per-message результаты
   (`results[i] == nil` — персист подтверждён). Внешняя ошибка — сбой всего батча
   (JS выключен / отмена `ctx`). Порядок персиста best-effort: при частичном сбое
   неподтверждённые уходят на ретрай и могут получить более поздний sequence —
-  дедуп по `MsgID` гарантирует отсутствие дублей.
+  дедуп по `MsgID` гарантирует отсутствие дублей. Потерянный `PubAck` (обрыв
+  сети между `PUB` и ответом) закрывается `jetstream.WithPublishAsyncTimeout`
+  (`NATS_JS_PUBLISH_ASYNC_TIMEOUT`): `results[i] = ErrAsyncPublishTimeout`, а не
+  вечное ожидание — на это опирается `outboxkit`.
 
 `WithMsgID(id)` (или `StreamMsg.MsgID`) ставит `Nats-Msg-Id`: в пределах окна
 `Duplicates` повторная публикация с тем же id дедуплицируется стримом
@@ -104,12 +121,16 @@ JetStream: окно дедупа ≤ срок хранения). Существ�
 
 `SubscribeStream(stream, subject, durable, handler)` создаёт/обновляет durable
 pull-консьюмера с `AckExplicitPolicy`, `FilterSubject=subject`,
-`AckWait=NATS_JS_ACK_WAIT`, `MaxAckPending=NATS_JS_MAX_IN_FLIGHT`. Обработка
-каждого сообщения (`handleStreamOne`):
+`AckWait=NATS_JS_ACK_WAIT`, `MaxAckPending=NATS_JS_MAX_IN_FLIGHT` и запускает
+`Consume`; ошибки pull-цикла (нет heartbeat, консьюмер удалён) логируются
+(`natskit: jetstream consume error`). Обработка каждого сообщения
+(`handleStreamOne`):
 
 ```
-sem.Acquire(1)  (если не удалось — Nak, сообщение вернётся позже)
+sem.Acquire(1) ──► track ──► go handleStreamOne(...)
    │ inflight +1
+   │ ctx = consumer-span + deadline HandlerTimeout
+   │ keepInProgress: каждые AckWait/2 → msg.InProgress(), пока handler работает
    ▼
 invoke(handler): panic → recover (panicked=true), иначе вернуть ошибку handler'а
    │
@@ -121,6 +142,13 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
                 └─ нет → NakWithDelay(NakBackoff) | Nak()  status=handler_error|panic
 ```
 
+- **Deadline + `InProgress`.** Сервер переотправляет сообщение, не дождавшись
+  `Ack` за `AckWait`; без продления живой, но медленный обработчик получал бы
+  конкурентный ределивери. `keepInProgress` сдвигает таймер сервера, пока
+  обработчик работает, а `HandlerTimeout` (по умолчанию = `AckWait`) — deadline
+  `ctx` обработчика: зависший обработчик получает отмену, возвращает ошибку и
+  сообщение идёт по poison-пути. После deadline `InProgress` не шлётся —
+  обработчик, игнорирующий `ctx`, получит ределивери, пока висит.
 - **`MaxDeliver`** — потолок числа доставок. Ставится и на консьюмере
   (server-side backstop), и проверяется клиентом перед `Term`. `MaxDeliver ≤ 0`
   — без лимита (бесконечный ределивери).
@@ -129,13 +157,36 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
   ретраи во времени, не упирая консьюмера в горячую петлю.
 - **DLQ** — на исчерпании попыток сообщение перед `Term` republish'ится в
   `DLQSubject` (Core-публикацией, best-effort) с заголовками `Natskit-Dlq-Origin`
-  (исходный subject) и `Natskit-Dlq-Error` (текст ошибки), плюс все исходные
-  header'ы. `Term` останавливает дальнейший ределивери. Без `DLQSubject` —
-  только `Term` (тихий drop после исчерпания).
+  (исходный subject), `Natskit-Dlq-Error` (текст ошибки, без переводов строк),
+  `Natskit-Dlq-Msg-Id` (исходный `Nats-Msg-Id`, если был) и остальными исходными
+  header'ами. `Nats-Msg-Id` в копию не переносится: DLQ-subject внутри стрима с
+  окном дедупа иначе молча выбросил бы копию как дубль. `Term` останавливает
+  дальнейший ределивери. Без `DLQSubject` — только `Term` (тихий drop после
+  исчерпания).
 
 `durable` — имя durable-консьюмера: переподключение продолжает с того же места,
 а не с начала стрима. Несколько инстансов с одним `durable` делят нагрузку
 (JetStream-аналог queue-группы).
+
+## Subscription и graceful shutdown
+
+Каждая подписка регистрируется в `Conn` и считает свои работающие обработчики
+(`inflightGroup`; тот же счётчик есть у `Conn` целиком).
+
+- `Subscription.Unsubscribe()` — снимает интерес сразу; уже полученные, но не
+  начатые сообщения не обрабатываются (JetStream переотправит их после
+  `AckWait`), работающие обработчики не ждутся.
+- `Subscription.Drain(ctx)` — снимает интерес, даёт обработать буфер и ждёт
+  завершения обработчиков в пределах ctx.
+- `Conn.Close()` (= `Client.Close()`, `OnStop`-хук `Module`) с бюджетом
+  `DrainTimeout`: drain всех подписок → ожидание всех обработчиков → `nc.Drain()`
+  (flush публикаций) → ожидание `ClosedHandler`. Порядок важен: обработчики
+  завершаются по живому соединению и успевают `Ack`/`Nak`. По истечении бюджета
+  — предупреждение в лог и принудительный `nc.Close()`. После начала `Close`
+  новые подписки получают `ErrClosed`.
+
+Счётчик обработчиков — не `sync.WaitGroup`: транспорт может доставить сообщение
+после истечения бюджета drain, а `WaitGroup` запрещает `Add` во время `Wait`.
 
 ## Trace-propagation
 
@@ -156,22 +207,32 @@ W3C trace-context (`traceparent`/`tracestate`) ездит вместе с соо
 ## Backpressure
 
 И `natsBus`, и `jsBus` держат `semaphore.Weighted`. Каждое входящее сообщение
-обрабатывается в отдельной горутине, но не больше `MaxInFlight` одновременно:
+обрабатывается в отдельной горутине, но не больше `MaxInFlight` одновременно.
+При исчерпании семафора delivery-горутина подписки блокируется, и новые
+сообщения копятся в клиентском буфере nats.go:
 
-- Core (`natsBus`): не удалось взять семафор → сообщение логируется и
-  пропускается (Core не подтверждает — повтора нет).
-- JetStream (`jsBus`): не удалось взять семафор → `Nak` (сообщение вернётся
-  позже). Дополнительно `MaxAckPending` на консьюмере ограничивает число
-  неподтверждённых сообщений, что JetStream доставит.
+- Core: буфер конечен (pending limits nats.go); переполнение — `slow consumer`,
+  сообщения теряются, клиент сообщает об этом через `ErrorHandler` → лог
+  `natskit: async error` с числом `dropped`.
+- JetStream: `MaxAckPending = MaxInFlight` на консьюмере — сервер не выдаёт
+  больше неподтверждённых сообщений, чем есть слотов, поэтому семафор здесь
+  почти не блокирует.
 
-Семафор защищает сервис от перегрузки при всплеске трафика; одновременная
-конкуренция обработчиков ограничена, остальное ждёт/откладывается.
+Семафор защищает сервис от перегрузки при всплеске трафика; конкуренция
+обработчиков ограничена, остальное ждёт в буфере.
+
+## Соединение
+
+`NewConn` вешает на `nats.Conn` handlers, которые пишут в `logkit.Logger`:
+`ErrorHandler` (slow consumer, ошибки протокола), `DisconnectErrHandler`,
+`ReconnectHandler`, `ClosedHandler` (сигнал для `Close`). `DrainTimeout`
+пробрасывается и в nats.go (`nats.DrainTimeout`), чтобы его внутренний drain
+укладывался в тот же бюджет.
 
 ## fx Module
 
 `Module(name)` provide'ит `Config`, `*Client`, `Bus` и `StreamBus` одного
-инстанса и вешает `OnStop`-хук с `Drain()` + `Close()` — graceful-разрыв на
-shutdown.
+инстанса и вешает `OnStop`-хук с `Client.Close()` — graceful shutdown.
 
 Пустое имя — дефолтный инстанс: конфиг из `NATS_*`, provide без тега. Непустое —
 конфиг из `<NAME>_NATS_*`, provide под тегом `name:"<name>"`, поэтому инстансы не
@@ -179,14 +240,13 @@ shutdown.
 
 ```go
 natskit.Module(""),     // своя шина
-natskit.Module("hub"),  // внешняя, HUB_NATS_*
+natskit.Module("hub"),  // внешняя, <NAME>_NATS_* с NAME=HUB
 fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
 ```
 
-`Probe` модуль **не** provide'ит: тип `func(context.Context) error` коллизит с
-health-probe'ами других китов (например `cachekit.Probe`), а класть в readiness
-имеет смысл не каждый инстанс. Регистрация — отдельной опцией
-`natskit.HealthProbe(name)`.
+`Probe` модуль **не** provide'ит: в readiness имеет смысл класть не каждый
+инстанс. Регистрация — `healthkit.Provide(natskit.Probe)` (дефолтный инстанс)
+или `natskit.HealthProbe(name)`; оба кладут `healthkit.Probe` в группу `health`.
 
 ## Ключевые проектные решения (WHY)
 
@@ -198,19 +258,31 @@ health-probe'ами других китов (например `cachekit.Probe`),
   `StreamBus` собирается, но его методы возвращают `ErrJetStreamDisabled`. fx-граф
   не ломается, а неверное использование выключенного транспорта — явная ошибка в
   рантайме, не nil-panic.
+- **Стримы: создать или долить subject, не переписывать.** Полный `UpdateStream`
+  из конфига кита затирал бы ручной тюнинг оператора (`Replicas`, `MaxBytes`,
+  доп. subjects). Кит владеет только своим subject `<name>.>`; всё остальное —
+  зона оператора, а `NATS_JS_STREAM_MANAGED=false` отдаёт ему и это.
+- **`HandlerTimeout` отдельно от `AckWait`.** `AckWait` — про смерть процесса
+  (за сколько сообщение уйдёт другому инстансу), бюджет обработки — про зависший
+  код. Смешивать их значило бы либо ставить `AckWait` в минуты (медленный
+  failover), либо резать долгие обработчики.
 - **Дедуп — на стороне стрима, по `Nats-Msg-Id`.** Кит не хранит состояние
   публикаций; effectively-once персист обеспечивает сам JetStream в окне
   `Duplicates`. Это согласовано с `outboxkit`, который ставит namespaced
   `Nats-Msg-Id` при публикации из outbox.
-- **DLQ — Core-публикация, best-effort.** Dead-letter уходит обычным
-  `conn.PublishMsg` (не в JetStream): DLQ — диагностический канал, не источник
-  истины. Term всё равно останавливает ределивери; сбой DLQ-публикации
-  логируется, но не блокирует Term.
+- **DLQ — Core-публикация, best-effort, без `Nats-Msg-Id`.** Dead-letter уходит
+  обычным `conn.PublishMsg` (не в JetStream): DLQ — диагностический канал, не
+  источник истины. Term всё равно останавливает ределивери; сбой DLQ-публикации
+  логируется, но не блокирует Term. Исходный id сохраняется в
+  `Natskit-Dlq-Msg-Id`.
 - **Backpressure обязателен.** Без семафора всплеск входящих породил бы
   неограниченное число горутин-обработчиков и съел бы память. `MaxInFlight`
   (default 100) — потолок конкуренции; для JetStream он же `MaxAckPending`.
 - **panic не роняет процесс.** Обработчик в отдельной горутине обёрнут recover:
   паника одного сообщения логируется со стеком и не валит весь подписчик. В Core
   сообщение при этом теряется; в JetStream — идёт по poison-пути (NAK→…→DLQ/Term).
+- **Drain с бюджетом, не бесконечный.** Shutdown обязан завершиться: оркестратор
+  всё равно убьёт процесс по своему таймауту, и лучше закрыть соединение
+  осознанно с предупреждением в логе, чем получить SIGKILL посреди обработки.
 - **`Config` не в `Module`.** Симметрично остальным китам: env-контракт собирает
   приложение, кит лишь его потребляет.

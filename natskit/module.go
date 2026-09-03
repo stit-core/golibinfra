@@ -6,6 +6,7 @@ import (
 
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -53,16 +54,15 @@ func Module(name string) fx.Option {
 	)
 }
 
-// HealthProbe регистрирует пробу инстанса в `group:"health"`. Отдельной опцией,
-// потому что тип пробы (`func(context.Context) error`) коллизит с пробами других
-// китов — caller решает, какие инстансы попадают в health.
+// HealthProbe регистрирует пробу инстанса в fx-группе `health`. Отдельной
+// опцией, а не внутри Module: caller решает, какие инстансы валят readiness.
 func HealthProbe(name string) fx.Option {
 	if name == "" {
-		return fx.Provide(fx.Annotate(Probe, fx.ResultTags(`group:"health"`)))
+		return healthkit.Provide(Probe)
 	}
 	return fx.Provide(fx.Annotate(
 		Probe,
-		fx.ParamTags(nameTag(name)), fx.ResultTags(`group:"health"`),
+		fx.ParamTags(nameTag(name)), fx.ResultTags(`group:"`+healthkit.Group+`"`),
 	))
 }
 

@@ -5,8 +5,6 @@ import (
 	"testing"
 	"time"
 
-	natsgo "github.com/nats-io/nats.go"
-
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
@@ -26,7 +24,7 @@ func TestBus_QueueGroupLoadBalances(t *testing.T) {
 	got := make(chan struct{}, n*2)
 	h := func(_ context.Context, _ []byte) error { got <- struct{}{}; return nil }
 	for i := 0; i < 2; i++ {
-		if err := bus.SubscribeQueue(ctx, "work.items", "workers", h); err != nil {
+		if _, err := bus.SubscribeQueue(ctx, "work.items", "workers", h); err != nil {
 			t.Fatalf("subscribe queue: %v", err)
 		}
 	}
@@ -48,22 +46,7 @@ func TestBus_QueueGroupLoadBalances(t *testing.T) {
 		}
 	}
 	// queue-group: каждое сообщение ровно одному подписчику → не больше n.
-	select {
-	case <-got:
-		t.Fatal("дубликат доставки — queue-group не балансирует")
-	case <-time.After(500 * time.Millisecond):
-	}
-}
-
-func connect(t *testing.T, url string) *natskit.Conn {
-	t.Helper()
-	nc, err := natsgo.Connect(url)
-	if err != nil {
-		t.Fatalf("connect nats: %v", err)
-	}
-	t.Cleanup(func() { nc.Close() })
-	conn := natskit.ExportConn(nc)
-	return conn
+	expectSilence(t, got, 500*time.Millisecond, "duplicate delivery")
 }
 
 func TestBus_PublishSubscribe(t *testing.T) {
@@ -73,14 +56,13 @@ func TestBus_PublishSubscribe(t *testing.T) {
 
 	fix := testkit.StartNATS(t)
 	conn := connect(t, fix.URL)
-	log := logkit.Nop()
-	bus := natskit.NewBus(conn, log, natskit.Config{})
+	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := "test.roundtrip"
 
 	got := make(chan []byte, 1)
-	if err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
+	if _, err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
 		got <- payload
 		return nil
 	}); err != nil {
@@ -91,13 +73,8 @@ func TestBus_PublishSubscribe(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	select {
-	case payload := <-got:
-		if string(payload) != `{"hello":"world"}` {
-			t.Errorf("unexpected payload: %s", payload)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for message")
+	if payload := recv(t, got, 3*time.Second, "message"); string(payload) != `{"hello":"world"}` {
+		t.Errorf("unexpected payload: %s", payload)
 	}
 }
 
@@ -108,8 +85,7 @@ func TestBus_PublishSubscribeJSON(t *testing.T) {
 
 	fix := testkit.StartNATS(t)
 	conn := connect(t, fix.URL)
-	log := logkit.Nop()
-	bus := natskit.NewBus(conn, log, natskit.Config{})
+	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := "test.json"
@@ -119,7 +95,7 @@ func TestBus_PublishSubscribeJSON(t *testing.T) {
 	}
 
 	got := make(chan Msg, 1)
-	if err := natskit.SubscribeJSON(bus, ctx, subject, func(_ context.Context, m Msg) error {
+	if _, err := natskit.SubscribeJSON(bus, ctx, subject, func(_ context.Context, m Msg) error {
 		got <- m
 		return nil
 	}); err != nil {
@@ -130,12 +106,23 @@ func TestBus_PublishSubscribeJSON(t *testing.T) {
 		t.Fatalf("publish json: %v", err)
 	}
 
-	select {
-	case m := <-got:
-		if m.Value != 42 {
-			t.Errorf("expected value=42, got=%d", m.Value)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("timeout waiting for message")
+	if m := recv(t, got, 3*time.Second, "message"); m.Value != 42 {
+		t.Errorf("expected value=42, got=%d", m.Value)
+	}
+}
+
+func TestBus_SubscribeRejectsCancelledContext(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	fix := testkit.StartNATS(t)
+	conn := connect(t, fix.URL)
+	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := bus.Subscribe(ctx, "x", func(context.Context, []byte) error { return nil }); err == nil {
+		t.Fatal("want error for cancelled ctx")
 	}
 }

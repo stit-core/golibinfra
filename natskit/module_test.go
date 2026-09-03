@@ -1,11 +1,11 @@
 package natskit_test
 
 import (
-	"context"
 	"testing"
 
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
 )
@@ -32,8 +32,24 @@ func TestModule_NamedInstanceHealthProbe(t *testing.T) {
 		natskit.Module("hub"),
 		natskit.HealthProbe("hub"),
 		fx.Invoke(fx.Annotate(
-			func(probes []func(context.Context) error) {},
-			fx.ParamTags(`group:"health"`),
+			func(probes []healthkit.Probe) {},
+			fx.ParamTags(`group:"`+healthkit.Group+`"`),
+		)),
+	)
+	if err != nil {
+		t.Fatalf("ValidateApp: %v", err)
+	}
+}
+
+// Probe совместима с healthkit.Provide — путь, которым пробы регистрируют остальные киты.
+func TestModule_ProbeViaHealthkitProvide(t *testing.T) {
+	err := fx.ValidateApp(
+		fx.Provide(func() logkit.Logger { return logkit.Nop() }),
+		natskit.Module(""),
+		healthkit.Provide(natskit.Probe),
+		fx.Invoke(fx.Annotate(
+			func(probes []healthkit.Probe) {},
+			fx.ParamTags(`group:"`+healthkit.Group+`"`),
 		)),
 	)
 	if err != nil {

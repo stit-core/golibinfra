@@ -40,6 +40,30 @@ func TestNewConfig_ReadsEnvAndDefaults(t *testing.T) {
 	if cfg.Backpressure.MaxInFlight != 100 {
 		t.Fatalf("MaxInFlight default = %d", cfg.Backpressure.MaxInFlight)
 	}
+	if cfg.DrainTimeout != 10*time.Second {
+		t.Fatalf("DrainTimeout default = %v", cfg.DrainTimeout)
+	}
+	if !cfg.JetStream.StreamManaged {
+		t.Fatal("StreamManaged default = false, want true")
+	}
+	if cfg.JetStream.PublishAsyncTimeout != 5*time.Second {
+		t.Fatalf("PublishAsyncTimeout default = %v", cfg.JetStream.PublishAsyncTimeout)
+	}
+	if cfg.JetStream.HandlerTimeout != 0 {
+		t.Fatalf("HandlerTimeout default = %v, want 0 (= AckWait)", cfg.JetStream.HandlerTimeout)
+	}
+}
+
+func TestNewConfig_StreamManagedOff(t *testing.T) {
+	t.Setenv("NATS_JS_STREAM_MANAGED", "false")
+
+	cfg, err := natskit.NewConfig()
+	if err != nil {
+		t.Fatalf("NewConfig: %v", err)
+	}
+	if cfg.JetStream.StreamManaged {
+		t.Fatal("StreamManaged = true, want false")
+	}
 }
 
 // Инстанс с префиксом не наследует переменные дефолтного: иначе вторая шина

@@ -1,25 +1,27 @@
 # Использование natskit
 
 Рецепты по `Bus` (Core NATS) и `StreamBus` (JetStream). Все сигнатуры — точно
-как в коде (`bus.go`, `jetstream.go`, `context.go`).
+как в коде (`bus.go`, `jetstream.go`, `subscription.go`, `context.go`).
 
 ## Сигнатуры API
 
 ### Bus (Core NATS)
 
 ```go
+type Handler func(ctx context.Context, payload []byte) error
+
 type Bus interface {
 	Publish(ctx context.Context, subject string, payload any) error
-	Subscribe(ctx context.Context, subject string, handler func(ctx context.Context, payload []byte) error) error
-	SubscribeQueue(ctx context.Context, subject, queue string, handler func(ctx context.Context, payload []byte) error) error
+	Subscribe(ctx context.Context, subject string, handler Handler) (Subscription, error)
+	SubscribeQueue(ctx context.Context, subject, queue string, handler Handler) (Subscription, error)
 }
 
 func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus // низкоуровнево; обычный путь — Client.Bus()
 
 // Дженерики: marshal/unmarshal JSON за вызывающего.
 func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T) error
-func SubscribeJSON[T any](b Bus, ctx context.Context, subject string, h func(ctx context.Context, msg T) error) error
-func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string, h func(ctx context.Context, msg T) error) error
+func SubscribeJSON[T any](b Bus, ctx context.Context, subject string, h func(ctx context.Context, msg T) error) (Subscription, error)
+func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string, h func(ctx context.Context, msg T) error) (Subscription, error)
 ```
 
 ### StreamBus (JetStream)
@@ -28,7 +30,7 @@ func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string
 type StreamBus interface {
 	PublishStream(ctx context.Context, subject string, payload []byte, opts ...PublishOption) error
 	PublishStreamBatch(ctx context.Context, msgs []StreamMsg) (results []error, err error)
-	SubscribeStream(ctx context.Context, stream, subject, durable string, handler func(ctx context.Context, payload []byte) error) error
+	SubscribeStream(ctx context.Context, stream, subject, durable string, handler Handler) (Subscription, error)
 }
 
 func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error)
@@ -43,7 +45,29 @@ func WithMsgID(id string) PublishOption
 
 // Дженерики.
 func PublishStreamJSON[T any](b StreamBus, ctx context.Context, subject string, msg T) error
-func SubscribeStreamJSON[T any](b StreamBus, ctx context.Context, stream, subject, durable string, h func(ctx context.Context, msg T) error) error
+func SubscribeStreamJSON[T any](b StreamBus, ctx context.Context, stream, subject, durable string, h func(ctx context.Context, msg T) error) (Subscription, error)
+```
+
+### Subscription
+
+```go
+type Subscription interface {
+	Unsubscribe() error            // снять интерес сразу; обработчики не ждутся
+	Drain(ctx context.Context) error // снять интерес, дообработать буфер, дождаться обработчиков (в пределах ctx)
+}
+```
+
+### Клиент и соединение
+
+```go
+func New(name string, cfg Config, log logkit.Logger) (*Client, error)
+func (c *Client) Bus() Bus
+func (c *Client) Stream() StreamBus
+func (c *Client) Close()                 // graceful: drain + ожидание обработчиков в пределах DrainTimeout
+func Probe(c *Client) healthkit.Probe
+
+func NewConn(cfg Config, log logkit.Logger) (*Conn, error)
+var ErrClosed error                      // Subscribe после начала Close
 ```
 
 ### Контекст обработчика
@@ -67,17 +91,39 @@ func HeadersFromContext(ctx context.Context) nats.Header // заголовки �
 fx.New(
 	logkit.Module,
 	natskit.Module(""),
-	natskit.HealthProbe(""), // опц. проба инстанса в group:"health"
+	natskit.HealthProbe(""), // опц. проба инстанса в group:"health" (= healthkit.Provide(natskit.Probe))
 	fx.Invoke(func(bus natskit.Bus, sb natskit.StreamBus) error {
 		// регистрация подписчиков на старте
-		return nil
+		_, err := natskit.SubscribeJSON(bus, context.Background(), "orders.created", handleOrder)
+		return err
 	}),
 )
 ```
 
 Подписки регистрируйте в `fx.Invoke` или в `OnStart`-хуке — до этого граф не
 собран. `Subscribe`/`SubscribeStream` неблокирующие: ставят callback и сразу
-возвращают управление, обработка идёт в фоновых горутинах.
+возвращают `Subscription`, обработка идёт в фоновых горутинах. `ctx` в них
+ограничивает только регистрацию (вызовы JetStream API); подписка живёт до
+`Subscription.Unsubscribe`/`Drain` или `Close` инстанса — `OnStop`-хук `Module`
+делает это сам, handle можно не хранить.
+
+## Остановить одну подписку
+
+```go
+sub, err := natskit.SubscribeJSON(bus, ctx, "orders.created", handleOrder)
+…
+// переключение режима: снять интерес, дождаться уже идущих обработчиков
+drainCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+defer cancel()
+if err := sub.Drain(drainCtx); err != nil { … } // ctx истёк — обработчики ещё работают
+
+// немедленно, без ожидания
+_ = sub.Unsubscribe()
+```
+
+Для JetStream `Unsubscribe` останавливает pull-консьюмер на стороне клиента;
+durable-консьюмер на сервере остаётся, и не подтверждённые сообщения уйдут на
+ределивери после `AckWait`.
 
 ## Несколько шин в одном приложении
 
@@ -89,20 +135,21 @@ fx.New(
 fx.New(
 	logkit.Module,
 	natskit.Module(""),      // своя шина:    NATS_URL, NATS_JS_STREAM_NAMES, …
-	natskit.Module("hub"),   // внешняя шина: HUB_NATS_URL, HUB_NATS_JETSTREAM_ENABLED, …
+	natskit.Module("hub"),   // внешняя шина: <NAME>_NATS_* с NAME=HUB
 	fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
 )
 
 func NewAlertPublisher(hub natskit.StreamBus) *AlertPublisher { … }
 ```
 
-Переменные инстансов изолированы: `HUB_NATS_JS_STREAM_NAMES` не задан — значит
-список пуст, а не унаследован из `NATS_JS_STREAM_NAMES`. Это защищает от
+Переменные инстансов изолированы: `<NAME>_NATS_JS_STREAM_NAMES` не задан —
+значит список пуст, а не унаследован из `NATS_JS_STREAM_NAMES`. Это защищает от
 публикации в чужую шину и от создания там чужих стримов: инстанс, который только
 публикует в стрим под управлением соседней команды, оставляет
-`<NAME>_NATS_JS_STREAM_NAMES` незаданным.
+`<NAME>_NATS_JS_STREAM_NAMES` незаданным (или ставит
+`<NAME>_NATS_JS_STREAM_MANAGED=false`, если хочет проверять наличие стрима).
 
-Имя инстанса едет атрибутом `instance` в метриках и спанах (см.
+Имя инстанса едет атрибутом `instance` в метриках, спанах и логах (см.
 [observability.md](observability.md)), поэтому сигналы двух шин не сливаются.
 
 Без fx инстанс собирается напрямую:
@@ -126,7 +173,7 @@ type OrderCreated struct {
 err := natskit.PublishJSON(bus, ctx, "orders.created", OrderCreated{ID: 42})
 
 // Subscriber (fan-out — каждому инстансу).
-err = natskit.SubscribeJSON(bus, ctx, "orders.created",
+sub, err := natskit.SubscribeJSON(bus, ctx, "orders.created",
 	func(ctx context.Context, m OrderCreated) error {
 		return process(ctx, m) // вернёте ошибку → status=handler_error в метрике
 	})
@@ -138,7 +185,7 @@ err = natskit.SubscribeJSON(bus, ctx, "orders.created",
 сообщение получает ровно один инстанс из группы:
 
 ```go
-err := natskit.SubscribeQueueJSON(bus, ctx, "jobs.process", "workers",
+sub, err := natskit.SubscribeQueueJSON(bus, ctx, "jobs.process", "workers",
 	func(ctx context.Context, j Job) error {
 		return handle(ctx, j)
 	})
@@ -157,9 +204,10 @@ err := natskit.SubscribeQueueJSON(bus, ctx, "jobs.process", "workers",
 err := natskit.PublishStreamJSON(sb, ctx, "ORDERS.created", OrderCreated{ID: 7})
 
 // Durable-подписчик: durable-имя держит позицию между переподключениями.
-err = natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "ORDERS.created", "orders-worker",
+sub, err := natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "ORDERS.created", "orders-worker",
 	func(ctx context.Context, m OrderCreated) error {
-		// nil → Ack; ошибка → Nak/ретрай; исчерпание MaxDeliver → DLQ/Term
+		// nil → Ack; ошибка → Nak/ретрай; исчерпание MaxDeliver → DLQ/Term.
+		// ctx несёт deadline HandlerTimeout — передавайте его в БД/HTTP.
 		return process(ctx, m)
 	})
 ```
@@ -167,6 +215,16 @@ err = natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "ORDERS.created", "orders-w
 `SubscribeStream(stream, subject, durable, ...)`: `subject` — `FilterSubject`
 консьюмера (может быть wildcard, напр. `ORDERS.>`); `durable` — имя
 durable-консьюмера (инстансы с одним именем делят нагрузку).
+
+### Медленные обработчики
+
+Пока обработчик работает, кит каждые `AckWait/2` шлёт серверу `InProgress` —
+сообщение не переотправляется другому инстансу. Бюджет одной попытки задаёт
+`HandlerTimeout` (по умолчанию = `AckWait`): по его истечении `ctx` обработчика
+отменяется, обработчик обязан вернуть ошибку (`ctx.Err()`), и сообщение уходит
+на ретрай. Тяжёлые задачи (минуты) — поднимайте `NATS_JS_HANDLER_TIMEOUT`, не
+`NATS_JS_ACK_WAIT`: второй отвечает за скорость failover при смерти процесса
+(см. [configuration.md](configuration.md#ackwait-и-handlertimeout)).
 
 ### Дедуп публикации (`Nats-Msg-Id`)
 
@@ -187,7 +245,7 @@ batch := []natskit.StreamMsg{
 results, err := sb.PublishStreamBatch(ctx, batch)
 // err != nil       — сбой всего батча (JS выключен / отмена ctx)
 // results[i] == nil — i-е сообщение подтверждено персистом (дубль по MsgID — тоже PubAck, не ошибка)
-// results[i] != nil — i-е не опубликовано
+// results[i] != nil — i-е не опубликовано; потерянный PubAck — jetstream.ErrAsyncPublishTimeout
 if err != nil {
 	return err
 }
@@ -205,14 +263,17 @@ Poison-обработка настраивается через ENV (`NATS_JS_MA
 [configuration.md](configuration.md)), не в коде. Обработчик просто возвращает
 ошибку — остальное делает кит.
 
-DLQ-сообщение приходит как обычное Core-сообщение в `DLQSubject`. Метаданные —
-в заголовках, читаемых через `HeadersFromContext`:
+DLQ-сообщение приходит как обычное сообщение в `DLQSubject` — Core-подписчику
+или, если subject накрыт стримом, JetStream-консьюмеру. Метаданные — в
+заголовках (константы `HeaderDLQOrigin`/`HeaderDLQError`/`HeaderDLQMsgID`),
+читаемых через `HeadersFromContext`:
 
 ```go
-err := bus.Subscribe(ctx, "dlq.orders", func(ctx context.Context, payload []byte) error {
+sub, err := bus.Subscribe(ctx, "dlq.orders", func(ctx context.Context, payload []byte) error {
 	h := natskit.HeadersFromContext(ctx)
-	origin := h.Get("Natskit-Dlq-Origin") // исходный subject
-	cause := h.Get("Natskit-Dlq-Error")   // текст ошибки обработчика
+	origin := h.Get(natskit.HeaderDLQOrigin) // исходный subject
+	cause := h.Get(natskit.HeaderDLQError)   // текст ошибки обработчика
+	msgID := h.Get(natskit.HeaderDLQMsgID)   // исходный Nats-Msg-Id, если был
 	// разбор/алерт/ручной retry
 	return nil
 })
@@ -224,7 +285,7 @@ err := bus.Subscribe(ctx, "dlq.orders", func(ctx context.Context, payload []byte
 дублировать его в payload:
 
 ```go
-err := bus.Subscribe(ctx, "orders.*", func(ctx context.Context, payload []byte) error {
+sub, err := bus.Subscribe(ctx, "orders.*", func(ctx context.Context, payload []byte) error {
 	switch natskit.SubjectFromContext(ctx) {
 	case "orders.created":
 		// ...
@@ -239,6 +300,14 @@ err := bus.Subscribe(ctx, "orders.*", func(ctx context.Context, payload []byte) 
 `schema-version` и т.п.). Там же лежит W3C trace-context — это нормально,
 читайте только нужные ключи.
 
+## Graceful shutdown
+
+`Client.Close()` (его вызывает `OnStop`-хук `Module`) дренит подписки, ждёт
+работающие обработчики и только потом закрывает соединение — обработчики
+успевают `Ack`. Бюджет — `NATS_DRAIN_TIMEOUT` (10s по умолчанию); держите его
+меньше stop-таймаута fx/оркестратора. Обработчики, не уложившиеся в бюджет,
+теряют соединение: JetStream переотправит их сообщения после `AckWait`.
+
 ## Обработка ошибок и паник
 
 - Обработчик вернул ошибку: Core логирует (кроме `context.Canceled`), сообщение
@@ -248,3 +317,4 @@ err := bus.Subscribe(ctx, "orders.*", func(ctx context.Context, payload []byte) 
 - Публикация JSON: ошибка marshal'а возвращается из `PublishJSON`/
   `PublishStreamJSON` (`natskit: marshal: …`). Ошибка unmarshal'а в подписчике
   возвращается как handler-ошибка (`natskit: unmarshal: …`).
+- Подписка после начала `Close` — `ErrClosed`.

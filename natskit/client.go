@@ -3,6 +3,7 @@ package natskit
 import (
 	"context"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -22,7 +23,7 @@ func New(name string, cfg Config, log logkit.Logger) (*Client, error) {
 	}
 	cfg.Instance = name
 
-	conn, err := NewConn(cfg)
+	conn, err := NewConn(cfg, log)
 	if err != nil {
 		return nil, err
 	}
@@ -44,10 +45,13 @@ func (c *Client) Conn() *Conn { return c.conn }
 
 func (c *Client) Healthy() error { return c.conn.Healthy() }
 
+// Close — graceful: дренит подписки, ждёт обработчики (в пределах DrainTimeout)
+// и закрывает соединение.
 func (c *Client) Close() { c.conn.Close() }
 
-func Probe(c *Client) func(ctx context.Context) error {
-	return func(_ context.Context) error {
+// Probe — health-проба инстанса для fx-группы `health` (healthkit.Provide / HealthProbe).
+func Probe(c *Client) healthkit.Probe {
+	return func(context.Context) error {
 		return c.Healthy()
 	}
 }

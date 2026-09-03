@@ -10,6 +10,8 @@ import (
 	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.40.0"
 	"go.opentelemetry.io/otel/trace"
+
+	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 )
 
 // natsHeaderCarrier — TextMapCarrier на nats.Header. Через него
@@ -50,45 +52,36 @@ type natsInstruments struct {
 }
 
 func newNatsInstruments(instance string) *natsInstruments {
-	meter := otel.Meter("git.stit.tech/stit-core/golibinfra/natskit")
-	tracer := otel.Tracer("git.stit.tech/stit-core/golibinfra/natskit")
-
-	publishedTotal, _ := meter.Int64Counter(
-		"nats_messages_published_total",
-		metric.WithDescription("NATS messages published"),
-	)
-	publishDuration, _ := meter.Float64Histogram(
-		"nats_publish_duration_seconds",
-		metric.WithDescription("Time to publish a NATS message"),
-		metric.WithUnit("s"),
-	)
-	consumedTotal, _ := meter.Int64Counter(
-		"nats_messages_consumed_total",
-		metric.WithDescription("NATS messages consumed"),
-	)
-	handleDuration, _ := meter.Float64Histogram(
-		"nats_handle_duration_seconds",
-		metric.WithDescription("Subscriber handler duration"),
-		metric.WithUnit("s"),
-	)
-	inflight, _ := meter.Int64UpDownCounter(
-		"nats_inflight_messages",
-		metric.WithDescription("Messages currently being handled (per-subject)"),
-	)
-
+	meter := otelkit.Meter("natskit")
 	if instance == "" {
 		instance = DefaultInstance
 	}
-
 	return &natsInstruments{
-		tracer:          tracer,
-		prop:            otel.GetTextMapPropagator(),
-		instance:        instance,
-		publishedTotal:  publishedTotal,
-		publishDuration: publishDuration,
-		consumedTotal:   consumedTotal,
-		handleDuration:  handleDuration,
-		inflight:        inflight,
+		tracer:   otelkit.Tracer("natskit"),
+		prop:     otel.GetTextMapPropagator(),
+		instance: instance,
+		publishedTotal: otelkit.Must(meter.Int64Counter(
+			"nats_messages_published_total",
+			metric.WithDescription("NATS messages published"),
+		)),
+		publishDuration: otelkit.Must(meter.Float64Histogram(
+			"nats_publish_duration_seconds",
+			metric.WithDescription("Time to publish a NATS message"),
+			metric.WithUnit("s"),
+		)),
+		consumedTotal: otelkit.Must(meter.Int64Counter(
+			"nats_messages_consumed_total",
+			metric.WithDescription("NATS messages consumed"),
+		)),
+		handleDuration: otelkit.Must(meter.Float64Histogram(
+			"nats_handle_duration_seconds",
+			metric.WithDescription("Subscriber handler duration"),
+			metric.WithUnit("s"),
+		)),
+		inflight: otelkit.Must(meter.Int64UpDownCounter(
+			"nats_inflight_messages",
+			metric.WithDescription("Messages currently being handled (per subscription subject)"),
+		)),
 	}
 }
 
