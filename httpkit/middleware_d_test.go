@@ -74,7 +74,8 @@ func TestCORS_Disabled(t *testing.T) {
 }
 
 func TestRateLimit_AllowAndReject(t *testing.T) {
-	cfg := httpkit.RateLimitConfig{RPS: 100, Burst: 100}
+	// RPS=1: за время 101 запроса ведро не успевает пополниться, 101-й всегда 429.
+	cfg := httpkit.RateLimitConfig{RPS: 1, Burst: 100}
 	h := httpkit.RateLimit(cfg)(http.HandlerFunc(okHandler))
 
 	srv := httptest.NewServer(h)
