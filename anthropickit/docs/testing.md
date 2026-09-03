@@ -14,7 +14,7 @@ import "git.stit.tech/stit-core/golibinfra/anthropickit/testkit/anthropictest"
 
 | Поле | Подменяет | Дефолт (если поле `nil`) |
 |---|---|---|
-| `CompleteFunc` | `Complete` | `*Response` с одним `TextBlock{Text:"stub"}`, `StopReason=StopEndTurn`. |
+| `CompleteFunc` | `Complete` | `*Response` с одним `TextBlock{Text:"stub"}`, `StopReason=StopEndTurn`, `CostKnown=true`. |
 | `StreamFunc` | `Stream` | `ScriptStream` с событиями `EventTextDelta("stub")` + `EventDone` и таким же финалом. |
 | `CountTokensFunc` | `CountTokens` | `0, nil`. |
 | `RawClient` | возвращается из `Raw()` | нулевой `anthropic.Client`. |
@@ -30,6 +30,8 @@ stub := &anthropictest.Stub{
 			StopReason: anthropickit.StopEndTurn,
 			Content:    []anthropickit.Block{anthropickit.TextBlock{Text: "42"}},
 			Usage:      anthropickit.Usage{InputTokens: 10, OutputTokens: 1},
+			Cost:       75,
+			CostKnown:  true,
 		}, nil
 	},
 }
@@ -72,16 +74,25 @@ resp, _ := st.Final()
 ```
 
 Дрейн-контракт совпадает с боевым `sseStream`: `Next()` до `false`, затем
-`Final()`. Подменив `Stub.StreamFunc` на возврат `ScriptStream`, скриптуешь поток
-для всего сервиса.
+`Final()`, `Close()` в конце. Подменив `Stub.StreamFunc` на возврат
+`ScriptStream`, скриптуешь поток для всего сервиса.
 
 ## `ErrStream` — стрим сразу в ошибке
 
 `ErrStream(err)` — `anthropickit.Stream`, у которого `Next()==false`, а ошибка
 доступна через `Err()` и `Final()`. Зеркалит боевой `errStream` (сбой маппинга
-запроса до открытия SSE).
+запроса до HTTP-вызова) и стрим, чей HTTP-запрос отклонил API.
 
 ```go
 st := anthropictest.ErrStream(anthropickit.ErrInvalidRequest)
 // st.Next() == false; st.Err() / st.Final() → ErrInvalidRequest
 ```
+
+## Тесты самого кита
+
+Боевой `Client` тестируется против `httptest.Server`, изображающего Anthropic
+API (`WithBaseURL(srv.URL)`): JSON-ответы Messages/count_tokens и SSE-поток с
+`Content-Type: text/event-stream`; метрики и спаны проверяются через in-memory
+OTel SDK (`sdkmetric.ManualReader`, `tracetest.SpanRecorder`), установленный в
+глобальные провайдеры до `New`. Ретраи SDK в тестах управляются заголовком
+`Retry-After-Ms` в ответе сервера.

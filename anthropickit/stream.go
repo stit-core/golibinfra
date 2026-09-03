@@ -37,7 +37,8 @@ type StreamEvent struct {
 }
 
 // Stream — pull-итератор: Next до false, затем Final для итогового ответа
-// (Usage+Cost). Под gRPC server-stream ре-стримятся события из Event.
+// (Usage+Cost); Close обязателен — он отдаёт соединение и дописывает метрики
+// брошенного стрима. Под gRPC server-stream ре-стримятся события из Event.
 type Stream interface {
 	Next() bool
 	Event() StreamEvent
@@ -46,7 +47,7 @@ type Stream interface {
 	Close() error
 }
 
-// errStream — стрим, который сразу в ошибке (сбой маппинга запроса до открытия SSE).
+// errStream — стрим, который сразу в ошибке (сбой маппинга запроса до HTTP-вызова).
 type errStream struct{ err error }
 
 func (e *errStream) Next() bool                { return false }
@@ -64,21 +65,25 @@ type sseStream struct {
 	acc    anthropic.Message
 	cur    StreamEvent
 	err    error
-	done   bool
+	ended  bool // SSE исчерпан или упал
+	done   bool // метрики записаны
+	closed bool
 }
 
 func (st *sseStream) Next() bool {
-	if st.err != nil {
+	if st.err != nil || st.ended {
 		return false
 	}
 	if !st.s.Next() {
-		st.finish()
+		st.ended = true
+		st.finish(statusOK)
 		return false
 	}
 	ev := st.s.Current()
 	if e := st.acc.Accumulate(ev); e != nil {
 		st.err = e
-		st.finish()
+		st.ended = true
+		st.finish(statusOK)
 		return false
 	}
 	st.cur = translate(ev)
@@ -101,20 +106,28 @@ func (st *sseStream) Final() (*Response, error) {
 	return st.client.buildResponse(&st.acc, st.model), nil
 }
 
-func (st *sseStream) Close() error { return st.s.Close() }
+// Close до исчерпания SSE — брошенный стрим: метрики пишутся с накопленным usage
+// под status=abandoned.
+func (st *sseStream) Close() error {
+	if st.closed {
+		return nil
+	}
+	st.closed = true
+	err := st.s.Close()
+	st.finish(statusAbandoned)
+	return err
+}
 
-// finish — однократная запись метрик по завершении дрейна (успех/ошибка).
-func (st *sseStream) finish() {
+func (st *sseStream) finish(status string) {
 	if st.done {
 		return
 	}
 	st.done = true
-	if err := st.Err(); err != nil {
-		st.client.instr.record(st.ctx, st.model, "error", time.Since(st.start), Usage{}, 0)
-		return
-	}
 	u := mapUsage(st.acc.Usage)
-	st.client.instr.record(st.ctx, st.model, "ok", time.Since(st.start), u, st.client.costOf(st.model, u))
+	cost, _ := st.client.costOf(st.model, u)
+	st.client.observe(st.ctx, st.start,
+		callResult{op: opStream, model: st.model, status: status, usage: u, cost: cost},
+		st.Err())
 }
 
 func translate(ev anthropic.MessageStreamEventUnion) StreamEvent {

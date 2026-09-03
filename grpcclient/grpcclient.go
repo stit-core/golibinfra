@@ -5,6 +5,7 @@
 package grpcclient
 
 import (
+	"context"
 	"crypto/tls"
 
 	"go.opentelemetry.io/contrib/instrumentation/google.golang.org/grpc/otelgrpc"
@@ -54,6 +55,9 @@ func Dial(cfg Config, log logkit.Logger, opts ...Option) (*grpc.ClientConn, erro
 		dialOpts = append(dialOpts, grpc.WithTransportCredentials(insecure.NewCredentials()))
 	}
 	if cfg.Token != "" {
+		if !cfg.TLS {
+			log.Warn(context.Background(), "grpcclient: bearer token over plaintext transport", "target", cfg.Target)
+		}
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(bearerPerRPC{token: cfg.Token, secure: cfg.TLS}))
 	}
 	dialOpts = append(dialOpts, o.extra...)

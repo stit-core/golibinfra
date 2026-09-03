@@ -41,10 +41,10 @@ gRPC-сервисы (gen-стабы + бизнес-логика) живут в �
 
 | # | Интерсептор | Назначение |
 |---|---|---|
-| 1 | `recovery` | `recover()` вокруг handler'а; паника → лог `error` (method + panic + stack) + `codes.Internal`. Первый в цепочке, чтобы ловить паники нижележащих. |
-| 2 | `request-id` | Берёт `x-request-id` из metadata (или генерит `uuid`), кладёт под общий ключ `httpkit` (`httpkit.ContextWithRequestID`) — `request_id` коррелирует логи так же, как в HTTP. |
-| 3 | `access-log` | Меряет длительность, логирует исход: успех → `Debug` (`method`/`code`/`duration_ms`), ошибка → `Error` (+`error`). `code` = gRPC `status.Code(err)`. |
-| 4 | `auth` (опц.) | Только если задан `Authenticator`. Извлекает bearer-токен, делегирует валидацию порту, обогащает `ctx` identity. Health и reflection — exempt. |
+| 1 | `recovery` | `recover()` вокруг handler'а; паника → лог `Error` (method + panic + stack) + `codes.Internal`. Первый в цепочке, чтобы ловить паники нижележащих. |
+| 2 | `request-id` | Берёт `x-request-id` из metadata; невалидный (пустой, длиннее 128, не печатный ASCII) заменяет на UUID v7 (`idkit.NewV7`). Кладёт id под общий с `httpkit` ключ (`internal/requestid`) — `request_id` коррелирует логи так же, как в HTTP — и отдаёт его клиенту в response-header `x-request-id`. |
+| 3 | `access-log` | Меряет длительность, логирует исход одной записью; уровень — по gRPC-коду (см. [observability.md](observability.md)). |
+| 4 | `auth` (опц.) | Только если задан `Authenticator`. Извлекает bearer-токен, делегирует валидацию порту, обогащает `ctx` identity. Клиенту уходит обезличенный `Unauthenticated`, текст ошибки порта — только в `Warn`-лог. Health и reflection — exempt. |
 
 Auth стоит **после** request-id и access-log намеренно: отклонённые вызовы тоже
 попадают в лог с корректным `request_id`.
@@ -84,8 +84,16 @@ RPC (`rpc.server.*`), читая meter/tracer из глобальных OTel-п�
 
 - **StatsHandler, а не otel-интерсептор** — StatsHandler видит сообщения и
   трейс-контекст на уровне транспорта; это рекомендованный otelgrpc-путь.
-- **request-id под ключом `httpkit`** — единый `request_id` в логах HTTP и gRPC
-  без дублирования контракта корреляции.
+- **request-id под ключом `internal/requestid`** — единый `request_id` в логах
+  HTTP и gRPC без импорта `httpkit` (huma/chi) в gRPC-сервер; входящий id
+  валидируется, потому что попадает в каждую строку лога.
+- **Обезличенный `Unauthenticated`** — текст ошибки порта может нести внутренние
+  детали (имя ключа, причина истечения, состояние стора); клиенту это знать не
+  нужно, оператору — да, поэтому деталь идёт в лог.
+- **Уровень access-log по коду** — `Error` только там, где виноват сервер
+  (`Internal`/`Unknown`/`DataLoss`/`Unavailable`/`Unimplemented`); клиентские
+  ошибки и отказы — `Warn`, чтобы алерты на `Error` не шумели от невалидных
+  запросов.
 - **Health всегда, reflection — opt-in** — health нужен оркестратору всегда;
   reflection раскрывает схему API и по умолчанию выключен (см.
   [usage.md](usage.md) и инварианты).

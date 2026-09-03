@@ -29,6 +29,7 @@ func (s *Stub) Complete(ctx context.Context, req anthropickit.Request) (*anthrop
 		Role:       anthropickit.RoleAssistant,
 		StopReason: anthropickit.StopEndTurn,
 		Content:    []anthropickit.Block{anthropickit.TextBlock{Text: "stub"}},
+		CostKnown:  true,
 	}, nil
 }
 
@@ -40,6 +41,7 @@ func (s *Stub) Stream(ctx context.Context, req anthropickit.Request) anthropicki
 		Role:       anthropickit.RoleAssistant,
 		StopReason: anthropickit.StopEndTurn,
 		Content:    []anthropickit.Block{anthropickit.TextBlock{Text: "stub"}},
+		CostKnown:  true,
 	}
 	return ScriptStream(
 		final,

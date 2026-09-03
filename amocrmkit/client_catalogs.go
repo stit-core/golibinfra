@@ -6,8 +6,7 @@ import (
 	"net/http"
 )
 
-// catalogs + elements. Реестр: create_catalogs, update_catalogs, list_catalogs,
-// create_catalog_elements, update_catalog_elements, list_catalog_elements.
+// catalogs + elements (списки/товары).
 
 // Catalog — объект каталога (списки/товары).
 type Catalog struct {

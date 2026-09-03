@@ -1,40 +1,47 @@
 # amocrmkit — тестирование
 
-У kit'а нет отдельного testkit-сабпакета и нет in-memory фейка `Client`: он
-обращается к amoCRM по HTTP, поэтому тестируется через `httptest.Server` +
-редирект хоста (`Config.HostOverride`). Это единственный шов для подмены
-бэкенда — `httpclient` не принимает кастомный transport.
+У кита нет отдельного testkit-сабпакета и нет in-memory фейка `Client`: он
+обращается к amoCRM по HTTP, поэтому тестируется через `httptest.Server`. Два
+шва для подмены бэкенда: редирект хоста (`Config.HostOverride`) и базовый
+транспорт (`WithTransport`).
 
 ## Почему HostOverride, а не интерфейс
 
-`Client` — конкретный тип, а не интерфейс. Для проверки реального пути (сборка
-URL, заголовки, подпись amoJo, классификация ошибок, декод `_embedded`) тест
-поднимает `httptest.Server` и направляет на него весь трафик клиента через
-`HostOverride` (scheme://host). Путь, заголовки и подпись при этом сохраняются —
-проверяется именно то, что уйдёт в прод.
+`Client` — конкретный тип, а не интерфейс. Для проверки реального пути (валидация
+координат, сборка URL, заголовки, подпись amoJo, классификация ошибок, декод
+`_embedded`) тест поднимает `httptest.Server` и направляет на него весь трафик
+клиента через `HostOverride` (scheme://host). Путь, query, заголовки и подпись
+при этом сохраняются — проверяется именно то, что уйдёт в прод.
 
 ```go
-hc := httpclient.New(httpclient.Config{
+hcCfg := httpclient.Config{
     Timeout:    5 * time.Second,
     MaxRetries: 0, // в тестах ретраи обычно отключают
+    RetryWait:  time.Millisecond,
     Breaker: httpclient.BreakerConfig{
         FailureThreshold: 100,
         RecoveryTimeout:  time.Second,
-        SuccessThreshold: 1,
     },
-})
+}
 c, _ := amocrmkit.New(
     amocrmkit.Config{
         RateRPS:      1000,    // высокий — чтобы тесты не троттлились
         HostOverride: srv.URL, // весь трафик → httptest
     },
-    hc, clockkit.Real{}, logkit.Nop(),
+    hcCfg, clockkit.Real{}, logkit.Nop(),
 )
 ```
 
 `HostOverride` редиректит **все** контуры (REST/amoJo/OAuth/Drive) на один хост —
 один `httptest.Server` обслуживает любой из них; маршрутизируйте по
-`r.Method + " " + r.URL.Path`.
+`r.Method + " " + r.URL.Path`. Координаты в тестах должны быть валидными
+(`Subdomain` по `^[a-z0-9-]{1,63}$`, `TLD` `ru`/`com`) — иначе вызов упадёт с
+`ErrInvalidAccount` до сети.
+
+`WithTransport(rt)` подставляет транспорт под собираемый китом httpclient —
+удобно, когда нужен `http.RoundTripper`-стаб без сервера. `WithHTTPClient(hc)`
+подставляет готовый `*httpclient.Client` целиком (его ретраи лимитер аккаунта не
+видят).
 
 ## Что проверять на стороне сервера
 
@@ -70,16 +77,20 @@ if errors.As(err, &apiErr) {
 
 ## Детерминированное время
 
-`clockkit` инъектируется в `New` — для проверки TTL-логики (`Tokens.ExpiresAt`)
-или фиксированного `Date` в amoJo-подписи подставляйте `clockkit.Fixed` вместо
-`clockkit.Real{}`. Подпись (`signRequest`) принимает `now time.Time` явно, что
-делает её юнит-тестируемой без клиента.
+`clockkit` инъектируется в `New` — для проверки TTL-логики (`Tokens.ExpiresAt`),
+фиксированного `Date` в amoJo-подписи или вытеснения лимитеров подставляйте
+`clockkit.Fixed`/`clockkit.Tickable` вместо `clockkit.Real{}`. Подпись
+(`signRequest`) принимает `now time.Time` явно, что делает её юнит-тестируемой
+без клиента.
 
 ## Rate-limiter
 
 `accountLimiter` тестируется напрямую (см. `ratelimit_test.go`): per-account
 изоляция бюджета, один `*rate.Limiter` на аккаунт, реакция `wait` на отменённый
-`ctx`. В интеграционных тестах поднимайте `RateRPS` высоко, чтобы троттлинг не
+`ctx`, вытеснение аккаунтов, молчавших дольше TTL (через `clockkit.Tickable`), и
+хук `beforeAttempt` (первая попытка не ждёт, ретрай — ждёт). Проход ретрая
+httpclient через лимитер проверяется интеграционно по времени двух попыток. В
+интеграционных тестах поднимайте `RateRPS` высоко, чтобы троттлинг не
 вмешивался; для проверки самого троттлинга задавайте низкий `RateRPS` и считайте
 `Allow()`.
 

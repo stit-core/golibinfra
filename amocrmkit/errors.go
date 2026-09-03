@@ -5,17 +5,18 @@ import (
 	"fmt"
 )
 
-// Таксономия ошибок. Потребитель различает через errors.Is для решения
-// retry/throttle/dead-letter (в command-log gateway). HTTP-коды наружу не
-// протекают — только sentinel'ы (+ опционально *APIError через errors.As).
+// Таксономия ошибок. Потребитель различает исходы через errors.Is для решения
+// retry/throttle/dead-letter. HTTP-коды наружу не протекают — только sentinel'ы
+// (+ опционально *APIError через errors.As).
 var (
-	ErrAuth        = errors.New("amocrmkit: auth failed")      // 401
-	ErrForbidden   = errors.New("amocrmkit: forbidden")        // 403 (в т.ч. IP-бан)
-	ErrNotFound    = errors.New("amocrmkit: not found")        // 404
-	ErrValidation  = errors.New("amocrmkit: validation error") // 400/422 (+ validation-errors)
-	ErrRateLimited = errors.New("amocrmkit: rate limited")     // 429 (+ retry_after)
-	ErrServer      = errors.New("amocrmkit: server error")     // 5xx
-	ErrSignature   = errors.New("amocrmkit: signature mismatch")
+	ErrConfig         = errors.New("amocrmkit: invalid config")
+	ErrInvalidAccount = errors.New("amocrmkit: invalid account")  // subdomain/tld вне допустимого формата
+	ErrAuth           = errors.New("amocrmkit: auth failed")      // 401
+	ErrForbidden      = errors.New("amocrmkit: forbidden")        // 403 (в т.ч. IP-бан)
+	ErrNotFound       = errors.New("amocrmkit: not found")        // 404
+	ErrValidation     = errors.New("amocrmkit: validation error") // 400/422 (+ validation-errors)
+	ErrRateLimited    = errors.New("amocrmkit: rate limited")     // 429 (+ retry_after)
+	ErrServer         = errors.New("amocrmkit: server error")     // 5xx
 )
 
 // APIError несёт структурированную деталь ответа amoCRM (application/problem+json)

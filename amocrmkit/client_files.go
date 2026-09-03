@@ -7,12 +7,8 @@ import (
 	"net/http"
 )
 
-// files (attach/links) + events + Drive (динамический drive_url).
-// Реестр: attach_files, detach_files, get_file_links, list_events (REST v4) +
-// create_upload_session, upload_part, patch_file, trash_files, restore_files,
-// get_file_versions, list_files (Drive). drive_url резолвится через GetDriveURL.
-
-// --- REST v4: attach/links + events ---
+// files (attach/links) + events (REST v4) + Drive (динамический drive_url,
+// резолвится через GetDriveURL).
 
 // FileLink — ссылка на привязанный файл (GET /files/{uuid}/links).
 type FileLink struct {
@@ -62,8 +58,6 @@ func (c *Client) ListEvents(ctx context.Context, acc Account, p ListParams) (Pag
 	return listEntities[Event](ctx, c, acc, "events.list", "/api/v4/events", "events", p.values())
 }
 
-// --- Drive (динамический drive_url, Bearer) ---
-
 // File — объект Drive.
 type File struct {
 	UUID                string         `json:"uuid"`
@@ -103,7 +97,13 @@ func (c *Client) CreateUploadSession(ctx context.Context, acc Account, driveURL 
 // UploadPart — POST {upload_url} с чанком и заголовком Content-Range. Возвращает
 // промежуточный ответ (next upload_url) либо финальный File (после последней части).
 func (c *Client) UploadPart(ctx context.Context, acc Account, uploadURL, contentRange string, chunk []byte) (File, error) {
-	u := c.resolveURL(uploadURL, "", nil)
+	if err := acc.validate(); err != nil {
+		return File{}, fmt.Errorf("amocrmkit: drive.upload: %w", err)
+	}
+	u, err := c.resolveURL(uploadURL, "", nil)
+	if err != nil {
+		return File{}, fmt.Errorf("amocrmkit: drive.upload: %w", err)
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(chunk))
 	if err != nil {
 		return File{}, fmt.Errorf("amocrmkit: drive.upload: new request: %w", err)

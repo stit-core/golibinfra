@@ -13,7 +13,7 @@ import (
 )
 
 // Tokens — пара токенов + серверное время выдачи. TTL считается по ServerTime,
-// а не по локальным часам — это устраняет clock-skew между gateway и amoCRM.
+// а не по локальным часам — это устраняет clock-skew между потребителем и amoCRM.
 type Tokens struct {
 	AccessToken  string
 	RefreshToken string
@@ -26,9 +26,9 @@ func (t Tokens) ExpiresAt() time.Time {
 	return time.Unix(t.ServerTime+int64(t.ExpiresIn), 0).UTC()
 }
 
-// TokenSource — gateway реализует его поверх token-store; kit зовёт для
-// авто-подстановки актуального access-токена аккаунта. Превентивный refresh
-// (порог 5 мин) и хранение — у gateway, не у kit'а.
+// TokenSource — контракт поставщика актуального access-токена аккаунта; кит
+// его определяет для потребителя (реализация поверх token-store с превентивным
+// refresh), сам не вызывает: токен приходит в Account.Token.
 type TokenSource interface {
 	Token(ctx context.Context, accountSubdomain string) (string, error)
 }
@@ -45,8 +45,8 @@ func (c *Client) ExchangeCode(ctx context.Context, subdomain, tld, clientID, cli
 }
 
 // RefreshToken обновляет пару токенов по refresh-токену (grant refresh_token).
-// redirect_uri обязателен в теле и для refresh (подтверждено wire-докой amoCRM),
-// хотя в индикативной сигнатуре spec он опущен.
+// redirect_uri обязателен в теле и для refresh (wire-контракт amoCRM), хотя в
+// индикативной сигнатуре spec он опущен.
 func (c *Client) RefreshToken(ctx context.Context, subdomain, tld, clientID, clientSecret, refreshToken, redirectURI string) (Tokens, error) {
 	return c.oauthCall(ctx, subdomain, tld, "oauth.refresh", oauthReq{
 		ClientID:     clientID,
@@ -77,8 +77,13 @@ type oauthResp struct {
 }
 
 func (c *Client) oauthCall(ctx context.Context, subdomain, tld, endpoint string, reqBody oauthReq) (Tokens, error) {
-	base := "https://" + subdomain + ".amocrm." + tld
-	u := c.resolveURL(base, "/oauth2/access_token", nil)
+	if err := validateAccount(subdomain, tld); err != nil {
+		return Tokens{}, fmt.Errorf("amocrmkit: %s: %w", endpoint, err)
+	}
+	u, err := c.resolveURL(Account{Subdomain: subdomain, TLD: tld}.restBase(), "/oauth2/access_token", nil)
+	if err != nil {
+		return Tokens{}, fmt.Errorf("amocrmkit: %s: %w", endpoint, err)
+	}
 
 	b, err := json.Marshal(reqBody) //nolint:gosec // G117: OAuth-тело обязано нести client_secret (wire-контракт amoCRM), не утечка
 	if err != nil {
@@ -101,6 +106,7 @@ func (c *Client) oauthCall(ctx context.Context, subdomain, tld, endpoint string,
 	c.instr.oauthRefresh.Add(ctx, 1, metric.WithAttributes(attribute.String("status", status)))
 
 	if err != nil {
+		c.log.Warn(ctx, "amocrmkit: oauth failed", "grant", reqBody.GrantType, "account", subdomain, "error", err.Error())
 		return Tokens{}, err
 	}
 	return Tokens{

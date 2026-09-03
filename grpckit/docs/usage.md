@@ -43,7 +43,9 @@ type Authenticator interface {
 - Токен берётся из metadata-ключа `authorization`; префикс `Bearer ` снимается
   (кейс-инсенситивно), голый токен тоже принимается.
 - Пустой токен → `codes.Unauthenticated` («missing bearer token») до вызова порта.
-- Ошибка `Authenticate` → `codes.Unauthenticated` (текст = `err.Error()`).
+- Ошибка `Authenticate` → `codes.Unauthenticated` с обезличенным текстом
+  `unauthenticated`; сама ошибка порта пишется в лог на `Warn`
+  (`grpc auth rejected`: `method`, `error`) и клиенту не уходит.
 - Успех → `ctx`, возвращённый портом, передаётся в handler (так identity доезжает
   до бизнес-логики).
 - Методы health (`/grpc.health.v1.Health/`) и reflection (`/grpc.reflection.`) —
@@ -58,6 +60,14 @@ fx.Provide(func(d *accessDomain) grpckit.Authenticator { return d }) // в гр�
 ```go
 srv, err := grpckit.New(cfg, log, grpckit.WithAuthenticator(myAuth))
 ```
+
+## Request-id
+
+Клиент может прислать metadata `x-request-id` (печатный ASCII, до 128 символов)
+— сервер сохранит его; иначе сгенерирует UUID v7. Id доступен handler'у через
+ctx (тот же ключ, что у `httpkit`: `httpkit.RequestIDFrom(ctx)`), попадает в
+`request_id` логов `logkit` и возвращается клиенту в response-header
+`x-request-id`.
 
 ## Прямой `New` (тесты, не-fx сборка)
 

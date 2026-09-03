@@ -6,8 +6,7 @@ import (
 	"net/http"
 )
 
-// customers + transactions. Реестр: create_customer, update_customer, list_customers,
-// create_transaction, delete_transaction, list_transactions, adjust_bonus_points.
+// customers + transactions.
 
 // Customer — объект покупателя (GET-ответ).
 type Customer struct {

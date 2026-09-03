@@ -14,6 +14,8 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 type stubAuth struct {
@@ -60,7 +62,7 @@ func TestBearerToken(t *testing.T) {
 }
 
 func TestAuthenticateMissingToken(t *testing.T) {
-	_, err := authenticate(context.Background(), &stubAuth{})
+	_, err := authenticate(context.Background(), &stubAuth{}, logkit.Nop(), "/svc/M")
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
 	}
@@ -69,7 +71,7 @@ func TestAuthenticateMissingToken(t *testing.T) {
 func TestAuthenticateOK(t *testing.T) {
 	a := &stubAuth{}
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(authMetadataKey, "Bearer tok"))
-	got, err := authenticate(ctx, a)
+	got, err := authenticate(ctx, a, logkit.Nop(), "/svc/M")
 	if err != nil {
 		t.Fatalf("authenticate: %v", err)
 	}
@@ -83,9 +85,25 @@ func TestAuthenticateOK(t *testing.T) {
 
 func TestAuthenticateRejects(t *testing.T) {
 	ctx := metadata.NewIncomingContext(context.Background(), metadata.Pairs(authMetadataKey, "Bearer x"))
-	_, err := authenticate(ctx, &stubAuth{err: errors.New("bad token")})
+	_, err := authenticate(ctx, &stubAuth{err: errors.New("bad token: kid=42")}, logkit.Nop(), "/svc/M")
 	if status.Code(err) != codes.Unauthenticated {
 		t.Fatalf("code = %v, want Unauthenticated", status.Code(err))
+	}
+	if msg := status.Convert(err).Message(); msg != "unauthenticated" {
+		t.Fatalf("message = %q, must not leak the authenticator error", msg)
+	}
+}
+
+func TestIsServerFault(t *testing.T) {
+	for _, c := range []codes.Code{codes.Internal, codes.Unknown, codes.DataLoss, codes.Unavailable, codes.Unimplemented} {
+		if !isServerFault(c) {
+			t.Errorf("%v must be a server fault", c)
+		}
+	}
+	for _, c := range []codes.Code{codes.OK, codes.InvalidArgument, codes.NotFound, codes.Unauthenticated, codes.PermissionDenied, codes.Canceled, codes.DeadlineExceeded, codes.ResourceExhausted} {
+		if isServerFault(c) {
+			t.Errorf("%v must not be a server fault", c)
+		}
 	}
 }
 

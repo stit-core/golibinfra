@@ -11,16 +11,17 @@ import "git.stit.tech/stit-core/golibinfra/amocrmkit"
 ## Подключение через fx
 
 `Module` provide'ит `*amocrmkit.Client`, забирая из графа `Config`,
-`*httpclient.Client`, `clockkit.Clock` и `logkit.Logger`. `Config` регистрирует
-caller — `Module` его не provide'ит (та же asymmetry, что в `pgkit`).
+`httpclient.Config`, `clockkit.Clock` и `logkit.Logger`. Обе конфигурации
+регистрирует caller — `Module` их не provide'ит (та же asymmetry, что в
+`pgkit`). Общий `*httpclient.Client` приложения кит не использует — собирает
+свой, с лимитером аккаунта на каждую попытку.
 
 ```go
 app := fx.New(
-    httpclient.Module,
     clockkit.Module,
     logkit.Module,
     amocrmkit.Module,
-    fx.Provide(amocrmkit.NewConfig),
+    fx.Provide(httpclient.NewConfig, amocrmkit.NewConfig),
     fx.Invoke(func(c *amocrmkit.Client) {
         acc := amocrmkit.Account{Subdomain: "mycompany", TLD: "ru", Token: accessToken}
         page, err := c.ListLeads(ctx, acc, amocrmkit.ListParams{Limit: 50})
@@ -30,13 +31,17 @@ app := fx.New(
 ```
 
 Минимальные ENV — нет обязательных: `Config` целиком на дефолтах
-(`AMOCRM_RATE_RPS=7`, `AMOCRM_TIMEOUT=10s`, `AMOCRM_HOST_OVERRIDE=""`). Подробности —
-[configuration.md](configuration.md).
+(`AMOCRM_RATE_RPS=7`, `AMOCRM_HOST_OVERRIDE=""`), таймаут/retry/breaker — из
+`HTTPCLIENT_*`. Подробности — [configuration.md](configuration.md).
 
 ## Подключение через прямой New
 
 ```go
-c, err := amocrmkit.New(amocrmkit.Config{RateRPS: 7}, hc, clockkit.Real{}, logkit.Nop())
+c, err := amocrmkit.New(
+    amocrmkit.Config{RateRPS: 7},
+    httpclient.Config{Timeout: 10 * time.Second, MaxRetries: 3, RetryWait: 200 * time.Millisecond},
+    clockkit.Real{}, logkit.Nop(),
+)
 if err != nil {
     // ...
 }
@@ -47,24 +52,27 @@ created, err := c.CreateLeads(ctx, acc, []amocrmkit.LeadInput{{Name: "Сделк
 Сигнатура конструктора:
 
 ```go
-func New(cfg Config, hc *httpclient.Client, clock clockkit.Clock, log logkit.Logger) (*Client, error)
+func New(cfg Config, hcCfg httpclient.Config, clock clockkit.Clock, log logkit.Logger, opts ...Option) (*Client, error)
 ```
 
-`hc` обязателен (`nil` → ошибка); `RateRPS` обязан быть `> 0`. При `clock == nil`
-подставляется `clockkit.Real{}`, при `log == nil` — `logkit.Nop()`.
+`RateRPS` обязан быть `> 0` (`ErrConfig`). При `clock == nil` подставляется
+`clockkit.Real{}`, при `log == nil` — `logkit.Nop()`. Опции `WithTransport` /
+`WithHTTPClient` — в [configuration.md](configuration.md).
 
 ## REST v4: координаты аккаунта
 
 Каждый REST/Drive-вызов принимает `Account` — координаты аккаунта, которые
-gateway собирает из своего token-store на каждый вызов (kit их не хранит):
+потребитель собирает из своего token-store на каждый вызов (кит их не хранит):
 
 ```go
 acc := amocrmkit.Account{
-    Subdomain: "mycompany", // <subdomain>.amocrm.<tld>
+    Subdomain: "mycompany", // <subdomain>.amocrm.<tld>; ^[a-z0-9-]{1,63}$
     TLD:       "ru",        // "ru" | "com" — домены невзаимозаменяемы
     Token:     accessToken, // OAuth access token, уходит в Authorization: Bearer
 }
 ```
+
+Subdomain/TLD вне формата → `ErrInvalidAccount`, запрос не отправляется.
 
 ### List с пагинацией и фильтрами
 
@@ -114,7 +122,8 @@ types, err := c.GetAccountTaskTypes(ctx, acc) // GET /account?with=task_types
 ## OAuth2
 
 Обмен authorization code на пару токенов и refresh — отдельные методы; они не
-завязаны на `Account` (subdomain/tld/секреты приходят параметрами):
+завязаны на `Account` (subdomain/tld/секреты приходят параметрами и проходят ту
+же валидацию):
 
 ```go
 tok, err := c.ExchangeCode(ctx, "mycompany", "ru", clientID, clientSecret, code, redirectURI)
@@ -128,8 +137,8 @@ tok2, err := c.RefreshToken(ctx, "mycompany", "ru", clientID, clientSecret, refr
 (требование wire-контракта amoCRM).
 
 Хранение токенов, превентивный refresh (порог 5 мин до истечения) и оркестрация —
-у gateway. Kit определяет контракт `TokenSource` для gateway, но сам его не
-вызывает — актуальный access-токен gateway кладёт в `Account.Token` перед вызовом:
+у потребителя. Кит определяет контракт `TokenSource`, но сам его не вызывает —
+актуальный access-токен потребитель кладёт в `Account.Token` перед вызовом:
 
 ```go
 type TokenSource interface {
@@ -140,8 +149,8 @@ type TokenSource interface {
 ## amoJo Chat
 
 amoJo-вызовы принимают `AmojoTarget` вместо `Account`. `AccountKey` обязан
-совпадать с `Account.Subdomain` того же аккаунта — rate-budget (7 rps) общий с
-REST/Drive.
+совпадать с `Account.Subdomain` того же аккаунта — rate-budget общий с
+REST/Drive; `TLD`/`AccountKey` валидируются как у `Account`.
 
 ```go
 tgt := amocrmkit.AmojoTarget{
@@ -163,7 +172,7 @@ chat, err := c.AmojoCreateChat(ctx, tgt, res.ScopeID, amocrmkit.CreateChatInput{
 })
 
 // 3. Отправить сообщение. silent=false → send (создаёт неразобранное);
-//    silent=true → import (тихо в историю). Тело message полиморфно — строит gateway.
+//    silent=true → import (тихо в историю). Тело message полиморфно — строит потребитель.
 msg, err := c.AmojoNewMessage(ctx, tgt, res.ScopeID, amocrmkit.NewMessagePayload{
     MsgID:   "my-msg-1",
     Sender:  amocrmkit.AmojoParticipant{ID: "client-1", Name: "Иван"},
@@ -172,7 +181,7 @@ msg, err := c.AmojoNewMessage(ctx, tgt, res.ScopeID, amocrmkit.NewMessagePayload
 ```
 
 Эфемерные/служебные вызовы (`AmojoReact`, `AmojoTyping`, `AmojoDeliveryStatus`)
-принимают `map[string]any` — точное тело строит gateway по message-types.
+принимают `map[string]any` — точное тело строит потребитель по message-types.
 
 ### Верификация входящего вебхука
 
@@ -229,6 +238,8 @@ _, err := c.ListLeads(ctx, acc, amocrmkit.ListParams{})
 switch {
 case err == nil:
     // ok
+case errors.Is(err, amocrmkit.ErrInvalidAccount):
+    // координаты аккаунта вне формата — ошибка данных, не сети; retry бесполезен
 case errors.Is(err, amocrmkit.ErrRateLimited):
     var apiErr *amocrmkit.APIError
     if errors.As(err, &apiErr) {
@@ -243,7 +254,7 @@ case errors.Is(err, amocrmkit.ErrValidation):
         // apiErr.ValidationErrors — поля с ошибками (400)
     }
 case errors.Is(err, amocrmkit.ErrServer):
-    // 5xx — retry/dead-letter по политике gateway
+    // 5xx — retry/dead-letter по политике потребителя
 }
 ```
 

@@ -19,11 +19,9 @@ StatsHandler эмитит метрику длительности RPC. Имя з
 
 Гистограмма длительности использует явные бакеты otelgrpc (`0.005 … 10`).
 
-> **Примечание.** Эта версия StatsHandler эмитит как метрику **только**
+> **Примечание.** StatsHandler этой версии otelgrpc эмитит как метрику **только**
 > длительность RPC. Размеры сообщений (request/response size) в метрики не
-> попадают — они идут событиями в спан. Корневой README обобщённо называет это
-> «`rpc.server.*` (duration, msg-sizes)» — фактический метрик-выход сервера
-> ограничен duration.
+> попадают — они идут событиями в спан.
 
 ### Атрибуты метрик
 
@@ -43,18 +41,32 @@ StatsHandler эмитит метрику длительности RPC. Имя з
 Корреляция логов с трейсом — через `logkit` (инжектит `trace_id`/`span_id` в
 запись), плюс `request_id` из request-id-интерсептора.
 
+## Request-id
+
+Интерсептор берёт `x-request-id` из входящих metadata; невалидный (пустой,
+длиннее 128 символов, не печатный ASCII) заменяет на UUID v7. Итоговый id лежит
+в `ctx` под ключом `internal/requestid` (тем же, что у `httpkit`) — `logkit`
+подхватывает его как `request_id` — и возвращается клиенту в response-header
+`x-request-id`, чтобы обе стороны ссылались на один идентификатор.
+
 ## Access-log (logkit)
 
-Access-log-интерсептор пишет одну запись на вызов:
+Access-log-интерсептор пишет одну запись на вызов; уровень — по gRPC-коду:
 
-| Исход | Уровень | Поля |
-|---|---|---|
-| Успех | `Debug` | `method`, `code`, `duration_ms` |
-| Ошибка | `Error` | `method`, `code`, `duration_ms`, `error` |
+| Исход | Уровень | Сообщение | Поля |
+|---|---|---|---|
+| `OK` | `Info` | `grpc call` | `method`, `code`, `duration_ms` |
+| `Internal`, `Unknown`, `DataLoss`, `Unavailable`, `Unimplemented` | `Error` | `grpc call failed` | `method`, `code`, `duration_ms`, `error` |
+| остальные не-OK коды (`InvalidArgument`, `NotFound`, `Unauthenticated`, `PermissionDenied`, `Canceled`, `DeadlineExceeded`, `ResourceExhausted`, …) | `Warn` | `grpc call failed` | `method`, `code`, `duration_ms`, `error` |
 
-`code` — `status.Code(err).String()`. Паника, пойманная recovery-интерсептором,
-логируется отдельной записью `Error` с полями `method`, `panic`, `stack` и
-конвертируется в `codes.Internal`.
+`code` — `status.Code(err).String()`; не-status ошибка handler'а — `Unknown`
+(`Error`). Паника, пойманная recovery-интерсептором, логируется отдельной записью
+`Error` (`grpc panic recovered`: `method`, `panic`, `stack`) и конвертируется в
+`codes.Internal`.
+
+Отклонённая аутентификация пишет `Warn` `grpc auth rejected` (`method`, `error`
+— текст ошибки `Authenticator`), клиенту уходит только `Unauthenticated:
+unauthenticated`.
 
 ## Сводка
 

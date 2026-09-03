@@ -87,8 +87,8 @@ func New(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, error) {
 	unary := []grpc.UnaryServerInterceptor{recoveryUnary(log), requestIDUnary(), loggingUnary(log)}
 	stream := []grpc.StreamServerInterceptor{recoveryStream(log), requestIDStream(), loggingStream(log)}
 	if o.auth != nil {
-		unary = append(unary, authUnary(o.auth))
-		stream = append(stream, authStream(o.auth))
+		unary = append(unary, authUnary(o.auth, log))
+		stream = append(stream, authStream(o.auth, log))
 	}
 	gopts = append(gopts, grpc.ChainUnaryInterceptor(unary...), grpc.ChainStreamInterceptor(stream...))
 

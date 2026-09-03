@@ -13,7 +13,8 @@ type options struct {
 	baseURL    string // "" → берётся из Config
 }
 
-// WithHTTPClient подменяет HTTP-клиент SDK (таймауты/транспорт/тест-сервер).
+// WithHTTPClient задаёт базовый HTTP-клиент SDK (транспорт, cookie, тест-сервер);
+// его транспорт всё равно оборачивается в otelhttp.
 func WithHTTPClient(c *http.Client) Option {
 	return func(o *options) { o.httpClient = c }
 }

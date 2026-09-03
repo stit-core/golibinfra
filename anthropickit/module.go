@@ -19,7 +19,10 @@ var Module = fx.Module(
 
 func NewConfig() (Config, error) {
 	var c Config
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
 }
 
 func newClient(cfg Config, log logkit.Logger) (*Client, error) {

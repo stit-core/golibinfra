@@ -5,13 +5,13 @@ import (
 	"runtime/debug"
 	"time"
 
-	"github.com/google/uuid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 
-	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/idkit"
+	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -35,25 +35,30 @@ func metadataFirst(ctx context.Context, key string) string {
 	return ""
 }
 
-// withRequestID кладёт x-request-id (или сгенерированный) под общий ключ httpkit,
-// чтобы logkit-attr request_id коррелировал логи так же, как в HTTP.
-func withRequestID(ctx context.Context) context.Context {
-	id := metadataFirst(ctx, httpkit.HeaderRequestID)
-	if id == "" {
-		id = uuid.NewString()
+// withRequestID кладёт x-request-id из metadata (если валиден) или новый UUID v7
+// под общий с httpkit ключ, чтобы logkit-attr request_id коррелировал логи так
+// же, как в HTTP.
+func withRequestID(ctx context.Context) (context.Context, string) {
+	id := metadataFirst(ctx, requestid.Header)
+	if !requestid.Valid(id) {
+		id = idkit.NewV7()
 	}
-	return httpkit.ContextWithRequestID(ctx, id)
+	return requestid.With(ctx, id), id
 }
 
 func requestIDUnary() grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		return handler(withRequestID(ctx), req)
+		ctx, id := withRequestID(ctx)
+		_ = grpc.SetHeader(ctx, metadata.Pairs(requestid.Header, id))
+		return handler(ctx, req)
 	}
 }
 
 func requestIDStream() grpc.StreamServerInterceptor {
 	return func(srv any, ss grpc.ServerStream, _ *grpc.StreamServerInfo, handler grpc.StreamHandler) error {
-		return handler(srv, &wrappedStream{ServerStream: ss, ctx: withRequestID(ss.Context())})
+		ctx, id := withRequestID(ss.Context())
+		_ = ss.SetHeader(metadata.Pairs(requestid.Header, id))
+		return handler(srv, &wrappedStream{ServerStream: ss, ctx: ctx})
 	}
 }
 
@@ -101,9 +106,23 @@ func loggingStream(log logkit.Logger) grpc.StreamServerInterceptor {
 
 func logRPC(ctx context.Context, log logkit.Logger, method string, dur time.Duration, err error) {
 	code := status.Code(err)
-	if err != nil {
-		log.Error(ctx, "grpc call failed", "method", method, "code", code.String(), "duration_ms", dur.Milliseconds(), "error", err.Error())
-		return
+	kv := []any{"method", method, "code", code.String(), "duration_ms", dur.Milliseconds()}
+	switch {
+	case err == nil:
+		log.Info(ctx, "grpc call", kv...)
+	case isServerFault(code):
+		log.Error(ctx, "grpc call failed", append(kv, "error", err.Error())...)
+	default:
+		log.Warn(ctx, "grpc call failed", append(kv, "error", err.Error())...)
 	}
-	log.Debug(ctx, "grpc call", "method", method, "code", code.String(), "duration_ms", dur.Milliseconds())
+}
+
+// isServerFault — коды, за которыми стоит сбой сервера; остальные не-OK исходы
+// (клиентская ошибка, отказ в доступе, отмена) — ожидаемые, для них Warn.
+func isServerFault(code codes.Code) bool {
+	switch code {
+	case codes.Internal, codes.Unknown, codes.DataLoss, codes.Unavailable, codes.Unimplemented:
+		return true
+	}
+	return false
 }

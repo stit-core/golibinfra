@@ -21,7 +21,7 @@ provide'ит — её собирает приложение. Дешёвый пу
 
 ```go
 app := fx.New(
-	fx.Provide(anthropickit.NewConfig), // Config из ENV (envconfig)
+	fx.Provide(anthropickit.NewConfig), // Config из ENV (envconfig + Validate)
 	logkit.Module,                       // даёт logkit.Logger
 	anthropickit.Module,                 // даёт anthropickit.API
 	fx.Invoke(func(api anthropickit.API) {
@@ -43,20 +43,20 @@ fx.Provide(func(cfg anthropickit.Config, log logkit.Logger) (anthropickit.API, e
 
 ```go
 client, err := anthropickit.New(
-	anthropickit.Config{APIKey: "sk-ant-...", DefaultModel: "claude-opus-4-8"},
+	anthropickit.Config{APIKey: "sk-ant-...", DefaultModel: "claude-opus-5", MaxRetries: 2},
 	logkit.Nop(),
 	anthropickit.WithBaseURL("http://localhost:8080"), // напр. stub в тестах
 )
 ```
 
-`New` падает с `ErrConfig`, если `APIKey` пуст. `nil`-логгер заменяется на
-`logkit.Nop()`.
+`New` падает с `ErrConfig`, если `APIKey` пуст, `MaxRetries < 0` или
+`Timeout < 0`. `nil`-логгер заменяется на `logkit.Nop()`.
 
 ## Синхронный вызов и обработка отказа
 
 ```go
 resp, err := client.Complete(ctx, anthropickit.Request{
-	Model:  "claude-sonnet-4-6", // "" → Config.DefaultModel
+	Model:  "claude-sonnet-5", // "" → Config.DefaultModel
 	System: anthropickit.SystemText("Отвечай кратко."),
 	Messages: []anthropickit.Message{
 		{Role: anthropickit.RoleUser, Content: []anthropickit.Block{
@@ -75,13 +75,27 @@ if resp.IsRefusal() {
 text := resp.Text()                 // конкатенация всех TextBlock
 total := resp.Usage.TotalInput()    // input + cache_write + cache_read
 spent := resp.Cost                  // USDMicros по прайс-таблице
+if !resp.CostKnown {
+	// модели нет в таблице: Cost == 0, тарифицируйте сами / WithPriceTable
+}
 ```
+
+## Ошибки
+
+Sentinel-ошибки для `errors.Is`: `ErrConfig`, `ErrInvalidRequest` (400/413/422 и
+ошибки маппинга запроса), `ErrAuth` (401/403), `ErrNotFound` (404),
+`ErrRateLimited` (429), `ErrOverloaded` (529), `ErrServer` (прочие 5xx).
+Исходная `*anthropic.Error` сохраняется в цепочке (`errors.As`): `StatusCode`,
+`RequestID`, `Type()`. Таймаут попытки (`ANTHROPIC_TIMEOUT`) и отмена `ctx`
+приходят как `context.DeadlineExceeded`/`context.Canceled`.
 
 ## Стриминг
 
-`Stream` возвращает итератор сразу; SSE открывается лениво в первом `Next`.
-Дрейните до `Next()==false`, затем `Final()` для итогового ответа с авторитетными
-`Usage`/`Cost`.
+`Stream` выполняет HTTP-запрос сразу и возвращает итератор; события читаются в
+`Next`. Дрейните до `Next()==false`, затем `Final()` для итогового ответа с
+авторитетными `Usage`/`Cost`. `Close()` обязателен: он отдаёт соединение, а при
+вызове до конца стрима дописывает метрики брошенного стрима (`status=abandoned`)
+с накопленным usage/cost.
 
 ```go
 st := client.Stream(ctx, anthropickit.Request{
@@ -107,7 +121,7 @@ for st.Next() {
 	}
 }
 if err := st.Err(); err != nil {
-	// ошибка стрима
+	// ошибка стрима (в т.ч. ошибка самого HTTP-запроса: Next() сразу false)
 }
 final, _ := st.Final() // *Response с финальным Usage+Cost
 ```
@@ -182,16 +196,18 @@ n, err := client.CountTokens(ctx, req) // входные токены для б�
 ```
 
 Учитывает `Messages`, `System`, `Tools`, `Thinking`, `ToolChoice` из `Request`.
+Пишет `anthropic_api_calls_total{op="count_tokens"}` и латентность; токены в
+`anthropic_api_tokens_total` не попадают.
 
 ## Стоимость без клиента
 
 ```go
-cost, known := anthropickit.Cost("claude-opus-4-8", usage)
+cost, known := anthropickit.Cost("claude-opus-5", usage)
 // known=false для модели вне defaultPrices — fallback решает потребитель
 ```
 
-`Client.Complete`/`Stream.Final` считают `Cost` автоматически по таблице
-клиента (с учётом `WithPriceTable`). Свободная `Cost` всегда использует
+`Client.Complete`/`Stream.Final` считают `Cost`/`CostKnown` автоматически по
+таблице клиента (с учётом `WithPriceTable`). Свободная `Cost` всегда использует
 `defaultPrices`.
 
 ## Managed Agents и экзотика — `Raw()`
@@ -203,4 +219,5 @@ agent, err := raw.Beta.Agents.New(ctx, /* ... */)
 ```
 
 Кит покрывает Messages-поверхность; всё остальное SDK (Managed Agents, batches,
-files, server-side tools) — через `Raw()`.
+files, server-side tools) — через `Raw()`. Вызовы через `Raw()` идут тем же
+otelhttp-транспортом (спаны есть), но метрики кита не пишут.

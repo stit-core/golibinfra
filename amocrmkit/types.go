@@ -1,10 +1,8 @@
 package amocrmkit
 
-// Shared wire-типы REST v4, общие для большинства сущностей.
-
 // CustomFieldValue — элемент custom_fields_values[]. Значения полиморфны (амо
 // возвращает строки/числа/булевы/объекты в зависимости от типа поля), поэтому
-// Value — any; gateway маппит по field_type/field_id.
+// Value — any; потребитель маппит по field_type/field_id.
 type CustomFieldValue struct {
 	FieldID   int                    `json:"field_id,omitempty"`
 	FieldName string                 `json:"field_name,omitempty"`

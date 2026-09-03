@@ -11,14 +11,15 @@ Kit собирает `*grpc.ClientConn` через `grpc.NewClient` с набо�
 dial-опций:
 
 - **OTel** — `otelgrpc.NewClientHandler()` как `StatsHandler`: client-спаны и
-  метрики `rpc.client.*` без ручной разметки.
+  метрика длительности `rpc.client.*` без ручной разметки.
 - **Access-log** — unary-интерсептор пишет каждый вызов в [`logkit.Logger`](../logkit/)
-  (метод, код, длительность; ошибки — на `Error`, успехи — на `Debug`).
+  (метод, код, длительность; уровень — по gRPC-коду, см. § Observability).
 - **Keepalive** — HTTP/2 ping'и держат соединение живым (в т.ч. без активных
   стримов).
-- **Bearer** — `PerRPCCredentials` инжектит `Authorization: Bearer <token>` в
+- **Bearer** — `PerRPCCredentials` инжектит `authorization: Bearer <token>` в
   metadata каждого RPC, если токен задан.
-- **TLS** — `credentials.NewTLS` (MinVersion 1.2) либо `insecure` транспорт.
+- **TLS** — `credentials.NewTLS` (MinVersion 1.2) либо `insecure` транспорт;
+  bearer поверх plaintext логируется как риск (см. § Инварианты).
 
 `grpc.NewClient` ленивый: соединение устанавливается на первом RPC, а не в `Dial`.
 
@@ -113,7 +114,7 @@ var Module = fx.Module("grpcclient", fx.Provide(newConn))
 |---|---|---|---|---|
 | `GRPC_CLIENT_TARGET` | `Target` | `string` | — (`required`) | Адрес downstream gRPC-сервиса (gRPC name-resolver target, напр. `dns:///billing:9090`) |
 | `GRPC_CLIENT_TOKEN` | `Token` | `string` | `""` | Bearer-токен в `authorization` на каждый RPC. Пусто → `PerRPCCredentials` не подключается |
-| `GRPC_CLIENT_TLS` | `TLS` | `bool` | `false` | `true` → TLS-транспорт (MinVersion 1.2); `false` → `insecure` (plaintext) |
+| `GRPC_CLIENT_TLS` | `TLS` | `bool` | `false` | `true` → TLS-транспорт (MinVersion 1.2); `false` → `insecure` (plaintext); с токеном при `false` `Dial` пишет `Warn` |
 | `GRPC_CLIENT_KEEPALIVE_TIME` | `Keepalive.Time` | `time.Duration` | `30s` | Интервал HTTP/2 keepalive-ping'ов |
 | `GRPC_CLIENT_KEEPALIVE_TIMEOUT` | `Keepalive.Timeout` | `time.Duration` | `20s` | Сколько ждать ack на ping до признания соединения мёртвым |
 
@@ -130,19 +131,26 @@ downstream-хост (README § Per-concern endpoints).
 
 | Сигнал | Источник | Что |
 |---|---|---|
-| Спаны `rpc.client.*` | `otelgrpc` StatsHandler | Client-спан на каждый RPC; атрибуты `rpc.system`, `rpc.service`, `rpc.method`, `rpc.grpc.status_code` |
-| Метрики `rpc.client.*` | `otelgrpc` StatsHandler | Duration и размеры сообщений запроса/ответа (по версии `otelgrpc`) |
+| Client span | `otelgrpc` StatsHandler | SpanKind `CLIENT` на каждый RPC; атрибуты `rpc.system`, `rpc.service`, `rpc.method`, `rpc.grpc.status_code`, `server.address`; trace-context уходит в metadata |
+| `rpc.client.call.duration` (histogram, `s`) | `otelgrpc` StatsHandler | Длительность RPC — единственная метрика StatsHandler; при `OTEL_SEMCONV_STABILITY_OPT_IN=rpc/old` — `rpc.client.duration` (`ms`), `rpc/dup` — обе. Размеры сообщений в метрики не попадают (только событиями в спан) |
 
-Точный набор метрик и атрибутов определяется версией `otelgrpc` из
-[`go.mod`](../go.mod) — он же является источником правды.
+Атрибуты метрики: `rpc.system=grpc`, `rpc.service`, `rpc.method`,
+`rpc.response.status_code`. Спаны/метрики эмитятся через глобальные
+OTel-провайдеры; без зарегистрированного провайдера — no-op (экспорт настраивает
+потребитель своей проводкой OTel SDK).
 
-Спаны/метрики `rpc.client.*` эмитятся через глобальные OTel-провайдеры; без
-зарегистрированного провайдера — no-op (экспорт настраивает потребитель своей
-проводкой OTel SDK).
+Access-log идёт отдельно, через unary-интерсептор и `logkit.Logger` (стримы в
+access-log не попадают):
 
-Access-log идёт отдельно, через unary-интерсептор и `logkit.Logger`: успешный
-вызов — `Debug` (`method`, `duration_ms`), ошибка — `Error` (`method`, `code`,
-`duration_ms`, `error`). `trace_id`/`span_id` в строки лога инжектит `logkit`.
+| Исход | Уровень | Сообщение | Поля |
+|---|---|---|---|
+| `OK` | `Debug` | `grpc client call` | `method`, `code`, `duration_ms` |
+| `Internal`, `Unknown`, `DataLoss`, `Unavailable`, `Unimplemented` | `Error` | `grpc client call failed` | `method`, `code`, `duration_ms`, `error` |
+| остальные не-OK коды (`InvalidArgument`, `NotFound`, `Unauthenticated`, `PermissionDenied`, `Canceled`, `DeadlineExceeded`, …) | `Warn` | `grpc client call failed` | `method`, `code`, `duration_ms`, `error` |
+
+`trace_id`/`span_id` в строки лога инжектит `logkit`. `Dial` с токеном при
+`TLS=false` пишет `Warn` `grpcclient: bearer token over plaintext transport`
+(`target`).
 
 ## API
 
@@ -183,7 +191,21 @@ conn, err := grpcclient.Dial(grpcclient.Config{Target: "passthrough:///x"}, nil)
 Схема `passthrough:///` отдаёт target резолверу как есть, без DNS-запроса. Для
 полного round-trip с настоящим stub'ом используйте `google.golang.org/grpc/test/bufconn`:
 поднимите `*grpc.Server` на in-memory listener и передайте его dialer в
-`WithDialOptions` (`grpc.WithContextDialer`).
+`WithDialOptions`:
+
+```go
+lis := bufconn.Listen(1 << 20)
+// … grpc.NewServer + Serve(lis) …
+conn, err := grpcclient.Dial(
+	grpcclient.Config{Target: "passthrough:///bufnet", Token: "tok"}, log,
+	grpcclient.WithDialOptions(grpc.WithContextDialer(func(ctx context.Context, _ string) (net.Conn, error) {
+		return lis.DialContext(ctx)
+	})),
+)
+```
+
+Так тесты кита проверяют, что `authorization: Bearer tok` доезжает до серверного
+интерсептора, и уровни access-log по коду ответа.
 
 ## Инварианты и подводные камни
 
@@ -195,10 +217,11 @@ conn, err := grpcclient.Dial(grpcclient.Config{Target: "passthrough:///x"}, nil)
   При прямом `Dial` закрывать соединение — обязанность вызывающего (`defer conn.Close()`).
 - **Bearer из env.** Токен берётся из `GRPC_CLIENT_TOKEN`. Per-RPC creds
   подключаются только при непустом токене.
-- **TLS и per-RPC creds.** При `GRPC_CLIENT_TLS=false` транспорт plaintext, а
-  `RequireTransportSecurity()` = `false` — bearer едет поверх незашифрованного
-  канала. Это осознанно для внутреннего mesh (mTLS на sidecar). Для канала за
-  пределами доверенной сети ставьте `GRPC_CLIENT_TLS=true`.
+- **Bearer поверх plaintext — риск.** При `GRPC_CLIENT_TLS=false` транспорт
+  plaintext, а `RequireTransportSecurity()` = `false` — токен едет по
+  незашифрованному каналу и читается любым узлом на пути. Кит допускает это
+  только для внутреннего mesh с mTLS на sidecar и напоминает об этом `Warn`-логом
+  при `Dial`. За пределами доверенной сети ставьте `GRPC_CLIENT_TLS=true`.
 - **Один target на `Module`.** `Module` провайдит ровно один `*grpc.ClientConn` к
   `GRPC_CLIENT_TARGET`. Несколько downstream-целей — `Dial` напрямую (fx не
   различает несколько `*grpc.ClientConn` без именованных групп).

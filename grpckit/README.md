@@ -1,8 +1,10 @@
 # grpckit
 
 Серверный gRPC-примитив (аналог `httpkit` для gRPC): `*grpc.Server` с цепочкой
-интерсепторов (recovery, request-id, access-log, опц. auth через порт
-`Authenticator`), observability через `otelgrpc` StatsHandler (`rpc.server.*`),
+интерсепторов (recovery, request-id — общий с `httpkit` ключ, UUID v7 при
+отсутствии/невалидном входящем id, эхо в response-header; access-log с уровнем по
+gRPC-коду; опц. auth через порт `Authenticator` с обезличенным `Unauthenticated`
+наружу), observability через `otelgrpc` StatsHandler (`rpc.server.*`),
 встроенные health- и (опц.) reflection-сервисы. Доменные gRPC-сервисы
 регистрируются через fx value-group `grpc.services` — кит владеет транспортом,
 интерсепторами и lifecycle, а gen-стабы и бизнес-логика живут в сервис-репо.
@@ -58,6 +60,6 @@ func main() {
 
 - [docs/architecture.md](docs/architecture.md) — устройство: сервер, цепочка интерсепторов, StatsHandler, fx-group сервисов, ключевые решения (WHY).
 - [docs/configuration.md](docs/configuration.md) — полный справочник `Config`/ENV: bind, лимиты сообщений, keepalive, TLS, health, reflection.
-- [docs/observability.md](docs/observability.md) — метрики `rpc.server.*` и спаны `otelgrpc` (единый источник правды).
-- [docs/usage.md](docs/usage.md) — рецепты: регистрация сервиса через fx-group, `Authenticator`-порт, health-статус, reflection toggle.
+- [docs/observability.md](docs/observability.md) — метрики `rpc.server.*`, спаны `otelgrpc`, request-id и уровни access-log (единый источник правды).
+- [docs/usage.md](docs/usage.md) — рецепты: регистрация сервиса через fx-group, `Authenticator`-порт, request-id, health-статус, reflection toggle.
 - [docs/testing.md](docs/testing.md) — `testkit/grpctest`: bufconn-харнесс для тестов потребителей.

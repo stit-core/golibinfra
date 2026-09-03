@@ -5,8 +5,7 @@ import (
 	"net/url"
 )
 
-// account/meta. Реестр: get_amojo_id, get_drive_url, get_account_task_types, get_event_types.
-// (Webhook-subscription management в реестре 109 отсутствует — добавляется при появлении use-case.)
+// account/meta: amojo_id, drive_url, типы задач и событий.
 
 // AccountInfo — объект GET /api/v4/account (с нужными with=).
 type AccountInfo struct {

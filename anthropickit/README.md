@@ -2,11 +2,12 @@
 
 Клиент Claude поверх [`anthropic-sdk-go`](https://github.com/anthropics/anthropic-sdk-go):
 синхронный (`Complete`) и стриминговый (`Stream`) Messages, нормализованный учёт
-токенов (`Usage`) и подсчитанная стоимость (`Cost` в микро-долларах) по
-прайс-таблице, предполётный `CountTokens`. Managed Agents и прочую экзотику
-SDK — через `Raw()`. Кит даёт сервисам единый, декаплированный от SDK вход в
-Claude API с observability-by-default; хранение, леджер и агрегации usage/cost —
-на стороне потребителя (БД у кита нет).
+токенов (`Usage`) и подсчитанная стоимость (`Cost` в микро-долларах +
+`CostKnown`) по прайс-таблице, предполётный `CountTokens`. Managed Agents и
+прочую экзотику SDK — через `Raw()`. Кит даёт сервисам единый, декаплированный
+от SDK вход в Claude API с observability-by-default (метрики + клиентские
+HTTP-спаны через otelhttp); хранение, леджер и агрегации usage/cost — на стороне
+потребителя (БД у кита нет).
 
 ## Импорт
 
@@ -30,7 +31,7 @@ import (
 )
 
 func main() {
-	cfg := anthropickit.Config{APIKey: "sk-ant-...", DefaultModel: "claude-opus-4-8"}
+	cfg := anthropickit.Config{APIKey: "sk-ant-...", DefaultModel: "claude-opus-5"}
 
 	client, err := anthropickit.New(cfg, logkit.Nop())
 	if err != nil {
@@ -51,7 +52,7 @@ func main() {
 	if resp.IsRefusal() {
 		return // отказ классификатора — не ошибка, это успешный 200
 	}
-	fmt.Println(resp.Text(), resp.Usage.OutputTokens, resp.Cost)
+	fmt.Println(resp.Text(), resp.Usage.OutputTokens, resp.Cost, resp.CostKnown)
 }
 ```
 
@@ -61,7 +62,7 @@ func main() {
 ## Документация
 
 - [docs/architecture.md](docs/architecture.md) — устройство, компоненты, поток данных, проектные решения.
-- [docs/configuration.md](docs/configuration.md) — полный справочник `Config`/ENV + опции конструктора.
-- [docs/observability.md](docs/observability.md) — метрики и спаны (единый источник правды).
+- [docs/configuration.md](docs/configuration.md) — полный справочник `Config`/ENV + опции конструктора + прайс-таблица.
+- [docs/observability.md](docs/observability.md) — метрики, спаны и логи (единый источник правды).
 - [docs/usage.md](docs/usage.md) — рецепты: fx Module, прямой `New`, стриминг, tools, structured output, Managed Agents через `Raw()`.
 - [docs/testing.md](docs/testing.md) — `testkit/anthropictest`: `Stub`, `ScriptStream`, `ErrStream`.

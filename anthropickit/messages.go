@@ -148,6 +148,8 @@ type Request struct {
 }
 
 // Response — нативный ответ с нормализованным Usage и посчитанной стоимостью.
+// CostKnown=false — модели нет в прайс-таблице: Cost равен 0, fallback решает
+// потребитель.
 type Response struct {
 	ID         string
 	Model      string
@@ -157,6 +159,7 @@ type Response struct {
 	StopSeq    string
 	Usage      Usage
 	Cost       USDMicros
+	CostKnown  bool
 }
 
 func (r *Response) Text() string {
@@ -183,20 +186,22 @@ func (c *Client) Complete(ctx context.Context, req Request) (*Response, error) {
 	start := time.Now()
 	msg, err := c.sdk.Messages.New(ctx, params)
 	if err != nil {
-		c.instr.record(ctx, model, "error", time.Since(start), Usage{}, 0)
+		c.observe(ctx, start, callResult{op: opComplete, model: model}, err)
 		return nil, classify(err)
 	}
 	resp := c.buildResponse(msg, model)
-	c.instr.record(ctx, model, "ok", time.Since(start), resp.Usage, resp.Cost)
+	c.observe(ctx, start, callResult{op: opComplete, model: model, status: statusOK, usage: resp.Usage, cost: resp.Cost}, nil)
 	return resp, nil
 }
 
-// CountTokens — предполётный подсчёт входных токенов под бюджетирование.
+// CountTokens — предполётный подсчёт входных токенов под бюджетирование. Токены
+// подсчёта не тарифицируются и в anthropic_api_tokens_total не попадают.
 func (c *Client) CountTokens(ctx context.Context, req Request) (int64, error) {
-	params, _, err := c.toParams(req, defaultMaxTokensSync)
+	params, model, err := c.toParams(req, defaultMaxTokensSync)
 	if err != nil {
 		return 0, err
 	}
+	start := time.Now()
 	res, err := c.sdk.Messages.CountTokens(ctx, anthropic.MessageCountTokensParams{
 		Model:      params.Model,
 		Messages:   params.Messages,
@@ -206,8 +211,10 @@ func (c *Client) CountTokens(ctx context.Context, req Request) (int64, error) {
 		ToolChoice: params.ToolChoice,
 	})
 	if err != nil {
+		c.observe(ctx, start, callResult{op: opCountTokens, model: model}, err)
 		return 0, classify(err)
 	}
+	c.observe(ctx, start, callResult{op: opCountTokens, model: model, status: statusOK}, nil)
 	return res.InputTokens, nil
 }
 
@@ -233,7 +240,7 @@ func (c *Client) buildResponse(m *anthropic.Message, model string) *Response {
 			r.Content = append(r.Content, ThinkingBlock{Thinking: b.Thinking, Signature: b.Signature})
 		}
 	}
-	r.Cost = c.costOf(r.Model, r.Usage)
+	r.Cost, r.CostKnown = c.costOf(r.Model, r.Usage)
 	return r
 }
 

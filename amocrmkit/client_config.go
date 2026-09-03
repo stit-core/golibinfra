@@ -8,9 +8,6 @@ import (
 
 // account-config: pipelines/statuses, custom_fields/groups, tags, loss_reasons,
 // sources/buttons/online_chat, users/roles, customer statuses/segments.
-// Покрытие — 40 слотов реестра _shared/integrations/amocrm (секции config).
-
-// --- Pipelines + statuses ---
 
 // Pipeline — воронка продаж.
 type Pipeline struct {
@@ -77,7 +74,7 @@ func (c *Client) UpsertStatuses(ctx context.Context, acc Account, pipelineID int
 	return sendBatch[StatusInput, Status](ctx, c, acc, http.MethodPost, "statuses.upsert", path, "statuses", in)
 }
 
-// --- Custom fields + groups (entity: leads|contacts|companies|customers|catalogs/{id}) ---
+// Custom fields + groups: entity ∈ leads|contacts|companies|customers|catalogs/{id}.
 
 // CustomField — дополнительное поле.
 type CustomField struct {
@@ -172,7 +169,7 @@ func (c *Client) DeleteCustomFieldGroup(ctx context.Context, acc Account, entity
 	return c.sendNoContent(ctx, acc, http.MethodDelete, "custom_field_groups.delete", fmt.Sprintf("/api/v4/%s/custom_fields/groups/%s", entity, id), nil)
 }
 
-// --- Tags (entity: leads|contacts|companies|customers) ---
+// Tags: entity ∈ leads|contacts|companies|customers.
 
 // TagCreateInput — тело POST/PATCH /{entity}/tags.
 type TagCreateInput struct {
@@ -197,8 +194,6 @@ func (c *Client) UpdateTags(ctx context.Context, acc Account, entity string, in 
 	return sendBatch[TagCreateInput, Tag](ctx, c, acc, http.MethodPatch, "tags.update", fmt.Sprintf("/api/v4/%s/tags", entity), "tags", in)
 }
 
-// --- Loss reasons (read-only) ---
-
 // LossReason — причина отказа.
 type LossReason struct {
 	ID        int    `json:"id"`
@@ -212,8 +207,6 @@ type LossReason struct {
 func (c *Client) ListLossReasons(ctx context.Context, acc Account, p ListParams) (Page[LossReason], error) {
 	return listEntities[LossReason](ctx, c, acc, "loss_reasons.list", "/api/v4/leads/loss_reasons", "loss_reasons", p.values())
 }
-
-// --- Sources + website buttons + online chat ---
 
 // Source — источник.
 type Source struct {
@@ -296,8 +289,6 @@ func (c *Client) ConnectOnlineChat(ctx context.Context, acc Account, sourceID in
 	return sendOne[map[string]any](ctx, c, acc, http.MethodPost, "online_chat.connect", path, in)
 }
 
-// --- Users + roles ---
-
 // User — пользователь аккаунта.
 type User struct {
 	ID     int            `json:"id"`
@@ -376,8 +367,6 @@ func (c *Client) UpdateRole(ctx context.Context, acc Account, id int, in RoleInp
 func (c *Client) DeleteRole(ctx context.Context, acc Account, id int) error {
 	return c.sendNoContent(ctx, acc, http.MethodDelete, "roles.delete", fmt.Sprintf("/api/v4/roles/%d", id), nil)
 }
-
-// --- Customer statuses + segments ---
 
 // CustomerStatus — этап покупателя.
 type CustomerStatus struct {

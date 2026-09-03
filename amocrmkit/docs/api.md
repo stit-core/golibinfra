@@ -8,21 +8,23 @@
 
 | Символ | Роль | Когда использовать |
 |---|---|---|
-| `Module` (`fx.Options`) | provide'ит `*Client` из графа | подключение через fx |
-| `New(cfg, hc, clock, log) (*Client, error)` | прямая сборка клиента | вне fx / в тестах |
-| `Config` | настройки уровня kit'а (см. [configuration.md](configuration.md)) | передаётся в `New` / читается `NewConfig` |
-| `NewConfig() (Config, error)` | читает `Config` из ENV | `fx.Provide(amocrmkit.NewConfig)` |
+| `Module` (`fx.Options`) | provide'ит `*Client` из графа (`Config`, `httpclient.Config`, `clockkit.Clock`, `logkit.Logger`) | подключение через fx |
+| `New(cfg, hcCfg, clock, log, opts...) (*Client, error)` | прямая сборка клиента; кит собирает свой `httpclient` из `hcCfg` | вне fx / в тестах |
+| `Option`: `WithHTTPClient(*httpclient.Client)`, `WithTransport(http.RoundTripper)` | готовый httpclient (тесты) / базовый транспорт собираемого клиента | см. [configuration.md](configuration.md) |
+| `Config` | настройки уровня кита (см. [configuration.md](configuration.md)); `Validate()` | передаётся в `New` / читается `NewConfig` |
+| `NewConfig() (Config, error)` | читает `Config` из ENV + `Validate` | `fx.Provide(amocrmkit.NewConfig)` |
 | `Client` | единая точка вызовов всех контуров | один экземпляр на процесс, все аккаунты |
 
 ## Координаты вызова
 
 | Тип | Контур | Поля |
 |---|---|---|
-| `Account` | REST v4 / Drive | `Subdomain`, `TLD` (`"ru"`/`"com"`), `Token` (Bearer) |
-| `AmojoTarget` | amoJo Chat | `TLD`, `AccountKey` (= `Account.Subdomain`), `Secret` (channel secret) |
+| `Account` | REST v4 / Drive | `Subdomain` (`^[a-z0-9-]{1,63}$`), `TLD` (`"ru"`/`"com"`), `Token` (Bearer) |
+| `AmojoTarget` | amoJo Chat | `TLD` (`"ru"`/`"com"`), `AccountKey` (= `Account.Subdomain`, тот же формат), `Secret` (channel secret) |
 
 OAuth-методы координат-структуры не используют — subdomain/tld/секреты приходят
-отдельными параметрами.
+отдельными параметрами и проходят ту же валидацию. Координаты вне формата →
+`ErrInvalidAccount` без сетевого вызова.
 
 ## Пагинация и общие параметры (REST v4)
 
@@ -34,8 +36,9 @@ OAuth-методы координат-структуры не использую
 
 ## Shared wire-типы (`types.go`)
 
-`CustomFieldValue` / `CustomFieldValueItem` (значения полиморфны — `any`), `Tag` /
-`TagRef`, `CreatedEntity` (`ID`, `RequestID`, `UpdatedAt`, `Links`), `ContactRef` /
+`CustomFieldValue` / `CustomFieldValueItem` (значения полиморфны — `any`),
+`CustomFieldEdit` + `CustomFieldValues`, `CodeField`, `Tag` / `TagRef`,
+`CreatedEntity` (`ID`, `RequestID`, `UpdatedAt`, `Links`), `ContactRef` /
 `CompanyRef`.
 
 ## REST v4 — методы по доменам
@@ -47,10 +50,11 @@ OAuth-методы координат-структуры не использую
 
 | Домен (файл) | Методы |
 |---|---|
-| leads (`client_leads.go`) | `ListLeads`, `CreateLeads`, `UpdateLeads`; unsorted: `CreateUnsortedSIP`, `CreateUnsortedForms`, `AcceptUnsorted`, `DeclineUnsorted`, `LinkUnsorted` |
+| leads (`client_leads.go`) | `ListLeads`, `CreateLeads`, `UpdateLeads`, `CreateLeadsComplex`; unsorted: `CreateUnsortedSIP`, `CreateUnsortedForms`, `AcceptUnsorted`, `DeclineUnsorted`, `LinkUnsorted` |
 | contacts + companies (`client_contacts.go`) | `ListContacts`, `CreateContacts`, `UpdateContacts`, `ListContactChats`, `LinkContactChat`; `ListCompanies`, `CreateCompanies`, `UpdateCompanies` |
-| customers + transactions (`client_customers.go`) | `ListCustomers`, `CreateCustomers`, `UpdateCustomers`, `ListTransactions`, `CreateTransactions`, `DeleteTransaction`, `AdjustBonusPoints` (RU-only) |
+| customers + transactions (`client_customers.go`) | `ListCustomers`, `CreateCustomers`, `UpdateCustomers`, `ListTransactions`, `CreateTransactions`, `DeleteTransaction`, `AdjustBonusPoints` (RU-only), `SetCustomersMode` |
 | catalogs + elements (`client_catalogs.go`) | `ListCatalogs`, `CreateCatalogs`, `UpdateCatalogs`, `ListCatalogElements`, `CreateCatalogElements`, `UpdateCatalogElements` |
+| entity links (`client_links.go`) | `LinkEntities`, `UnlinkEntities` (матрица допустимых связей проверяется до запроса) |
 | tasks (`client_tasks.go`) | `ListTasks`, `CreateTasks`, `UpdateTasks`, `CompleteTask` |
 | notes + calls (`client_notes.go`) | `AddNotes`, `AddCalls` |
 | talks (`client_talks.go`) | `GetTalk`, `ListTalks`, `CloseTalk` |
@@ -59,15 +63,16 @@ OAuth-методы координат-структуры не использую
 | account-meta (`client_account.go`) | `GetAmojoID`, `GetDriveURL`, `GetAccountTaskTypes`, `GetEventTypes` |
 | account-config (`client_config.go`) | pipelines/statuses: `ListPipelines`, `CreatePipelines`, `UpdatePipeline`, `UpsertStatuses`; custom fields/groups: `ListCustomFields`, `CreateCustomFields`, `UpdateCustomFields`, `DeleteCustomField`, `ListCustomFieldGroups`, `CreateCustomFieldGroups`, `UpdateCustomFieldGroup`, `DeleteCustomFieldGroup`; tags: `ListTags`, `CreateTags`, `UpdateTags`; `ListLossReasons`; sources/buttons/online chat: `ListSources`, `CreateSources`, `UpdateSources`, `DeleteSources`, `ListWebsiteButtons`, `CreateWebsiteButton`, `UpdateWebsiteButton`, `ConnectOnlineChat`; users/roles: `ListUsers`, `CreateUsers`, `ActivateUser`, `DeactivateUser`, `ListRoles`, `CreateRoles`, `UpdateRole`, `DeleteRole`; customer statuses/segments: `ListCustomerStatuses`, `CreateCustomerStatuses`, `UpdateCustomerStatus`, `DeleteCustomerStatus`, `ListSegments`, `CreateSegments`, `UpdateSegment`, `DeleteSegment` |
 
-`GET /{id}`-геттеры есть только у `talks` (`GetTalk`): прочие сущности gateway
-отдаёт из локального read-model, а не read-through к amoCRM.
+`GET /{id}`-геттеры есть только у `talks` (`GetTalk`): одиночное чтение прочих
+сущностей — из локального read-model потребителя, не read-through к amoCRM.
 
 ## Drive — методы (`client_files.go`)
 
 `CreateUploadSession`, `UploadPart` (чанк + `Content-Range`), `PatchFile`,
 `TrashFiles`, `RestoreFiles`, `GetFileVersions`, `ListFiles`. Все принимают
-`driveURL` параметром (из `GetDriveURL`). Типы: `File`, `UploadSession`,
-`UploadSessionInput`, `PatchFileInput`, `FileLink`, `AttachFileInput`.
+`driveURL` параметром (из `GetDriveURL`) и `Account` (валидируется). Типы:
+`File`, `UploadSession`, `UploadSessionInput`, `PatchFileInput`, `FileLink`,
+`AttachFileInput`.
 
 ## amoJo Chat — методы (`amojo.go`)
 
@@ -84,7 +89,7 @@ OAuth-методы координат-структуры не использую
 
 Типы: `ConnectInput`, `CreateChatInput`, `NewMessagePayload`, `AmojoParticipant`,
 `AmojoProfile`. Полиморфные тела (message/react/typing) — `map[string]any`: строит
-gateway.
+потребитель.
 
 ## Подпись amoJo (`signing.go`)
 
@@ -102,21 +107,22 @@ gateway.
 | `ExchangeCode(ctx, subdomain, tld, clientID, clientSecret, code, redirectURI) (Tokens, error)` | grant `authorization_code` |
 | `RefreshToken(ctx, subdomain, tld, clientID, clientSecret, refreshToken, redirectURI) (Tokens, error)` | grant `refresh_token` (`redirect_uri` обязателен) |
 | `Tokens` | `AccessToken`, `RefreshToken`, `ExpiresIn`, `ServerTime`; метод `ExpiresAt()` (= `ServerTime + ExpiresIn`, UTC) |
-| `TokenSource` | контракт для gateway (`Token(ctx, accountSubdomain) (string, error)`); kit определяет, но сам не вызывает |
+| `TokenSource` | контракт поставщика access-токена (`Token(ctx, accountSubdomain) (string, error)`); кит определяет, но сам не вызывает |
 
 ## Ошибки (`errors.go`)
 
 Sentinel'ы для `errors.Is` и маппинг HTTP-статусов:
 
-| Sentinel | Статус(ы) |
+| Sentinel | Когда |
 |---|---|
+| `ErrConfig` | невалидный `Config` (`RateRPS <= 0`, `HostOverride` не `scheme://host`) |
+| `ErrInvalidAccount` | subdomain/tld вне формата (REST, Drive, OAuth, amoJo) — запрос не отправляется |
 | `ErrAuth` | 401 |
 | `ErrForbidden` | 403 (в т.ч. IP-бан) |
 | `ErrNotFound` | 404 |
 | `ErrValidation` | 400, 422, прочие 4xx (402/405/409/…) |
 | `ErrRateLimited` | 429 |
 | `ErrServer` | 5xx |
-| `ErrSignature` | несовпадение подписи |
 
 `*APIError` (доступен через `errors.As`) несёт `Status`, `Title`, `Type`,
 `Detail`, `ValidationErrors []ValidationError`, `RetryAfter` (секунды, поле тела

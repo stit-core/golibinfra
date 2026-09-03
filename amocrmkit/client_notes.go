@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-// notes + calls (communications). Реестр: add_note, add_call.
+// notes + calls (communications).
 
 // Note — объект примечания (GET-ответ).
 type Note struct {

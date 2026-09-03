@@ -6,9 +6,7 @@ import (
 	"net/http"
 )
 
-// chat templates (REST v4; amoJo-контур — в amojo.go). Реестр: create_chat_templates,
-// update_chat_template, delete_chat_templates, list_chat_templates,
-// submit_template_review, update_template_review.
+// chat templates (REST v4; amoJo-контур — в amojo.go).
 
 // ChatTemplate — шаблон сообщения чата.
 type ChatTemplate struct {

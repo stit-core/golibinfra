@@ -8,9 +8,8 @@ import (
 	"strconv"
 )
 
-// talks. Реестр: get_talk, list_talks, close_talk.
-// get_talk здесь ЕСТЬ (в отличие от прочих сущностей): talks — единственная сущность
-// без надёжного webhook, poller/webhook-комплемент гидратируют беседу через get_talk.
+// talks. GetTalk есть (в отличие от прочих сущностей): talks — единственная
+// сущность без надёжного webhook, беседу гидратируют read-through через GetTalk.
 
 // Talk — беседа (talk).
 type Talk struct {
@@ -36,7 +35,7 @@ func (c *Client) GetTalk(ctx context.Context, acc Account, talkID int) (Talk, er
 }
 
 // ListTalks — GET /api/v4/talks?filter[contact_id]={id}. Прочие server-фильтры/сортировка
-// амо игнорит → клиентская фильтрация по updated_at у gateway.
+// амо игнорит — фильтровать по updated_at приходится на стороне потребителя.
 func (c *Client) ListTalks(ctx context.Context, acc Account, contactID int, p ListParams) (Page[Talk], error) {
 	q := p.values()
 	if q == nil {

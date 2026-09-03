@@ -5,8 +5,7 @@ import (
 	"net/http"
 )
 
-// contacts + companies. Реестр: create_contact, update_contact, list_contacts,
-// list_contact_chats, link_contact_chat, create_company, update_company, list_companies.
+// contacts + companies.
 
 // Contact — объект контакта (GET-ответ).
 type Contact struct {

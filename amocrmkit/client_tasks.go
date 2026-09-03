@@ -6,7 +6,7 @@ import (
 	"net/http"
 )
 
-// tasks. Реестр: create_task, update_task, complete_task, list_tasks.
+// tasks.
 
 // Task — объект задачи (GET-ответ).
 type Task struct {

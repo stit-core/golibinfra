@@ -10,22 +10,27 @@ import (
 )
 
 // amoJo Chat API — подписанные (HMAC-SHA1) запросы на https://amojo.amocrm.{tld}.
-// Реестр: amojo_connect, amojo_disconnect, amojo_create_chat, amojo_new_message,
-// amojo_edit_message, amojo_react, amojo_typing, amojo_delivery_status.
 //
 // Тело маршалится ОДИН раз: Content-MD5 и реальное тело считаются с тех же байтов
-// (иначе MD5 разойдётся). Маппинг типов медиа (audio→voice и пр.) — у gateway,
-// kit принимает amoJo-тип как есть.
+// (иначе MD5 разойдётся). Маппинг типов медиа (audio→voice и пр.) — у потребителя,
+// кит принимает amoJo-тип как есть.
 
 // AmojoTarget — координаты amoJo-вызова. AccountKey должен совпадать с
-// Account.Subdomain того же аккаунта: rate-budget (7 rps) общий с REST.
+// Account.Subdomain того же аккаунта: rate-budget общий с REST.
 type AmojoTarget struct {
 	TLD        string // "ru" | "com" (домены невзаимозаменяемы)
 	AccountKey string // ключ rate-limiter (= Account.Subdomain аккаунта)
 	Secret     string // channel secret для подписи
 }
 
+func (t AmojoTarget) validate() error {
+	return validateAccount(t.AccountKey, t.TLD)
+}
+
 func (c *Client) amojoCall(ctx context.Context, t AmojoTarget, method, endpoint, path string, body, out any) error {
+	if err := t.validate(); err != nil {
+		return fmt.Errorf("amocrmkit: %s: %w", endpoint, err)
+	}
 	var raw []byte
 	if body != nil {
 		var err error
@@ -34,7 +39,10 @@ func (c *Client) amojoCall(ctx context.Context, t AmojoTarget, method, endpoint,
 			return fmt.Errorf("amocrmkit: %s: marshal: %w", endpoint, err)
 		}
 	}
-	u := c.resolveURL("https://amojo.amocrm."+t.TLD, path, nil)
+	u, err := c.resolveURL("https://amojo.amocrm."+t.TLD, path, nil)
+	if err != nil {
+		return fmt.Errorf("amocrmkit: %s: %w", endpoint, err)
+	}
 	sh := signRequest(c.clock.Now(), method, path, raw, t.Secret)
 
 	var reader io.Reader
@@ -76,8 +84,6 @@ type AmojoParticipant struct {
 	ProfileLink string        `json:"profile_link,omitempty"`
 }
 
-// --- channel lifecycle ---
-
 // ConnectInput — тело POST /v2/origin/custom/{channel_id}/connect.
 type ConnectInput struct {
 	AccountID            string `json:"account_id"` // amojo_id аккаунта (UUID)
@@ -107,8 +113,6 @@ func (c *Client) AmojoDisconnect(ctx context.Context, t AmojoTarget, channelID, 
 	return c.amojoCall(ctx, t, http.MethodDelete, "amojo.disconnect", "/v2/origin/custom/"+channelID+"/disconnect", body, nil)
 }
 
-// --- chats / messages ---
-
 // CreateChatInput — тело POST /v2/origin/custom/{scope_id}/chats.
 type CreateChatInput struct {
 	ConversationID string           `json:"conversation_id"`
@@ -137,7 +141,7 @@ func (c *Client) AmojoCreateChat(ctx context.Context, t AmojoTarget, scopeID str
 }
 
 // NewMessagePayload — payload события new_message. Message полиморфно (text/media/…),
-// поэтому map: точное содержимое строит gateway по message-types.
+// поэтому map: точное содержимое строит потребитель по message-types.
 type NewMessagePayload struct {
 	Timestamp         int64             `json:"timestamp"`
 	MsecTimestamp     int64             `json:"msec_timestamp"`
@@ -183,8 +187,8 @@ func (c *Client) AmojoEditMessage(ctx context.Context, t AmojoTarget, scopeID st
 	return out, err
 }
 
-// AmojoReact — POST /v2/origin/custom/{scope_id}/react. Тело строит gateway
-// (id/msgid цели, user, type, emoji) — kit передаёт как есть.
+// AmojoReact — POST /v2/origin/custom/{scope_id}/react. Тело строит потребитель
+// (id/msgid цели, user, type, emoji) — кит передаёт как есть.
 func (c *Client) AmojoReact(ctx context.Context, t AmojoTarget, scopeID string, body map[string]any) error {
 	return c.amojoCall(ctx, t, http.MethodPost, "amojo.react", "/v2/origin/custom/"+scopeID+"/react", body, nil)
 }

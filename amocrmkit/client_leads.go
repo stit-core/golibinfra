@@ -6,11 +6,8 @@ import (
 	"net/http"
 )
 
-// leads + unsorted. Покрытие реестра _shared/integrations/amocrm:
-// create_lead, update_lead, list_leads, create_unsorted_sip, create_unsorted_forms,
-// accept_unsorted, decline_unsorted, link_unsorted.
-// GET /leads/{id} в реестре нет: gateway отдаёт Get*-геттеры из локального зеркала
-// (read-model), а не read-through к амо.
+// leads + unsorted. GET /leads/{id} не покрыт: одиночное чтение сущностей —
+// из локального read-model потребителя, не read-through к амо.
 
 // Lead — объект сделки (GET-ответ).
 type Lead struct {
@@ -129,8 +126,6 @@ func (c *Client) CreateLeadsComplex(ctx context.Context, acc Account, in []LeadC
 	err := c.doREST(ctx, restReq{acc: acc, method: http.MethodPost, path: "/api/v4/leads/complex", body: in, endpoint: "leads.complex"}, &out)
 	return out, err
 }
-
-// --- Unsorted (неразобранное) ---
 
 // Unsorted — объект неразобранного.
 type Unsorted struct {
