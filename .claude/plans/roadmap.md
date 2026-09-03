@@ -11,73 +11,83 @@ changelog'ов нет: они расходятся с правдой и меша
 целиком — история остаётся в `git log`. Незакрытый follow-up переезжает в `## Backlog` или
 новой `### `-секцией, а не хвостом в удаляемой.
 
-**Где это запускается.** Репо — библиотека, живого стека нет: гейт целиком локальный —
-`golangci-lint run ./...` + `go test -short -race ./...` + `go build ./...` (как в
-`.gitea/workflows/ci.yml`). Выпуск версии — тег `vX.Y.Z` (skill `/release`), консьюмеры
-подтягивают `go get` сами.
+**Где это запускается.** Репо — библиотека, живого стека нет: гейт локальный — `make check`
+(fmt, vet, lint, test -short -race, build, tidy, govulncheck, envdoc), перед тегом —
+`make gate-clean` (то же в чистом worktree). Выпуск версии — тег `vX.Y.Z` (skill `/release`),
+консьюмеры подтягивают `go get` сами.
 
 ## Active
 
-### hubkit-customer-contour — второй контур identity (заказчик) в `hubkit`
+### ideal-state — довести библиотеку до 8+ по всем линзам аудита
 
-**Создан:** 2026-07-27 · **Статус:** in-progress (код и доки готовы, гейт зелёный; открыт
-только выпуск версии — A9, за оператором)
+**Создан:** 2026-09-03 · **Статус:** in-progress
 
-**Контекст.** Программа «customer-portal» (`stit-hub/infra/plan-customer/`, файл
-`10-golibinfra.md`, волна 1) вводит второй контур сессии: заказчик логинится в
-company-backend (`iss=https://api.hub.stit.tech`), тот выпускает свою ES256-сессию в
-cookie `stit_customer` (claims `kind=customer`, `company_id`, `account_role`, `products`).
-Сотруднический контур (`stit_session`, `iss=https://id.stit.tech`) не трогается. `hubkit` —
-общая точка: он один знает про оба слота, продукты не сравнивают строки руками.
+**Контекст.** Аудит на 843842e: 4,7/10, гейт красный (несобираемый sberaikit, флаки
+rate-limit, нет CI), восемь критических дефектов в самых используемых китах (httpkit,
+httpclient, authnkit, outboxkit, health-проводка), 17 достижимых CVE, дрейф доков. Решения
+оператора: удалить openaikit/googleaikit/yandexaikit/sberaikit/webpushkit; остальные киты
+остаются; API можно ломать одним breaking-minor; коммиты по ходу без push.
 
-**Не входит в скоуп.** Выпуск customer-сессии (company-backend, волна 2), правило видимости
-`customer_visible` (продукты, волны 4–6), правки в репо-потребителях, bump версии и тег.
+**Не входит в скоуп.** CI-раннер (инфраструктура вне репо; заменён `make gate-clean`),
+вынос hubkit/amocrmkit в отдельные модули, правки в репо-потребителях, bump версии и тег.
 
 **Атомы.**
-- [x] **A1:** RED — тесты `hubkit/sso` на оба контура: employee-токен в customer-слоте →
-  отказ, обе cookie → employee, протухший employee + валидный customer → customer,
-  выключенный customer-контур → поведение как сегодня, `CanUseProduct` в обоих контурах.
-  - Verify: `go test ./hubkit/...` красный по новым тестам · Зависит от: —
-- [x] **A2:** `Identity` — `Kind`/`CompanyID`/`AccountRole`/`Products` + `IsEmployee`/
-  `IsCustomer`/`CanUseProduct`; пустой claim `kind` = employee (уже выпущенные токены живут).
-  - Verify: `go test ./hubkit/sso/...` зелёный по identity-тестам · Зависит от: A1
-- [x] **A3:** `sso.Config` — customer-поля (`HUB_SSO_CUSTOMER_JWKS_URL|_ISSUER|_COOKIE|
-  _LOGIN_URL`), `CustomerEnabled()`, `CustomerLoginURLFor`; пустой JWKS-URL = контур выключен.
-  - Verify: тесты конфига зелёные · Зависит от: A1
-- [x] **A4:** `Verifier` — контур-дискриминатор `kind` (employee-верификатор отвергает
-  `kind=customer` и наоборот), `CustomerVerifier` с обязательным `iss`; claim-константы
-  `ClaimKind`/`ClaimCompanyID`/`ClaimAccountRole`/`ClaimProducts`.
-  - Verify: verifier-тесты обоих контуров зелёные · Зависит от: A2, A3
-- [x] **A5:** `Extractor` — два слота с приоритетом employee (`NewDualExtractor`), `Module`
-  разворачивает оба верификатора; `NewExtractor` остаётся однослотовым (совместимость).
-  - Verify: extractor-тесты (приоритет, протухший employee, выключенный контур) зелёные ·
-    Зависит от: A4
-- [x] **A6:** Гейт-хелперы `sso.RequireEmployee` / `RequireCustomer` (+ `ErrNoIdentity`,
-  `ErrWrongKind`).
-  - Verify: тесты гейтов зелёные · Зависит от: A2
-- [x] **A7:** `issuer` — имена access/refresh-cookie и `Path` refresh'а из конфига
-  (`RefreshName`/`RefreshPath` + `RefreshCookie`/`ExpiredRefreshCookie`), чтобы второй issuer
-  в соседнем процессе поднимался со своими именами.
-  - Verify: issuer-тест на два экземпляра с разными именами зелёный · Зависит от: —
-- [x] **A8:** Доки: `hubkit/README.md` — таблица двух контуров, правило приоритета,
-  предупреждение «`Kind` проверяется до доменной политики»; env-таблица + корневой
-  `README.md`.
-  - Verify: `golangci-lint run ./...` + `go test -short -race ./...` + `go build ./...`
-    зелёные · Зависит от: A5, A6, A7
-- [ ] **A9:** Выпуск версии — коммит + тег minor (`v0.53.0`: последний тег `v0.52.0`) +
-  push. За оператором (skill `/release`), рабочее дерево готово.
-  - Verify: `go get git.stit.tech/stit-core/golibinfra@v0.53.0` в первом потребителе
-    (company-backend, волна 2) · Зависит от: A8
+- [x] **A0:** удаление пяти китов, детерминированный тест rate-limit, Makefile-гейт,
+  `gate-clean`, `envdoc-check`, bump x/crypto, grpc, x/text, go 1.26.6.
+  - Verify: `go build ./...` + `go test -short -race ./...` + `govulncheck ./...` чистые.
+- [ ] **A1 (health):** leaf-пакет `healthkit` с именованным `Probe`; `httpkit.Probe` — alias;
+  `pgkit`/`natskit`/`cachekit` возвращают `healthkit.Probe`; `/ready` не отдаёт текст ошибок.
+  - Verify: тест проводки через `httpkit.Module` видит пробы китов · Зависит от: A0
+- [ ] **A2 (httpkit):** `MapSentinel` без `errors.As` для `error`; `Idempotency` со scoped-ключом,
+  NX-reserve, только 2xx/4xx; OTel первым в цепочке + span-name по route; синхронный Listen;
+  limiter с eviction и `TrustProxy`; wrappers с `Unwrap`/`Flush`; `Vary: Origin`; лимит
+  `X-Request-ID`; `ReadHeaderTimeout`; envconfig-теги у всех полей конфигов.
+  - Verify: регрессионные тесты на каждый пункт · Зависит от: A1
+- [ ] **A3 (httpclient):** retry через `GetBody` и только идемпотентных методов (opt-in для
+  остальных), валидация `RetryWait`, cap backoff, `Retry-After`, per-host breaker, hook перед
+  попыткой; request-id через `internal/requestid` без импорта httpkit.
+  - Verify: тесты retry с телом, POST без retry, `RetryWait=0` · Зависит от: A0
+- [ ] **A4 (authnkit):** валидация PHC-параметров в `Verify`, длина секрета, `exp` обязателен,
+  go-jose вместо golang-jwt, экземплярный RBAC-реестр, `NeedsRehash`.
+  - Verify: fuzz-корпус с t=0/p=0/пустым хэшем зелёный · Зависит от: A0
+- [ ] **A5 (pgkit):** defer-rollback в `WithTx`; версии миграций на источник под advisory-lock;
+  драйвер pgx/v5 для migrate; `MigrateModule` с multi-source; метрики через глобальный
+  `otel.Meter`, реплика инструментирована; предикаты 55P03/57014.
+  - Verify: тест «новая миграция в ките не сдвигает app-версии» · Зависит от: A0
+- [ ] **A6 (outboxkit):** `EnsurePartitions` на старте; claim строк в транзакции; таймаут тика;
+  `PublishAsyncTimeout`; атрибут `instance` в метриках; retention не дропает неопубликованное.
+  - Verify: тест двух воркеров без дублей; тест партиций после старта · Зависит от: A5
+- [ ] **A7 (natskit):** drain с ожиданием; DLQ без `Nats-Msg-Id`; deadline + `InProgress` в
+  JS-хендлере; управляемые поля стрима; `Subscription` с отпиской; error-handlers.
+  - Verify: тест DLQ внутри стрима; тест drain · Зависит от: A0
+- [ ] **A8 (cachekit, storagekit, timerkit):** `Close`/Ping/`GetDel`/`Reserve`/теги + метрики
+  в cachekit; стриминговый `Put` + метрики в storagekit; валидация интервала, WaitGroup,
+  таймаут и метрики в timerkit.
+  - Verify: unit-тесты, minio-тест под `testing.Short()` · Зависит от: A0
+- [ ] **A9 (logkit, telemetry):** redact через `ReplaceAttr` (включая `With`); `Span` с
+  fallback; стандартная семантика `OTEL_EXPORTER_OTLP_ENDPOINT`; OTel log-bridge или удаление
+  LoggerProvider; fail-fast на невалидный уровень/паттерн.
+  - Verify: структурные тесты redact · Зависит от: A0
+- [ ] **A10 (сессии):** `internal/jwks` с троттлингом и singleflight для oidckit и hubkit/sso;
+  reuse-detection и хэшированные ключи refresh; `GETDEL`; обязательный aud; единый дефолт
+  `COOKIE_SECURE`; клиенты с таймаутом; метрики verify.
+  - Verify: тесты повторного refresh и JWKS-шторма · Зависит от: A8
+- [ ] **A11 (anthropickit, amocrmkit, grpc):** прайс с текущими моделями и `CostKnown`; спаны;
+  метрики при `Close` стрима; regex subdomain/TLD; eviction лимитера; мёртвый API убран;
+  уровень логов и текст ошибок в grpckit.
+  - Verify: httptest-тесты Complete/Stream · Зависит от: A3
+- [ ] **A12 (общее):** `internal/otelkit` вместо копий метрик, forward-only в комментариях,
+  `bizmetric` суффиксы, `bruteforcekit.Window`, `mapkit` консистентность, testkit без
+  `:latest` и с JetStream.
+  - Verify: `make check` зелёный · Зависит от: A1–A11
+- [ ] **A13 (доки):** README/CLAUDE.md/CONTRIBUTING/skills синхронны с кодом, env-таблицы
+  проходят `envdoc-check`, обещания README сверены с кодом, release notes в аннотации тега.
+  - Verify: `make gate-clean` зелёный · Зависит от: A12
 
-**Открытые вопросы (эскалация оператору, не решаются здесь).**
-- `Products []string` делает `sso.Identity` несравнимой (`==`/`!=`, ключ map). В репо это
-  чинится (тесты переведены на `reflect.DeepEqual`); в потребителях сравнений `Identity`
-  не найдено, но `tag-backend`/`company-backend` держат `type Identity = sso.Identity` —
-  при bump'е версии проверить.
-- `HUB_SSO_CUSTOMER_AUDIENCE` планом не предусмотрен: aud customer-контура не проверяется
-  (у employee — опционально через `HUB_SSO_AUDIENCE`).
-- План называет версию `v0.4x.0`, фактический последний тег — `v0.52.0`; minor-bump =
-  `v0.53.0`.
-- `issuer.Session` (запись refresh-стора) не расширена полями заказчика: по
-  `00-architecture § 3` refresh заказчика и так ходит в БД за аккаунтом (там же ловится
-  `status=blocked` и снятый продукт). Понадобится иначе — правка контракта в плане, не здесь.
+## Backlog
+
+- Вынос `hubkit` (SDK хаба) и `amocrmkit` в отдельные модули; триггер — второй потребитель
+  вне stit-core или конфликт версий зависимостей у потребителя.
+- CI на Gitea Actions, когда появится раннер: `make check` + `make test-full`.
+- `hubkit/projection`: синхронизировать схему с клиентом (departments, tags, entity-tags) или
+  перенести в шаблон продукта.
