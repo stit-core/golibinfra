@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func sseClient() *Client { return New(Config{Timeout: 2 * time.Second}) }
+func sseClient() *Client { c, _ := New(Config{Timeout: 2 * time.Second}); return c }
 
 func TestSSE_ParsesEventsAndDone(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

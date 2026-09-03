@@ -10,7 +10,7 @@ import (
 )
 
 func TestNewAppliesConfigHostOverride(t *testing.T) {
-	hc := httpclient.New(httpclient.Config{Timeout: time.Second})
+	hc, _ := httpclient.New(httpclient.Config{Timeout: time.Second})
 	c, err := New(Config{RateRPS: 7, HostOverride: "http://fake-amo:8080"}, hc, clockkit.Real{}, logkit.Nop())
 	if err != nil {
 		t.Fatalf("New: %v", err)
@@ -25,7 +25,7 @@ func TestNewAppliesConfigHostOverride(t *testing.T) {
 }
 
 func TestNewNoOverrideUsesAccountHost(t *testing.T) {
-	hc := httpclient.New(httpclient.Config{Timeout: time.Second})
+	hc, _ := httpclient.New(httpclient.Config{Timeout: time.Second})
 	c, err := New(Config{RateRPS: 7}, hc, clockkit.Real{}, logkit.Nop())
 	if err != nil {
 		t.Fatalf("New: %v", err)

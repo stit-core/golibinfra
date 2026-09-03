@@ -1,54 +1,77 @@
 package httpclient
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
 
-	"github.com/sony/gobreaker/v2"
+	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 )
 
-func TestCircuitBreaker_OpensAfterFailures(t *testing.T) {
-	threshold := 5
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+func contextWithRequestID(ctx context.Context, id string) context.Context {
+	return requestid.With(ctx, id)
+}
+
+func failingServer(t *testing.T) *httptest.Server {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
-	defer srv.Close()
+	t.Cleanup(srv.Close)
+	return srv
+}
 
-	cfg := Config{
-		Timeout:    5 * time.Second,
-		MaxRetries: 0,
-		RetryWait:  0,
-		Breaker: BreakerConfig{
-			FailureThreshold: threshold,
-			RecoveryTimeout:  30 * time.Second,
-			SuccessThreshold: 2,
-		},
-	}
-	client := New(cfg)
+func TestCircuitBreaker_OpensAfterFailures(t *testing.T) {
+	srv := failingServer(t)
+	c := newTestClient(t, Config{Breaker: BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second}})
 
-	for i := 0; i < threshold; i++ {
+	for range 5 {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
-		_, _ = client.Do(req)
+		if resp, err := c.Do(req); err == nil {
+			resp.Body.Close()
+		}
 	}
 
 	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
-	_, err := client.Do(req)
-	if err == nil {
-		t.Fatal("expected error from open circuit breaker")
-	}
-	if !errors.Is(err, gobreaker.ErrOpenState) {
-		t.Fatalf("expected ErrOpenState, got: %v", err)
+	_, err := c.Do(req)
+	if !errors.Is(err, ErrBreakerOpen) {
+		t.Fatalf("expected ErrBreakerOpen, got: %v", err)
 	}
 }
 
-func TestCircuitBreaker_RecoveryTimeout(t *testing.T) {
-	threshold := 2
-	probeHit := false
+func TestCircuitBreaker_PerHostIsolation(t *testing.T) {
+	bad := failingServer(t)
+	good := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(good.Close)
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	c := newTestClient(t, Config{Breaker: BreakerConfig{FailureThreshold: 2, RecoveryTimeout: 30 * time.Second}})
+	for range 2 {
+		req, _ := http.NewRequest(http.MethodGet, bad.URL, nil)
+		if resp, err := c.Do(req); err == nil {
+			resp.Body.Close()
+		}
+	}
+	req, _ := http.NewRequest(http.MethodGet, bad.URL, nil)
+	if _, err := c.Do(req); !errors.Is(err, ErrBreakerOpen) {
+		t.Fatalf("bad host: want open breaker, got %v", err)
+	}
+
+	req, _ = http.NewRequest(http.MethodGet, good.URL, nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("good host must not be affected: %v", err)
+	}
+	resp.Body.Close()
+}
+
+func TestCircuitBreaker_RecoveryTimeout(t *testing.T) {
+	probeHit := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		if probeHit {
 			w.WriteHeader(http.StatusOK)
 		} else {
@@ -57,39 +80,43 @@ func TestCircuitBreaker_RecoveryTimeout(t *testing.T) {
 	}))
 	defer srv.Close()
 
-	recoveryTimeout := 50 * time.Millisecond
-	cfg := Config{
-		Timeout:    5 * time.Second,
-		MaxRetries: 0,
-		RetryWait:  0,
-		Breaker: BreakerConfig{
-			FailureThreshold: threshold,
-			RecoveryTimeout:  recoveryTimeout,
-			SuccessThreshold: 1,
-		},
-	}
-	client := New(cfg)
+	recovery := 50 * time.Millisecond
+	c := newTestClient(t, Config{Breaker: BreakerConfig{FailureThreshold: 2, RecoveryTimeout: recovery}})
 
-	for i := 0; i < threshold; i++ {
+	for range 2 {
 		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
-		_, _ = client.Do(req)
+		if resp, err := c.Do(req); err == nil {
+			resp.Body.Close()
+		}
 	}
-
 	req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
-	_, err := client.Do(req)
-	if !errors.Is(err, gobreaker.ErrOpenState) {
+	if _, err := c.Do(req); !errors.Is(err, ErrBreakerOpen) {
 		t.Fatalf("expected open state, got: %v", err)
 	}
 
-	time.Sleep(recoveryTimeout + 10*time.Millisecond)
+	time.Sleep(recovery + 10*time.Millisecond)
 	probeHit = true
 
 	req, _ = http.NewRequest(http.MethodGet, srv.URL, nil)
-	resp, err := client.Do(req)
+	resp, err := c.Do(req)
 	if err != nil {
 		t.Fatalf("expected probe to succeed, got: %v", err)
 	}
+	resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+}
+
+func TestCircuitBreaker_Disabled(t *testing.T) {
+	srv := failingServer(t)
+	c := newTestClient(t, Config{Breaker: BreakerConfig{FailureThreshold: 0}})
+	for range 10 {
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatalf("breaker disabled: unexpected error %v", err)
+		}
+		resp.Body.Close()
 	}
 }

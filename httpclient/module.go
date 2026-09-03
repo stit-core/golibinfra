@@ -5,15 +5,16 @@ import (
 	"go.uber.org/fx"
 )
 
-// Module не provide'ит Config (см. asymmetry note в pgkit/module.go).
-// Дешёвый mode: `fx.Provide(httpclient.NewConfig)`.
+// Module не provide'ит Config: caller регистрирует его сам
+// (`fx.Provide(httpclient.NewConfig)` или из App-структуры).
 var Module = fx.Module("httpclient",
-	fx.Provide(
-		New,
-	),
+	fx.Provide(func(cfg Config) (*Client, error) { return New(cfg) }),
 )
 
 func NewConfig() (Config, error) {
 	var c Config
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
 }

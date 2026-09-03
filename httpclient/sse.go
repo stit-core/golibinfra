@@ -13,7 +13,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
-	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 )
 
 // sse.go — поддержка Server-Sent Events (text/event-stream) для long-lived стримов
@@ -55,8 +55,8 @@ func (c *Client) Stream(req *http.Request) (*SSEStream, error) {
 	if req.Header.Get("Accept") == "" {
 		req.Header.Set("Accept", "text/event-stream")
 	}
-	if id := httpkit.RequestIDFrom(req.Context()); id != "" {
-		req.Header.Set(httpkit.HeaderRequestID, id)
+	if id := requestid.From(req.Context()); id != "" && req.Header.Get(requestid.Header) == "" {
+		req.Header.Set(requestid.Header, id)
 	}
 
 	start := time.Now()

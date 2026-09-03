@@ -14,14 +14,13 @@ import (
 // троттлятся (отдельный лимит-тест задаёт свой).
 func newTestClient(t *testing.T, srvURL string) *Client {
 	t.Helper()
-	hc := httpclient.New(httpclient.Config{
+	hc, _ := httpclient.New(httpclient.Config{
 		Timeout:    5 * time.Second,
 		MaxRetries: 0,
 		RetryWait:  time.Millisecond,
 		Breaker: httpclient.BreakerConfig{
 			FailureThreshold: 100,
 			RecoveryTimeout:  time.Second,
-			SuccessThreshold: 1,
 		},
 	})
 	c, err := New(Config{Timeout: 5 * time.Second, RateRPS: 1000}, hc, clockkit.Real{}, logkit.Nop())
