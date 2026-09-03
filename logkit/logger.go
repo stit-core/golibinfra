@@ -1,10 +1,7 @@
-// Package logkit — структурный logger поверх slog: каждый record пишется
-// JSON'ом в stdout (при LOG_STDOUT, default; иначе отбрасывается) или в
-// произвольный writer через NewWithWriter (file-sink); автоматически
-// получает trace_id/span_id из ctx. Поддерживает PII-redact'инг
-// (regex-фильтры через RedactConfig, LOG_REDACT_ENABLED) и user-registered
-// attrs (RegisterAttr) для проброса полей вроде request_id из httpkit.
-// Эмитит log_messages_total{level}.
+// Package logkit — структурный logger поверх slog: JSON-записи в stdout
+// (LOG_STDOUT) или в произвольный writer, опциональный второй sink в OTel
+// LoggerProvider (OTLP), PII-redact на уровне атрибутов, trace_id/span_id из
+// ctx, user-registered attrs (RegisterAttr) и метрика log_messages_total{level}.
 package logkit
 
 import "context"

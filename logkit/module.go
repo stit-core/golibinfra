@@ -1,34 +1,30 @@
 package logkit
 
 import (
-	"github.com/kelseyhightower/envconfig"
+	"log/slog"
+
+	"go.opentelemetry.io/otel/log"
 	"go.uber.org/fx"
 )
 
-// Module не provide'ит logkit.Config / ServiceConfig — caller обязан
-// зарегистрировать их сам (см. asymmetry note в pgkit/module.go).
-// Дешёвый mode: `fx.Provide(logkit.NewConfig, logkit.NewServiceConfig)`.
-//
-// service.name / service.version / deployment.environment.name НЕ пишутся
-// как record attrs модулем. registerServiceAttrs остаётся как helper для
-// caller'ов/тестов, которым нужны эти поля в каждой записи.
+// Module не provide'ит конфиги — caller регистрирует их сам (fx.Provide(
+// logkit.NewConfig) и опц. NewRedactConfig). OTel-sink включается, если в
+// графе есть log.LoggerProvider (его отдаёт telemetry.Module).
 var Module = fx.Module(
 	"logkit",
 	fx.Provide(
-		New,
-		// *slog.Logger для consumer'ов которые не используют logkit.Logger
-		// interface (timerkit и пр.). Тот же handler-chain что и Logger —
-		// единое место конфигурации.
-		NewSlog,
+		newSlogLogger,
+		func(l *slog.Logger) Logger { return &slogLogger{l: l} },
 	),
 )
 
-func NewConfig() (Config, error) {
-	var c Config
-	return c, envconfig.Process("", &c)
+type params struct {
+	fx.In
+	Config         Config
+	Redact         RedactConfig       `optional:"true"`
+	LoggerProvider log.LoggerProvider `optional:"true"`
 }
 
-func NewServiceConfig() (ServiceConfig, error) {
-	var c ServiceConfig
-	return c, envconfig.Process("", &c)
+func newSlogLogger(p params) (*slog.Logger, error) {
+	return NewSlog(p.Config, WithRedact(p.Redact), WithOTel(p.LoggerProvider))
 }

@@ -98,7 +98,7 @@ func (z Zone) OffsetAt(t time.Time) time.Duration {
 }
 
 // Config — зона приложения одна на всю организацию. Kit её не provide'ит:
-// Config регистрирует caller (конвенция golibinfra ≥ v0.17).
+// Config регистрирует caller.
 type Config struct {
 	TZ string `default:"Europe/Moscow" envconfig:"APP_TZ"`
 }

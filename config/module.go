@@ -4,7 +4,8 @@ import "go.uber.org/fx"
 
 // Module провайдит набор Source'ов для config.Load. Единственный источник —
 // env (envconfig); секреты приложений приходят обычными env-переменными.
-var Module = fx.Module("config",
+var Module = fx.Module(
+	"config",
 	fx.Provide(newSources),
 )
 

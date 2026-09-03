@@ -5,53 +5,38 @@ import (
 
 	"github.com/kelseyhightower/envconfig"
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/metric"
-	sdklog "go.opentelemetry.io/otel/sdk/log"
 	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 )
 
-// Module не provide'ит Config (см. asymmetry note в pgkit/module.go).
-// Дешёвый mode: `fx.Provide(telemetry.NewConfig)`.
+// Module не provide'ит Config — caller регистрирует его сам
+// (fx.Provide(telemetry.NewConfig)). Отдаёт *Providers, trace.Tracer,
+// metric.Meter и log.LoggerProvider (второй sink для logkit.Module).
 var Module = fx.Module(
 	"telemetry",
 	fx.Provide(
 		newProvidersWithLifecycle,
-		newTracer,
-		newMeter,
-		extractLoggerProvider,
+		func(*Providers) trace.Tracer { return otel.Tracer(tracerName) },
+		func(*Providers) metric.Meter { return otel.Meter(tracerName) },
+		func(p *Providers) log.LoggerProvider { return p.LoggerProvider },
 	),
 )
 
 func NewConfig() (Config, error) {
 	var c Config
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
 }
 
 func newProvidersWithLifecycle(lc fx.Lifecycle, cfg Config) (*Providers, error) {
-	ctx, cancel := context.WithCancel(context.Background())
-
-	p, err := Init(ctx, cfg)
+	p, err := Init(context.Background(), cfg)
 	if err != nil {
-		cancel()
 		return nil, err
 	}
-
-	lc.Append(fx.Hook{
-		OnStop: func(stopCtx context.Context) error {
-			defer cancel()
-			return p.Shutdown(stopCtx)
-		},
-	})
-
+	lc.Append(fx.Hook{OnStop: p.Shutdown})
 	return p, nil
 }
-
-func newTracer(_ *Providers) trace.Tracer { return otel.Tracer("app") }
-func newMeter(_ *Providers) metric.Meter  { return otel.Meter("app") }
-
-// extractLoggerProvider экспонирует *sdklog.LoggerProvider отдельно от
-// Providers — чтобы logkit.New / logkit.NewSlog могли резолвить его через
-// fx без явного доступа к struct. Lifecycle уже привязан в
-// newProvidersWithLifecycle (init.go держит реальный newLoggerProvider).
-func extractLoggerProvider(p *Providers) *sdklog.LoggerProvider { return p.LoggerProvider }

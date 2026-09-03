@@ -64,20 +64,22 @@ func TestMap(t *testing.T) {
 }
 
 func TestIntPtr(t *testing.T) {
-	m := map[string]any{"zero": 0.0, "n": 4.0}
-	if p, ok := mapkit.IntPtr(m, "zero"); !ok || p == nil || *p != 0 {
-		t.Fatalf("IntPtr(zero) = (%v, %v), want (*0, true) — key present distinguishes from absent", p, ok)
+	m := map[string]any{"zero": 0.0, "n": 4.0, "null": nil, "str": "7"}
+	if p := mapkit.IntPtr(m, "zero"); p == nil || *p != 0 {
+		t.Fatalf("IntPtr(zero) = %v, want *0 — present zero differs from absent", p)
 	}
-	if p, ok := mapkit.IntPtr(m, "n"); !ok || *p != 4 {
-		t.Fatalf("IntPtr(n) = (%v, %v), want (*4, true)", p, ok)
+	if p := mapkit.IntPtr(m, "n"); p == nil || *p != 4 {
+		t.Fatalf("IntPtr(n) = %v, want *4", p)
 	}
-	if p, ok := mapkit.IntPtr(m, "absent"); ok || p != nil {
-		t.Fatalf("IntPtr(absent) = (%v, %v), want (nil, false)", p, ok)
+	for _, k := range []string{"absent", "null", "str"} {
+		if p := mapkit.IntPtr(m, k); p != nil {
+			t.Fatalf("IntPtr(%s) = %v, want nil (absent/null/wrong type)", k, *p)
+		}
 	}
 }
 
 func TestBoolPtr(t *testing.T) {
-	m := map[string]any{"b": true, "bad": "nope"}
+	m := map[string]any{"b": true, "bad": "nope", "null": nil}
 	if p := mapkit.BoolPtr(m, "b"); p == nil || *p != true {
 		t.Fatalf("BoolPtr(b) = %v, want *true", p)
 	}
@@ -86,5 +88,8 @@ func TestBoolPtr(t *testing.T) {
 	}
 	if p := mapkit.BoolPtr(m, "absent"); p != nil {
 		t.Fatalf("BoolPtr(absent) = %v, want nil", p)
+	}
+	if p := mapkit.BoolPtr(m, "null"); p != nil {
+		t.Fatalf("BoolPtr(null) = %v, want nil", p)
 	}
 }

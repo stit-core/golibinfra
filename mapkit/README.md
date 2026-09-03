@@ -24,9 +24,9 @@ price := mapkit.Int(p, "price")            // 0 если нет/не число
 tags  := mapkit.Strings(p, "tags")         // nil, не-строки отброшены
 sub   := mapkit.Map(p, "nested")           // nil если нет/не объект
 
-if lr, ok := mapkit.IntPtr(p, "loss_reason_id"); ok {
-	// ключ передан (0 отличается от «не передано»)
-	_ = lr
+if lr := mapkit.IntPtr(p, "loss_reason_id"); lr != nil {
+	// передано число (0 отличается от «не передано»/null)
+	_ = *lr
 }
 ```
 
@@ -39,7 +39,7 @@ func Float(m map[string]any, k string) float64
 func Int(m map[string]any, k string) int
 func Int64(m map[string]any, k string) int64
 func Map(m map[string]any, k string) map[string]any
-func IntPtr(m map[string]any, k string) (*int, bool)
+func IntPtr(m map[string]any, k string) *int
 func BoolPtr(m map[string]any, k string) *bool
 ```
 
@@ -55,9 +55,10 @@ in-memory map.
   для прямых map-литералов (тесты), но в распарсенном JSON их не будет.
 - **Дефолт скрывает «нет ключа» от «нулевого значения».** `String`/`Int`/`Float`
   не различают «ключа нет» и «значение пустое/0/не того типа» — все дают нулевой
-  результат. Когда различие важно (0 как валидное значение) — `IntPtr`: он
-  смотрит на наличие ключа, а не на значение.
-- **`BoolPtr` — по типу, не по наличию.** Возвращает указатель только если
-  значение действительно `bool`; отсутствие ключа и не-bool оба дают `nil`.
+  результат. Когда различие важно (0/`false` как валидное значение) —
+  `IntPtr`/`BoolPtr`.
+- **`IntPtr` и `BoolPtr` — по типу значения.** Указатель только если значение
+  действительно число / `bool`; отсутствие ключа, `null` и другой тип дают
+  `nil`. Так `{"price": 0}` даёт `*0`, а `{"price": null}` — `nil`.
 - **`Strings` молча отбрасывает не-строки.** Элементы массива не-строкового типа
   пропускаются; не-массив даёт `nil`.

@@ -30,15 +30,20 @@ func Strings(m map[string]any, k string) []string {
 // Float возвращает число по ключу k как float64. JSON-числа в map[string]any
 // приходят float64 (json.Unmarshal); int/int64 поддержаны для map-литералов.
 func Float(m map[string]any, k string) float64 {
-	switch v := m[k].(type) {
+	f, _ := number(m[k])
+	return f
+}
+
+func number(v any) (float64, bool) {
+	switch n := v.(type) {
 	case float64:
-		return v
+		return n, true
 	case int:
-		return float64(v)
+		return float64(n), true
 	case int64:
-		return float64(v)
+		return float64(n), true
 	}
-	return 0
+	return 0, false
 }
 
 // Int возвращает Float(m, k), усечённое до int.
@@ -55,19 +60,20 @@ func Map(m map[string]any, k string) map[string]any {
 	return nil
 }
 
-// IntPtr различает «ключ задан» и «ключа нет»: при наличии ключа — (Int, true),
-// иначе (nil, false). Для опциональных числовых полей, где 0 — допустимое
-// значение, отличаемое от «не передано».
-func IntPtr(m map[string]any, k string) (*int, bool) {
-	if _, ok := m[k]; !ok {
-		return nil, false
+// IntPtr — указатель на число по ключу k либо nil, если ключа нет, значение
+// null или не число. 0 в JSON даёт указатель на 0 — так «не передано»
+// отличается от «передан ноль».
+func IntPtr(m map[string]any, k string) *int {
+	f, ok := number(m[k])
+	if !ok {
+		return nil
 	}
-	v := Int(m, k)
-	return &v, true
+	v := int(f)
+	return &v
 }
 
-// BoolPtr возвращает указатель на bool по ключу k либо nil при
-// отсутствии/несовпадении типа.
+// BoolPtr — указатель на bool по ключу k либо nil, если ключа нет, значение
+// null или не bool.
 func BoolPtr(m map[string]any, k string) *bool {
 	if v, ok := m[k].(bool); ok {
 		return &v

@@ -3,98 +3,121 @@ package logkit
 import (
 	"bytes"
 	"context"
-	"io"
+	"encoding/json"
+	"fmt"
 	"log/slog"
 	"regexp"
 )
 
-type RedactConfig struct {
-	Patterns    []string `envconfig:"LOG_REDACT_PATTERNS"`
-	ReplaceWith string   `default:"[REDACTED]"`
-	Enabled     bool     `envconfig:"LOG_REDACT_ENABLED"`
-}
-
-var defaultRedactPatterns = []string{
+// Дефолтные паттерны — эвристики компактных форм: email, телефон (E.164 с «+»
+// либо RU-номер 7/8 + 10 цифр), карта (4×4 цифры). Свои — LOG_REDACT_PATTERNS.
+var defaultRedactPatterns = Patterns{
 	`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`,
-	`\+?[0-9]{10,15}`,
+	`\+\d{10,15}\b|\b[78]\d{10}\b`,
 	`\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b`,
 }
 
 type redactHandler struct {
-	slog.Handler
-	regexps     []*regexp.Regexp
-	replaceWith []byte
+	inner slog.Handler
+	res   []*regexp.Regexp
+	with  string
 }
 
-func NewRedactHandler(inner slog.Handler, cfg RedactConfig) slog.Handler {
+// NewRedactHandler маскирует msg и строковые значения атрибутов (включая
+// With()-attrs, группы, LogValuer, error и JSON-представление Any-значений);
+// числа, bool, time и duration не трогает.
+func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) {
 	patterns := cfg.Patterns
 	if len(patterns) == 0 {
 		patterns = defaultRedactPatterns
+	}
+	res := make([]*regexp.Regexp, 0, len(patterns))
+	for _, p := range patterns {
+		re, err := regexp.Compile(p)
+		if err != nil {
+			return nil, fmt.Errorf("%w: LOG_REDACT_PATTERNS %q: %w", ErrConfig, p, err)
+		}
+		res = append(res, re)
 	}
 	with := cfg.ReplaceWith
 	if with == "" {
 		with = "[REDACTED]"
 	}
-	var regexps []*regexp.Regexp
-	for _, p := range patterns {
-		r, err := regexp.Compile(p)
-		if err == nil {
-			regexps = append(regexps, r)
-		}
-	}
-	return &redactHandler{
-		Handler:     inner,
-		regexps:     regexps,
-		replaceWith: []byte(with),
-	}
+	return &redactHandler{inner: inner, res: res, with: with}, nil
 }
 
-func (h *redactHandler) redact(b []byte) []byte {
-	for _, re := range h.regexps {
-		b = re.ReplaceAll(b, h.replaceWith)
+func (h *redactHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.inner.Enabled(ctx, l)
+}
+
+func (h *redactHandler) Handle(ctx context.Context, r slog.Record) error {
+	out := slog.NewRecord(r.Time, r.Level, h.text(r.Message), r.PC)
+	r.Attrs(func(a slog.Attr) bool {
+		out.AddAttrs(h.attr(a))
+		return true
+	})
+	return h.inner.Handle(ctx, out)
+}
+
+func (h *redactHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	out := make([]slog.Attr, len(attrs))
+	for i, a := range attrs {
+		out[i] = h.attr(a)
+	}
+	return &redactHandler{inner: h.inner.WithAttrs(out), res: h.res, with: h.with}
+}
+
+func (h *redactHandler) WithGroup(name string) slog.Handler {
+	return &redactHandler{inner: h.inner.WithGroup(name), res: h.res, with: h.with}
+}
+
+func (h *redactHandler) text(s string) string {
+	for _, re := range h.res {
+		s = re.ReplaceAllString(s, h.with)
+	}
+	return s
+}
+
+func (h *redactHandler) bytes(b []byte) []byte {
+	for _, re := range h.res {
+		b = re.ReplaceAll(b, []byte(h.with))
 	}
 	return b
 }
 
-func (h *redactHandler) Handle(ctx context.Context, r slog.Record) error {
-	var buf bytes.Buffer
-	tmp := slog.NewJSONHandler(&buf, &slog.HandlerOptions{Level: slog.LevelDebug})
-	if err := tmp.Handle(ctx, r); err != nil {
-		return err
-	}
-	redacted := h.redact(buf.Bytes())
-	redacted = bytes.TrimRight(redacted, "\n")
-
-	newRecord := slog.NewRecord(r.Time, r.Level, string(redacted), r.PC)
-	return h.Handler.Handle(ctx, newRecord)
-}
-
-func (h *redactHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &redactHandler{
-		Handler:     h.Handler.WithAttrs(attrs),
-		regexps:     h.regexps,
-		replaceWith: h.replaceWith,
+func (h *redactHandler) attr(a slog.Attr) slog.Attr {
+	v := a.Value.Resolve()
+	switch v.Kind() {
+	case slog.KindString:
+		return slog.String(a.Key, h.text(v.String()))
+	case slog.KindGroup:
+		in := v.Group()
+		out := make([]slog.Attr, len(in))
+		for i, g := range in {
+			out[i] = h.attr(g)
+		}
+		return slog.Attr{Key: a.Key, Value: slog.GroupValue(out...)}
+	case slog.KindAny:
+		return h.anyAttr(a.Key, v.Any())
+	default:
+		return slog.Attr{Key: a.Key, Value: v}
 	}
 }
 
-func (h *redactHandler) WithGroup(name string) slog.Handler {
-	return &redactHandler{
-		Handler:     h.Handler.WithGroup(name),
-		regexps:     h.regexps,
-		replaceWith: h.replaceWith,
+// anyAttr: error — как строка (так его рендерит и JSONHandler); прочее — через
+// JSON, и только если маска что-то заменила, значение подменяется RawMessage.
+func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
+	if err, ok := x.(error); ok {
+		if _, isMarshaler := x.(json.Marshaler); !isMarshaler {
+			return slog.String(key, h.text(err.Error()))
+		}
 	}
-}
-
-func NewWithRedact(cfg Config, redactCfg RedactConfig, w io.Writer) Logger {
-	var lvl slog.Level
-	if err := lvl.UnmarshalText([]byte(cfg.Level)); err != nil {
-		lvl = slog.LevelInfo
+	b, err := json.Marshal(x)
+	if err != nil {
+		return slog.Any(key, x)
 	}
-	base := slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})
-	inner := &traceHandler{Handler: base}
-	var handler slog.Handler = inner
-	if redactCfg.Enabled {
-		handler = NewRedactHandler(inner, redactCfg)
+	if rb := h.bytes(b); !bytes.Equal(rb, b) {
+		return slog.Any(key, json.RawMessage(rb))
 	}
-	return &slogLogger{l: slog.New(handler)}
+	return slog.Any(key, x)
 }

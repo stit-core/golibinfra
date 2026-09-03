@@ -9,7 +9,7 @@ import (
 )
 
 // MemoryStorage — in-memory Storage для тестов и локального dev.
-// Не персистентен; ключи и URL совпадают по схеме с боевым адаптером.
+// Не персистентен; ключи, URL и контракт size совпадают с боевым адаптером.
 type MemoryStorage struct {
 	urls *URLBuilder
 
@@ -22,12 +22,15 @@ func NewMemoryStorage(urls *URLBuilder) *MemoryStorage {
 }
 
 func (m *MemoryStorage) Put(_ context.Context, r io.Reader, contentType string, size int64) (Ref, error) {
-	data, err := io.ReadAll(io.LimitReader(r, size+1))
+	if size >= 0 {
+		r = io.LimitReader(r, size+1)
+	}
+	data, err := io.ReadAll(r)
 	if err != nil {
 		return Ref{}, fmt.Errorf("%w: read body: %w", ErrUploadFailed, err)
 	}
-	if int64(len(data)) > size {
-		return Ref{}, fmt.Errorf("%w: body larger than declared %d", ErrUploadFailed, size)
+	if size >= 0 && int64(len(data)) != size {
+		return Ref{}, fmt.Errorf("%w: body length differs from declared %d", ErrUploadFailed, size)
 	}
 
 	key, err := NewKey(contentType)
@@ -50,9 +53,6 @@ func (m *MemoryStorage) Put(_ context.Context, r io.Reader, contentType string, 
 func (m *MemoryStorage) Delete(_ context.Context, key string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if _, ok := m.objs[key]; !ok {
-		return fmt.Errorf("%w: %q", ErrNotFound, key)
-	}
 	delete(m.objs, key)
 	return nil
 }

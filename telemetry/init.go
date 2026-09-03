@@ -1,13 +1,8 @@
-// Package telemetry — opt-in bootstrap OTel SDK: tracer/meter/logger
-// providers, OTLP HTTP-экспортёры всех трёх сигналов (опционально с
-// Bearer-токеном). Выставляет resource-атрибуты service.name,
-// service.version, deployment.environment.name из Config;
-// tenant/service.namespace — только если Config.Tenant задан. Куда слать
-// сигналы — задаёт потребитель через OTEL_EXPORTER_OTLP_ENDPOINT; без
-// подключения этого кита инструментация остальных китов инертна (no-op).
-// Включает стандартную runtime-инструментацию (go_*, process_*) через
-// contrib/instrumentation/runtime. Метрики и трейсы идут только в OTLP —
-// в stdout их нет; stdout-копию логов даёт logkit.
+// Package telemetry — opt-in bootstrap OTel SDK: tracer/meter/logger providers,
+// OTLP HTTP-экспортёры трёх сигналов (опционально с Bearer-токеном), resource-
+// атрибуты service.name/service.version/deployment.environment.name, W3C
+// propagator и runtime-инструментация. Без этого кита инструментация остальных
+// китов инертна (no-op).
 package telemetry
 
 import (
@@ -21,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
+	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -35,11 +31,14 @@ type Providers struct {
 	LoggerProvider *sdklog.LoggerProvider
 }
 
+// Shutdown гасит провайдеры в порядке tracer → meter → logger: логи последними,
+// чтобы ошибки остановки других сигналов ещё могли быть записаны. Ошибки
+// собираются, остановка не прерывается.
 func (p *Providers) Shutdown(ctx context.Context) error {
 	var errs []error
-	if p.LoggerProvider != nil {
-		if err := p.LoggerProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("logger provider: %w", err))
+	if p.TracerProvider != nil {
+		if err := p.TracerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("tracer provider: %w", err))
 		}
 	}
 	if p.MeterProvider != nil {
@@ -47,30 +46,26 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 			errs = append(errs, fmt.Errorf("meter provider: %w", err))
 		}
 	}
-	if p.TracerProvider != nil {
-		if err := p.TracerProvider.Shutdown(ctx); err != nil {
-			errs = append(errs, fmt.Errorf("tracer provider: %w", err))
+	if p.LoggerProvider != nil {
+		if err := p.LoggerProvider.Shutdown(ctx); err != nil {
+			errs = append(errs, fmt.Errorf("logger provider: %w", err))
 		}
 	}
 	return errors.Join(errs...)
 }
 
 func Init(ctx context.Context, cfg Config) (*Providers, error) {
-	// OTEL_DISABLED: провайдеры без экспортёров/reader'ов — API китов работает
-	// (tracer/meter/logger non-nil), сигналы дропаются, сеть не трогается.
-	if cfg.Disabled {
-		tp := sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample()))
-		otel.SetTracerProvider(tp)
-		mp := sdkmetric.NewMeterProvider()
-		otel.SetMeterProvider(mp)
-		return &Providers{
-			TracerProvider: tp,
-			MeterProvider:  mp,
-			LoggerProvider: sdklog.NewLoggerProvider(),
-		}, nil
+	if err := cfg.Validate(); err != nil {
+		return nil, err
 	}
-	if cfg.ServiceName == "" {
-		return nil, errors.New("telemetry: OTEL_SERVICE_NAME обязателен (либо OTEL_DISABLED=true)")
+	if cfg.Disabled {
+		p := &Providers{
+			TracerProvider: sdktrace.NewTracerProvider(sdktrace.WithSampler(sdktrace.NeverSample())),
+			MeterProvider:  sdkmetric.NewMeterProvider(),
+			LoggerProvider: sdklog.NewLoggerProvider(),
+		}
+		setGlobals(p)
+		return p, nil
 	}
 
 	attrs := []attribute.KeyValue{
@@ -79,60 +74,52 @@ func Init(ctx context.Context, cfg Config) (*Providers, error) {
 		semconv.DeploymentEnvironmentNameKey.String(cfg.Environment),
 	}
 	if cfg.Tenant != "" {
-		attrs = append(
-			attrs,
-			semconv.ServiceNamespace(cfg.Tenant),
-			attribute.String("tenant", cfg.Tenant),
-		)
+		attrs = append(attrs, semconv.ServiceNamespace(cfg.Tenant), attribute.String("tenant", cfg.Tenant))
 	}
-	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(
-		semconv.SchemaURL, attrs...,
-	))
+	res, err := resource.Merge(resource.Default(), resource.NewWithAttributes(semconv.SchemaURL, attrs...))
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: resource: %w", err)
 	}
 
-	tp, err := newTracerProvider(ctx, cfg, res)
-	if err != nil {
+	p := &Providers{}
+	if p.TracerProvider, err = newTracerProvider(ctx, cfg, res); err != nil {
 		return nil, err
 	}
-	mp, err := newMeterProvider(ctx, cfg, res)
-	if err != nil {
-		_ = tp.Shutdown(ctx)
+	if p.MeterProvider, err = newMeterProvider(ctx, cfg, res); err != nil {
+		_ = p.Shutdown(ctx)
 		return nil, err
 	}
-	lp, err := newLoggerProvider(ctx, cfg, res)
-	if err != nil {
-		_ = mp.Shutdown(ctx)
-		_ = tp.Shutdown(ctx)
+	if p.LoggerProvider, err = newLoggerProvider(ctx, cfg, res); err != nil {
+		_ = p.Shutdown(ctx)
 		return nil, err
 	}
+	if err := runtimeinstr.Start(
+		runtimeinstr.WithMeterProvider(p.MeterProvider),
+		runtimeinstr.WithMinimumReadMemStatsInterval(cfg.MetricInterval),
+	); err != nil {
+		_ = p.Shutdown(ctx)
+		return nil, fmt.Errorf("telemetry: runtime instrumentation: %w", err)
+	}
+	setGlobals(p)
+	return p, nil
+}
 
-	otel.SetTracerProvider(tp)
-	otel.SetMeterProvider(mp)
+func setGlobals(p *Providers) {
+	otel.SetTracerProvider(p.TracerProvider)
+	otel.SetMeterProvider(p.MeterProvider)
+	global.SetLoggerProvider(p.LoggerProvider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
 	))
-
-	// Стандартный набор go-runtime метрик (runtime.go.goroutines,
-	// runtime.go.mem.heap_alloc/inuse, runtime.go.gc.duration, etc.).
-	// Без них невозможно отличить memory leak от utilization spike.
-	if err := runtimeinstr.Start(
-		runtimeinstr.WithMeterProvider(mp),
-		runtimeinstr.WithMinimumReadMemStatsInterval(cfg.ExportTimeout),
-	); err != nil {
-		_ = lp.Shutdown(ctx)
-		_ = mp.Shutdown(ctx)
-		_ = tp.Shutdown(ctx)
-		return nil, fmt.Errorf("telemetry: runtime instrumentation: %w", err)
-	}
-
-	return &Providers{TracerProvider: tp, MeterProvider: mp, LoggerProvider: lp}, nil
 }
 
 func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdktrace.TracerProvider, error) {
-	opts := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(buildOTLPURL(cfg, "v1/traces"))}
+	u, err := signalURL(cfg.OTLPEndpoint, "v1/traces")
+	if err != nil {
+		return nil, err
+	}
+	opts := []otlptracehttp.Option{otlptracehttp.WithEndpointURL(u), otlptracehttp.WithTimeout(cfg.ExportTimeout)}
 	if h := otlpHeaders(cfg); len(h) > 0 {
 		opts = append(opts, otlptracehttp.WithHeaders(h))
 	}
@@ -141,14 +128,22 @@ func newTracerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 		return nil, fmt.Errorf("telemetry: trace exporter: %w", err)
 	}
 	return sdktrace.NewTracerProvider(
-		sdktrace.WithBatcher(exp, sdktrace.WithBatchTimeout(cfg.ExportTimeout)),
+		sdktrace.WithBatcher(
+			exp,
+			sdktrace.WithBatchTimeout(cfg.TraceBatchDelay),
+			sdktrace.WithExportTimeout(cfg.ExportTimeout),
+		),
 		sdktrace.WithResource(res),
 		sdktrace.WithSampler(sdktrace.ParentBased(sdktrace.TraceIDRatioBased(cfg.SampleRatio))),
 	), nil
 }
 
 func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdkmetric.MeterProvider, error) {
-	opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpointURL(buildOTLPURL(cfg, "v1/metrics"))}
+	u, err := signalURL(cfg.OTLPEndpoint, "v1/metrics")
+	if err != nil {
+		return nil, err
+	}
+	opts := []otlpmetrichttp.Option{otlpmetrichttp.WithEndpointURL(u), otlpmetrichttp.WithTimeout(cfg.ExportTimeout)}
 	if h := otlpHeaders(cfg); len(h) > 0 {
 		opts = append(opts, otlpmetrichttp.WithHeaders(h))
 	}
@@ -157,13 +152,21 @@ func newMeterProvider(ctx context.Context, cfg Config, res *resource.Resource) (
 		return nil, fmt.Errorf("telemetry: metric exporter: %w", err)
 	}
 	return sdkmetric.NewMeterProvider(
-		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(exp, sdkmetric.WithInterval(cfg.ExportTimeout))),
+		sdkmetric.WithReader(sdkmetric.NewPeriodicReader(
+			exp,
+			sdkmetric.WithInterval(cfg.MetricInterval),
+			sdkmetric.WithTimeout(cfg.ExportTimeout),
+		)),
 		sdkmetric.WithResource(res),
 	), nil
 }
 
 func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) (*sdklog.LoggerProvider, error) {
-	opts := []otlploghttp.Option{otlploghttp.WithEndpointURL(buildOTLPURL(cfg, "v1/logs"))}
+	u, err := signalURL(cfg.OTLPEndpoint, "v1/logs")
+	if err != nil {
+		return nil, err
+	}
+	opts := []otlploghttp.Option{otlploghttp.WithEndpointURL(u), otlploghttp.WithTimeout(cfg.ExportTimeout)}
 	if h := otlpHeaders(cfg); len(h) > 0 {
 		opts = append(opts, otlploghttp.WithHeaders(h))
 	}
@@ -172,7 +175,11 @@ func newLoggerProvider(ctx context.Context, cfg Config, res *resource.Resource) 
 		return nil, fmt.Errorf("telemetry: log exporter: %w", err)
 	}
 	return sdklog.NewLoggerProvider(
-		sdklog.WithProcessor(sdklog.NewBatchProcessor(exp)),
+		sdklog.WithProcessor(sdklog.NewBatchProcessor(
+			exp,
+			sdklog.WithExportInterval(cfg.LogBatchDelay),
+			sdklog.WithExportTimeout(cfg.ExportTimeout),
+		)),
 		sdklog.WithResource(res),
 	), nil
 }
@@ -182,17 +189,4 @@ func otlpHeaders(cfg Config) map[string]string {
 		return nil
 	}
 	return map[string]string{"Authorization": "Bearer " + cfg.OTLPBearerToken}
-}
-
-// buildOTLPURL составляет полный URL для OTLP-exporter'а с явной схемой —
-// чтобы не зависеть от env-based scheme inference. У otlploghttp v0.19
-// (experimental) есть quirk: `url.Parse("host:port")` парсит как
-// scheme=host, opaque=port → insecureFromScheme считает scheme непустой
-// → невольно ставит insecure=true. Явный URL обходит эту цепочку.
-func buildOTLPURL(cfg Config, signalPath string) string {
-	scheme := "https"
-	if cfg.OTLPInsecure {
-		scheme = "http"
-	}
-	return scheme + "://" + cfg.OTLPEndpoint + "/" + signalPath
 }

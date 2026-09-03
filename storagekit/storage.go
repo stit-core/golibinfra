@@ -23,9 +23,11 @@ type Ref struct {
 }
 
 type Storage interface {
-	// Put сохраняет не более size байт из r под сгенерированным ключом.
-	// Тело больше declared size — ErrUploadFailed.
+	// Put стримит r под сгенерированным ключом. size >= 0 — точная длина тела:
+	// расхождение даёт ErrUploadFailed, объект не остаётся. size < 0 — длина
+	// неизвестна, тело читается до EOF; Ref.Size — фактический размер.
 	Put(ctx context.Context, r io.Reader, contentType string, size int64) (Ref, error)
+	// Delete идемпотентен: отсутствующий ключ — не ошибка.
 	Delete(ctx context.Context, key string) error
 }
 

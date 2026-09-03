@@ -31,6 +31,18 @@ func TestPtr(t *testing.T) {
 	})
 }
 
+func TestOf(t *testing.T) {
+	if got := ptrkit.Of(""); got == nil || *got != "" {
+		t.Fatalf("Of(\"\") = %v, want pointer to empty string", got)
+	}
+	if got := ptrkit.Of(0); got == nil || *got != 0 {
+		t.Fatalf("Of(0) = %v, want *0", got)
+	}
+	if got := ptrkit.Of([]int{1}); got == nil || len(*got) != 1 {
+		t.Fatalf("Of(slice) = %v, want pointer (no comparable constraint)", got)
+	}
+}
+
 func TestDeref(t *testing.T) {
 	t.Run("nil string returns zero", func(t *testing.T) {
 		if got := ptrkit.Deref[string](nil); got != "" {

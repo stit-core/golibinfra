@@ -63,9 +63,13 @@ svc := NewService(clock)
 clock := clockkit.NewTickable(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
 svc := NewService(clock)
 
-require.False(t, svc.IsExpired(deadline))
+if svc.IsExpired(deadline) {
+	t.Fatal("not expired yet")
+}
 clock.Advance(24 * time.Hour) // прыжок на сутки вперёд
-require.True(t, svc.IsExpired(deadline))
+if !svc.IsExpired(deadline) {
+	t.Fatal("expired after a day")
+}
 ```
 
 ## Конфигурация

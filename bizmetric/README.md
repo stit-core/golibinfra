@@ -72,8 +72,9 @@ carts.Add(ctx, 1)
 | `Gauge` | `Int64UpDownCounter` | *(нет)* | `biz_checkout_active_carts` |
 
 `domain` и `name` должны соответствовать `^[a-z][a-z0-9_]*$` — snake_case ASCII:
-строчные буквы, цифры и `_`, первый символ — буква. Префикс `biz_` и суффикс
-(`_total`/`_seconds`) подставляет helper, в `domain`/`name` их класть не нужно.
+строчные буквы, цифры и `_`, первый символ — буква. Префикс `biz_` и суффиксы
+`_total`/`_seconds` подставляет helper: `domain`/`name` с префиксом `biz_` или
+суффиксом `_total`/`_seconds` отклоняются panic'ом.
 
 ### Labels
 
@@ -132,7 +133,8 @@ func MustName(domain, name string) string
 ## Инварианты и подводные камни
 
 - **Panic при нарушении конвенции.** `domain` или `name` вне `^[a-z][a-z0-9_]*$`
-  (заглавные буквы, дефис, пустая строка, первый символ — цифра) — `panic`. Это
+  (заглавные буквы, дефис, пустая строка, первый символ — цифра), с префиксом
+  `biz_` или суффиксом `_total`/`_seconds` — `panic`. Это
   fail-fast: метрика с кривым именем не должна доехать до прода. Так как имена
   обычно регистрируются при старте сервиса, нарушение всплывёт сразу.
 
@@ -144,9 +146,9 @@ func MustName(domain, name string) string
   произвольной строкой ломает конвенцию `biz_*`. Любую biz-метрику заводите через
   `Counter`/`Histogram`/`Gauge`, а ручные случаи — через `MustName`.
 
-- **Префикс/суффикс не дублировать.** В `domain`/`name` нельзя класть `biz_`,
-  `_total`, `_seconds` — их подставляет helper. `_` внутри `name` допустим
-  (`login_attempts`), это часть snake_case.
+- **Префикс/суффикс не дублировать.** `biz_` в начале и `_total`/`_seconds` в
+  конце `domain`/`name` отклоняются — их подставляет helper. `_` внутри `name`
+  допустим (`login_attempts`, `total_orders`), это часть snake_case.
 
 - **`domain` vs `name`.** `domain` — бизнес-область (`auth`, `checkout`,
   `onboarding`); `name` — конкретное событие/величина (`login_attempts`,

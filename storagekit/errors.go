@@ -4,6 +4,6 @@ import "errors"
 
 var (
 	ErrUploadFailed  = errors.New("storagekit: upload failed")
-	ErrNotFound      = errors.New("storagekit: object not found")
+	ErrDeleteFailed  = errors.New("storagekit: delete failed")
 	ErrPresignFailed = errors.New("storagekit: presign failed")
 )

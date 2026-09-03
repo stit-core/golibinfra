@@ -8,6 +8,7 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
 
@@ -29,7 +30,7 @@ func NewClient(cfg storagekit.Config) (*miniogo.Client, error) {
 	return client, nil
 }
 
-func Probe(client *miniogo.Client, cfg storagekit.Config) func(ctx context.Context) error {
+func Probe(client *miniogo.Client, cfg storagekit.Config) healthkit.Probe {
 	return func(ctx context.Context) error {
 		ok, err := client.BucketExists(ctx, cfg.Bucket)
 		if err != nil {

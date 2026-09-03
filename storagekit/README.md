@@ -4,9 +4,9 @@ S3-совместимое объектное хранилище: порт `Stora
 стабильного публичного URL (`URLBuilder`), генератор ключей `NewKey` и адаптеры —
 боевой (`minio`-подпакет поверх MinIO/S3) и in-memory (для тестов потребителя).
 
-Kit доменно-нейтрален: стримит байты как есть. Image/file-семантика — валидация
-mime, ограничение размера, декод картинки — на стороне приложения в доменных
-value-объектах, не здесь.
+Kit доменно-нейтрален: стримит байты как есть, без буферизации тела в памяти.
+Image/file-семантика — валидация mime, ограничение размера, декод картинки — на
+стороне приложения в доменных value-объектах, не здесь.
 
 ## Импорт
 
@@ -50,12 +50,12 @@ fx.New(
 func handle(ctx context.Context, st storagekit.Storage, body io.Reader, size int64) error {
     ref, err := st.Put(ctx, body, "image/png", size)
     if err != nil {
-        return err // errors.Is(err, storagekit.ErrUploadFailed) при отказе/oversize
+        return err // errors.Is(err, storagekit.ErrUploadFailed) при отказе/расхождении size
     }
     // ref.Key — `<uuidv7>.png`; ref.URL — публичный стабильный URL; ref.Size — реальный размер
     _ = ref
 
-    return st.Delete(ctx, ref.Key) // errors.Is(err, storagekit.ErrNotFound) если ключа нет
+    return st.Delete(ctx, ref.Key) // идемпотентен: отсутствующий ключ — не ошибка
 }
 ```
 
@@ -66,8 +66,9 @@ Put(ctx context.Context, r io.Reader, contentType string, size int64) (Ref, erro
 Delete(ctx context.Context, key string) error
 ```
 
-`Put` читает не более `size` байт; тело больше заявленного `size` → `ErrUploadFailed`
-(без сохранения объекта).
+`size >= 0` — точная длина тела: тело короче или длиннее → `ErrUploadFailed`,
+объект не остаётся. `size < 0` — длина неизвестна: тело стримится до EOF
+(multipart), `Ref.Size` — фактический размер.
 
 ### URLBuilder и NewKey
 
@@ -106,6 +107,7 @@ API`). Менять имена/типы полей или их `envconfig`-те�
 | `STORAGE_S3_SECRET_KEY` | `SecretKey` | `string` | — | Secret key (S3 v4 static creds) |
 | `STORAGE_S3_BUCKET` | `Bucket` | `string` | — | Имя бакета; часть публичного URL и health-probe |
 | `STORAGE_S3_USE_SSL` | `UseSSL` | `bool` | `false` | TLS до endpoint'а |
+| `STORAGE_S3_REGION` | `Region` | `string` | — | Регион bucket'а для S3 v4 signing; у MinIO может быть пустым |
 | `STORAGE_PUBLIC_BASE_URL` | `PublicBaseURL` | `string` | — | База публичного URL (`<base>/<bucket>/<key>`); read-side читает напрямую |
 
 `NewConfig()` заполняет `Config` из ENV через `envconfig` и возвращает ошибку
@@ -116,11 +118,18 @@ API`). Менять имена/типы полей или их `envconfig`-те�
 
 ## Observability
 
-`storagekit` **ничего не эмитит** — ни метрик, ни спанов. Это согласуется с
-`../README.md § Что эмитит каждый пакет` (строка `storagekit` — `—`). Боевые
-HTTP-вызовы к S3 идут через клиент `minio-go` без OTel-инструментирования со
-стороны кита. Трассировка операций storage, если нужна, — забота потребителя на
-уровне доменного кода.
+Боевой адаптер `minio` эмитит метрики через
+`otel.Meter("git.stit.tech/stit-core/golibinfra/storagekit")` (no-op без
+`MeterProvider`):
+
+| Метрика | Тип | Labels | Что |
+|---|---|---|---|
+| `storage_ops_total` | counter | `op` (`put` / `delete` / `presign`), `result` (`ok` / `error`) | операции по исходу |
+| `storage_op_duration_seconds` | histogram (s) | `op` | длительность операции |
+
+`MemoryStorage` метрик не эмитит. Спанов кит не эмитит; HTTP-вызовы `minio-go`
+не инструментированы — трассировка операций storage, если нужна, — на стороне
+доменного кода.
 
 ## API
 
@@ -133,8 +142,8 @@ type Storage interface {
 }
 ```
 
-`Put` генерирует ключ через `NewKey`, сохраняет тело и возвращает `Ref`; `Delete`
-удаляет по ключу.
+`Put` генерирует ключ через `NewKey`, стримит тело и возвращает `Ref`; `Delete`
+удаляет по ключу и идемпотентен (S3 отвечает 204 и на отсутствующий ключ).
 
 ### `Ref`
 
@@ -169,31 +178,36 @@ func (b *URLBuilder) Build(key string) string // <base>/<bucket>/<key>
 ```go
 func NewMemoryStorage(urls *URLBuilder) *MemoryStorage
 func (m *MemoryStorage) Put(ctx, r, contentType, size) (Ref, error) // реализует Storage
-func (m *MemoryStorage) Delete(ctx, key) error                      // реализует Storage
+func (m *MemoryStorage) Delete(ctx, key) error                      // реализует Storage; идемпотентен
+func (m *MemoryStorage) PresignedGet(ctx, bucket, key, ttl) (string, error) // реализует Presigner (детерминированная псевдо-подпись)
 func (m *MemoryStorage) Get(key string) ([]byte, bool)              // тест-хелпер
 ```
 
-Потокобезопасен (`sync.RWMutex`), не персистентен.
+Потокобезопасен (`sync.RWMutex`), не персистентен; контракт `size` совпадает с
+боевым адаптером.
 
 ### `minio`-подпакет (боевой адаптер)
 
 ```go
 func NewClient(cfg storagekit.Config) (*miniogo.Client, error)
 func NewUploader(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder) *Uploader
-func Probe(client *miniogo.Client, cfg storagekit.Config) func(ctx context.Context) error
-var Module fx.Options // → *miniogo.Client, *Uploader, storagekit.Storage
+func Probe(client *miniogo.Client, cfg storagekit.Config) healthkit.Probe
+var Module fx.Options // → *miniogo.Client, *Uploader, storagekit.Storage, storagekit.Presigner
 ```
 
-`*Uploader` реализует `storagekit.Storage` поверх `minio-go`. `Probe` возвращает
-health-probe (`BucketExists` по `cfg.Bucket`) — подключается потребителем туда, где
-он собирает health-чеки. `Delete` маппит ответ S3 `NoSuchKey` → `ErrNotFound`,
-прочие ошибки → `ErrUploadFailed`.
+`*Uploader` реализует `storagekit.Storage` и `storagekit.Presigner` поверх
+`minio-go`. `Probe` возвращает health-probe (`BucketExists` по `cfg.Bucket`) —
+регистрируется потребителем в группу `health` (`healthkit.Provide`). `Put`
+передаёт reader в `PutObject` как есть; при известном `size` клиент читает
+ровно `size` байт, хвост длиннее заявленного ловится пробным чтением после
+загрузки — объект в этом случае удаляется, результат `ErrUploadFailed`.
 
 ### Sentinel-ошибки
 
 ```go
-var ErrUploadFailed = errors.New("storagekit: upload failed")  // отказ загрузки, oversize-тело, сбой uuid
-var ErrNotFound     = errors.New("storagekit: object not found") // Delete по отсутствующему ключу
+var ErrUploadFailed  = errors.New("storagekit: upload failed")  // отказ загрузки, расхождение size, сбой uuid
+var ErrDeleteFailed  = errors.New("storagekit: delete failed")  // отказ S3 на RemoveObject
+var ErrPresignFailed = errors.New("storagekit: presign failed") // пустые bucket/key или отказ подписи
 ```
 
 Проверять через `errors.Is`.
@@ -214,9 +228,10 @@ data, ok := mem.Get(ref.Key) // проверить сохранённые бай
 
 `Get` — единственный метод сверх интерфейса `Storage`, для assert'ов в тестах.
 
-Боевой адаптер покрыт integration-тестом на testcontainers MinIO под build-tag
-`integration` (`minio/uploader_integration_test.go`) — он поднимает контейнер и
-гоняет реальные `Put`/`Stat`/`Delete`.
+Боевой адаптер покрыт тестами на testcontainers MinIO
+(`minio/uploader_minio_test.go`): `Put`/`Stat`/`Delete`, стриминг с неизвестным
+размером, отказ при расхождении `size` (бакет остаётся пустым), метрики. Под
+`-short` они пропускаются; полный прогон — `make test-full` (нужен Docker).
 
 ## Инварианты и подводные камни
 
@@ -226,9 +241,11 @@ data, ok := mem.Get(ref.Key) // проверить сохранённые бай
 - **`URL` стабилен и публичен.** `Ref.URL` (`<PublicBaseURL>/<bucket>/<key>`) не
   протухает — read-side читает напрямую, без подписанных/временных ссылок. Доступ к
   бакету должен это допускать (публичное чтение либо CDN перед ним).
-- **`size` — declared limit, не подсказка.** И боевой, и in-memory адаптер читают
-  тело и отклоняют его с `ErrUploadFailed`, если оно больше заявленного `size`.
-  Передавайте реальный размер.
+- **`size >= 0` — точная длина, не подсказка.** И боевой, и in-memory адаптер
+  отклоняют тело короче или длиннее заявленного (`ErrUploadFailed`, объект не
+  остаётся). Неизвестна длина — передавайте `-1`: тело стримится до EOF.
+- **`Delete` идемпотентен.** Повторное удаление и удаление несуществующего
+  ключа — `nil`; «объект не найден» кит не различает (S3 не сообщает об этом).
 - **`minio` vs in-memory.** `MemoryStorage` — только для тестов и локального dev:
   не персистентен, теряет данные с процессом. В проде — `storagekit/minio.Module`.
   Оба согласованы по схеме `Ref` (ключ/URL), так что тест на in-memory проверяет ту

@@ -24,7 +24,13 @@ func TestMustName(t *testing.T) {
 		{"checkout", "orders-completed", "", true}, // dash
 		{"", "x", "", true},                        // empty
 		{"checkout", "", "", true},
-		{"1abc", "x", "", true}, // starts with digit
+		{"1abc", "x", "", true},         // starts with digit
+		{"biz_checkout", "x", "", true}, // prefix belongs to the helper
+		{"checkout", "biz_x", "", true}, // prefix in name
+		{"checkout", "orders_total", "", true},
+		{"checkout", "latency_seconds", "", true},
+		{"orders_total", "x", "", true},                                  // suffix in domain
+		{"checkout", "total_orders", "biz_checkout_total_orders", false}, // suffix word inside name is fine
 	}
 	for _, c := range cases {
 		t.Run(c.domain+"/"+c.name, func(t *testing.T) {

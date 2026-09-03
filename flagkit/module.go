@@ -7,7 +7,8 @@ import (
 
 // Module не provide'ит Config (см. asymmetry note в pgkit/module.go).
 // Дешёвый mode: `fx.Provide(flagkit.NewConfig)`.
-var Module = fx.Module("flagkit",
+var Module = fx.Module(
+	"flagkit",
 	fx.Provide(
 		fx.Annotate(NewEnvStore, fx.As(new(Store))),
 	),

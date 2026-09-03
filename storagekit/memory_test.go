@@ -42,13 +42,31 @@ func TestMemoryStorage_PutReturnsStableRef(t *testing.T) {
 	}
 }
 
-func TestMemoryStorage_PutRejectsOversizeBody(t *testing.T) {
+func TestMemoryStorage_PutRejectsSizeMismatch(t *testing.T) {
 	m := newMem()
 	body := []byte("0123456789")
 
-	_, err := m.Put(context.Background(), bytes.NewReader(body), "application/pdf", 4)
-	if !errors.Is(err, storagekit.ErrUploadFailed) {
+	if _, err := m.Put(context.Background(), bytes.NewReader(body), "application/pdf", 4); !errors.Is(err, storagekit.ErrUploadFailed) {
 		t.Fatalf("Put oversize: err = %v, want ErrUploadFailed", err)
+	}
+	if _, err := m.Put(context.Background(), bytes.NewReader(body), "application/pdf", 40); !errors.Is(err, storagekit.ErrUploadFailed) {
+		t.Fatalf("Put short body: err = %v, want ErrUploadFailed", err)
+	}
+	if got, _ := m.Get(""); got != nil {
+		t.Fatal("nothing must be stored on mismatch")
+	}
+}
+
+func TestMemoryStorage_PutUnknownSizeStreamsToEOF(t *testing.T) {
+	m := newMem()
+	body := []byte("streamed")
+
+	ref, err := m.Put(context.Background(), bytes.NewReader(body), "image/webp", -1)
+	if err != nil {
+		t.Fatalf("Put(-1): %v", err)
+	}
+	if ref.Size != int64(len(body)) {
+		t.Errorf("Size = %d, want actual %d", ref.Size, len(body))
 	}
 }
 
@@ -66,7 +84,7 @@ func TestMemoryStorage_PresignedGet(t *testing.T) {
 	}
 }
 
-func TestMemoryStorage_Delete(t *testing.T) {
+func TestMemoryStorage_DeleteIsIdempotent(t *testing.T) {
 	m := newMem()
 	ref, err := m.Put(context.Background(), bytes.NewReader([]byte("x")), "application/pdf", 1)
 	if err != nil {
@@ -79,7 +97,7 @@ func TestMemoryStorage_Delete(t *testing.T) {
 	if _, ok := m.Get(ref.Key); ok {
 		t.Error("object still present after Delete")
 	}
-	if err := m.Delete(context.Background(), ref.Key); !errors.Is(err, storagekit.ErrNotFound) {
-		t.Fatalf("Delete missing: err = %v, want ErrNotFound", err)
+	if err := m.Delete(context.Background(), ref.Key); err != nil {
+		t.Fatalf("Delete missing: err = %v, want nil (idempotent)", err)
 	}
 }
