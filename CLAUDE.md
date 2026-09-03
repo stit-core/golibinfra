@@ -79,7 +79,7 @@ make tools        # golangci-lint + govulncheck
   или App-структура. `NewConfig` валидирует (`ErrConfig`) и падает на старте, а
   не на первом запросе.
 - **envconfig-теги — часть public API.** Имена полей/тегов конфигов (`README.md §
-  Стабильность API`) менять = breaking → minor с `!` до v1.
+  Стабильность API`) менять = breaking → major (`/vN` в module path).
 - **Observability by default.** Новый kit эмитит метрики/спаны через `internal/otelkit`;
   resource attrs и экспорт настраивает потребитель.
 - **Минимум зависимостей.** Перед новым import — проверь stdlib + существующие deps;
@@ -91,8 +91,8 @@ make tools        # golangci-lint + govulncheck
 
 - **Conventional Commits**: `feat|fix|refactor|docs|test|chore` + `<type>(<scope>)?: <subject>`;
   breaking — `!` и футер `BREAKING CHANGE:`.
-- Линейная история; версия — тег `vX.Y.Z` (pre-v1: minor может быть breaking).
-  Аннотация тега — release notes: что сломано и как мигрировать.
+- Линейная история; версия — тег `vX.Y.Z` (breaking — major, добавления — minor,
+  фиксы — patch). Аннотация тега — release notes: что изменилось и как мигрировать.
 - Коммит/пуш — гейт человека (без явной просьбы не коммитить).
 
 ## Границы

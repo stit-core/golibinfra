@@ -24,9 +24,10 @@ description: Выпустить новую версию golibinfra — make gate
 1. **Gate на чистом дереве.** `make gate-clean` — `make check` в worktree от HEAD
    (ловит незакоммиченные и gitignored-файлы, от которых зависит сборка).
    Красное → не релизим. Для китов с БД/шиной дополнительно `make test-full`.
-2. **Версия (semver).** Pre-v1.0.0: **minor может быть breaking**. Breaking change
-   (коммиты с `!` / `BREAKING CHANGE:` с прошлого тега) → bump minor (`v0.X.0`);
-   только фиксы/добавления → patch (`v0.X.Y`). Список коммитов с прошлого тега:
+2. **Версия (semver).** Breaking change (коммиты с `!` / `BREAKING CHANGE:` с
+   прошлого тега) → major (`vN.0.0`; для N ≥ 2 module path получает суффикс `/vN`
+   в `go.mod` и импортах); совместимые добавления → minor; только фиксы → patch.
+   Список коммитов с прошлого тега:
    `git log $(git describe --tags --abbrev=0)..HEAD --oneline`.
    Спроси у пользователя версию, если неочевидно.
 3. **Release notes в аннотации тега.** Обязательные секции: `Breaking` (что

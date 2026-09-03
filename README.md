@@ -203,17 +203,19 @@ README § Observability — у сложных китов в `docs/observability.
 
 ## Стабильность API
 
-Публичные конфиг-структуры китов (их поля и envconfig-теги) — **part of public
-API**: менять имена/типы полей или теги = breaking change. До `v1.0.0` breaking
-идёт minor-релизом с маркером `!` и миграционными заметками в аннотации тега.
-Полный перечень полей — в README каждого кита § Конфигурация (у сложных китов —
-`docs/configuration.md`); `make docs-check` сверяет теги в коде с документацией.
+Публичные конфиг-структуры китов (их поля и envconfig-теги), экспортируемые
+типы и сигнатуры — **part of public API**: менять их = breaking change, который
+идёт мажорным релизом (`v2.0.0` с суффиксом `/v2` в module path) с миграционными
+заметками в аннотации тега. Полный перечень полей — в README каждого кита
+§ Конфигурация (у сложных китов — `docs/configuration.md`); `make docs-check`
+сверяет теги в коде с документацией.
 
 ## Версионирование
 
-Семвер, теги `v0.x.y`. До `v1.0.0` API нестабилен — breaking changes допустимы в
-minor. Релиз — skill `/release`: `make gate-clean` → аннотированный тег с release
-notes (`Breaking` / `Изменения` / `Гейт`) → push. В проектах после релиза:
+Семвер, теги `vX.Y.Z`. Начиная с `v1.0.0` API стабилен: breaking — major,
+совместимые добавления — minor, фиксы — patch. Релиз — skill `/release`:
+`make gate-clean` → аннотированный тег с release notes (`Breaking` / `Изменения`
+/ `Гейт`) → push. В проектах после релиза:
 ```bash
 go get git.stit.tech/stit-core/golibinfra@vX.Y.Z && go mod tidy
 ```
