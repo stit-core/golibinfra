@@ -5,22 +5,21 @@
 ### Инфраструктурные Go-kit'ы с observability из коробки
 
 Набор переиспользуемых Go-библиотек для сервисов экосистемы stit:
-auth, БД, messaging, кэш, аудит, storage, AI-клиенты. Каждый kit — `fx.Module`,
+auth, БД, messaging, кэш, аудит, storage, AI-клиент. Каждый kit — `fx.Module`,
 инструментирован OTel, подключается независимо. Импортируется как Go-модуль из
 бизнес-репозиториев.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
-[![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
+[![Go](https://img.shields.io/badge/Go-1.26+-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#observability)
-[![Kits](https://img.shields.io/badge/kits-25-0ea5e9)](#пакеты)
 
 </div>
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/pgkit"
 import "git.stit.tech/stit-core/golibinfra/httpkit"
-import "git.stit.tech/stit-core/golibinfra/config"
+import "git.stit.tech/stit-core/golibinfra/healthkit"
 import "git.stit.tech/stit-core/golibinfra/testkit"
 ```
 
@@ -58,23 +57,29 @@ printf 'machine git.stit.tech\nlogin %s\npassword %s\n' "$USER" "$GITEA_TOKEN" >
 chmod 600 ~/.netrc
 ```
 
-Проверка: `go get git.stit.tech/stit-core/golibinfra@v0.24.0` скачивает без ошибок.
+Проверка: `go list -m -versions git.stit.tech/stit-core/golibinfra` показывает теги.
 
 ## Использование в проекте
 
-```
-require git.stit.tech/stit-core/golibinfra v0.24.0
+```bash
+go get git.stit.tech/stit-core/golibinfra@latest   # или @vX.Y.Z из `git tag`
+go mod tidy
 ```
 
-`go mod tidy` подтянет.
+Модуль требует Go ≥ 1.26.6 (директива `go` в `go.mod`; при `GOTOOLCHAIN=auto`
+нужный toolchain скачается сам).
 
 ## Принципы
 
 - **Никакой продуктовой специфики.** Если файл знает про конкретные роли, домены,
-  имена сервисов — он не здесь.
-- **Без скрытых зависимостей.** Каждый пакет подключается независимо.
+  имена сервисов — он не здесь. Исключения по решению оператора — `hubkit` (SDK
+  хаба stit) и `amocrmkit`; условия их выноса — в `.claude/plans/roadmap.md`.
+- **Без скрытых зависимостей.** Каждый пакет подключается независимо; `Config`
+  даёт caller, `NewConfig` валидирует и падает на старте.
 - **fx-first.** Каждый пакет экспортирует `Module` для проводки.
 - **Observability-by-default.** Все компоненты инструментированы OTel.
+- **Безопасные дефолты.** Cookie `Secure`, обязательный `aud`, таймауты у каждого
+  исходящего вызова, retry только идемпотентных запросов.
 
 ## Пакеты
 
@@ -88,34 +93,39 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 
 | Пакет | Ответственность |
 |---|---|
-| [`pgkit`](pgkit/) | `*pgkit.DB` фасад, Transactor, migrate-runner, маппинг pg-ошибок, `DBProbe` health-probe; `ReadWriteDB` для read-replica (`PG_REPLICA_DSN`) |
-| [`storagekit`](storagekit/) | S3/object storage: `Storage` (`Put`/`Delete`), `URLBuilder`, in-memory адаптер для тестов, `minio`-подпакет; `Config` + `NewKey` (content-addressed) |
-| [`httpkit`](httpkit/) | Huma bootstrap; middleware: RequestID, Recovery, AccessLog, OTel, CORS, RateLimit, MaxBody, Metrics, HumaAuth, **SecurityHeaders**, **Idempotency**; `APIError`, `MapErr`, `MapSentinel` |
+| [`pgkit`](pgkit/) | `*pgkit.DB` фасад, `Transactor` (`WithTx`/`WithTxOptions`, откат при panic), миграции с версией на источник (`Source`, `MigrateModule`, fx-группа `pgkit.migrations`), маппинг pg-ошибок, `DBProbe`; `ReadWriteDB` для read-replica (`PG_REPLICA_DSN`); `db_pool_*{role}` |
+| [`storagekit`](storagekit/) | S3/object storage: `Storage` (стриминговый `Put`, идемпотентный `Delete`), `Presigner`, `URLBuilder`, in-memory адаптер для тестов, `minio`-подпакет; `storage_ops_*` |
+| [`httpkit`](httpkit/) | huma/chi bootstrap; middleware: RequestID, OTel, Recovery, SecurityHeaders, CORS, RateLimit, MaxBody, AccessLog, Metrics, Idempotency, HumaAuth; `/health` + `/ready` по пробам `healthkit`; `APIError`, `MapErr`, `MapIs`, `MapAs` |
 | [`grpckit`](grpckit/) | gRPC-сервер: `*grpc.Server` + интерсепторы (recovery/request-id/access-log/опц. `Authenticator`-порт), otel (StatsHandler), health + опц. reflection, сервисы через fx-group `grpc.services` |
-| [`natskit`](natskit/) | Pub/sub поверх NATS: `Bus`, `PublishJSON[T]`, `SubscribeJSON[T]`, fx.Module; panic recovery + backpressure (`NATS_MAX_IN_FLIGHT`) |
-| [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel и автопередачей `X-Request-ID` |
-| [`amocrmkit`](amocrmkit/) | Транспорт к amoCRM: REST v4 (Bearer) + amoJo Chat (HMAC-SHA1) + Drive + OAuth2; per-account rate-limit (7 rps), таксономия ошибок (`ErrAuth/ErrRateLimited/…`), `TokenSource`; обёртка над `httpclient`/`clockkit`/`logkit` |
-| [`anthropickit`](anthropickit/) | Клиент Anthropic (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, прайс-таблица), Managed Agents через `Raw()`; `testkit/anthropictest` |
+| [`natskit`](natskit/) | Pub/sub поверх NATS/JetStream: `Bus`/`StreamBus`, `PublishJSON[T]`, `SubscribeJSON[T]` → `Subscription`, graceful drain, DLQ, deadline обработчика, backpressure, несколько шин через `Module(name)` |
+| [`httpclient`](httpclient/) | HTTP-клиент: retry только идемпотентных запросов (`GetBody`, `Retry-After`), circuit breaker на хост, OTel-спаны, `X-Request-ID` из ctx, SSE-стримы |
+| [`amocrmkit`](amocrmkit/) | Транспорт к amoCRM: REST v4 (Bearer) + amoJo Chat (HMAC-SHA1) + Drive + OAuth2; валидация subdomain/TLD, per-account rate-limit на каждую попытку, таксономия ошибок |
+| [`anthropickit`](anthropickit/) | Клиент Anthropic (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, флаг известной цены), спаны и метрики вызовов; `testkit/anthropictest` |
 | [`grpcclient`](grpcclient/) | gRPC-клиент: `*grpc.ClientConn` + otel (StatsHandler), access-log, keepalive, `PerRPCCredentials` (bearer-токен из env) |
-| [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
+| [`cachekit`](cachekit/) | Redis: `Cache` (`Get`/`Set`/`SetNX`/`GetDel`/теги), `GetJSON[T]`/`SetJSON[T]`, `IdempotencyStore` для `httpkit`, `MemoryCache` для тестов; `cache_commands_*` |
+| [`healthkit`](healthkit/) | Тип health-пробы `Probe` и `healthkit.Provide` в fx-группу `health`; `/ready` в `httpkit` собирает пробы китов |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
-| [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
-| [`telemetry`](telemetry/) | Opt-in bootstrap OTel SDK: tracer/meter/logger providers + OTLP HTTP-экспортёры (endpoint/Bearer из env); resource-атрибуты `service.*`, опц. `tenant`; runtime-инструментация. Без него kit-инструментация no-op |
-| [`logkit`](logkit/) | `Logger` поверх slog; JSON-stdout (`LOG_STDOUT`) или произвольный writer (`NewWithWriter`); `log_messages_total`; trace_id correlation; `RegisterAttr`; `NewWithRedact` (PII-фильтры) |
-| [`authnkit`](authnkit/) | `Hasher` (Argon2id); `JWTConfig` + sign/verify; `TOTPGenerator` (RFC 6238); `Permission`/`RolePermissions`/`Has` для RBAC |
-| [`oidckit`](oidckit/) | Authentik/OIDC BFF: `Verifier` (discovery, JWKS lazy-refresh, verify iss/aud/exp/nonce, PKCE S256), huma-роуты login/callback/me/logout, cookie-сессия HS256 (`authnkit`), `Extractor` → `httpkit.AuthExtractor`, `StateStore` (Redis/in-memory), `Hooks` (SessionClaims/OnLogin) |
-| [`hubkit`](hubkit/) | Клиент центрального хаба stit: `sso` (verify hub-session JWT ES256/JWKS двух контуров — сотрудник `stit_session`/`id.stit.tech` и заказчик `stit_customer`/`api.hub.stit.tech`, приоритет сотрудника, `Identity{Kind,CompanyID,AccountRole,Products}` в ctx + `AuthExtractor`, гейты `RequireEmployee`/`RequireCustomer`), `issuer` (выпуск session-JWT: ES256 + ротация kid, JWKS-handler, cookie `Domain=.stit.tech`/SameSite=Lax + host-only refresh на своём `Path`, rotating-refresh поверх Redis + tombstone), `client` (типизир. hub API поверх `httpclient`: companies/projects/employees/visibility/sync, m2m Bearer, `ErrNotFound`/`ErrConflict`/`ErrUnavailable`), `sync` (pull-синк проекций: цикл `after=<cursor>`, порты `ProjectionStore`/`CursorStore`, `hub_sync_*`-метрики), `projection` (эталон схемы проекций: миграции + sqlc) |
+| [`timerkit`](timerkit/) | Periodic jobs через fx-группу `timer.job`: валидация на старте, ожидание джобов на стопе, `Timeout`/`Jitter`/`RunOnStart`; `timer_job_*` |
+| [`telemetry`](telemetry/) | Opt-in bootstrap OTel SDK: tracer/meter/logger providers + OTLP HTTP-экспортёры (`OTEL_EXPORTER_OTLP_ENDPOINT` — URL по спецификации); `log.LoggerProvider` для `logkit`; `Span` helper. Без него kit-инструментация no-op |
+| [`logkit`](logkit/) | `Logger` поверх slog: JSON в stdout + OTel log-bridge, redact PII на уровне атрибутов (`WithRedact`), trace_id/request_id из ctx, `RegisterAttr`; `log_messages_total` |
+| [`authnkit`](authnkit/) | `Hasher` (Argon2id, строгий PHC, `NeedsRehash`); HS256 JWT на go-jose (`SignAccess`/`SignRefresh`, `JWT_LEEWAY`); `TOTP` (`TOTP_SKEW`); RBAC `Registry` |
+| [`oidckit`](oidckit/) | Authentik/OIDC BFF: `Verifier` (discovery, JWKS-кэш с троттлингом, iss/aud/exp/nonce, PKCE S256), роуты login/callback/me/logout, cookie-сессия HS256 (`Secure` по умолчанию), `Extractor` → `httpkit.AuthExtractor`, `StateStore` (Redis, атомарный `GetDel`); `oidc_*` |
+| [`hubkit`](hubkit/) | SDK хаба stit: `sso` (verify hub-session двух контуров, обязательный `aud`, JWKS-кэш, `Identity` в ctx, гейты), `issuer` (ES256 + ротация kid, JWKS-handler, rotating-refresh с reuse-detection поверх `cachekit`), `client` (типизированный hub API поверх `httpclient`), `sync` (pull-синк проекций), `projection` (эталон схемы) |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении) |
-| [`outboxkit`](outboxkit/) | Transactional outbox: Worker публикует в JetStream (`MarkPublished` батчем после PubAck; `OUTBOX_PUBLISH_MODE` batch\|ordered), poison→dead после `OUTBOX_MAX_ATTEMPTS`, retention партиций `OUTBOX_RETENTION_MONTHS`, `BacklogReporter` для `outbox_lag_seconds`/`outbox_pending_count`. `Module` — один инстанс (таблица `outbox`); `outboxkit.New` + `pgstore.NewStoreFor(db, table)` + `NewStreamTransportFor(sb, namespace)` — несколько (таблица на инстанс, namespaced Msg-Id) |
-| [`auditkit`](auditkit/) | Audit-log: `Entry`/`Logger`, core+pgstore split |
-| [`bruteforcekit`](bruteforcekit/) | Brute-force guard: счётчик попыток по паре (subject, IP), `LockState`, core+pgstore split |
+| [`outboxkit`](outboxkit/) | Transactional outbox: тик воркера в одной транзакции (`batch` — SKIP LOCKED между репликами, `ordered` — один активный воркер), публикация в JetStream с дедупом, poison→dead, партиции создаются на старте, retention без потери pending; `BacklogReporter`; `outbox_*{instance}`; несколько инстансов через `New` |
+| [`auditkit`](auditkit/) | Audit-log: `Entry`/`Logger`, core+pgstore split, время — часы БД |
+| [`bruteforcekit`](bruteforcekit/) | Brute-force guard: атомарный счётчик попыток по паре (subject, IP), `LockState`, core+pgstore split |
 | [`clockkit`](clockkit/) | `Clock` + test-fakes (`Fixed`, `Tickable`) для детерминированных временных тестов |
-| [`tzkit`](tzkit/) | Канон времени: `Zone` (`APP_TZ`, fail-fast), `Day` (`DATE`/`YYYY-MM-DD`) и `WallTime` (`TIME`/`HH:MM`) с huma-схемой и pgtype-интеропом, границы суток (`DayOf`/`StartOfDay`/`Span`) в зоне приложения; tzdata вшита в бинарь |
-| [`ptrkit`](ptrkit/) | Generic-хелперы указателей: `Ptr` (nil-on-zero), `Deref` (nil-safe); без I/O |
-| [`mapkit`](mapkit/) | Декодеры `map[string]any`: `String/Int/Int64/Float/Strings/Map/IntPtr/BoolPtr`; nil-safe, без I/O |
-| [`idkit`](idkit/) | Внутренние id: `NewV7()` — UUID v7 строкой (time-sortable, PK-локальность); без I/O |
-| [`config`](config/) | Загрузчик конфигурации из env, провайдит `[]Source` для приложения |
-| [`testkit`](testkit/) | testcontainers: `StartPostgres`, `StartNATS`, `StartRedis`; httptest helpers; per-kit subpackages |
+| [`tzkit`](tzkit/) | Канон времени: `Zone` (`APP_TZ`, fail-fast), `Day` и `WallTime` с huma-схемой и pgtype-интеропом, границы суток в зоне приложения |
+| [`ptrkit`](ptrkit/) | Generic-хелперы указателей: `Of` (адрес значения), `Ptr` (nil-on-zero), `Deref` (nil-safe) |
+| [`mapkit`](mapkit/) | Декодеры `map[string]any`: `String/Int/Int64/Float/Strings/Map/IntPtr/BoolPtr`; nil-safe |
+| [`idkit`](idkit/) | Внутренние id: `NewV7()` — UUID v7 строкой (time-sortable) |
+| [`config`](config/) | Композиция ENV-источников (`Source`, `Load`) для App-конфига приложения |
+| [`testkit`](testkit/) | testcontainers: `StartPostgres(t, WithMigrations(...))`, `StartNATS(t, WithJetStream())`, `StartRedis`; httptest helpers; per-kit subpackages |
+
+Служебные пакеты `internal/otelkit` (scope и `Must` для OTel-инструментов),
+`internal/requestid` (ctx-ключ request-id) и `internal/jwks` (JWKS-кэш с
+троттлингом) наружу не экспортируются.
 
 ## Per-concern endpoints (multi-host)
 
@@ -127,18 +137,19 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 
 | Env | Кит | Назначение |
 |---|---|---|
-| `PG_DSN` | `pgkit` | Postgres (primary) |
+| `PG_DSN` | `pgkit` | Postgres (primary); `PG_CONNECT_TIMEOUT` — таймаут подключения на старте |
 | `PG_REPLICA_DSN` | `pgkit` | Postgres read-replica (опц.; `ReadWriteDB`) |
 | `STORAGE_S3_ENDPOINT` | `storagekit` | S3 / MinIO object storage |
 | `NATS_URL` | `natskit` | NATS / JetStream |
-| `REDIS_URL` | `cachekit` | Redis (cache + idempotency store) |
+| `REDIS_URL` | `cachekit` | Redis (cache + idempotency store + refresh/state store) |
 | `OIDC_ISSUER` | `oidckit` | OIDC-провайдер (Authentik): discovery, token endpoint, JWKS |
-| `HUB_SSO_JWKS_URL` | `hubkit` | JWKS employee-backend (`id.stit.tech`) для verify сессии сотрудника |
-| `HUB_SSO_CUSTOMER_JWKS_URL` | `hubkit` | JWKS company-backend (`api.hub.stit.tech`) для verify сессии заказчика; пусто → контур выключен |
-| `HUB_BASE_URL` | `hubkit` | hub API (company-backend `api.hub.stit.tech`; employees — `HUB_EMPLOYEE_BASE_URL`), m2m-токен `HUB_SERVICE_TOKEN` |
-| `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host (default `api.anthropic.com`); ключ — `ANTHROPIC_API_KEY` |
+| `HUB_SSO_JWKS_URL` | `hubkit` | JWKS employee-backend для verify сессии сотрудника; `HUB_SSO_AUDIENCE` обязателен |
+| `HUB_SSO_CUSTOMER_JWKS_URL` | `hubkit` | JWKS company-backend для verify сессии заказчика; пусто → контур выключен; `HUB_SSO_CUSTOMER_AUDIENCE` обязателен при включённом контуре |
+| `HUB_BASE_URL` | `hubkit` | hub API (company-backend; employees — `HUB_EMPLOYEE_BASE_URL`), m2m-токен `HUB_SERVICE_TOKEN` |
+| `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host; ключ — `ANTHROPIC_API_KEY` |
 | `GRPC_ADDR` | `grpckit` | bind gRPC-сервера (HTTP/2; default `:9090`) |
 | `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | OTLP HTTP-коллектор, полный URL (`http://collector:4318`) |
 
 `outboxkit` **не** имеет своего эндпоинта — он co-located с pg-хостом: outbox
 пишется в той же транзакции, что и доменные данные (атомарность), поэтому живёт
@@ -146,28 +157,32 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 
 ## Observability
 
-Киты инструментированы OTel: HTTP/gRPC/DB/bus/AI-вызовы эмитят метрики и спаны
-через **глобальные** OTel-провайдеры (`otel.Meter`/`otel.Tracer`), а `logkit`
-пишет структурный лог в stdout. Пока приложение не зарегистрирует
+Киты инструментированы OTel: HTTP/gRPC/DB/bus/cache/storage/AI-вызовы эмитят
+метрики и спаны через **глобальные** OTel-провайдеры (`internal/otelkit` поверх
+`otel.Meter`/`otel.Tracer`), а `logkit` пишет структурный лог в stdout и, при
+подключённом `telemetry`, в OTLP. Пока приложение не зарегистрирует
 `MeterProvider`/`TracerProvider`, инструменты — **no-op** (записи молча
 отбрасываются, kit не падает). Экспорт и бэкенд — ответственность
 потребителя: либо готовый opt-in кит `telemetry` (OTLP HTTP-экспортёры всех
 трёх сигналов, endpoint/Bearer из env), либо собственная проводка OTel SDK.
 
-Подключение fx-модулей golibinfra даёт RED + DB-pool + bus + logs «из коробки» на
-уровне инструментов:
-
 ```go
 fx.New(
-  logkit.Module,      // log_messages_total{level}, slog с trace_id в stdout
-  httpkit.Module,     // http_requests_total, http_request_duration_seconds
-  pgkit.Module,       // db_pool_* (acquired/idle/max/wait), pg traces
-  natskit.Module,     // nats_messages_*, nats_handle_duration_seconds
-  outboxkit.Module,   // outbox_events_*, outbox_batch_size, outbox_publish_duration_seconds
-  authnkit.Module,    // jwt_verifications_total, password_*_duration_seconds
-  ...
+  fx.Provide(telemetry.NewConfig, logkit.NewConfig, httpkit.NewConfig, pgkit.NewPoolConfig, /* ... */),
+  telemetry.Module,   // OTLP-экспортёры; без него всё ниже — no-op
+  logkit.Module,      // log_messages_total{level}, slog с trace_id в stdout + OTLP
+  httpkit.Module,     // http_requests_total, http_request_duration_seconds, server-span
+  pgkit.Module,       // db_pool_*{role}, pg traces
+  natskit.Module(""), // nats_messages_*, nats_handle_duration_seconds, consumer-span
+  outboxkit.Module,   // outbox_*{instance}
+  cachekit.Module,    // cache_commands_total, cache_command_duration_seconds
+  timerkit.Module,    // timer_job_runs_total, timer_job_duration_seconds
+  healthkit.Provide(pgkit.DBProbe), healthkit.Provide(natskit.Probe), healthkit.Provide(cachekit.Probe),
 )
 ```
+
+Имена метрик — Prometheus-стиль `<kit_prefix>_<what>_<unit|total>`; label'ы —
+конечные множества (route-pattern, хост, инстанс, результат), не пути и не id.
 
 ### Business-метрики (`biz_*`)
 
@@ -179,9 +194,6 @@ logins := bizmetric.Counter(meter, "auth", "login_attempts")  // → biz_auth_lo
 logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 ```
 
-Единый префикс `biz_` держит конвенцию имён бизнес-метрик; не плодите их в обход
-`bizmetric.Counter/Histogram/Gauge`.
-
 ### Что эмитит каждый пакет
 
 Точный перечень сигналов кита (метрики — имена, типы, labels; спаны) живёт в его
@@ -192,16 +204,27 @@ README § Observability — у сложных китов в `docs/observability.
 ## Стабильность API
 
 Публичные конфиг-структуры китов (их поля и envconfig-теги) — **part of public
-API**: менять имена/типы полей или теги = breaking change, идёт мажорным
-апгрейдом. Полный перечень полей с пометкой стабильности — в README каждого кита
-§ Конфигурация (у сложных китов — `docs/configuration.md`).
+API**: менять имена/типы полей или теги = breaking change. До `v1.0.0` breaking
+идёт minor-релизом с маркером `!` и миграционными заметками в аннотации тега.
+Полный перечень полей — в README каждого кита § Конфигурация (у сложных китов —
+`docs/configuration.md`); `make docs-check` сверяет теги в коде с документацией.
 
 ## Версионирование
 
 Семвер, теги `v0.x.y`. До `v1.0.0` API нестабилен — breaking changes допустимы в
-minor. Релиз — skill `/release` (`git tag vX.Y.Z` + push). В проектах после релиза:
+minor. Релиз — skill `/release`: `make gate-clean` → аннотированный тег с release
+notes (`Breaking` / `Изменения` / `Гейт`) → push. В проектах после релиза:
 ```bash
-go get git.stit.tech/stit-core/golibinfra@v0.24.0 && go mod tidy
+go get git.stit.tech/stit-core/golibinfra@vX.Y.Z && go mod tidy
+```
+
+## Гейт
+
+```bash
+make tools        # golangci-lint + govulncheck
+make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + docs-check
+make test-full    # + testcontainers (Postgres/NATS/Redis/MinIO), нужен Docker
+make gate-clean   # make check в чистом worktree от HEAD — перед тегом
 ```
 
 ## Локальная разработка с правкой golibinfra

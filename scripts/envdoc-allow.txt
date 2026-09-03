@@ -1,0 +1,6 @@
+# Токены вида UPPER_SNAKE из доков, которые не являются envconfig-тегами китов:
+# стандартные переменные, которые читают сами зависимости (OTel SDK, otelgrpc),
+# и константы протоколов. По одному на строку, `#` — комментарий.
+OTEL_EXPORTER_OTLP_TIMEOUT
+OTEL_SEMCONV_STABILITY_OPT_IN
+NOT_SERVING

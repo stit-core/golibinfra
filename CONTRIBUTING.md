@@ -18,15 +18,16 @@
 
 - **Никакой продуктовой специфики.** Если файл знает про конкретные роли, домены,
   имена сервисов — он не здесь, а в сервис-репо. golibinfra — общая lib.
-- **Observability by default.** Новый код эмитит метрики/спаны через otel-go SDK
-  (глобальные `otel.Meter`/`otel.Tracer`, no-op без провайдера); resource attrs и
-  экспорт настраивает потребитель.
+- **Observability by default.** Новый код эмитит метрики/спаны через
+  `internal/otelkit` (глобальные `otel.Meter`/`otel.Tracer`, no-op без провайдера);
+  resource attrs и экспорт настраивает потребитель.
 - **Минимум зависимостей.** Перед новым import проверь stdlib + уже подключённые
   deps. Каждая новая зависимость в `go.mod` обсуждается отдельно.
 - **fx-first.** Каждый kit отдаёт `Module` (`fx.Options`); консьюмер собирает `App`
-  из них. Прямой `New*()` без fx допустим, но менее идиоматичен.
+  из них. `Config` провайдит caller (`fx.Provide(<kit>.NewConfig)`), `NewConfig`
+  валидирует и падает на старте.
 - **envconfig-теги — часть public API.** Имена полей/тегов публичных конфиг-структур
-  (`README.md § Стабильность API`) менять = breaking change, идёт мажорным апгрейдом.
+  менять = breaking change (до v1 — minor с `!`).
 - **Forward-only документация.** Текст описывает текущее состояние, без «было/стало» —
   история живёт в `git log`.
 
@@ -41,22 +42,23 @@
 
 ## Перед PR
 
-Makefile'а нет — команды сырые `go`, как в CI:
-
 ```bash
-golangci-lint run ./...           # lint (gofumpt + .golangci.yml)
-go test -short -race ./...         # unit (-race при CGO_ENABLED=1)
-go build ./...                     # build
+make tools        # один раз: golangci-lint + govulncheck
+make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check
+make test-full    # + testcontainers (нужен Docker) — для китов с БД/шиной/кэшем
 ```
 
-Зелёные все три — gate пройден.
+Зелёный `make check` — gate пройден. Что именно он запускает — в `Makefile`
+(цели можно вызывать по отдельности: `make lint`, `make test`, …).
 
 - Новый kit → собственный `README.md` кита (+ `docs/` у сложного) и строка-индекс
   в `README.md § Пакеты` обязательны.
 - Тронул конфиг / эмитимые метрики / labels / span-attrs → обнови `README.md`
-  (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability).
+  (+ `docs/`) соответствующего кита; `make docs-check` сверит env-переменные.
+- Багфикс → регрессионный тест в том же PR.
 - **Conventional Commits** — `<type>(<scope>)?: <subject>`, subject ≤72. Типы:
-  `feat`, `fix`, `refactor`, `docs`, `test`, `chore`. Пример: `feat(httpkit): add CSP header`.
+  `feat`, `fix`, `refactor`, `docs`, `test`, `chore`; breaking — `!` и футер
+  `BREAKING CHANGE:`. Пример: `feat(httpkit)!: MapSentinel → MapIs/MapAs`.
 
 ## Стиль
 
