@@ -1,45 +1,43 @@
 package cachekit
 
 import (
+	"bytes"
 	"context"
-	"encoding/json"
-	"fmt"
 	"time"
 )
 
-type idempotencyEntry struct {
-	Response []byte `json:"response"`
-	Status   int    `json:"status"`
+const idempotencyPrefix = "idempotency:"
+
+// reservedMarker занимает ключ на время выполнения запроса; Get такой ключ
+// не отдаёт, чтобы httpkit различал «выполняется» и «готовый ответ».
+var reservedMarker = []byte("\x00reserved")
+
+// IdempotencyStore — байтовый store для httpkit.Idempotency поверх Cache:
+// ключи в namespace `idempotency:`, резерв через SetNX.
+type IdempotencyStore struct {
+	c Cache
 }
 
-type idempotencyStore struct {
-	cache Cache
-	ttl   time.Duration
+func NewIdempotencyStore(c Cache) *IdempotencyStore {
+	return &IdempotencyStore{c: c}
 }
 
-func IdempotencyStore(cache Cache, ttl time.Duration) interface {
-	Get(ctx context.Context, key string) ([]byte, int, bool, error)
-	Set(ctx context.Context, key string, response []byte, status int) error
-} {
-	return &idempotencyStore{cache: cache, ttl: ttl}
+func (s *IdempotencyStore) Reserve(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	return s.c.SetNX(ctx, idempotencyPrefix+key, reservedMarker, ttl)
 }
 
-func (s *idempotencyStore) Get(ctx context.Context, key string) ([]byte, int, bool, error) {
-	data, found, err := s.cache.Get(ctx, "idempotency:"+key)
-	if err != nil || !found {
-		return nil, 0, found, err
+func (s *IdempotencyStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	v, found, err := s.c.Get(ctx, idempotencyPrefix+key)
+	if err != nil || !found || bytes.Equal(v, reservedMarker) {
+		return nil, false, err
 	}
-	var entry idempotencyEntry
-	if err := json.Unmarshal(data, &entry); err != nil {
-		return nil, 0, false, fmt.Errorf("cachekit: idempotency unmarshal: %w", err)
-	}
-	return entry.Response, entry.Status, true, nil
+	return v, true, nil
 }
 
-func (s *idempotencyStore) Set(ctx context.Context, key string, response []byte, status int) error {
-	data, err := json.Marshal(idempotencyEntry{Response: response, Status: status})
-	if err != nil {
-		return fmt.Errorf("cachekit: idempotency marshal: %w", err)
-	}
-	return s.cache.Set(ctx, "idempotency:"+key, data, s.ttl)
+func (s *IdempotencyStore) Set(ctx context.Context, key string, record []byte, ttl time.Duration) error {
+	return s.c.Set(ctx, idempotencyPrefix+key, record, ttl)
+}
+
+func (s *IdempotencyStore) Release(ctx context.Context, key string) error {
+	return s.c.Delete(ctx, idempotencyPrefix+key)
 }

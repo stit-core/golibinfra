@@ -1,21 +1,17 @@
 package cachekit
 
 import (
+	"context"
+
 	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 )
 
-// Module не provide'ит Config (asymmetry note в pgkit/module.go) и не provide'ит
-// Probe. Probe имеет тип `func(context.Context) error`, который коллизит с
-// natskit.Probe (и любым другим health-probe). Caller сам регистрирует с нужной
-// аннотацией, обычно `group:"health"`:
-//
-//	fx.Provide(fx.Annotate(cachekit.Probe, fx.ResultTags(`group:"health"`)))
+// Module не provide'ит Config (caller регистрирует его сам) и не кладёт Probe в
+// граф: пробу регистрирует потребитель через healthkit.Provide(cachekit.Probe).
 var Module = fx.Module(
 	"cachekit",
-	fx.Provide(
-		fx.Annotate(newRedisCache, fx.As(new(Cache))),
-	),
+	fx.Provide(newCacheWithLifecycle),
 )
 
 func NewConfig() (Config, error) {
@@ -23,6 +19,19 @@ func NewConfig() (Config, error) {
 	return c, envconfig.Process("", &c)
 }
 
-func newRedisCache(cfg Config) (Cache, error) {
-	return NewRedisCache(cfg)
+func newCacheWithLifecycle(lc fx.Lifecycle, cfg Config) (Cache, error) {
+	c, err := NewRedisCache(cfg)
+	if err != nil {
+		return nil, err
+	}
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			if !cfg.PingOnStart {
+				return nil
+			}
+			return c.Ping(ctx)
+		},
+		OnStop: func(context.Context) error { return c.Close() },
+	})
+	return c, nil
 }

@@ -1,6 +1,7 @@
-// Package cachekit — Redis-обёртка: интерфейс Cache, типизированные
-// helper'ы GetJSON[T]/SetJSON[T], tag-based invalidation
-// (InvalidateByTag) и адаптер IdempotencyStore для httpkit.Idempotency.
+// Package cachekit — Redis-обёртка: Cache (байтовый KV с TTL, атомарные
+// SetNX/GetDel, тегированная инвалидация), типизированные GetJSON[T]/SetJSON[T],
+// IdempotencyStore для httpkit и health-проба. Эмитит cache_commands_total и
+// cache_command_duration_seconds.
 package cachekit
 
 import (
@@ -11,6 +12,8 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 )
 
 type Config struct {
@@ -19,15 +22,26 @@ type Config struct {
 	DialTimeout  time.Duration `envconfig:"REDIS_DIAL_TIMEOUT" default:"5s"`
 	ReadTimeout  time.Duration `envconfig:"REDIS_READ_TIMEOUT" default:"3s"`
 	WriteTimeout time.Duration `envconfig:"REDIS_WRITE_TIMEOUT" default:"3s"`
+	PingOnStart  bool          `envconfig:"REDIS_PING_ON_START" default:"true"`
 }
 
+// Cache — байтовый KV. Промах везде — found == false, err == nil.
 type Cache interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
+	// SetNX пишет только отсутствующий ключ: атомарный резерв/lock.
+	SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
+	// GetDel читает и удаляет атомарно: одноразовые токены и state.
+	GetDel(ctx context.Context, key string) ([]byte, bool, error)
 	Delete(ctx context.Context, keys ...string) error
+	// SetWithTags пишет ключ и добавляет его в наборы tag:<tag> для InvalidateByTag.
+	SetWithTags(ctx context.Context, key string, value []byte, ttl time.Duration, tags ...string) error
 	InvalidateByTag(ctx context.Context, tag string) error
 	Ping(ctx context.Context) error
+	Close() error
 }
+
+const tagPrefix = "tag:"
 
 type redisCache struct {
 	client *redis.Client
@@ -44,6 +58,7 @@ func NewRedisCache(cfg Config) (Cache, error) {
 	opts.WriteTimeout = cfg.WriteTimeout
 
 	client := redis.NewClient(opts)
+	client.AddHook(newMetricsHook())
 	return &redisCache{client: client}, nil
 }
 
@@ -65,12 +80,60 @@ func (c *redisCache) Set(ctx context.Context, key string, value []byte, ttl time
 	return nil
 }
 
+func (c *redisCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
+	ok, err := c.client.SetNX(ctx, key, value, ttl).Result()
+	if err != nil {
+		return false, fmt.Errorf("cachekit: setnx: %w", err)
+	}
+	return ok, nil
+}
+
+func (c *redisCache) GetDel(ctx context.Context, key string) ([]byte, bool, error) {
+	val, err := c.client.GetDel(ctx, key).Bytes()
+	if errors.Is(err, redis.Nil) {
+		return nil, false, nil
+	}
+	if err != nil {
+		return nil, false, fmt.Errorf("cachekit: getdel: %w", err)
+	}
+	return val, true, nil
+}
+
 func (c *redisCache) Delete(ctx context.Context, keys ...string) error {
 	if len(keys) == 0 {
 		return nil
 	}
 	if err := c.client.Del(ctx, keys...).Err(); err != nil {
 		return fmt.Errorf("cachekit: delete: %w", err)
+	}
+	return nil
+}
+
+func (c *redisCache) SetWithTags(ctx context.Context, key string, value []byte, ttl time.Duration, tags ...string) error {
+	pipe := c.client.TxPipeline()
+	pipe.Set(ctx, key, value, ttl)
+	for _, tag := range tags {
+		tagKey := tagPrefix + tag
+		pipe.SAdd(ctx, tagKey, key)
+		if ttl > 0 {
+			// Набор живёт ttl после последней записи с этим тегом.
+			pipe.Expire(ctx, tagKey, ttl)
+		}
+	}
+	if _, err := pipe.Exec(ctx); err != nil {
+		return fmt.Errorf("cachekit: set with tags: %w", err)
+	}
+	return nil
+}
+
+func (c *redisCache) InvalidateByTag(ctx context.Context, tag string) error {
+	tagKey := tagPrefix + tag
+	keys, err := c.client.SMembers(ctx, tagKey).Result()
+	if err != nil && !errors.Is(err, redis.Nil) {
+		return fmt.Errorf("cachekit: invalidate tag members: %w", err)
+	}
+	if err := c.client.Del(ctx, append(keys, tagKey)...).Err(); err != nil {
+		return fmt.Errorf("cachekit: invalidate delete: %w", err)
 	}
 	return nil
 }
@@ -82,27 +145,15 @@ func (c *redisCache) Ping(ctx context.Context) error {
 	return nil
 }
 
-func Probe(c Cache) func(ctx context.Context) error {
-	return func(ctx context.Context) error {
-		return c.Ping(ctx)
-	}
-}
-
-func (c *redisCache) InvalidateByTag(ctx context.Context, tag string) error {
-	tagKey := "tag:" + tag
-	keys, err := c.client.SMembers(ctx, tagKey).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return fmt.Errorf("cachekit: invalidate tag members: %w", err)
-	}
-	if len(keys) > 0 {
-		if err := c.client.Del(ctx, keys...).Err(); err != nil {
-			return fmt.Errorf("cachekit: invalidate delete keys: %w", err)
-		}
-	}
-	if err := c.client.Del(ctx, tagKey).Err(); err != nil {
-		return fmt.Errorf("cachekit: invalidate delete tag: %w", err)
+func (c *redisCache) Close() error {
+	if err := c.client.Close(); err != nil {
+		return fmt.Errorf("cachekit: close: %w", err)
 	}
 	return nil
+}
+
+func Probe(c Cache) healthkit.Probe {
+	return c.Ping
 }
 
 func GetJSON[T any](ctx context.Context, c Cache, key string) (T, bool, error) {

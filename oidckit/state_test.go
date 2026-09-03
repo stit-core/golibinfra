@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"git.stit.tech/stit-core/golibinfra/cachekit"
 )
 
 func TestMemoryStateStore_OneTime(t *testing.T) {
@@ -35,32 +37,8 @@ func TestMemoryStateStore_TTL(t *testing.T) {
 	}
 }
 
-// fakeCache — минимальный cachekit.Cache для проверки адаптера.
-type fakeCache struct {
-	m map[string][]byte
-}
-
-func (c *fakeCache) Get(_ context.Context, k string) ([]byte, bool, error) {
-	v, ok := c.m[k]
-	return v, ok, nil
-}
-
-func (c *fakeCache) Set(_ context.Context, k string, v []byte, _ time.Duration) error {
-	c.m[k] = v
-	return nil
-}
-
-func (c *fakeCache) Delete(_ context.Context, keys ...string) error {
-	for _, k := range keys {
-		delete(c.m, k)
-	}
-	return nil
-}
-func (c *fakeCache) InvalidateByTag(context.Context, string) error { return nil }
-func (c *fakeCache) Ping(context.Context) error                    { return nil }
-
 func TestCacheStateStore_OneTime(t *testing.T) {
-	s := NewCacheStateStore(&fakeCache{m: map[string][]byte{}})
+	s := NewCacheStateStore(cachekit.NewMemoryCache())
 	ctx := context.Background()
 
 	if err := s.Set(ctx, "k", []byte("v"), time.Minute); err != nil {
