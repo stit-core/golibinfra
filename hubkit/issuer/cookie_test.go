@@ -44,6 +44,10 @@ func TestCookies_NamesFromConfig(t *testing.T) {
 	if exp.Name != "stit_customer_refresh" || exp.Path != "/auth/customer" || exp.MaxAge != -1 || exp.Value != "" {
 		t.Fatalf("expired refresh cookie=%+v", exp)
 	}
+	expSession := issuer.ExpiredSessionCookie(cust)
+	if expSession.Name != "stit_customer" || expSession.Domain != ".stit.tech" || expSession.MaxAge != -1 || !expSession.Secure {
+		t.Fatalf("expired session cookie=%+v", expSession)
+	}
 }
 
 // Конфиг, собранный литералом (без envconfig-дефолтов), не должен выпускать

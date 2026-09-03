@@ -6,7 +6,7 @@ import (
 )
 
 // Company — каноническая компания хаба (company-backend, api.hub.stit.tech).
-// Реквизиты — общая правда экосистемы (00-architecture §2).
+// Реквизиты — общая правда экосистемы.
 type Company struct {
 	ID           string         `json:"id"`
 	Name         string         `json:"name"`
@@ -112,15 +112,15 @@ type Employee struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	UpdatedSeq int64     `json:"updated_seq"`
-	// DepartmentIDs — snapshot набора департаментов сотрудника (M2M хаба,
-	// 00-architecture §2). Владелец — employee-backend; строкового поля
-	// department в модели нет — принадлежность только через этот массив.
+	// DepartmentIDs — snapshot набора департаментов сотрудника (M2M хаба). Владелец —
+	// employee-backend; строкового поля department в модели нет — принадлежность
+	// только через этот массив.
 	// Всегда массив в фиде (пустой набор — []); старый сервер без поля →
 	// nil (обратная совместимость: продукты со старым фидом не ломаются).
 	DepartmentIDs []string `json:"department_ids,omitempty"`
 }
 
-// Visibility — per-service флаг видимости сущности (00-architecture §2).
+// Visibility — per-service флаг видимости сущности.
 type Visibility struct {
 	Service    string `json:"service"`
 	EntityKind string `json:"entity_kind"`
@@ -131,7 +131,7 @@ type Visibility struct {
 
 // Tag — каноническая запись глобального словаря тегов (tag-backend,
 // tags.hub.stit.tech). Дедуп по norm_name; name — написание первого автора
-// экосистемы (00-architecture §5).
+// экосистемы.
 type Tag struct {
 	ID       string `json:"id"`
 	Name     string `json:"name"`
@@ -145,7 +145,7 @@ type TagInput struct {
 
 // EntityTagsSnapshot — snapshot принадлежности тегам одной hub-сущности из
 // sync-фида entity-tags (company-backend, владелец глобальной принадлежности
-// company/project — 00-architecture §5). Полный набор TagIDs на курсоре
+// company/project). Полный набор TagIDs на курсоре
 // UpdatedSeq; потребитель применяет как replace. Ключ — (EntityKind, EntityID),
 // не id. Пустой набор (все теги сняты) приезжает как TagIDs=[] обычной записью
 // (курсор бампается только при фактическом diff'е набора). Продукт
@@ -159,7 +159,7 @@ type EntityTagsSnapshot struct {
 
 // Department — запись глобального справочника департаментов (employee-backend,
 // id.stit.tech). Механика тегов: дедуп по norm_name, name — написание первого
-// автора (00-architecture §2). Приезжает в sync-фиде ResourceDepartments.
+// автора. Приезжает в sync-фиде ResourceDepartments.
 type Department struct {
 	ID         string    `json:"id"`
 	Name       string    `json:"name"`

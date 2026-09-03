@@ -15,10 +15,22 @@ import (
 	"github.com/go-jose/go-jose/v4/jwt"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
+	"git.stit.tech/stit-core/golibinfra/cachekit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-const sessionSecret = "session-secret"
+const sessionSecret = "session-secret-of-at-least-32-bytes!!"
+
+func memStore() StateStore { return NewCacheStateStore(cachekit.NewMemoryCache()) }
+
+func sessionSigner(t *testing.T) *authnkit.HS256JWT {
+	t.Helper()
+	s, err := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: sessionSecret})
+	if err != nil {
+		t.Fatalf("NewHS256JWT: %v", err)
+	}
+	return s
+}
 
 type stubIDP struct {
 	url    string
@@ -75,7 +87,7 @@ func newStubIDP(t *testing.T) *stubIDP {
 
 func newTestBFF(t *testing.T, idp *stubIDP, store StateStore, hooks Hooks) *BFF {
 	t.Helper()
-	signer := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: sessionSecret})
+	signer := sessionSigner(t)
 	cfg := Config{
 		Issuer:       idp.url,
 		ClientID:     "svc",
@@ -89,7 +101,7 @@ func newTestBFF(t *testing.T, idp *stubIDP, store StateStore, hooks Hooks) *BFF 
 
 func parseSession(t *testing.T, token string) map[string]any {
 	t.Helper()
-	claims, err := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: sessionSecret}).Parse(token)
+	claims, err := sessionSigner(t).Parse(token)
 	if err != nil {
 		t.Fatalf("parse session: %v", err)
 	}
@@ -98,7 +110,7 @@ func parseSession(t *testing.T, token string) map[string]any {
 
 func TestBFF_LoginCallback(t *testing.T) {
 	idp := newStubIDP(t)
-	b := newTestBFF(t, idp, NewMemoryStateStore(), Hooks{})
+	b := newTestBFF(t, idp, memStore(), Hooks{})
 	ctx := context.Background()
 
 	// login → redirect на idp, state+nonce сохранены.
@@ -161,7 +173,7 @@ func TestBFF_SessionClaimsHook(t *testing.T) {
 		}
 		return map[string]any{"role": "client"}
 	}}
-	b := newTestBFF(t, idp, NewMemoryStateStore(), hooks)
+	b := newTestBFF(t, idp, memStore(), hooks)
 	ctx := context.Background()
 
 	loginOut, err := b.login(ctx, &loginInput{})
@@ -191,7 +203,7 @@ func TestBFF_OnLoginHook(t *testing.T) {
 			}
 			return hookErr
 		}}
-		b := newTestBFF(t, idp, NewMemoryStateStore(), hooks)
+		b := newTestBFF(t, idp, memStore(), hooks)
 		ctx := context.Background()
 
 		loginOut, err := b.login(ctx, &loginInput{})
@@ -231,7 +243,7 @@ func TestBFF_ReturnTo(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			idp := newStubIDP(t)
-			b := newTestBFF(t, idp, NewMemoryStateStore(), Hooks{})
+			b := newTestBFF(t, idp, memStore(), Hooks{})
 			ctx := context.Background()
 
 			loginOut, err := b.login(ctx, &loginInput{ReturnTo: tc.returnTo})
@@ -253,22 +265,21 @@ func TestBFF_ReturnTo(t *testing.T) {
 }
 
 func TestBFF_UnknownState(t *testing.T) {
-	b := newTestBFF(t, newStubIDP(t), NewMemoryStateStore(), Hooks{})
+	b := newTestBFF(t, newStubIDP(t), memStore(), Hooks{})
 	if _, err := b.callback(context.Background(), &callbackInput{Code: "c", State: "nope"}); err == nil {
 		t.Fatal("callback с неизвестным state прошёл")
 	}
 }
 
 func TestBFF_Disabled(t *testing.T) {
-	signer := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: sessionSecret})
-	b := NewBFF(Config{}, signer, NewMemoryStateStore(), CookieConfig{}, Hooks{}, logkit.Nop())
+	b := NewBFF(Config{}, sessionSigner(t), memStore(), CookieConfig{}, Hooks{}, logkit.Nop())
 	if _, err := b.login(context.Background(), &loginInput{}); err == nil {
 		t.Fatal("login при выключенном OIDC прошёл")
 	}
 }
 
 func TestBFF_Me(t *testing.T) {
-	b := newTestBFF(t, newStubIDP(t), NewMemoryStateStore(), Hooks{})
+	b := newTestBFF(t, newStubIDP(t), memStore(), Hooks{})
 	ctx := WithIdentity(context.Background(), Identity{Subject: "emp-1", Username: "n.sycheva", Name: "Наталья Сычева", Role: "admin"})
 
 	out, err := b.me(ctx, &struct{}{})
@@ -287,7 +298,7 @@ func TestBFF_Me(t *testing.T) {
 }
 
 func TestBFF_Logout(t *testing.T) {
-	b := newTestBFF(t, newStubIDP(t), NewMemoryStateStore(), Hooks{})
+	b := newTestBFF(t, newStubIDP(t), memStore(), Hooks{})
 	out, err := b.logout(context.Background(), &struct{}{})
 	if err != nil {
 		t.Fatalf("logout: %v", err)

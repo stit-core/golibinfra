@@ -15,11 +15,20 @@ func benchClaims() map[string]any {
 	}
 }
 
+func benchJWT(b *testing.B) *HS256JWT {
+	b.Helper()
+	h, err := NewHS256JWT(JWTConfig{Secret: "bench-secret-key-of-at-least-32-bytes!"})
+	if err != nil {
+		b.Fatal(err)
+	}
+	return h
+}
+
 func BenchmarkJWTSign(b *testing.B) {
-	h := NewHS256JWT(JWTConfig{Secret: "bench-secret-key"})
+	h := benchJWT(b)
 	claims := benchClaims()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := h.Sign(claims, time.Minute); err != nil {
 			b.Fatal(err)
 		}
@@ -27,13 +36,13 @@ func BenchmarkJWTSign(b *testing.B) {
 }
 
 func BenchmarkJWTParse(b *testing.B) {
-	h := NewHS256JWT(JWTConfig{Secret: "bench-secret-key"})
+	h := benchJWT(b)
 	tok, err := h.Sign(benchClaims(), time.Minute)
 	if err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := h.Parse(tok); err != nil {
 			b.Fatal(err)
 		}

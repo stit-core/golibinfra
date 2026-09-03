@@ -3,11 +3,12 @@ package issuer
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/cachekit"
@@ -16,10 +17,13 @@ import (
 var (
 	ErrRefreshInvalid = errors.New("hubkit/issuer: refresh token unknown or expired")
 	ErrRefreshRevoked = errors.New("hubkit/issuer: session revoked (logged out)")
+	ErrRefreshReused  = errors.New("hubkit/issuer: refresh token reused, session revoked")
+	ErrRefreshConfig  = errors.New("hubkit/issuer: invalid refresh config")
 )
 
 const (
 	refreshKeyPrefix   = "hub:refresh:"
+	usedKeyPrefix      = "hub:refresh:used:"
 	tombstoneKeyPrefix = "hub:revoked:"
 )
 
@@ -35,27 +39,25 @@ type Session struct {
 	Role       string `json:"role,omitempty"`
 }
 
-// RefreshStore хранит refresh-состояние. Записи refresh-токена one-time (GetDel),
-// tombstone — по sid. Одна из двух реализаций: RedisRefreshStore (прод) /
-// MemoryRefreshStore (тесты, single-replica без Redis).
-type RefreshStore interface {
-	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
-	GetDel(ctx context.Context, key string) ([]byte, bool, error)
-	Tombstone(ctx context.Context, sid string, ttl time.Duration) error
-	IsTombstoned(ctx context.Context, sid string) (bool, error)
-}
-
-// RefreshManager реализует rotating refresh: каждый обмен инвалидирует старый
-// токен и выдаёт новый; логаут ставит tombstone по sid, после чего вся
-// refresh-цепочка сессии отвергается.
+// RefreshManager реализует rotating refresh поверх cachekit.Cache: каждый обмен
+// гасит старый токен и выдаёт новый; повторное предъявление погашенного токена
+// (утечка) отзывает всю сессию; логаут ставит tombstone по sid. В кэше лежат
+// только sha256-хэши токенов.
 type RefreshManager struct {
-	store        RefreshStore
+	cache        cachekit.Cache
 	ttl          time.Duration
 	tombstoneTTL time.Duration
 }
 
-func NewRefreshManager(store RefreshStore, cfg RefreshConfig) *RefreshManager {
-	return &RefreshManager{store: store, ttl: cfg.TTL, tombstoneTTL: cfg.TombstoneTTL}
+// NewRefreshManager: TTL <= 0 или TombstoneTTL < TTL → ErrRefreshConfig.
+func NewRefreshManager(cache cachekit.Cache, cfg RefreshConfig) (*RefreshManager, error) {
+	if cfg.TTL <= 0 {
+		return nil, fmt.Errorf("%w: TTL must be > 0", ErrRefreshConfig)
+	}
+	if cfg.TombstoneTTL < cfg.TTL {
+		return nil, fmt.Errorf("%w: TombstoneTTL must be >= TTL", ErrRefreshConfig)
+	}
+	return &RefreshManager{cache: cache, ttl: cfg.TTL, tombstoneTTL: cfg.TombstoneTTL}, nil
 }
 
 // Issue создаёт новый refresh-токен для сессии (после логина). Возвращает
@@ -71,27 +73,31 @@ func (m *RefreshManager) Issue(ctx context.Context, sess Session) (string, error
 	return token, nil
 }
 
-// Rotate обменивает старый refresh-токен на новую сессию + новый токен.
-// Старый гасится (one-time). Отклоняет неизвестный/протухший токен и токены
-// сессии с tombstone (после логаута).
+// Rotate обменивает refresh-токен на сессию + новый токен. Неизвестный/протухший
+// → ErrRefreshInvalid; сессия после логаута → ErrRefreshRevoked; уже
+// погашенный токен → Revoke(sid) и ErrRefreshReused.
 func (m *RefreshManager) Rotate(ctx context.Context, oldToken string) (Session, string, error) {
-	raw, ok, err := m.store.GetDel(ctx, refreshKeyPrefix+oldToken)
+	h := tokenHash(oldToken)
+	raw, ok, err := m.cache.GetDel(ctx, refreshKeyPrefix+h)
 	if err != nil {
 		return Session{}, "", err
 	}
 	if !ok {
-		return Session{}, "", ErrRefreshInvalid
+		return Session{}, "", m.rejectMissing(ctx, h)
 	}
 	var sess Session
 	if err := json.Unmarshal(raw, &sess); err != nil {
 		return Session{}, "", fmt.Errorf("hubkit/issuer: corrupt refresh record: %w", err)
 	}
-	dead, err := m.store.IsTombstoned(ctx, sess.SID)
+	dead, err := m.tombstoned(ctx, sess.SID)
 	if err != nil {
 		return Session{}, "", err
 	}
 	if dead {
 		return Session{}, "", ErrRefreshRevoked
+	}
+	if err := m.cache.Set(ctx, usedKeyPrefix+h, []byte(sess.SID), m.ttl); err != nil {
+		return Session{}, "", err
 	}
 	newToken, err := randomToken()
 	if err != nil {
@@ -103,10 +109,29 @@ func (m *RefreshManager) Rotate(ctx context.Context, oldToken string) (Session, 
 	return sess, newToken, nil
 }
 
+func (m *RefreshManager) rejectMissing(ctx context.Context, h string) error {
+	sid, used, err := m.cache.Get(ctx, usedKeyPrefix+h)
+	if err != nil {
+		return err
+	}
+	if !used {
+		return ErrRefreshInvalid
+	}
+	if err := m.Revoke(ctx, string(sid)); err != nil {
+		return err
+	}
+	return fmt.Errorf("%w: sid %s", ErrRefreshReused, sid)
+}
+
 // Revoke ставит tombstone на сессию (логаут): любой ещё живой refresh-токен
 // этой sid перестаёт обмениваться.
 func (m *RefreshManager) Revoke(ctx context.Context, sid string) error {
-	return m.store.Tombstone(ctx, sid, m.tombstoneTTL)
+	return m.cache.Set(ctx, tombstoneKeyPrefix+sid, []byte{1}, m.tombstoneTTL)
+}
+
+func (m *RefreshManager) tombstoned(ctx context.Context, sid string) (bool, error) {
+	_, ok, err := m.cache.Get(ctx, tombstoneKeyPrefix+sid)
+	return ok, err
 }
 
 func (m *RefreshManager) save(ctx context.Context, token string, sess Session) error {
@@ -114,7 +139,12 @@ func (m *RefreshManager) save(ctx context.Context, token string, sess Session) e
 	if err != nil {
 		return fmt.Errorf("hubkit/issuer: marshal refresh record: %w", err)
 	}
-	return m.store.Set(ctx, refreshKeyPrefix+token, raw, m.ttl)
+	return m.cache.Set(ctx, refreshKeyPrefix+tokenHash(token), raw, m.ttl)
+}
+
+func tokenHash(token string) string {
+	sum := sha256.Sum256([]byte(token))
+	return hex.EncodeToString(sum[:])
 }
 
 func randomToken() (string, error) {
@@ -123,101 +153,4 @@ func randomToken() (string, error) {
 		return "", fmt.Errorf("hubkit/issuer: random: %w", err)
 	}
 	return base64.RawURLEncoding.EncodeToString(b), nil
-}
-
-// NewCacheRefreshStore — RefreshStore поверх cachekit.Cache (Redis): переживает
-// рестарт и работает при нескольких репликах.
-func NewCacheRefreshStore(c cachekit.Cache) RefreshStore {
-	return &cacheRefreshStore{c: c}
-}
-
-type cacheRefreshStore struct {
-	c cachekit.Cache
-}
-
-func (s *cacheRefreshStore) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	return s.c.Set(ctx, key, value, ttl)
-}
-
-func (s *cacheRefreshStore) GetDel(ctx context.Context, key string) ([]byte, bool, error) {
-	v, ok, err := s.c.Get(ctx, key)
-	if err != nil || !ok {
-		return nil, false, err
-	}
-	// Get+Delete не атомарны, но refresh-токен и так one-time-секрет: гонка двух
-	// параллельных refresh с одним токеном в худшем случае пустит один из них.
-	if err := s.c.Delete(ctx, key); err != nil {
-		return nil, false, err
-	}
-	return v, true, nil
-}
-
-func (s *cacheRefreshStore) Tombstone(ctx context.Context, sid string, ttl time.Duration) error {
-	return s.c.Set(ctx, tombstoneKeyPrefix+sid, []byte{1}, ttl)
-}
-
-func (s *cacheRefreshStore) IsTombstoned(ctx context.Context, sid string) (bool, error) {
-	_, ok, err := s.c.Get(ctx, tombstoneKeyPrefix+sid)
-	return ok, err
-}
-
-// NewMemoryRefreshStore — RefreshStore в памяти процесса: тесты и
-// single-replica без Redis (состояние не переживает рестарт).
-func NewMemoryRefreshStore() RefreshStore {
-	return &memoryRefreshStore{entries: map[string]memoryEntry{}, tombstones: map[string]time.Time{}}
-}
-
-type memoryEntry struct {
-	value     []byte
-	expiresAt time.Time
-}
-
-type memoryRefreshStore struct {
-	mu         sync.Mutex
-	entries    map[string]memoryEntry
-	tombstones map[string]time.Time
-}
-
-func (s *memoryRefreshStore) Set(_ context.Context, key string, value []byte, ttl time.Duration) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	v := make([]byte, len(value))
-	copy(v, value)
-	s.entries[key] = memoryEntry{value: v, expiresAt: time.Now().Add(ttl)}
-	return nil
-}
-
-func (s *memoryRefreshStore) GetDel(_ context.Context, key string) ([]byte, bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e, ok := s.entries[key]
-	if !ok {
-		return nil, false, nil
-	}
-	delete(s.entries, key)
-	if time.Now().After(e.expiresAt) {
-		return nil, false, nil
-	}
-	return e.value, true, nil
-}
-
-func (s *memoryRefreshStore) Tombstone(_ context.Context, sid string, ttl time.Duration) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.tombstones[sid] = time.Now().Add(ttl)
-	return nil
-}
-
-func (s *memoryRefreshStore) IsTombstoned(_ context.Context, sid string) (bool, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	exp, ok := s.tombstones[sid]
-	if !ok {
-		return false, nil
-	}
-	if time.Now().After(exp) {
-		delete(s.tombstones, sid)
-		return false, nil
-	}
-	return true, nil
 }

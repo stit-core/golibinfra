@@ -73,6 +73,7 @@ func sanitizeReturnTo(raw string) string {
 
 // BFF ведёт Authorization-Code-flow: login → idp → callback, после чего минтит
 // session-cookie (HS256/JWT_SECRET), которую читает Extractor; плюс me/logout.
+// Сессия stateless: logout лишь сбрасывает cookie, выданный JWT живёт до exp.
 type BFF struct {
 	cfg    Config
 	client *http.Client
@@ -89,7 +90,7 @@ type BFF struct {
 func NewBFF(cfg Config, signer authnkit.JWTSigner, store StateStore, cookie CookieConfig, hooks Hooks, log logkit.Logger) *BFF {
 	return &BFF{
 		cfg:    cfg,
-		client: &http.Client{Timeout: 10 * time.Second},
+		client: &http.Client{Timeout: defaultHTTPTimeout},
 		signer: signer,
 		store:  store,
 		cookie: cookie,
@@ -138,7 +139,8 @@ func (b *BFF) login(ctx context.Context, in *loginInput) (*redirectOutput, error
 	}
 	v, err := b.verifier(ctx)
 	if err != nil {
-		return nil, huma.Error502BadGateway("oidc discovery failed", err)
+		b.log.Error(ctx, "oidc discovery failed", "error", err)
+		return nil, huma.Error502BadGateway("oidc discovery failed")
 	}
 
 	state, err := RandomToken()
@@ -163,7 +165,8 @@ func (b *BFF) login(ctx context.Context, in *loginInput) (*redirectOutput, error
 		return nil, err
 	}
 	if err := b.store.Set(ctx, stateKeyPrefix+state, raw, stateTTL); err != nil {
-		return nil, huma.Error502BadGateway("state store", err)
+		b.log.Error(ctx, "oidc state store failed", "error", err)
+		return nil, huma.Error502BadGateway("state store unavailable")
 	}
 
 	return &redirectOutput{Location: v.AuthCodeURL(state, nonce, challenge)}, nil
@@ -179,7 +182,8 @@ func (b *BFF) callback(ctx context.Context, in *callbackInput) (*redirectOutput,
 
 	raw, ok, err := b.store.GetDel(ctx, stateKeyPrefix+in.State)
 	if err != nil {
-		return nil, huma.Error502BadGateway("state store", err)
+		b.log.Error(ctx, "oidc state store failed", "error", err)
+		return nil, huma.Error502BadGateway("state store unavailable")
 	}
 	if !ok {
 		return nil, huma.Error400BadRequest("unknown or expired state")
@@ -192,7 +196,8 @@ func (b *BFF) callback(ctx context.Context, in *callbackInput) (*redirectOutput,
 
 	v, err := b.verifier(ctx)
 	if err != nil {
-		return nil, huma.Error502BadGateway("oidc discovery failed", err)
+		b.log.Error(ctx, "oidc discovery failed", "error", err)
+		return nil, huma.Error502BadGateway("oidc discovery failed")
 	}
 	claims, err := v.Exchange(ctx, in.Code, st.CodeVerifier, st.Nonce)
 	if err != nil {
@@ -209,7 +214,8 @@ func (b *BFF) callback(ctx context.Context, in *callbackInput) (*redirectOutput,
 
 	session, err := b.signer.Sign(b.sessionClaims(claims), b.cfg.SessionTTL)
 	if err != nil {
-		return nil, huma.Error500InternalServerError("session sign", err)
+		b.log.Error(ctx, "oidc session sign failed", "error", err)
+		return nil, huma.Error500InternalServerError("session sign failed")
 	}
 
 	return &redirectOutput{

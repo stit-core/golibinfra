@@ -1,12 +1,12 @@
-// Package client — типизированный клиент hub API поверх httpclient (retry,
-// circuit breaker, OTel, X-Request-ID).
+// Package client — типизированный клиент hub API поверх httpclient (retry
+// идемпотентных запросов, circuit breaker, OTel, X-Request-ID).
 //
 // Ресурсы: companies/projects/visibility + entity-tags (company-backend,
 // api.hub.stit.tech), employees/departments (employee-backend, id.stit.tech)
 // и tags (tag-backend, tags.hub.stit.tech). m2m-аутентификация статик-Bearer'ом
-// (HUB_SERVICE_TOKEN, паттерн telemost). Ошибки типизированы (ErrNotFound /
-// ErrConflict / ErrUnavailable) — продукту нужно отличать «хаб недоступен»
-// (деградация чтения) от бизнес-ошибки.
+// (HUB_SERVICE_TOKEN). Ошибки типизированы (ErrNotFound / ErrConflict /
+// ErrUnavailable) — продукту нужно отличать «хаб недоступен» (деградация
+// чтения) от бизнес-ошибки.
 package client
 
 import (
@@ -19,6 +19,9 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
+
+	"git.stit.tech/stit-core/golibinfra/httpclient"
 )
 
 var (
@@ -31,6 +34,14 @@ var (
 	ErrUnavailable = errors.New("hubkit/client: hub unavailable")
 	// ErrUnauthorized — 401/403: неверный/просроченный SERVICE_TOKEN.
 	ErrUnauthorized = errors.New("hubkit/client: unauthorized")
+)
+
+const (
+	defaultTimeout = 10 * time.Second
+	// defaultRequestTimeout — потолок на весь запрос (все попытки retry) для
+	// ctx без дедлайна: sync-страница на 500 записей укладывается с запасом.
+	defaultRequestTimeout = 30 * time.Second
+	maxErrorBody          = 4096
 )
 
 // Doer — HTTP-транспорт. Ему удовлетворяет *httpclient.Client (прод) и
@@ -49,10 +60,12 @@ type Client struct {
 	http         Doer
 }
 
-// New строит Client из Config поверх переданного Doer (обычно *httpclient.Client).
+// New строит Client из Config поверх переданного Doer (обычно
+// *httpclient.Client); nil → httpclient с дефолтами (таймаут 10s, retry
+// идемпотентных, breaker).
 func New(cfg Config, doer Doer) *Client {
 	if doer == nil {
-		doer = http.DefaultClient
+		doer = defaultDoer()
 	}
 	return &Client{
 		companyBase:  strings.TrimRight(cfg.BaseURL, "/"),
@@ -62,6 +75,20 @@ func New(cfg Config, doer Doer) *Client {
 		service:      cfg.ServiceName,
 		http:         doer,
 	}
+}
+
+func defaultDoer() Doer {
+	c, err := httpclient.New(httpclient.Config{
+		Timeout:      defaultTimeout,
+		MaxRetries:   3,
+		RetryWait:    200 * time.Millisecond,
+		RetryMaxWait: 5 * time.Second,
+		Breaker:      httpclient.BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
+	})
+	if err != nil {
+		return &http.Client{Timeout: defaultTimeout}
+	}
+	return c
 }
 
 // APIError — необёрнутая ошибка со статусом (для кодов вне NotFound/Conflict/…).
@@ -75,6 +102,12 @@ func (e *APIError) Error() string {
 }
 
 func (c *Client) do(ctx context.Context, method, base, path string, body, out any) error {
+	if _, ok := ctx.Deadline(); !ok {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, defaultRequestTimeout)
+		defer cancel()
+	}
+
 	var reader io.Reader
 	if body != nil {
 		raw, err := json.Marshal(body)
@@ -131,7 +164,7 @@ func statusErr(resp *http.Response) error {
 	case resp.StatusCode >= 500:
 		return fmt.Errorf("%w: status %d", ErrUnavailable, resp.StatusCode)
 	default:
-		b, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		b, _ := io.ReadAll(io.LimitReader(resp.Body, maxErrorBody))
 		return &APIError{Status: resp.StatusCode, Body: string(b)}
 	}
 }

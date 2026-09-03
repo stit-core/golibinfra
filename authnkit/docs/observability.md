@@ -3,7 +3,8 @@
 Единый источник правды по сигналам кита. Имена/типы/labels берутся из
 `metrics.go` и точек записи в `jwt.go` / `hasher.go` / `totp.go`.
 
-Meter: `git.stit.tech/stit-core/golibinfra/authnkit`. Спанов кит не эмитит.
+Meter: `git.stit.tech/stit-core/golibinfra/authnkit` (через `internal/otelkit`).
+Спанов кит не эмитит.
 
 ## Метрики
 
@@ -20,17 +21,17 @@ Meter: `git.stit.tech/stit-core/golibinfra/authnkit`. Спанов кит не �
 
 | `result` | Когда |
 |---|---|
-| `ok` | токен валиден, подпись и срок прошли |
-| `expired` | сработал `exp` (мапится в `ErrTokenExpired`) |
+| `ok` | токен валиден, подпись и сроки прошли |
+| `expired` | сработал `exp` с учётом leeway (`ErrTokenExpired`) |
 | `signature_invalid` | подпись не сошлась (`ErrTokenSignature`) |
-| `malformed` | битый токен / не-HMAC alg / claims не `MapClaims` (`ErrTokenMalformed`) |
+| `malformed` | битый токен / не-HS256 alg / нет `exp` / `nbf`,`iat` в будущем / payload не объект (`ErrTokenMalformed`) |
 
 `totp_verifications_total`:
 
 | `result` | Когда |
 |---|---|
 | `ok` | код принят |
-| `invalid` | код отвергнут |
+| `invalid` | код отвергнут (в т.ч. нечитаемый секрет) |
 
 ## Что эмитится, а что нет
 
@@ -40,15 +41,15 @@ Meter: `git.stit.tech/stit-core/golibinfra/authnkit`. Спанов кит не �
   пишет.
 - `totp_verifications_total` инкрементится **только в `Verify`**; `Generate`
   метрик не пишет.
-- RBAC (`Has`, `RegisterRolePermissions`) метрик не эмитит.
+- RBAC (`Registry`) метрик не эмитит.
 
-## Инвариант инициализации
+## Инициализация
 
-Инструменты создаются один раз через `sync.Once` (`getInstruments`) и
-привязываются к тому `MeterProvider`, который активен на момент **первого**
-вызова любой функции кита. Если потребитель регистрирует свой `MeterProvider`,
-сделай это до первого хэша/подписи/верификации — иначе сигналы уйдут в no-op
-provider.
+Инструменты создаются в конструкторах (`NewArgon2idHasher`, `NewHS256JWT`,
+`NewTOTP`) через глобальный `otel.Meter`; повторные конструкторы получают те же
+инструменты (OTel SDK дедуплицирует по имени/описанию/unit). Глобальный провайдер
+OTel делегирующий: `SetMeterProvider` после конструктора тоже подхватывает уже
+созданные инструменты. Без провайдера — no-op.
 
 Resource attrs (`service.name` и пр.) несёт OTel-resource, настроенный
 потребителем в его проводке OTel SDK; в самом ките их выставлять не нужно.

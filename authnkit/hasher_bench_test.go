@@ -15,7 +15,7 @@ func benchHasher() *Argon2idHasher {
 func BenchmarkArgon2idHash(b *testing.B) {
 	h := benchHasher()
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		if _, err := h.Hash("longenough"); err != nil {
 			b.Fatal(err)
 		}
@@ -29,7 +29,7 @@ func BenchmarkArgon2idVerify(b *testing.B) {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
-	for i := 0; i < b.N; i++ {
+	for b.Loop() {
 		ok, err := h.Verify("longenough", encoded)
 		if err != nil {
 			b.Fatal(err)

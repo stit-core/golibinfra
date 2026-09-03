@@ -15,11 +15,15 @@ import (
 	"git.stit.tech/stit-core/golibinfra/hubkit/sso"
 )
 
-const testCustomerIssuer = "https://api.hub.stit.tech"
+const (
+	testCustomerIssuer   = "https://api.hub.stit.tech"
+	testCustomerAudience = "stit-customer"
+)
 
 func customerStdClaims() jwt.Claims {
 	c := stdClaims()
 	c.Issuer = testCustomerIssuer
+	c.Audience = jwt.Audience{testCustomerAudience}
 	c.Subject = "01990000-0000-7000-8000-0000000000c1"
 	return c
 }
@@ -37,21 +41,21 @@ func customerClaims() map[string]any {
 }
 
 // customerCfg — конфиг с включённым customer-контуром (employee-часть — как в
-// проде: свой JWKS и свой iss).
+// проде: свой JWKS, свой iss и свой aud).
 func customerCfg(employeeJWKS, customerJWKS string) sso.Config {
-	return sso.Config{
-		JWKSURL:         employeeJWKS,
-		Cookie:          "stit_session",
-		Issuer:          testIssuer,
-		CustomerJWKSURL: customerJWKS,
-		CustomerCookie:  "stit_customer",
-		CustomerIssuer:  testCustomerIssuer,
-	}
+	cfg := employeeCfg(employeeJWKS)
+	cfg.CustomerJWKSURL = customerJWKS
+	cfg.CustomerCookie = "stit_customer"
+	cfg.CustomerIssuer = testCustomerIssuer
+	cfg.CustomerAudience = testCustomerAudience
+	return cfg
 }
 
 func customerVerifier(t *testing.T, jwksURL string) *sso.CustomerVerifier {
 	t.Helper()
-	cv, err := sso.NewCustomerVerifier(sso.Config{CustomerJWKSURL: jwksURL, CustomerIssuer: testCustomerIssuer}, nil)
+	cv, err := sso.NewCustomerVerifier(sso.Config{
+		CustomerJWKSURL: jwksURL, CustomerIssuer: testCustomerIssuer, CustomerAudience: testCustomerAudience,
+	}, nil)
 	if err != nil {
 		t.Fatalf("NewCustomerVerifier: %v", err)
 	}
@@ -88,7 +92,7 @@ func TestCustomerVerify_Valid(t *testing.T) {
 }
 
 // Токен сотрудника, попавший в customer-слот, не принимается никогда: у него
-// чужой iss и нет kind=customer.
+// чужой iss/aud и нет kind=customer.
 func TestCustomerVerify_RejectsEmployeeToken(t *testing.T) {
 	ci := newSigningIdentity(t)
 	cv := customerVerifier(t, ci.jwksServer(t).URL)
@@ -97,25 +101,24 @@ func TestCustomerVerify_RejectsEmployeeToken(t *testing.T) {
 	if _, err := cv.Verify(context.Background(), ci.sign(t, stdClaims(), hubClaims())); err == nil {
 		t.Fatal("employee-токен принят customer-верификатором")
 	}
-	// Даже с правильным iss customer-контура — kind обязателен.
+	// Даже с правильными iss/aud customer-контура — kind обязателен.
 	if _, err := cv.Verify(context.Background(), ci.sign(t, customerStdClaims(), hubClaims())); !errors.Is(err, sso.ErrWrongKind) {
 		t.Fatalf("ожидали ErrWrongKind, получили %v", err)
 	}
 }
 
 // Обратное направление: customer-токен в employee-слоте — тоже отказ, даже если
-// iss совпал (HUB_SSO_ISSUER мог быть не задан).
+// iss/aud совпали.
 func TestVerify_RejectsCustomerToken(t *testing.T) {
 	si := newSigningIdentity(t)
 	v := verifier(t, si.jwksServer(t).URL)
 
-	std := stdClaims()
-	if _, err := v.Verify(context.Background(), si.sign(t, std, customerClaims())); !errors.Is(err, sso.ErrWrongKind) {
+	if _, err := v.Verify(context.Background(), si.sign(t, stdClaims(), customerClaims())); !errors.Is(err, sso.ErrWrongKind) {
 		t.Fatalf("ожидали ErrWrongKind, получили %v", err)
 	}
 }
 
-// Пустой claim kind = employee: токены, выпущенные до второго контура, живут.
+// Пустой claim kind = employee: токены без kind живут, а Identity.Kind всегда заполнен.
 func TestVerify_EmptyKindIsEmployee(t *testing.T) {
 	si := newSigningIdentity(t)
 	v := verifier(t, si.jwksServer(t).URL)
@@ -124,13 +127,13 @@ func TestVerify_EmptyKindIsEmployee(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if id.Kind != "" || !id.IsEmployee() || id.IsCustomer() {
+	if id.Kind != sso.KindEmployee || !id.IsEmployee() || id.IsCustomer() {
 		t.Fatalf("employee-токен без claim kind прочитан как %+v", id)
 	}
 }
 
 func TestNewCustomerVerifier_Disabled(t *testing.T) {
-	cv, err := sso.NewCustomerVerifier(sso.Config{JWKSURL: "https://id.stit.tech/jwks"}, nil)
+	cv, err := sso.NewCustomerVerifier(employeeCfg("https://id.stit.tech/jwks"), nil)
 	if err != nil {
 		t.Fatalf("выключенный контур не должен быть ошибкой: %v", err)
 	}
@@ -139,9 +142,14 @@ func TestNewCustomerVerifier_Disabled(t *testing.T) {
 	}
 }
 
-func TestNewCustomerVerifier_IssuerRequired(t *testing.T) {
-	if _, err := sso.NewCustomerVerifier(sso.Config{CustomerJWKSURL: "https://api.hub.stit.tech/jwks"}, nil); !errors.Is(err, sso.ErrCustomerIssuer) {
+func TestNewCustomerVerifier_IssuerAndAudienceRequired(t *testing.T) {
+	cfg := sso.Config{CustomerJWKSURL: "https://api.hub.stit.tech/jwks", CustomerAudience: testCustomerAudience}
+	if _, err := sso.NewCustomerVerifier(cfg, nil); !errors.Is(err, sso.ErrCustomerIssuer) {
 		t.Fatalf("ожидали ErrCustomerIssuer, получили %v", err)
+	}
+	cfg = sso.Config{CustomerJWKSURL: "https://api.hub.stit.tech/jwks", CustomerIssuer: testCustomerIssuer}
+	if _, err := sso.NewCustomerVerifier(cfg, nil); !errors.Is(err, sso.ErrCustomerAudience) {
+		t.Fatalf("ожидали ErrCustomerAudience, получили %v", err)
 	}
 }
 
@@ -223,10 +231,10 @@ func TestExtractor_EmployeeTokenInCustomerSlot(t *testing.T) {
 	}
 }
 
-// Выключенный customer-контур — поведение ровно как до второго контура.
+// Выключенный customer-контур — поведение ровно как без второго контура.
 func TestExtractor_CustomerDisabled(t *testing.T) {
 	emp, cust := newSigningIdentity(t), newSigningIdentity(t)
-	cfg := sso.Config{JWKSURL: emp.jwksServer(t).URL, Cookie: "stit_session", Issuer: testIssuer}
+	cfg := employeeCfg(emp.jwksServer(t).URL)
 	cv, err := sso.NewCustomerVerifier(cfg, nil)
 	if err != nil {
 		t.Fatalf("NewCustomerVerifier: %v", err)
@@ -324,7 +332,7 @@ func TestModule_Graph(t *testing.T) {
 		t.Fatalf("ожидали customer-сессию, получили %+v", id)
 	}
 
-	off := sso.Config{JWKSURL: cfg.JWKSURL, Issuer: testIssuer}
+	off := employeeCfg(cfg.JWKSURL)
 	var eOff *sso.Extractor
 	appOff := fx.New(fx.NopLogger, fx.Supply(off), sso.Module, fx.Populate(&eOff))
 	if err := appOff.Err(); err != nil {

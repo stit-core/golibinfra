@@ -9,7 +9,7 @@ import (
 
 // Module провайдит *Client поверх httpclient.Client. Config не provide'ится
 // (asymmetry-нота как в pgkit — caller добавляет `fx.Provide(client.NewConfig)`).
-// Требует httpclient.Module (или отдельно предоставленный *httpclient.Client).
+// *httpclient.Client в графе опционален: без него клиент собирает свой с дефолтами.
 var Module = fx.Module(
 	"hubkit-client",
 	fx.Provide(newClient),

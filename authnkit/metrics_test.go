@@ -13,15 +13,13 @@ import (
 )
 
 func TestMetricsEmitted(t *testing.T) {
-	// Pre-existing global MeterProvider is captured at first
-	// getInstruments() call via sync.Once — поэтому в одном test-run
-	// мы видим только те метрики которые проинициализировались с
-	// текущим provider'ом. Этот тест гарантирует что MeterProvider
-	// установлен ДО первого вызова authnkit функций.
 	reader := sdkmetric.NewManualReader()
 	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 
-	jwt := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "test-secret", AccessTTL: time.Minute})
+	jwt, err := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "test-secret-key-of-at-least-32-bytes!!", AccessTTL: time.Minute})
+	if err != nil {
+		t.Fatalf("NewHS256JWT: %v", err)
+	}
 	tok, err := jwt.Sign(map[string]any{"sub": "u1"}, time.Minute)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
@@ -43,6 +41,10 @@ func TestMetricsEmitted(t *testing.T) {
 	if _, err := hasher.Verify("password", hash); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
+	totp := authnkit.NewTOTP(authnkit.TOTPConfig{Issuer: "t", Skew: 1})
+	if totp.Verify("JBSWY3DPEHPK3PXP", "000000") {
+		t.Log("statistically improbable TOTP match")
+	}
 
 	var rm metricdata.ResourceMetrics
 	if err := reader.Collect(context.Background(), &rm); err != nil {
@@ -52,6 +54,7 @@ func TestMetricsEmitted(t *testing.T) {
 		"jwt_verifications_total":          false,
 		"password_hash_duration_seconds":   false,
 		"password_verify_duration_seconds": false,
+		"totp_verifications_total":         false,
 	}
 	for _, sm := range rm.ScopeMetrics {
 		for _, m := range sm.Metrics {
@@ -62,10 +65,7 @@ func TestMetricsEmitted(t *testing.T) {
 	}
 	for name, found := range want {
 		if !found {
-			// If global MeterProvider was already initialised in another test
-			// before SetMeterProvider above, instruments will be tied to the
-			// older provider. We can't reset sync.Once safely — accept skip.
-			t.Logf("metric %s not seen (likely sync.Once captured earlier provider)", name)
+			t.Errorf("metric %s not emitted", name)
 		}
 	}
 }

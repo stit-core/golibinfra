@@ -13,7 +13,7 @@ type Config struct {
 	Cookie string `default:"stit_session" envconfig:"HUB_SSO_COOKIE"`
 	// Issuer — ожидаемый iss (проверяется, если непусто).
 	Issuer string `default:"https://id.stit.tech" envconfig:"HUB_SSO_ISSUER"`
-	// Audience — ожидаемый aud (проверяется, только если непусто).
+	// Audience — ожидаемый aud; обязателен (= HUB_SESSION_AUDIENCE issuer'а сотрудника).
 	Audience string `envconfig:"HUB_SSO_AUDIENCE"`
 	// LoginURL — точка входа SSO для login-redirect хелпера.
 	LoginURL string `default:"https://id.stit.tech/auth/login" envconfig:"HUB_SSO_LOGIN_URL"`
@@ -28,6 +28,9 @@ type Config struct {
 	// CustomerIssuer — ожидаемый iss сессии заказчика; для включённого контура
 	// обязателен (токен чужого контура не должен приниматься никогда).
 	CustomerIssuer string `default:"https://api.hub.stit.tech" envconfig:"HUB_SSO_CUSTOMER_ISSUER"`
+	// CustomerAudience — ожидаемый aud сессии заказчика; для включённого контура
+	// обязателен (= HUB_SESSION_AUDIENCE issuer'а заказчика).
+	CustomerAudience string `envconfig:"HUB_SSO_CUSTOMER_AUDIENCE"`
 	// CustomerLoginURL — экран входа заказчика для login-redirect хелпера.
 	CustomerLoginURL string `default:"https://hub.stit.tech/customer/login" envconfig:"HUB_SSO_CUSTOMER_LOGIN_URL"`
 }

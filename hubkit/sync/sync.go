@@ -1,4 +1,4 @@
-// Package sync — движок pull-синка локальных проекций хаба (00-architecture §4).
+// Package sync — движок pull-синка локальных проекций хаба.
 //
 // Каждый Engine на каждый тик догоняет change-feed одного ресурса
 // (companies/projects/employees/visibility): читает страницами

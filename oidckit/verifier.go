@@ -1,7 +1,8 @@
 // Package oidckit — Authentik/OIDC BFF-контур для SSO-входа сотрудника:
 // relying-party (discovery, JWKS-кэш, verify ID-token, Authorization Code + PKCE),
 // huma-роуты login/callback/me/logout, cookie-сессия HS256 (authnkit) и extractor
-// для httpkit.HumaAuth. State логин-флоу — через StateStore (Redis/in-memory).
+// для httpkit.HumaAuth. State логин-флоу — через StateStore поверх cachekit.
+// Эмитит oidc_verifications_total{result} и oidc_jwks_refresh_total{result}.
 package oidckit
 
 import (
@@ -9,14 +10,16 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"git.stit.tech/stit-core/golibinfra/internal/jwks"
 )
 
 var (
@@ -36,7 +39,11 @@ var (
 // секрет подписи с IdP, HS-токен мог бы подписать кто угодно со client secret'ом).
 var allowedAlgs = []jose.SignatureAlgorithm{jose.RS256, jose.RS384, jose.RS512, jose.ES256, jose.ES384}
 
-const oidcScope = "openid profile email"
+const (
+	oidcScope          = "openid profile email"
+	defaultHTTPTimeout = 10 * time.Second
+	maxDiscoveryBody   = 1 << 20
+)
 
 // RPConfig — параметры relying-party для Verifier (программные; env-контур
 // BFF читает Config и строит RPConfig сам).
@@ -55,8 +62,9 @@ type Claims struct {
 	Email    string
 }
 
-// Verifier — OIDC relying-party: discovery /.well-known, JWKS-кэш с lazy-refresh
-// по неизвестному kid, verify iss/aud/exp/nonce, обмен authorization code.
+// Verifier — OIDC relying-party: discovery /.well-known, JWKS-кэш (refresh по
+// неизвестному kid не чаще раза в минуту, singleflight), verify iss/aud/exp/nonce,
+// обмен authorization code.
 type Verifier struct {
 	issuer        string
 	clientID      string
@@ -66,17 +74,18 @@ type Verifier struct {
 	tokenEndpoint string
 	jwksURI       string
 	http          *http.Client
-
-	mu   sync.RWMutex
-	keys jose.JSONWebKeySet
+	keys          *jwks.Cache
+	instr         *instruments
 }
 
+// NewVerifier делает discovery и первичную загрузку JWKS; nil client →
+// http.Client с таймаутом 10s.
 func NewVerifier(ctx context.Context, cfg RPConfig, client *http.Client) (*Verifier, error) {
 	if cfg.Issuer == "" || cfg.ClientID == "" {
 		return nil, ErrRPConfig
 	}
 	if client == nil {
-		client = http.DefaultClient
+		client = &http.Client{Timeout: defaultHTTPTimeout}
 	}
 	v := &Verifier{
 		issuer:       cfg.Issuer,
@@ -84,12 +93,14 @@ func NewVerifier(ctx context.Context, cfg RPConfig, client *http.Client) (*Verif
 		clientSecret: cfg.ClientSecret,
 		redirectURL:  cfg.RedirectURL,
 		http:         client,
+		instr:        newInstruments(),
 	}
 	if err := v.discover(ctx); err != nil {
 		return nil, err
 	}
-	if err := v.refreshKeys(ctx); err != nil {
-		return nil, err
+	v.keys = jwks.New(v.jwksURI, client, jwks.Options{Timeout: defaultHTTPTimeout, OnRefresh: v.instr.refreshed})
+	if err := v.keys.Refresh(ctx); err != nil {
+		return nil, fmt.Errorf("oidckit: jwks: %w", err)
 	}
 	return v, nil
 }
@@ -131,12 +142,12 @@ func (v *Verifier) Exchange(ctx context.Context, code, codeVerifier, expectedNon
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return Claims{}, ErrExchange
+		return Claims{}, fmt.Errorf("%w: status %d", ErrExchange, resp.StatusCode)
 	}
 	var tr struct {
 		IDToken string `json:"id_token"`
 	}
-	if err := json.NewDecoder(resp.Body).Decode(&tr); err != nil {
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxDiscoveryBody)).Decode(&tr); err != nil {
 		return Claims{}, fmt.Errorf("oidckit: decode token response: %w", err)
 	}
 	if tr.IDToken == "" {
@@ -151,16 +162,25 @@ func (v *Verifier) Verify(ctx context.Context, rawIDToken string) (Claims, error
 }
 
 func (v *Verifier) verifyToken(ctx context.Context, rawIDToken, expectedNonce string) (Claims, error) {
+	c, result, err := v.verify(ctx, rawIDToken, expectedNonce)
+	v.instr.verified(ctx, result)
+	return c, err
+}
+
+func (v *Verifier) verify(ctx context.Context, rawIDToken, expectedNonce string) (Claims, string, error) {
 	tok, err := jwt.ParseSigned(rawIDToken, allowedAlgs)
 	if err != nil {
-		return Claims{}, fmt.Errorf("oidckit: parse: %w", err)
+		return Claims{}, "malformed", fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 	if len(tok.Headers) == 0 {
-		return Claims{}, ErrInvalidToken
+		return Claims{}, "malformed", ErrInvalidToken
 	}
-	key, err := v.keyByID(ctx, tok.Headers[0].KeyID)
+	key, err := v.keys.Key(ctx, tok.Headers[0].KeyID)
 	if err != nil {
-		return Claims{}, err
+		if errors.Is(err, jwks.ErrUnknownKey) {
+			return Claims{}, "unknown_key", ErrUnknownKey
+		}
+		return Claims{}, "jwks_error", fmt.Errorf("oidckit: jwks: %w", err)
 	}
 
 	var claims jwt.Claims
@@ -170,28 +190,31 @@ func (v *Verifier) verifyToken(ctx context.Context, rawIDToken, expectedNonce st
 		Email             string `json:"email"`
 		Nonce             string `json:"nonce"`
 	}
-	if err := tok.Claims(key, &claims, &custom); err != nil {
-		return Claims{}, fmt.Errorf("oidckit: verify signature: %w", err)
+	if err := tok.Claims(key.Key, &claims, &custom); err != nil {
+		if errors.Is(err, jose.ErrCryptoFailure) {
+			return Claims{}, "signature_invalid", fmt.Errorf("oidckit: verify signature: %w", err)
+		}
+		return Claims{}, "malformed", fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 	if err := claims.Validate(jwt.Expected{
 		Issuer:      v.issuer,
 		AnyAudience: jwt.Audience{v.clientID},
 		Time:        time.Now(),
 	}); err != nil {
-		return Claims{}, fmt.Errorf("oidckit: claims: %w", err)
+		return Claims{}, "invalid_claims", fmt.Errorf("oidckit: claims: %w", err)
 	}
 	if claims.Subject == "" {
-		return Claims{}, ErrNoSubject
+		return Claims{}, "invalid_claims", ErrNoSubject
 	}
 	if expectedNonce != "" && custom.Nonce != expectedNonce {
-		return Claims{}, ErrNonceMismatch
+		return Claims{}, "nonce_mismatch", ErrNonceMismatch
 	}
 	return Claims{
 		Subject:  claims.Subject,
 		Username: custom.PreferredUsername,
 		Name:     custom.Name,
 		Email:    custom.Email,
-	}, nil
+	}, "ok", nil
 }
 
 func (v *Verifier) discover(ctx context.Context) error {
@@ -220,50 +243,12 @@ func (v *Verifier) discover(ctx context.Context) error {
 	return nil
 }
 
-func (v *Verifier) refreshKeys(ctx context.Context) error {
-	var ks jose.JSONWebKeySet
-	if err := v.getJSON(ctx, v.jwksURI, &ks); err != nil {
-		return fmt.Errorf("oidckit: jwks: %w", err)
-	}
-	v.mu.Lock()
-	v.keys = ks
-	v.mu.Unlock()
-	return nil
-}
-
-func (v *Verifier) keyByID(ctx context.Context, kid string) (any, error) {
-	if k := v.lookup(kid); k != nil {
-		return k.Key, nil
-	}
-	if err := v.refreshKeys(ctx); err != nil {
-		return nil, err
-	}
-	if k := v.lookup(kid); k != nil {
-		return k.Key, nil
-	}
-	return nil, ErrUnknownKey
-}
-
-func (v *Verifier) lookup(kid string) *jose.JSONWebKey {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	if kid != "" {
-		if ks := v.keys.Key(kid); len(ks) > 0 {
-			return &ks[0]
-		}
-		return nil
-	}
-	if len(v.keys.Keys) == 1 {
-		return &v.keys.Keys[0]
-	}
-	return nil
-}
-
 func (v *Verifier) getJSON(ctx context.Context, endpoint string, dst any) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return err
 	}
+	req.Header.Set("Accept", "application/json")
 	resp, err := v.http.Do(req)
 	if err != nil {
 		return err
@@ -272,5 +257,5 @@ func (v *Verifier) getJSON(ctx context.Context, endpoint string, dst any) error 
 	if resp.StatusCode != http.StatusOK {
 		return fmt.Errorf("oidckit: GET %s: status %d", endpoint, resp.StatusCode)
 	}
-	return json.NewDecoder(resp.Body).Decode(dst)
+	return json.NewDecoder(io.LimitReader(resp.Body, maxDiscoveryBody)).Decode(dst)
 }

@@ -12,6 +12,8 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,9 +30,11 @@ const (
 
 type idp struct {
 	server       *httptest.Server
+	key          *rsa.PrivateKey
 	signer       jose.Signer
 	issuedNonce  string // nonce, который IdP кладёт в id_token на /token
 	issuedIssuer string // iss в id_token (для override в негативных тестах)
+	jwksHits     atomic.Int64
 }
 
 func newIDP(t *testing.T) *idp {
@@ -53,7 +57,7 @@ func newIDP(t *testing.T) *idp {
 	mux := http.NewServeMux()
 	srv := httptest.NewServer(mux)
 	t.Cleanup(srv.Close)
-	i := &idp{server: srv, signer: signer, issuedIssuer: srv.URL}
+	i := &idp{server: srv, key: key, signer: signer, issuedIssuer: srv.URL}
 
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
 		_ = json.NewEncoder(w).Encode(map[string]any{
@@ -64,6 +68,7 @@ func newIDP(t *testing.T) *idp {
 		})
 	})
 	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		i.jwksHits.Add(1)
 		_ = json.NewEncoder(w).Encode(jwks)
 	})
 	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
@@ -92,6 +97,23 @@ func (i *idp) token(t *testing.T, claims jwt.Claims, custom map[string]any) stri
 	raw, err := jwt.Signed(i.signer).Claims(claims).Claims(custom).Serialize()
 	if err != nil {
 		t.Fatalf("sign id token: %v", err)
+	}
+	return raw
+}
+
+// tokenWithKID подписывает тем же ключом, но с другим kid в заголовке.
+func (i *idp) tokenWithKID(t *testing.T, kid string) string {
+	t.Helper()
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.RS256, Key: i.key},
+		(&jose.SignerOptions{}).WithHeader("kid", kid).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	raw, err := jwt.Signed(signer).Claims(i.claims()).Serialize()
+	if err != nil {
+		t.Fatalf("sign: %v", err)
 	}
 	return raw
 }
@@ -154,9 +176,46 @@ func TestVerify_ForeignSignature(t *testing.T) {
 	}
 }
 
+// Шторм токенов с неизвестным kid не превращается в шторм запросов к JWKS:
+// одна загрузка на интервал, остальные промахи отвечают из кэша.
+func TestVerify_UnknownKIDStorm_SingleJWKSFetch(t *testing.T) {
+	i := newIDP(t)
+	v := i.verifier(t)
+	initial := i.jwksHits.Load()
+
+	var wg sync.WaitGroup
+	for n := range 100 {
+		wg.Go(func() {
+			tok := i.tokenWithKID(t, "unknown-"+strings.Repeat("x", n%3))
+			if _, err := v.Verify(context.Background(), tok); !errors.Is(err, oidckit.ErrUnknownKey) {
+				t.Errorf("ожидали ErrUnknownKey, получили %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if got := i.jwksHits.Load() - initial; got > 1 {
+		t.Fatalf("100 неизвестных kid → %d загрузок JWKS, ожидали не больше 1", got)
+	}
+	// Известный ключ по-прежнему из кэша.
+	if _, err := v.Verify(context.Background(), i.token(t, i.claims(), nil)); err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+}
+
 func TestNewVerifier_Config(t *testing.T) {
 	if _, err := oidckit.NewVerifier(context.Background(), oidckit.RPConfig{ClientID: "x"}, nil); !errors.Is(err, oidckit.ErrRPConfig) {
 		t.Fatalf("пустой Issuer: ожидали ErrRPConfig, получили %v", err)
+	}
+}
+
+func TestNewVerifier_NilClient(t *testing.T) {
+	i := newIDP(t)
+	v, err := oidckit.NewVerifier(context.Background(), oidckit.RPConfig{Issuer: i.server.URL, ClientID: clientID}, nil)
+	if err != nil {
+		t.Fatalf("NewVerifier с nil client: %v", err)
+	}
+	if _, err := v.Verify(context.Background(), i.token(t, i.claims(), nil)); err != nil {
+		t.Fatalf("Verify: %v", err)
 	}
 }
 

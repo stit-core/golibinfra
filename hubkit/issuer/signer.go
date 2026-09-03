@@ -1,19 +1,14 @@
-// Package issuer — выпуск hub-сессии (используется только employee-backend,
-// id.stit.tech).
-//
-// ES256-подпись session-JWT приватным ключом хаба с поддержкой ротации
-// (активный ключ + опциональный next), публикация JWKS (оба ключа на период
-// ротации, чтобы старые токены оставались валидны), cookie-слой
-// (Domain=.stit.tech, HttpOnly, Secure, SameSite=Lax, короткий TTL) и
-// rotating-refresh поверх Redis с tombstone на логаут.
-//
-// Верификатор этих токенов — hubkit/sso (тот же контракт claim'ов); employee-backend
-// защищает и собственные ручки через sso-extractor (dogfooding).
+// Package issuer — выпуск hub-сессии issuer'ами контуров (employee-backend,
+// company-backend): ES256-подпись session-JWT с ротацией ключа (активный +
+// опциональный next в JWKS), cookie-слой и rotating-refresh поверх
+// cachekit.Cache с reuse-detection и tombstone на логаут. Верификатор этих
+// токенов — hubkit/sso (тот же контракт claim'ов).
 package issuer
 
 import (
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/x509"
 	"encoding/base64"
 	"encoding/pem"
@@ -27,36 +22,42 @@ import (
 
 var (
 	ErrNoActiveKey = errors.New("hubkit/issuer: active signing key required")
+	ErrNoAudience  = errors.New("hubkit/issuer: HUB_SESSION_AUDIENCE required")
 	ErrBadPEM      = errors.New("hubkit/issuer: not a PEM-encoded key")
-	ErrNotEC       = errors.New("hubkit/issuer: key is not an ECDSA P-256 private key")
+	ErrNotEC       = errors.New("hubkit/issuer: key is not an ECDSA P-256 key")
 )
 
-// signKey — один ключ подписи: приватный ECDSA + производный kid (JWK
-// thumbprint RFC 7638) + jose-signer.
+// signKey — ключ подписи: приватный ECDSA + jose-signer + публичный JWK с kid
+// (JWK thumbprint RFC 7638).
 type signKey struct {
 	kid    string
-	priv   *ecdsa.PrivateKey
 	signer jose.Signer
 	pubJWK jose.JSONWebKey
 }
 
 func newSignKey(priv *ecdsa.PrivateKey) (signKey, error) {
-	pub := jose.JSONWebKey{Key: priv.Public(), Algorithm: string(jose.ES256), Use: "sig"}
-	tp, err := pub.Thumbprint(crypto.SHA256)
+	pub, err := publicJWK(&priv.PublicKey)
 	if err != nil {
-		return signKey{}, fmt.Errorf("hubkit/issuer: thumbprint: %w", err)
+		return signKey{}, err
 	}
-	kid := base64.RawURLEncoding.EncodeToString(tp)
-	pub.KeyID = kid
-
 	s, err := jose.NewSigner(
 		jose.SigningKey{Algorithm: jose.ES256, Key: priv},
-		(&jose.SignerOptions{}).WithHeader("kid", kid).WithType("JWT"),
+		(&jose.SignerOptions{}).WithHeader("kid", pub.KeyID).WithType("JWT"),
 	)
 	if err != nil {
 		return signKey{}, fmt.Errorf("hubkit/issuer: signer: %w", err)
 	}
-	return signKey{kid: kid, priv: priv, signer: s, pubJWK: pub}, nil
+	return signKey{kid: pub.KeyID, signer: s, pubJWK: pub}, nil
+}
+
+func publicJWK(pub *ecdsa.PublicKey) (jose.JSONWebKey, error) {
+	jwk := jose.JSONWebKey{Key: pub, Algorithm: string(jose.ES256), Use: "sig"}
+	tp, err := jwk.Thumbprint(crypto.SHA256)
+	if err != nil {
+		return jose.JSONWebKey{}, fmt.Errorf("hubkit/issuer: thumbprint: %w", err)
+	}
+	jwk.KeyID = base64.RawURLEncoding.EncodeToString(tp)
+	return jwk, nil
 }
 
 // Signer подписывает session-JWT активным ключом и публикует JWKS (активный +
@@ -64,13 +65,17 @@ func newSignKey(priv *ecdsa.PrivateKey) (signKey, error) {
 // выбирает публичный ключ.
 type Signer struct {
 	active   signKey
-	next     *signKey
+	next     *jose.JSONWebKey
 	issuer   string
 	audience string
 }
 
-// NewSigner строит Signer из уже загруженных PEM-ключей. nextPEM пуст — ротации нет.
+// NewSigner: активный ключ — приватный P-256 (SEC1 или PKCS#8); next — тот же
+// формат либо публичный PKIX PEM (приватный ключ следующего kid инстансу не нужен).
 func NewSigner(cfg KeyConfig) (*Signer, error) {
+	if cfg.Audience == "" {
+		return nil, ErrNoAudience
+	}
 	activePEM, err := cfg.activePEM()
 	if err != nil {
 		return nil, err
@@ -93,11 +98,11 @@ func NewSigner(cfg KeyConfig) (*Signer, error) {
 		return nil, err
 	}
 	if nextPEM != "" {
-		nextKey, err := parseECPrivateKey(nextPEM)
+		nextPub, err := parseECPublicKey(nextPEM)
 		if err != nil {
 			return nil, err
 		}
-		nk, err := newSignKey(nextKey)
+		nk, err := publicJWK(nextPub)
 		if err != nil {
 			return nil, err
 		}
@@ -109,27 +114,24 @@ func NewSigner(cfg KeyConfig) (*Signer, error) {
 // ActiveKID — kid ключа, которым подписываются свежие токены.
 func (s *Signer) ActiveKID() string { return s.active.kid }
 
-// Sign подписывает claims активным ключом, добавляя iss/aud (если заданы),
-// exp/iat/nbf. sub кладётся в claims caller'ом (обычно через SessionClaims).
+// Sign подписывает claims активным ключом, добавляя iss/aud и exp/iat/nbf.
+// sub кладётся в claims caller'ом.
 func (s *Signer) Sign(claims map[string]any, ttl time.Duration) (string, error) {
 	now := time.Now()
 	std := jwt.Claims{
 		IssuedAt:  jwt.NewNumericDate(now),
 		NotBefore: jwt.NewNumericDate(now),
 		Expiry:    jwt.NewNumericDate(now.Add(ttl)),
+		Audience:  jwt.Audience{s.audience},
 	}
 	if s.issuer != "" {
 		std.Issuer = s.issuer
-	}
-	if s.audience != "" {
-		std.Audience = jwt.Audience{s.audience}
 	}
 	if sub, ok := claims["sub"].(string); ok {
 		std.Subject = sub
 	}
 
 	builder := jwt.Signed(s.active.signer).Claims(std)
-	// Пользовательские claims поверх стандартных (sub уже в std — не дублируем).
 	custom := make(map[string]any, len(claims))
 	for k, v := range claims {
 		if k == "sub" {
@@ -152,7 +154,7 @@ func (s *Signer) Sign(claims map[string]any, ttl time.Duration) (string, error) 
 func (s *Signer) JWKS() jose.JSONWebKeySet {
 	set := jose.JSONWebKeySet{Keys: []jose.JSONWebKey{s.active.pubJWK}}
 	if s.next != nil {
-		set.Keys = append(set.Keys, s.next.pubJWK)
+		set.Keys = append(set.Keys, *s.next)
 	}
 	return set
 }
@@ -163,16 +165,43 @@ func parseECPrivateKey(pemStr string) (*ecdsa.PrivateKey, error) {
 		return nil, ErrBadPEM
 	}
 	// Поддерживаем оба контейнера: SEC1 ("EC PRIVATE KEY") и PKCS#8 ("PRIVATE KEY").
-	if key, err := x509.ParseECPrivateKey(block.Bytes); err == nil {
-		return key, nil
-	}
-	k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+	key, err := x509.ParseECPrivateKey(block.Bytes)
 	if err != nil {
-		return nil, fmt.Errorf("hubkit/issuer: parse ec key: %w", err)
+		k, err := x509.ParsePKCS8PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("hubkit/issuer: parse ec key: %w", err)
+		}
+		ec, ok := k.(*ecdsa.PrivateKey)
+		if !ok {
+			return nil, ErrNotEC
+		}
+		key = ec
 	}
-	ec, ok := k.(*ecdsa.PrivateKey)
-	if !ok {
+	if key.Curve != elliptic.P256() {
 		return nil, ErrNotEC
 	}
-	return ec, nil
+	return key, nil
+}
+
+func parseECPublicKey(pemStr string) (*ecdsa.PublicKey, error) {
+	block, _ := pem.Decode([]byte(pemStr))
+	if block == nil {
+		return nil, ErrBadPEM
+	}
+	if block.Type != "PUBLIC KEY" {
+		priv, err := parseECPrivateKey(pemStr)
+		if err != nil {
+			return nil, err
+		}
+		return &priv.PublicKey, nil
+	}
+	k, err := x509.ParsePKIXPublicKey(block.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("hubkit/issuer: parse ec public key: %w", err)
+	}
+	pub, ok := k.(*ecdsa.PublicKey)
+	if !ok || pub.Curve != elliptic.P256() {
+		return nil, ErrNotEC
+	}
+	return pub, nil
 }

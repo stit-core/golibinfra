@@ -4,32 +4,31 @@ import "sync"
 
 type Permission string
 
-type PermissionSet map[Permission]struct{}
-
-type RolePermissions map[string]PermissionSet
-
-var (
-	rolesMu sync.RWMutex
-	roles   = make(RolePermissions)
-)
-
-func RegisterRolePermissions(role string, perms ...Permission) {
-	rolesMu.Lock()
-	defer rolesMu.Unlock()
-	ps := make(PermissionSet, len(perms))
-	for _, p := range perms {
-		ps[p] = struct{}{}
-	}
-	roles[role] = ps
+// Registry — реестр «роль → права»: наполняется на старте приложения,
+// проверки — под RLock. Неизвестная роль или право → false (fail-closed).
+type Registry struct {
+	mu    sync.RWMutex
+	roles map[string]map[Permission]struct{}
 }
 
-func Has(role string, p Permission) bool {
-	rolesMu.RLock()
-	defer rolesMu.RUnlock()
-	ps, ok := roles[role]
-	if !ok {
-		return false
+func NewRegistry() *Registry {
+	return &Registry{roles: map[string]map[Permission]struct{}{}}
+}
+
+// Register полностью заменяет набор прав роли.
+func (r *Registry) Register(role string, perms ...Permission) {
+	set := make(map[Permission]struct{}, len(perms))
+	for _, p := range perms {
+		set[p] = struct{}{}
 	}
-	_, has := ps[p]
-	return has
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.roles[role] = set
+}
+
+func (r *Registry) Has(role string, p Permission) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, ok := r.roles[role][p]
+	return ok
 }

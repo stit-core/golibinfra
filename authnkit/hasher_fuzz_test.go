@@ -1,6 +1,9 @@
 package authnkit
 
-import "testing"
+import (
+	"errors"
+	"testing"
+)
 
 func fuzzHasher() *Argon2idHasher {
 	return NewArgon2idHasher(Argon2idParams{
@@ -18,27 +21,20 @@ func FuzzArgon2idVerify(f *testing.F) {
 	f.Add("$argon2id$v=19$m=65536,t=3,p=4$invalid$invalid")
 	f.Add("not-a-hash")
 	f.Add("$argon2id$v=19$m=65536,t=3,p=4$AAAA$BBBB")
+	f.Add(phcString("m=8192,t=0,p=1", 16, 32))
+	f.Add(phcString("m=8192,t=1,p=0", 16, 32))
+	f.Add(phcString("m=8192,t=1,p=1", 16, 0))
+	f.Add(phcString("m=4294967295,t=1,p=1", 16, 32))
+	f.Add(phcString("m=8192,t=1,p=1", 0, 32))
+	f.Add(phcString("m=8192,t=1,p=1", 16, 16))
 
 	f.Fuzz(func(t *testing.T, encoded string) {
-		_, _ = h.Verify("any", encoded)
-
-		good, err := h.Hash("foo")
-		if err != nil {
-			t.Fatalf("Hash: %v", err)
+		ok, err := h.Verify("any", encoded)
+		if err != nil && !errors.Is(err, ErrInvalidHash) {
+			t.Fatalf("unexpected error type: %v", err)
 		}
-		ok, err := h.Verify("foo", good)
-		if err != nil {
-			t.Fatalf("Verify foo: %v", err)
-		}
-		if !ok {
-			t.Fatal("expected verify true for matching plain")
-		}
-		ok, err = h.Verify("bar", good)
-		if err != nil {
-			t.Fatalf("Verify bar: %v", err)
-		}
-		if ok {
-			t.Fatal("expected verify false for non-matching plain")
+		if err != nil && ok {
+			t.Fatal("ok with error")
 		}
 	})
 }

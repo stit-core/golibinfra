@@ -12,8 +12,13 @@ import (
 // JWKSPath — канонический путь публикации ключей (sso-verifier ходит именно сюда).
 const JWKSPath = "/.well-known/jwks.json"
 
+// jwksCacheControl: набор меняется только при ротации, а next публикуется
+// заранее — 5 минут кэша на прокси не задерживают ввод нового kid.
+const jwksCacheControl = "public, max-age=300"
+
 type jwksOutput struct {
-	Body jose.JSONWebKeySet
+	CacheControl string `header:"Cache-Control"`
+	Body         jose.JSONWebKeySet
 }
 
 // RegisterJWKS вешает GET /.well-known/jwks.json на huma-API: отдаёт публичные
@@ -26,7 +31,7 @@ func RegisterJWKS(api huma.API, s *Signer) {
 		Tags:        []string{"auth"},
 		Summary:     "JWKS для верификации hub-session JWT",
 	}, func(_ context.Context, _ *struct{}) (*jwksOutput, error) {
-		return &jwksOutput{Body: s.JWKS()}, nil
+		return &jwksOutput{CacheControl: jwksCacheControl, Body: s.JWKS()}, nil
 	})
 }
 
@@ -34,6 +39,7 @@ func RegisterJWKS(api huma.API, s *Signer) {
 func JWKSHandler(s *Signer) http.HandlerFunc {
 	return func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Cache-Control", jwksCacheControl)
 		_ = json.NewEncoder(w).Encode(s.JWKS())
 	}
 }

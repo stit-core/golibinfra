@@ -1,12 +1,11 @@
 # authnkit — конфигурация
 
-Два публичных конфига: `Argon2idParams` (параметры хэширования) и `JWTConfig`
-(секрет и TTL токенов). Оба — **part of public API**: имена/типы полей и их
-envconfig-теги менять = breaking change, идёт мажорным апгрейдом
-(см. [корневой README § Стабильность API](../README.md)).
+Три публичных конфига: `Argon2idParams` (параметры хэширования), `JWTConfig`
+(секрет, TTL и leeway токенов) и `TOTPConfig` (issuer и окно TOTP). Все —
+**part of public API**: имена/типы полей и их envconfig-теги менять = breaking
+change, идёт мажорным апгрейдом (см. [корневой README § Стабильность API](../README.md)).
 
-TOTP и RBAC конфигов не имеют: `TOTPGenerator` принимает `Issuer` аргументом
-конструктора, RBAC наполняется кодом через `RegisterRolePermissions`.
+RBAC конфига не имеет: `Registry` наполняется кодом через `Register`.
 
 ## Argon2idParams
 
@@ -15,33 +14,48 @@ TOTP и RBAC конфигов не имеют: `TOTPGenerator` принимае�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `ARGON2_TIME` | `Time` | `uint32` | `3` | Число итераций (passes). Растит CPU-стоимость линейно. |
-| `ARGON2_MEMORY_KIB` | `Memory` | `uint32` | `65536` | Память на один хэш, в КиБ (`65536` = 64 МиБ). Главный рычаг стойкости. |
-| `ARGON2_THREADS` | `Threads` | `uint8` | `4` | Параллелизм (lanes). Обычно = числу ядер. |
-| `ARGON2_KEYLEN` | `KeyLen` | `uint32` | `32` | Длина выходного ключа (хэша) в байтах. |
-| `ARGON2_SALTLEN` | `SaltLen` | `uint32` | `16` | Длина случайной соли в байтах. |
+| `ARGON2_TIME` | `Time` | `uint32` | `3` | Число итераций (passes), ≥ 1. Растит CPU-стоимость линейно. |
+| `ARGON2_MEMORY_KIB` | `Memory` | `uint32` | `65536` | Память на один хэш, в КиБ (`65536` = 64 МиБ), окно `8192..1048576`. Главный рычаг стойкости. |
+| `ARGON2_THREADS` | `Threads` | `uint8` | `4` | Параллелизм (lanes), ≥ 1. Обычно = числу ядер. |
+| `ARGON2_KEYLEN` | `KeyLen` | `uint32` | `32` | Длина выходного ключа (хэша) в байтах, `16..128`. |
+| `ARGON2_SALTLEN` | `SaltLen` | `uint32` | `16` | Длина случайной соли в байтах, `8..64`. |
+
+Окно значений одно и для `Hash`, и для `Verify` (константы `MinMemoryKiB`,
+`MaxMemoryKiB`, `MinSaltLen`, `MaxSaltLen`, `MinKeyLen`, `MaxKeyLen`): параметры
+хэшера вне окна → `Hash` возвращает `ErrConfig`; PHC-строка вне окна →
+`Verify` возвращает `ErrInvalidHash`.
 
 `KeyLen` и `SaltLen` влияют только на новые хэши: при `Verify` фактическая длина
 ключа берётся из самой PHC-строки, а соль — из неё же, поэтому изменение этих
-полей не ломает проверку ранее выданных хэшей.
+полей не ломает проверку ранее выданных хэшей. `NeedsRehash` сравнивает все пять
+параметров строки с параметрами хэшера.
 
 ## JWTConfig
 
-Секрет и сроки жизни токенов.
+Секрет, сроки жизни токенов и leeway. Передаётся в `NewHS256JWT(cfg, opts...)`
+напрямую либо читается из ENV через `NewJWTConfig()`.
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Пустой → `NewJWTConfig` вернёт ошибку. |
-| `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | Семантический срок жизни access-токена для потребителя. |
-| `JWT_REFRESH_TTL` | `RefreshTTL` | `time.Duration` | `720h` | Семантический срок жизни refresh-токена (`720h` = 30 дней). |
+| `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Короче 32 байт → `NewHS256JWT` возвращает `ErrConfig`. |
+| `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | TTL для `SignAccess`. `0` в литерале конфига → дефолт кита. |
+| `JWT_REFRESH_TTL` | `RefreshTTL` | `time.Duration` | `720h` | TTL для `SignRefresh` (`720h` = 30 дней). `0` → дефолт кита. |
+| `JWT_LEEWAY` | `Leeway` | `time.Duration` | `60s` | Допуск рассинхрона часов при проверке `exp`/`nbf`/`iat` в `Parse`. `0` → дефолт кита; отрицательный → `ErrConfig`. |
 
-`AccessTTL` / `RefreshTTL` — **именованные значения для приложения**, а не
-автоматика кита: `Sign(claims, ttl)` ставит `exp` из переданного `ttl`-аргумента.
-Типичный паттерн — `signer.Sign(claims, cfg.AccessTTL)` для access и
-`signer.Sign(claims, cfg.RefreshTTL)` для refresh; одним signer'ом, разным TTL.
+`Sign(claims, ttl)` принимает TTL явно — для токенов с нестандартным сроком
+(одноразовые ссылки, приглашения). `SignAccess`/`SignRefresh` берут TTL из
+конфига. Пороги и дефолты доступны константами: `MinSecretLen` (32),
+`DefaultAccessTTL`, `DefaultRefreshTTL`, `DefaultLeeway`.
 
-`Secret` читается из `JWT_SECRET`. Длина секрета для HS256 — не короче размера
-выхода хэша (32 байта для SHA-256); короткий секрет ослабляет подпись.
+## TOTPConfig
+
+Передаётся в `NewTOTP(cfg, opts...)` напрямую либо читается из ENV через
+`NewTOTPConfig()`.
+
+| Env | Поле | Тип | Default | Назначение |
+|---|---|---|---|---|
+| `TOTP_ISSUER` | `Issuer` | `string` | — (`required`) | Имя сервиса в otpauth-URL (показывается в authenticator-приложении). |
+| `TOTP_SKEW` | `Skew` | `uint` | `1` | Сколько соседних 30-секундных окон принимается с каждой стороны: `1` → код живёт ~90 с, `0` → только текущее окно. |
 
 ## Тюнинг стойкости Argon2id
 
@@ -59,5 +73,5 @@ TOTP и RBAC конфигов не имеют: `TOTPGenerator` принимае�
   будет крутиться сервис.
 - Поднятие параметров безопасно для уже выданных хэшей: они проверятся на старых
   параметрах (зашиты в PHC-строку). Перевыпуск под новую стойкость — на
-  следующем успешном логине (re-hash на стороне потребителя), кит его не делает
-  автоматически.
+  следующем успешном логине: `Verify` → `NeedsRehash` → `Hash`; кит не делает
+  этого автоматически.

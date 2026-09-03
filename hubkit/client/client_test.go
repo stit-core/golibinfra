@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"git.stit.tech/stit-core/golibinfra/hubkit/client"
 )
@@ -186,9 +187,55 @@ func TestErrorMapping(t *testing.T) {
 
 func TestTransportError_Unavailable(t *testing.T) {
 	// Клиент на несуществующий адрес — транспортная ошибка маппится в Unavailable.
-	c := client.New(client.Config{BaseURL: "http://127.0.0.1:0"}, http.DefaultClient)
+	c := client.New(client.Config{BaseURL: "http://127.0.0.1:0"}, &http.Client{Timeout: time.Second})
 	if _, err := c.GetCompany(context.Background(), "x"); !errors.Is(err, client.ErrUnavailable) {
 		t.Fatalf("ожидали ErrUnavailable, получили %v", err)
+	}
+}
+
+// nil Doer → собственный httpclient с таймаутом, а не http.DefaultClient.
+func TestNew_NilDoerDefaults(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "c1"}})
+	}))
+	t.Cleanup(srv.Close)
+	c := client.New(client.Config{BaseURL: srv.URL}, nil)
+	got, err := c.GetCompany(context.Background(), "c1")
+	if err != nil || got.ID != "c1" {
+		t.Fatalf("GetCompany: %+v %v", got, err)
+	}
+}
+
+type doerFunc func(*http.Request) (*http.Response, error)
+
+func (f doerFunc) Do(r *http.Request) (*http.Response, error) { return f(r) }
+
+// Запрос без дедлайна в ctx получает его от клиента: зависший хаб не держит
+// горутину продукта бесконечно.
+func TestDo_CtxDeadlineAlwaysSet(t *testing.T) {
+	var deadline time.Time
+	var hasDeadline bool
+	doer := doerFunc(func(r *http.Request) (*http.Response, error) {
+		deadline, hasDeadline = r.Context().Deadline()
+		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
+	})
+	c := client.New(client.Config{BaseURL: "http://hub"}, doer)
+
+	if err := c.ArchiveCompany(context.Background(), "c1"); err != nil {
+		t.Fatalf("ArchiveCompany: %v", err)
+	}
+	if !hasDeadline || time.Until(deadline) > time.Minute {
+		t.Fatalf("дедлайн не проставлен: has=%v deadline=%v", hasDeadline, deadline)
+	}
+
+	// Дедлайн вызывающего не перебивается.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := c.ArchiveCompany(ctx, "c1"); err != nil {
+		t.Fatalf("ArchiveCompany: %v", err)
+	}
+	if time.Until(deadline) > 5*time.Second {
+		t.Fatalf("дедлайн вызывающего перебит: %v", deadline)
 	}
 }
 

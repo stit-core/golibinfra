@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -21,14 +23,18 @@ import (
 	"git.stit.tech/stit-core/golibinfra/hubkit/sso"
 )
 
-const testIssuer = "https://id.stit.tech"
+const (
+	testIssuer   = "https://id.stit.tech"
+	testAudience = "stit"
+)
 
 // signingIdentity — тестовый ES256-ключ с производным kid + JWKS-сервер.
 type signingIdentity struct {
-	priv   *ecdsa.PrivateKey
-	kid    string
-	signer jose.Signer
-	jwks   jose.JSONWebKeySet
+	priv     *ecdsa.PrivateKey
+	kid      string
+	signer   jose.Signer
+	jwks     jose.JSONWebKeySet
+	jwksHits atomic.Int64
 }
 
 func newSigningIdentity(t *testing.T) *signingIdentity {
@@ -58,6 +64,7 @@ func newSigningIdentity(t *testing.T) *signingIdentity {
 func (s *signingIdentity) jwksServer(t *testing.T) *httptest.Server {
 	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		s.jwksHits.Add(1)
 		_ = json.NewEncoder(w).Encode(s.jwks)
 	}))
 	t.Cleanup(srv.Close)
@@ -69,6 +76,7 @@ func stdClaims() jwt.Claims {
 	return jwt.Claims{
 		Issuer:   testIssuer,
 		Subject:  "authentik-sub-1",
+		Audience: jwt.Audience{testAudience},
 		Expiry:   jwt.NewNumericDate(now.Add(15 * time.Minute)),
 		IssuedAt: jwt.NewNumericDate(now),
 	}
@@ -94,9 +102,30 @@ func (s *signingIdentity) sign(t *testing.T, std jwt.Claims, custom map[string]a
 	return raw
 }
 
+// signWithKID подписывает тем же ключом, но с подставленным kid.
+func (s *signingIdentity) signWithKID(t *testing.T, kid string, std jwt.Claims, custom map[string]any) string {
+	t.Helper()
+	signer, err := jose.NewSigner(
+		jose.SigningKey{Algorithm: jose.ES256, Key: s.priv},
+		(&jose.SignerOptions{}).WithHeader("kid", kid).WithType("JWT"),
+	)
+	if err != nil {
+		t.Fatalf("signer: %v", err)
+	}
+	raw, err := jwt.Signed(signer).Claims(std).Claims(custom).Serialize()
+	if err != nil {
+		t.Fatalf("sign: %v", err)
+	}
+	return raw
+}
+
+func employeeCfg(jwksURL string) sso.Config {
+	return sso.Config{JWKSURL: jwksURL, Cookie: "stit_session", Issuer: testIssuer, Audience: testAudience}
+}
+
 func verifier(t *testing.T, jwksURL string) *sso.Verifier {
 	t.Helper()
-	v, err := sso.NewVerifier(sso.Config{JWKSURL: jwksURL, Issuer: testIssuer}, nil)
+	v, err := sso.NewVerifier(employeeCfg(jwksURL), nil)
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -121,6 +150,7 @@ func TestVerify_Valid(t *testing.T) {
 		Email:      "n@stit.tech",
 		Role:       "employee",
 		SID:        "sess-1",
+		Kind:       sso.KindEmployee,
 	}
 	if !reflect.DeepEqual(id, want) {
 		t.Fatalf("identity=%+v, ожидали %+v", id, want)
@@ -147,21 +177,8 @@ func TestVerify_ForeignKeySameKID(t *testing.T) {
 	srv := si.jwksServer(t)
 	v := verifier(t, srv.URL)
 
-	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("gen: %v", err)
-	}
-	forged, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.ES256, Key: other},
-		(&jose.SignerOptions{}).WithHeader("kid", si.kid).WithType("JWT"),
-	)
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	raw, err := jwt.Signed(forged).Claims(stdClaims()).Claims(hubClaims()).Serialize()
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	other := newSigningIdentity(t)
+	raw := other.signWithKID(t, si.kid, stdClaims(), hubClaims())
 	if _, err := v.Verify(context.Background(), raw); err == nil {
 		t.Fatal("подделка с подставленным kid прошла проверку")
 	}
@@ -181,25 +198,41 @@ func TestVerify_Expired(t *testing.T) {
 }
 
 func TestVerify_UnknownKID(t *testing.T) {
-	// Токен с kid, которого нет в JWKS (битый/неизвестный kid). Verify рефрешит
-	// ключи и, не найдя, возвращает ErrUnknownKey.
 	si := newSigningIdentity(t)
 	srv := si.jwksServer(t)
 	v := verifier(t, srv.URL)
 
-	bad, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.ES256, Key: si.priv},
-		(&jose.SignerOptions{}).WithHeader("kid", "no-such-kid").WithType("JWT"),
-	)
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	raw, err := jwt.Signed(bad).Claims(stdClaims()).Claims(hubClaims()).Serialize()
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
+	raw := si.signWithKID(t, "no-such-kid", stdClaims(), hubClaims())
 	if _, err := v.Verify(context.Background(), raw); !errors.Is(err, sso.ErrUnknownKey) {
 		t.Fatalf("ожидали ErrUnknownKey, получили %v", err)
+	}
+}
+
+// Шторм токенов с неизвестным kid — одна загрузка JWKS на интервал, а не
+// запрос к хабу на каждый токен.
+func TestVerify_UnknownKIDStorm_SingleJWKSFetch(t *testing.T) {
+	si := newSigningIdentity(t)
+	srv := si.jwksServer(t)
+	v := verifier(t, srv.URL)
+
+	var wg sync.WaitGroup
+	for range 100 {
+		wg.Go(func() {
+			raw := si.signWithKID(t, "attacker-kid", stdClaims(), hubClaims())
+			if _, err := v.Verify(context.Background(), raw); !errors.Is(err, sso.ErrUnknownKey) {
+				t.Errorf("ожидали ErrUnknownKey, получили %v", err)
+			}
+		})
+	}
+	wg.Wait()
+	if got := si.jwksHits.Load(); got != 1 {
+		t.Fatalf("100 неизвестных kid → %d загрузок JWKS, ожидали 1", got)
+	}
+	if _, err := v.Verify(context.Background(), si.sign(t, stdClaims(), hubClaims())); err != nil {
+		t.Fatalf("валидный токен после шторма: %v", err)
+	}
+	if got := si.jwksHits.Load(); got != 1 {
+		t.Fatalf("валидный токен вызвал загрузку: %d", got)
 	}
 }
 
@@ -215,28 +248,28 @@ func TestVerify_WrongIssuer(t *testing.T) {
 	}
 }
 
+// aud проверяется всегда: токен без aud или с чужим aud отвергается.
 func TestVerify_Audience(t *testing.T) {
 	si := newSigningIdentity(t)
 	srv := si.jwksServer(t)
-	v, err := sso.NewVerifier(sso.Config{JWKSURL: srv.URL, Issuer: testIssuer, Audience: "stit-hub"}, nil)
-	if err != nil {
-		t.Fatalf("NewVerifier: %v", err)
-	}
+	v := verifier(t, srv.URL)
 
-	// Без aud — отвергается (audience-check включён конфигом).
-	if _, err := v.Verify(context.Background(), si.sign(t, stdClaims(), hubClaims())); err == nil {
-		t.Fatal("токен без ожидаемого aud прошёл проверку")
-	}
-	// С верным aud — проходит.
 	c := stdClaims()
-	c.Audience = jwt.Audience{"stit-hub"}
-	if _, err := v.Verify(context.Background(), si.sign(t, c, hubClaims())); err != nil {
-		t.Fatalf("токен с верным aud отвергнут: %v", err)
+	c.Audience = nil
+	if _, err := v.Verify(context.Background(), si.sign(t, c, hubClaims())); err == nil {
+		t.Fatal("токен без aud прошёл проверку")
+	}
+	c.Audience = jwt.Audience{"other-product"}
+	if _, err := v.Verify(context.Background(), si.sign(t, c, hubClaims())); err == nil {
+		t.Fatal("токен с чужим aud прошёл проверку")
 	}
 }
 
 func TestNewVerifier_ConfigRequired(t *testing.T) {
-	if _, err := sso.NewVerifier(sso.Config{}, nil); !errors.Is(err, sso.ErrConfig) {
+	if _, err := sso.NewVerifier(sso.Config{Audience: testAudience}, nil); !errors.Is(err, sso.ErrConfig) {
 		t.Fatalf("ожидали ErrConfig, получили %v", err)
+	}
+	if _, err := sso.NewVerifier(sso.Config{JWKSURL: "https://id.stit.tech/jwks"}, nil); !errors.Is(err, sso.ErrAudience) {
+		t.Fatalf("ожидали ErrAudience, получили %v", err)
 	}
 }

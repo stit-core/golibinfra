@@ -6,12 +6,10 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
-
-	"git.stit.tech/stit-core/golibinfra/authnkit"
 )
 
 func TestExtractor(t *testing.T) {
-	jwt := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "s3cret"})
+	jwt := sessionSigner(t)
 	e := NewExtractor(jwt)
 
 	token, err := jwt.Sign(map[string]any{
@@ -43,7 +41,7 @@ func TestExtractor(t *testing.T) {
 }
 
 func TestExtractor_NoCookie(t *testing.T) {
-	e := NewExtractor(authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "s"}))
+	e := NewExtractor(sessionSigner(t))
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
 	if _, err := e.Extract(r); !errors.Is(err, ErrNoSessionCookie) {
 		t.Fatalf("ожидали ErrNoSessionCookie, получили %v", err)
@@ -51,7 +49,7 @@ func TestExtractor_NoCookie(t *testing.T) {
 }
 
 func TestExtractor_BadToken(t *testing.T) {
-	e := NewExtractor(authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "s"}))
+	e := NewExtractor(sessionSigner(t))
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
 	r.AddCookie(&http.Cookie{Name: CookieAccess, Value: "garbage"})
 	if _, err := e.Extract(r); err == nil {
@@ -67,5 +65,17 @@ func TestIdentityCtx(t *testing.T) {
 	out, ok := IdentityFrom(WithIdentity(t.Context(), in))
 	if !ok || out != in {
 		t.Fatalf("ожидали %+v, получили %+v (ok=%v)", in, out, ok)
+	}
+}
+
+func TestSessionCookie_SecureFromConfig(t *testing.T) {
+	c := SessionCookie("tok", CookieConfig{Secure: true})
+	if !c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Name != CookieAccess {
+		t.Fatalf("cookie ослаблена: %+v", c)
+	}
+	for _, exp := range ExpiredSessionCookies(CookieConfig{Secure: true}) {
+		if !exp.Secure || exp.MaxAge != -1 {
+			t.Fatalf("expired cookie: %+v", exp)
+		}
 	}
 }

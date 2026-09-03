@@ -59,8 +59,8 @@ func newBFF(p bffParams) *BFF {
 //
 // Module не provide'ит Config/CookieConfig (asymmetry note в pgkit/module.go —
 // caller добавляет `fx.Provide(oidckit.NewConfig, oidckit.NewCookieConfig)`),
-// StateStore (Redis: `fx.Provide(fx.Annotate(oidckit.NewCacheStateStore, ...))`
-// поверх cachekit; либо NewMemoryStateStore) и JWTSigner/JWTParser (authnkit.Module).
+// StateStore (`fx.Provide(oidckit.NewCacheStateStore)` поверх cachekit.Cache)
+// и JWTSigner/JWTParser (authnkit.Module).
 // Hooks опциональны. Сервису с составным extractor'ом (несколько схем authn)
 // Module не подходит — собирай из конструкторов, httpkit принимает один
 // AuthExtractor.

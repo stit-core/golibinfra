@@ -4,11 +4,10 @@
 // (stit_session, employee-backend id.stit.tech) и заказчик (stit_customer,
 // company-backend api.hub.stit.tech). Extractor читает оба слота с приоритетом
 // сотрудника; верификатор слота проверяет ES256-подпись по JWKS своего контура
-// (in-memory кэш ключей + lazy-refresh по неизвестному kid — тот же приём, что в
-// oidckit/verifier.go), iss/aud/exp и claim kind, после чего кладёт Identity в
-// ctx через httpkit.AuthExtractor. Ни одного похода по сети на запрос после
-// первичной загрузки JWKS — продукт живёт при недоступном хабе, пока ключи в
-// кэше. Контур заказчика включается заданием HUB_SSO_CUSTOMER_JWKS_URL.
+// (кэш в памяти, refresh по неизвестному kid не чаще раза в минуту), iss/aud/exp
+// и claim kind, после чего кладёт Identity в ctx через httpkit.AuthExtractor.
+// Контур заказчика включается заданием HUB_SSO_CUSTOMER_JWKS_URL. Эмитит
+// hub_sso_verifications_total{contour,result} и hub_sso_jwks_refresh_total{contour,result}.
 //
 // Пара к этому пакету — hubkit/issuer (выпускает те же токены); контракт claim'ов
 // (employee_id/username/name/email/role/sid + kind/company_id/account_role/
@@ -17,24 +16,25 @@ package sso
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
-	"sync"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
+
+	"git.stit.tech/stit-core/golibinfra/internal/jwks"
 )
 
 var (
-	ErrConfig         = errors.New("hubkit/sso: HUB_SSO_JWKS_URL required")
-	ErrCustomerIssuer = errors.New("hubkit/sso: HUB_SSO_CUSTOMER_ISSUER required")
-	ErrInvalidToken   = errors.New("hubkit/sso: malformed session token")
-	ErrUnknownKey     = errors.New("hubkit/sso: no signing key for kid")
-	ErrNoSubject      = errors.New("hubkit/sso: session token has no subject")
-	ErrNoJWKS         = errors.New("hubkit/sso: jwks endpoint returned no keys")
+	ErrConfig           = errors.New("hubkit/sso: HUB_SSO_JWKS_URL required")
+	ErrAudience         = errors.New("hubkit/sso: HUB_SSO_AUDIENCE required")
+	ErrCustomerIssuer   = errors.New("hubkit/sso: HUB_SSO_CUSTOMER_ISSUER required")
+	ErrCustomerAudience = errors.New("hubkit/sso: HUB_SSO_CUSTOMER_AUDIENCE required")
+	ErrInvalidToken     = errors.New("hubkit/sso: malformed session token")
+	ErrUnknownKey       = errors.New("hubkit/sso: no signing key for kid")
+	ErrNoSubject        = errors.New("hubkit/sso: session token has no subject")
 )
 
 // Claim* — имена нестандартных claim'ов hub-session JWT (часть контракта между
@@ -57,6 +57,8 @@ const (
 // симметричную подпись мог бы подделать любой держатель секрета.
 var allowedAlgs = []jose.SignatureAlgorithm{jose.ES256}
 
+const defaultHTTPTimeout = 10 * time.Second
+
 // Doer — минимальный HTTP-клиент для загрузки JWKS. Ему удовлетворяет и
 // *httpclient.Client (retry + breaker + OTel), и *http.Client.
 type Doer interface {
@@ -68,35 +70,31 @@ type Doer interface {
 // (kind) — часть проверки: токен чужого контура отвергается, даже если подпись
 // и iss сошлись.
 type Verifier struct {
-	jwksURL  string
 	issuer   string
 	audience string
 	kind     string
-	http     Doer
-
-	mu     sync.RWMutex
-	keys   jose.JSONWebKeySet
-	loaded bool
+	keys     *jwks.Cache
+	instr    *instruments
 }
 
 // NewVerifier строит Verifier сотруднического контура из Config. JWKS не
 // грузится в конструкторе: discovery ключей не должен блокировать старт
 // приложения и переживает временную недоступность хаба (ключи подтянутся на
-// первом Verify).
+// первом Verify). nil doer → http.Client с таймаутом 10s.
 func NewVerifier(cfg Config, doer Doer) (*Verifier, error) {
 	if cfg.JWKSURL == "" {
 		return nil, ErrConfig
 	}
-	if doer == nil {
-		doer = &http.Client{Timeout: 10 * time.Second}
+	if cfg.Audience == "" {
+		return nil, ErrAudience
 	}
-	return &Verifier{
-		jwksURL:  cfg.JWKSURL,
-		issuer:   cfg.Issuer,
-		audience: cfg.Audience,
-		kind:     KindEmployee,
-		http:     doer,
-	}, nil
+	return buildVerifier(cfg.JWKSURL, cfg.Issuer, cfg.Audience, KindEmployee, doer), nil
+}
+
+func buildVerifier(jwksURL, issuer, audience, kind string, doer Doer) *Verifier {
+	v := &Verifier{issuer: issuer, audience: audience, kind: kind, instr: newInstruments(kind)}
+	v.keys = jwks.New(jwksURL, doer, jwks.Options{Timeout: defaultHTTPTimeout, OnRefresh: v.instr.refreshed})
+	return v
 }
 
 // CustomerVerifier — верификатор контура заказчика (JWKS company-backend,
@@ -106,8 +104,8 @@ type CustomerVerifier struct{ *Verifier }
 
 // NewCustomerVerifier строит верификатор сессии заказчика. Пустой
 // CustomerJWKSURL → (nil, nil): контур выключен, продукт живёт как без него.
-// iss обязателен: он вместе с kind не даёт токену чужого контура пройти в
-// customer-слот.
+// iss и aud обязательны: вместе с kind они не дают токену чужого контура пройти
+// в customer-слот.
 func NewCustomerVerifier(cfg Config, doer Doer) (*CustomerVerifier, error) {
 	if !cfg.CustomerEnabled() {
 		return nil, nil //nolint:nilnil // пустой JWKS-URL = контур выключен, это не ошибка
@@ -115,26 +113,34 @@ func NewCustomerVerifier(cfg Config, doer Doer) (*CustomerVerifier, error) {
 	if cfg.CustomerIssuer == "" {
 		return nil, ErrCustomerIssuer
 	}
-	v, err := NewVerifier(Config{JWKSURL: cfg.CustomerJWKSURL, Issuer: cfg.CustomerIssuer}, doer)
-	if err != nil {
-		return nil, err
+	if cfg.CustomerAudience == "" {
+		return nil, ErrCustomerAudience
 	}
-	v.kind = KindCustomer
-	return &CustomerVerifier{Verifier: v}, nil
+	return &CustomerVerifier{Verifier: buildVerifier(cfg.CustomerJWKSURL, cfg.CustomerIssuer, cfg.CustomerAudience, KindCustomer, doer)}, nil
 }
 
-// Verify проверяет подпись/claims токена и возвращает Identity.
+// Verify проверяет подпись/claims токена и возвращает Identity; Kind всегда
+// заполнен (пустой claim читается как employee).
 func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
+	id, result, err := v.verify(ctx, raw)
+	v.instr.verified(ctx, result)
+	return id, err
+}
+
+func (v *Verifier) verify(ctx context.Context, raw string) (Identity, string, error) {
 	tok, err := jwt.ParseSigned(raw, allowedAlgs)
 	if err != nil {
-		return Identity{}, fmt.Errorf("hubkit/sso: parse: %w", err)
+		return Identity{}, "malformed", fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 	if len(tok.Headers) == 0 {
-		return Identity{}, ErrInvalidToken
+		return Identity{}, "malformed", ErrInvalidToken
 	}
-	key, err := v.keyByID(ctx, tok.Headers[0].KeyID)
+	key, err := v.keys.Key(ctx, tok.Headers[0].KeyID)
 	if err != nil {
-		return Identity{}, err
+		if errors.Is(err, jwks.ErrUnknownKey) {
+			return Identity{}, "unknown_key", ErrUnknownKey
+		}
+		return Identity{}, "jwks_error", fmt.Errorf("hubkit/sso: jwks: %w", err)
 	}
 
 	var claims jwt.Claims
@@ -150,32 +156,32 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		AccountRole string   `json:"account_role"`
 		Products    []string `json:"products"`
 	}
-	if err := tok.Claims(key, &claims, &custom); err != nil {
-		return Identity{}, fmt.Errorf("hubkit/sso: verify signature: %w", err)
+	if err := tok.Claims(key.Key, &claims, &custom); err != nil {
+		if errors.Is(err, jose.ErrCryptoFailure) {
+			return Identity{}, "signature_invalid", fmt.Errorf("hubkit/sso: verify signature: %w", err)
+		}
+		return Identity{}, "malformed", fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
 
-	expected := jwt.Expected{Time: time.Now()}
+	expected := jwt.Expected{Time: time.Now(), AnyAudience: jwt.Audience{v.audience}}
 	if v.issuer != "" {
 		expected.Issuer = v.issuer
 	}
-	if v.audience != "" {
-		expected.AnyAudience = jwt.Audience{v.audience}
-	}
 	if err := claims.Validate(expected); err != nil {
-		return Identity{}, fmt.Errorf("hubkit/sso: claims: %w", err)
+		return Identity{}, "invalid_claims", fmt.Errorf("hubkit/sso: claims: %w", err)
 	}
 	if claims.Subject == "" {
-		return Identity{}, ErrNoSubject
+		return Identity{}, "invalid_claims", ErrNoSubject
 	}
 	// Контур — до всего остального: подпись и iss могут сойтись (общий ключ в
 	// dev, незаданный HUB_SSO_ISSUER), но токен другого контура в этом слоте
 	// значит подмену принципала, а не «почти то же самое».
 	kind := custom.Kind
 	if kind == "" {
-		kind = KindEmployee // токены, выпущенные до появления второго контура
+		kind = KindEmployee
 	}
 	if kind != v.kind {
-		return Identity{}, fmt.Errorf("%w: %s", ErrWrongKind, kind)
+		return Identity{}, "wrong_kind", fmt.Errorf("%w: %s", ErrWrongKind, kind)
 	}
 
 	return Identity{
@@ -186,68 +192,9 @@ func (v *Verifier) Verify(ctx context.Context, raw string) (Identity, error) {
 		Email:       custom.Email,
 		Role:        custom.Role,
 		SID:         custom.SID,
-		Kind:        custom.Kind,
+		Kind:        kind,
 		CompanyID:   custom.CompanyID,
 		AccountRole: custom.AccountRole,
 		Products:    custom.Products,
-	}, nil
-}
-
-func (v *Verifier) keyByID(ctx context.Context, kid string) (any, error) {
-	if k := v.lookup(kid); k != nil {
-		return k.Key, nil
-	}
-	// Промах: либо ключи ещё не грузились, либо kid новый (ротация) — рефрешим.
-	if err := v.refreshKeys(ctx); err != nil {
-		return nil, err
-	}
-	if k := v.lookup(kid); k != nil {
-		return k.Key, nil
-	}
-	return nil, ErrUnknownKey
-}
-
-func (v *Verifier) lookup(kid string) *jose.JSONWebKey {
-	v.mu.RLock()
-	defer v.mu.RUnlock()
-	if !v.loaded {
-		return nil
-	}
-	if kid != "" {
-		if ks := v.keys.Key(kid); len(ks) > 0 {
-			return &ks[0]
-		}
-		return nil
-	}
-	if len(v.keys.Keys) == 1 {
-		return &v.keys.Keys[0]
-	}
-	return nil
-}
-
-func (v *Verifier) refreshKeys(ctx context.Context) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, v.jwksURL, nil)
-	if err != nil {
-		return err
-	}
-	resp, err := v.http.Do(req)
-	if err != nil {
-		return fmt.Errorf("hubkit/sso: jwks: %w", err)
-	}
-	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("hubkit/sso: jwks GET %s: status %d", v.jwksURL, resp.StatusCode)
-	}
-	var ks jose.JSONWebKeySet
-	if err := json.NewDecoder(resp.Body).Decode(&ks); err != nil {
-		return fmt.Errorf("hubkit/sso: decode jwks: %w", err)
-	}
-	if len(ks.Keys) == 0 {
-		return ErrNoJWKS
-	}
-	v.mu.Lock()
-	v.keys = ks
-	v.loaded = true
-	v.mu.Unlock()
-	return nil
+	}, "ok", nil
 }

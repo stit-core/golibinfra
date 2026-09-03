@@ -1,5 +1,5 @@
-// Package projection — эталон схемы локальных read-проекций хаба
-// (00-architecture §4). Цель — идентичная схема companies/projects/employees/
+// Package projection — эталон схемы локальных read-проекций хаба.
+// Цель — идентичная схема companies/projects/employees/
 // entity_visibility (+ курсор-таблица hub_sync_cursors) во всех продуктах, чтобы
 // проекции не расходились.
 //

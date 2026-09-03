@@ -127,8 +127,7 @@ func (c *Client) UpsertTag(ctx context.Context, name string) (Tag, error) {
 // --- Entity tags (company-backend, глобальная принадлежность тегам) ---
 
 // GetEntityTags — текущий набор канонических имён тегов hub-сущности
-// (kind ∈ {company,project}). Ходит на company base (владелец принадлежности,
-// 00-architecture §5).
+// (kind ∈ {company,project}). Ходит на company base (владелец принадлежности).
 func (c *Client) GetEntityTags(ctx context.Context, kind, id string) ([]string, error) {
 	var out dataEnvelope[[]string]
 	path := "/api/tags/" + url.PathEscape(kind) + "/" + url.PathEscape(id)
