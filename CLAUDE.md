@@ -34,10 +34,9 @@ go build ./...                    # build
 эмитимые сигналы каждого кита — в его `README.md` рядом с кодом (у сложных китов
 ещё `docs/`); это единый источник правды по киту. Кратко:
 `telemetry` (opt-in OTel bootstrap) · `logkit` (slog + PII-redact + trace-id, JSON в stdout), `httpkit` (huma/chi
-server + middleware), `httpclient` (retry + circuit breaker), provider-киты `anthropickit` / `openaikit`
-/ `googleaikit` (SDK) + `yandexaikit` / `sberaikit` (raw HTTP) — LLM-вызовы
-(chat/embeddings/images/audio) с нормализованным `Usage`+`Cost` (USD у
-anthropic/openai/google, RUB у yandex/sber), `grpckit` (gRPC-сервер) + `grpcclient` (gRPC-клиент),
+server + middleware), `httpclient` (retry + circuit breaker), `anthropickit` (клиент
+Anthropic SDK: `Complete`/`Stream`/`CountTokens` с нормализованным `Usage`+`Cost` в USD),
+`grpckit` (gRPC-сервер) + `grpcclient` (gRPC-клиент),
 `pgkit` (pgx pool +
 otelpgx), `natskit` (NATS/JetStream), `outboxkit` (transactional outbox),
 `authnkit` (JWT/Argon2id/TOTP/RBAC), `oidckit` (OIDC BFF: RP-verify + login-роуты +

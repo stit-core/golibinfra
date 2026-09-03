@@ -13,7 +13,7 @@ auth, БД, messaging, кэш, аудит, storage, AI-клиенты. Кажд�
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
 [![Go](https://img.shields.io/badge/Go-module-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#observability)
-[![Kits](https://img.shields.io/badge/kits-30-0ea5e9)](#пакеты)
+[![Kits](https://img.shields.io/badge/kits-25-0ea5e9)](#пакеты)
 
 </div>
 
@@ -96,12 +96,7 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | [`httpclient`](httpclient/) | HTTP-клиент с retry, circuit breaker (`sony/gobreaker/v2`), OTel и автопередачей `X-Request-ID` |
 | [`amocrmkit`](amocrmkit/) | Транспорт к amoCRM: REST v4 (Bearer) + amoJo Chat (HMAC-SHA1) + Drive + OAuth2; per-account rate-limit (7 rps), таксономия ошибок (`ErrAuth/ErrRateLimited/…`), `TokenSource`; обёртка над `httpclient`/`clockkit`/`logkit` |
 | [`anthropickit`](anthropickit/) | Клиент Anthropic (`anthropic-sdk-go`): `API` (`Complete`/`Stream`/`CountTokens`), нормализованный `Usage` + `Cost` (`USDMicros`, прайс-таблица), Managed Agents через `Raw()`; `testkit/anthropictest` |
-| [`openaikit`](openaikit/) | Клиент OpenAI (`openai-go/v3`): `API` (Responses + Chat + Embeddings + Images + Audio STT/TTS + Moderation), нормализованный `Usage` + `Cost` (**`USDMicros`**, прайс-таблица), экзотика через `Raw()`; `testkit/openaitest` |
-| [`googleaikit`](googleaikit/) | Клиент Google Gemini (`google.golang.org/genai`, dual-backend AI-Studio/Vertex): `API` (GenerateContent + Stream + Embeddings + Images + Video + Speech), нормализованный `Usage` + `Cost` (**`USDMicros`**, прайс-таблица), `Raw()`; `testkit/googletest` |
-| [`yandexaikit`](yandexaikit/) | Клиент Yandex FM (raw REST, IAM-JWT + async-операции): `API` (Completion sync/async + Stream + Embeddings + YandexART), нормализованный `Usage` + `Cost` (**`RUBMicros`**, sync/async прайс-таблицы), `Raw()`; `testkit/yandextest` |
-| [`sberaikit`](sberaikit/) | Клиент Sber GigaChat (raw HTTP, OAuth2 + Russian-Trusted CA): `API` (Chat + Stream + Embeddings + Files), нормализованный `Usage` + `Cost` (**`RUBMicros`**, `CurrencyRUB`, прайс-таблица), `Raw()`; `testkit/sbertest` |
 | [`grpcclient`](grpcclient/) | gRPC-клиент: `*grpc.ClientConn` + otel (StatsHandler), access-log, keepalive, `PerRPCCredentials` (bearer-токен из env) |
-| [`webpushkit`](webpushkit/) | Web Push доставка: VAPID (RFC 8292) + aes128gcm-шифрование payload (RFC 8291/8188) + POST на endpoint (RFC 8030); `Sender.Send`, `Subscription`, `GenerateVAPIDKeys`, `ErrSubscriptionGone` (404/410 → чистка подписки). Подписки хранит потребитель |
 | [`cachekit`](cachekit/) | Redis-обёртка: `Cache`, `GetJSON[T]`/`SetJSON[T]`, `InvalidateByTag`; `IdempotencyStore` для `httpkit` |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`); `Store.Bool/String` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx group: регистрация задач с интервалом, lifecycle-aware |
@@ -142,13 +137,8 @@ require git.stit.tech/stit-core/golibinfra v0.24.0
 | `HUB_SSO_CUSTOMER_JWKS_URL` | `hubkit` | JWKS company-backend (`api.hub.stit.tech`) для verify сессии заказчика; пусто → контур выключен |
 | `HUB_BASE_URL` | `hubkit` | hub API (company-backend `api.hub.stit.tech`; employees — `HUB_EMPLOYEE_BASE_URL`), m2m-токен `HUB_SERVICE_TOKEN` |
 | `ANTHROPIC_BASE_URL` | `anthropickit` | Anthropic API host (default `api.anthropic.com`); ключ — `ANTHROPIC_API_KEY` |
-| `OPENAI_BASE_URL` | `openaikit` | OpenAI API host (default `api.openai.com/v1`); ключ — `OPENAI_API_KEY` |
-| `GOOGLE_BASE_URL` | `googleaikit` | Gemini API host (бэкенд — `GOOGLE_BACKEND` aistudio\|vertex); ключ — `GOOGLE_API_KEY` (AI-Studio) или ADC (Vertex) |
-| `YANDEX_BASE_URL` | `yandexaikit` | Yandex FM host (default `llm.api.cloud.yandex.net`); auth — `YANDEX_API_KEY` / service-account-JWT |
-| `SBER_BASE_URL` | `sberaikit` | GigaChat host (OAuth via `SBER_OAUTH_URL`); ключ — `SBER_AUTH_KEY` |
 | `GRPC_ADDR` | `grpckit` | bind gRPC-сервера (HTTP/2; default `:9090`) |
 | `GRPC_CLIENT_TARGET` | `grpcclient` | адрес downstream gRPC-сервиса (токен — `GRPC_CLIENT_TOKEN`) |
-| `WEBPUSH_VAPID_PRIVATE_KEY` | `webpushkit` | VAPID private (raw ES256); public — `WEBPUSH_VAPID_PUBLIC_KEY`, контакт — `WEBPUSH_SUBJECT` |
 
 `outboxkit` **не** имеет своего эндпоинта — он co-located с pg-хостом: outbox
 пишется в той же транзакции, что и доменные данные (атомарность), поэтому живёт
