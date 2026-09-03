@@ -2,38 +2,31 @@
 
 ## API-поверхность (кратко)
 
-- **Сервер**: `NewServer(cfg, schemes...) *Server`; методы `Router() *chi.Mux`,
-  `API()/BindAPI() huma.API`, `Start() error`, `Stop(ctx) error`.
-- **Middleware** (net/http): `RequestID`, `Recovery(log)`, `AccessLog(log)`,
-  `OTel`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`, `Metrics(meter)`,
-  `SecurityHeaders(cfg)`, `Idempotency(cfg, store)`. huma-уровень:
+- **Сервер**: `NewServer(cfg, schemes...) *Server`; `Router()`, `API()/BindAPI()`,
+  `Listen()`, `Addr()`, `Serve()`/`Start()`, `Stop(ctx)`.
+- **Middleware** (net/http): `RequestID`, `OTel`, `Recovery(log)`,
+  `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
+  `AccessLog(log)`, `Metrics()`, `Idempotency(cfg, store)`. huma-уровень:
   `HumaAuth(api, extract)`.
 - **Ошибки**: `APIError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
-  Conflict/Internal`, `MapErr`, `MapSentinel`.
-- **Health**: `RegisterHealth(api, probes...)`, тип `Probe`.
-- **Прочее**: `RequestIDFrom(ctx)`, `ContextWithRequestID`, `HeaderRequestID`,
-  `IsMaxBodyError`, `NewMemoryStore`, `NewConfig`.
+  Conflict/Internal`, `MapErr`, `MapIs`, `MapAs[T]`, `ProblemContentType`.
+- **Health**: `RegisterHealth(api, log, probes...)`, `Probe` (= `healthkit.Probe`).
+- **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
+  `IsMaxBodyError`, `NewMemoryStore`, `NewConfig`, `Config.Validate`, `ErrConfig`.
 
 ## Сервер через fx Module
 
-`httpkit.Module` provide'ит `*Server` и `huma.API`, собирает middleware из
-`Config`, регистрирует `/health` + `/ready`, привязывает lifecycle. `Config`
-регистрирует caller.
-
 ```go
 app := fx.New(
-    logkit.Module,                 // logkit.Logger
-    httpkit.Module,                // *Server + huma.API
-    fx.Provide(httpkit.NewConfig), // Config из ENV
-
-    fx.Invoke(registerRoutes),     // см. ниже
+    logkit.Module,
+    fx.Provide(httpkit.NewConfig),
+    httpkit.Module,
+    fx.Invoke(registerRoutes),
 )
 app.Run()
 ```
 
 ## Добавить роут
-
-Роуты вешаются на `huma.API` (не на chi-router):
 
 ```go
 type GetUserInput struct {
@@ -50,8 +43,7 @@ func registerRoutes(api huma.API, svc *UserService) {
     huma.Get(api, "/users/{id}", func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
         u, err := svc.Get(ctx, in.ID)
         if err != nil {
-            return nil, httpkit.MapSentinel(err, ErrUserNotFound,
-                "USER_NOT_FOUND", http.StatusNotFound, "user not found")
+            return nil, httpkit.MapIs(err, ErrUserNotFound, "USER_NOT_FOUND", http.StatusNotFound, "user not found")
         }
         out := &GetUserOutput{}
         out.Body.ID, out.Body.Name = u.ID, u.Name
@@ -60,67 +52,61 @@ func registerRoutes(api huma.API, svc *UserService) {
 }
 ```
 
-## APIError / MapErr / MapSentinel
-
-Возвращайте `*APIError` напрямую или переводите доменные ошибки на границе
-handler'а. huma сериализует `APIError` с его `Status`.
+## APIError / MapErr / MapIs / MapAs
 
 ```go
-// Прямой APIError
 return nil, httpkit.BadRequest("INVALID_EMAIL", "email is malformed")
 
-// Таблица правил
 err = httpkit.MapErr(err,
-    httpkit.ErrorMapping{
-        Match:  func(e error) bool { return errors.Is(e, pgkit.ErrNotFound) },
-        Code:   "NOT_FOUND", Status: http.StatusNotFound, Detail: "resource not found",
-    },
-    httpkit.ErrorMapping{
-        Match:  func(e error) bool { return errors.Is(e, ErrConflict) },
-        Code:   "CONFLICT", Status: http.StatusConflict, Detail: "already exists",
-    },
+    httpkit.ErrorMapping{Match: func(e error) bool { return errors.Is(e, pgkit.ErrNotFound) },
+        Code: "NOT_FOUND", Status: http.StatusNotFound, Detail: "resource not found"},
+    httpkit.ErrorMapping{Match: func(e error) bool { return errors.Is(e, ErrConflict) },
+        Code: "CONFLICT", Status: http.StatusConflict, Detail: "already exists"},
 )
 
-// Sentinel + типизированная ошибка одного домена
-err = httpkit.MapSentinel(err, ErrLocked, "LOCKED", http.StatusForbidden, "account locked")
+err = httpkit.MapIs(err, ErrLocked, "LOCKED", http.StatusForbidden, "account locked")
+err = httpkit.MapAs[*ValidationError](err, "VALIDATION", http.StatusUnprocessableEntity, "invalid input")
 ```
 
-`MapErr`/`MapSentinel` на неузнанной ошибке возвращают её как есть — её
-подхватит дефолтный huma-обработчик (500). На `nil` возвращают `nil`.
+Неузнанная ошибка возвращается как есть (500 от huma); `nil` → `nil`.
+`MapAs[error]` паникует: такой маппинг превратил бы любую ошибку, включая
+упавшую БД, в выбранный статус.
 
 ## Идемпотентность
 
-Middleware дедуплицирует write-запросы (`POST`/`PUT`/`PATCH`) по заголовку
-`Idempotency-Key`. GET и запросы без ключа проходят насквозь. Первый ответ
-буферизуется и сохраняется в `IdempotencyStore`; повторный запрос с тем же
-ключом отдаёт закэшированный ответ (`Content-Type: application/json`).
+`POST`/`PUT`/`PATCH` с заголовком `Idempotency-Key` выполняются один раз, повтор
+получает сохранённый ответ (`Idempotent-Replayed: true`, воспроизводятся
+`Content-Type`, `Location`, `ETag`, `Content-Language`, `Content-Disposition`,
+`Cache-Control`). Ключ привязан к клиенту (`Authorization` + `Cookie`): чужой
+ключ не отдаёт чужой ответ. Тот же ключ с другим методом/путём/телом → `422
+IDEMPOTENCY_KEY_REUSED`; параллельный повтор, пока первый выполняется → `409
+IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` не сохраняются, запрос или ответ больше
+`MaxBodyBytes` идёт без идемпотентности, ошибка store — fail-open (запрос
+выполняется, метрика `result=error`).
 
-В fx-флоу middleware подключается **автоматически**, если в графе есть
-`IdempotencyStore`:
-
-```go
-app := fx.New(
-    httpkit.Module,
-    cachekit.Module, // provide'ит IdempotencyStore поверх Redis
-    // ...
-)
-```
-
-`IdempotencyStore` — интерфейс `Get(ctx, key) (resp, status, found, err)` /
-`Set(ctx, key, resp, status)`. Для тестов/одноинстансных сценариев есть
-in-memory: `httpkit.NewMemoryStore(ttl)`. Прод-store с TTL/шарингом между
-инстансами — `cachekit` (Redis). Прямое подключение мимо `Module`:
+Подключение через fx: положите в граф `IdempotencyStore` — `Module` навесит
+middleware с `Config.Idempotency`:
 
 ```go
-s.Router().Use(httpkit.Idempotency(httpkit.IdempotencyConfig{
-    Header: "Idempotency-Key", TTL: 24 * time.Hour, MaxBodyBytes: 65536,
-}, store))
+fx.Provide(func(c cachekit.Cache) httpkit.IdempotencyStore { return cachekit.NewIdempotencyStore(c) })
 ```
+
+Контракт store — байтовый, запись сериализует httpkit:
+
+```go
+type IdempotencyStore interface {
+    Reserve(ctx context.Context, key string, ttl time.Duration) (bool, error)
+    Get(ctx context.Context, key string) ([]byte, bool, error)
+    Set(ctx context.Context, key string, record []byte, ttl time.Duration) error
+    Release(ctx context.Context, key string) error
+}
+```
+
+`httpkit.NewMemoryStore()` — in-memory store для тестов и одного процесса.
 
 ## Security headers
 
-Включены всегда (через `Config.Security`). Пустое поле → заголовок не ставится.
-CSP по умолчанию пуст — задайте `HTTP_CSP`, если он нужен:
+Всегда включены; пустое поле — заголовок не ставится. CSP по умолчанию пуст:
 
 ```bash
 HTTP_HSTS="max-age=63072000; includeSubDomains; preload"
@@ -129,50 +115,40 @@ HTTP_CSP="default-src 'self'"
 
 ## CORS / RateLimit
 
-CORS выключен, пока `HTTP_CORS_ORIGINS` пуст. Включение:
-
 ```bash
 HTTP_CORS_ORIGINS="https://app.example.com,https://admin.example.com"
-HTTP_CORS_METHODS="GET,POST,PUT,DELETE"
-```
+HTTP_CORS_ALLOW_CREDENTIALS=true          # cookie-сессии; несовместимо с "*"
 
-RateLimit (per-IP) активен по умолчанию (`RPS=100`, `Burst=200`); `RPS=0`
-выключает:
-
-```bash
 HTTP_RATE_LIMIT_RPS=200
 HTTP_RATE_LIMIT_BURST=400
+HTTP_RATE_LIMIT_TRUST_PROXY=true          # только за своим nginx/traefik
 ```
+
+За reverse-proxy без `TrustProxy` все клиенты приходят с одного IP и делят
+один bucket; с `TrustProxy` без прокси заголовок `X-Forwarded-For`
+подделывается. Выбирайте по топологии.
 
 ## Auth
 
-`HumaAuth` проверяет авторизацию только для операций с непустым
-`Operation().Security`. Логика извлечения личности — в `AuthExtractor`
-(`func(*http.Request) (context.Context, error)`); ошибка → `401`. В fx-флоу
-`AuthExtractor` подключается опционально (`optional:"true"`); без него auth —
-no-op.
+`HumaAuth` проверяет только операции с непустым `Operation().Security`.
+`AuthExtractor` (`func(*http.Request) (context.Context, error)`) кладёт личность
+в ctx; ошибка → `401`. Без extractor'а в графе auth — no-op.
 
 ```go
-fx.Provide(func(jwt *authnkit.Verifier) httpkit.AuthExtractor {
+fx.Provide(func(v *authnkit.Verifier) httpkit.AuthExtractor {
     return func(r *http.Request) (context.Context, error) {
-        claims, err := jwt.Verify(extractBearer(r))
+        claims, err := v.Verify(extractBearer(r))
         if err != nil {
             return nil, err
         }
         return contextWithClaims(r.Context(), claims), nil
     }
 })
-```
 
-Схемы безопасности для OpenAPI регистрируйте через fx-группу:
-
-```go
 fx.Provide(fx.Annotate(
     func() httpkit.SecuritySchemeEntry {
-        return httpkit.SecuritySchemeEntry{
-            Name:   "Bearer",
-            Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"},
-        }
+        return httpkit.SecuritySchemeEntry{Name: "Bearer",
+            Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"}}
     },
     fx.ResultTags(`group:"httpkit.security_scheme"`),
 ))
@@ -180,32 +156,44 @@ fx.Provide(fx.Annotate(
 
 ## Readiness-probes
 
-`Probe` (`func(ctx) error`) через fx-группу `health` подключается к `/ready`:
-
 ```go
-fx.Provide(fx.Annotate(
-    func(db *pgkit.DB) httpkit.Probe { return pgkit.DBProbe(db) },
-    fx.ResultTags(`group:"health"`),
-))
+healthkit.Provide(pgkit.DBProbe)
+healthkit.Provide(natskit.Probe)
+healthkit.Provide(cachekit.Probe)
+healthkit.Provide(func(s *Sync) healthkit.Probe { return s.Ready })
 ```
 
-Любая упавшая probe → `/ready` отвечает `503`.
+Любая упавшая проба → `/ready` отвечает `503 unhealthy`; текст ошибки — в логе.
+
+## SSE и WebSocket
+
+Wrapper ответа реализует `http.Flusher`, `Unwrap()` и `http.Hijacker`, поэтому
+стриминг и upgrade работают через всю цепочку `Module`:
+
+```go
+func stream(w http.ResponseWriter, r *http.Request) {
+    w.Header().Set("Content-Type", "text/event-stream")
+    rc := http.NewResponseController(w)
+    for ev := range events {
+        fmt.Fprintf(w, "data: %s\n\n", ev)
+        _ = rc.Flush()
+    }
+}
+```
+
+Для долгих стримов задайте `HTTP_WRITE_TIMEOUT=0` (или продлевайте дедлайн через
+`ResponseController.SetWriteDeadline`).
 
 ## Прямой запуск без fx
 
 ```go
 s := httpkit.NewServer(cfg)
-s.Router().Use(
-    httpkit.RequestID(),
-    httpkit.Recovery(log),
-    httpkit.AccessLog(log),
-)
-api := s.BindAPI() // ОБЯЗАТЕЛЬНО после Use
-httpkit.RegisterHealth(api)
+s.Router().Use(httpkit.RequestID(), httpkit.OTel(), httpkit.Recovery(log), httpkit.AccessLog(log), httpkit.Metrics())
+api := s.BindAPI() // после Use
+httpkit.RegisterHealth(api, log)
 huma.Get(api, "/ping", pingHandler)
-if err := s.Start(); err != nil { /* ... */ }
+if err := s.Listen(); err != nil { /* порт занят */ }
+go func() { _ = s.Serve() }()
+// ...
+_ = s.Stop(ctx)
 ```
-
-`BindAPI` после `Use` — иначе chi паникует (`humachi.New` регистрирует
-`/openapi.json` + `/docs`, и `router.Use` после route'ов запрещён). См.
-[architecture.md](architecture.md) § Ленивый BindAPI.

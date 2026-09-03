@@ -15,128 +15,105 @@
 huma (`api.UseMiddleware`), потому что ему нужен доступ к `Operation().Security`.
 
 `*http.Server` собирается в `NewServer` из `Config` (`Addr`, `ReadTimeout`,
-`WriteTimeout`, `IdleTimeout`); handler — chi router. `Start` запускает
-`ListenAndServe` (игнорируя `http.ErrServerClosed`), `Stop` — graceful
-`Shutdown`.
+`ReadHeaderTimeout`, `WriteTimeout`, `IdleTimeout`); handler — chi router.
+
+## Старт и остановка
+
+`Listen()` занимает порт синхронно и идемпотентно; `Serve()` обслуживает
+соединения до `Stop(ctx)` (graceful `Shutdown`). `Module` вызывает `Listen` в
+`OnStart` — занятый порт или невалидный адрес валят старт приложения, а не
+превращаются в строку лога при уже «запущенном» fx-графе. `Addr()` отдаёт
+фактический адрес (для `HTTP_ADDR=:0` в тестах). `Start()` = `Serve()` для
+ручной проводки.
 
 ## Ленивый BindAPI — порядок имеет значение
 
-`huma.API` создаётся **не** в `NewServer`, а лениво в `BindAPI()`.
+`huma.API` создаётся не в `NewServer`, а лениво в `BindAPI()`: `humachi.New`
+сразу регистрирует `/openapi.json` и `/docs`, после чего chi запрещает
+`router.Use(...)`. Контракт:
 
-`humachi.New` (huma ≥ 2.37) при создании сразу регистрирует route'ы
-`/openapi.json` и `/docs` на chi router. chi запрещает `router.Use(...)` после
-того, как зарегистрирован хоть один route (panic «all middlewares must be
-defined before routes on a mux»). Поэтому контракт жёсткий:
-
-1. `NewServer(cfg, schemes...)` — только router + `*http.Server`, без huma.API.
+1. `NewServer(cfg, schemes...)` — только router + `*http.Server`.
 2. `router.Use(middleware...)` — вся net/http-цепочка.
-3. `BindAPI()` — создаёт `huma.API` (и регистрирует `/openapi.json`, `/docs`).
-4. `huma.Register` / `huma.Get` для бизнес-роутов; `api.UseMiddleware(...)` для
-   huma-уровневых middleware.
+3. `BindAPI()` — создаёт `huma.API`.
+4. `huma.Register` / `huma.Get`; `api.UseMiddleware(...)` для huma-уровня.
 
-`BindAPI` идемпотентен: повторный вызов возвращает тот же `huma.API`. `API()` —
-алиас на `BindAPI()`. `Module` соблюдает этот порядок автоматически.
-
-`SecuritySchemeEntry` (имя + `*huma.SecurityScheme`) регистрируют
-`components.securitySchemes` в OpenAPI. httpkit **не** выставляет дефолтных
-схем — caller передаёт их аргументами `NewServer` или через fx-группу
-`httpkit.security_scheme`.
+`BindAPI` идемпотентен, `API()` — алиас. `Module` соблюдает порядок сам.
+`SecuritySchemeEntry` регистрирует `components.securitySchemes`; дефолтных схем
+httpkit не выставляет.
 
 ## Конвейер middleware и порядок
 
-`Module` собирает net/http-цепочку в фиксированном порядке. chi применяет
-middleware в порядке регистрации — первый в списке оказывается **внешним**
-(ближе к сети), запрос проходит сверху вниз, ответ — снизу вверх.
+chi применяет middleware в порядке регистрации: первый в списке — внешний,
+запрос идёт сверху вниз, ответ — снизу вверх.
 
 | # | Middleware | Условие | Зачем именно здесь |
 |---|---|---|---|
-| 1 | `CORS` | если `CORS.Origins` не пуст | preflight `OPTIONS` отвечает 204 до всего остального; no-op при пустых origins |
-| 2 | `RateLimit` | если `RateLimit.RPS != 0` | отсекает поток до тяжёлой работы; per-IP token-bucket |
-| 3 | `MaxBody` | если `MaxBody.MaxBytes != 0` | оборачивает `r.Body` в `MaxBytesReader` до чтения handler'ом |
-| 4 | `RequestID` | всегда | генерирует/принимает `X-Request-ID`, кладёт в ctx — чтобы дальше его видели логи |
-| 5 | `Recovery` | всегда | ловит panic из всего, что ниже; логирует + 500 + `http_panics_total` |
-| 6 | `SecurityHeaders` | всегда | выставляет security-заголовки на ответ |
-| 7 | `AccessLog` | всегда | пишет строку доступа (после `RequestID` — чтобы `request_id` был в логе) |
-| 8 | `Metrics` | если в DI есть `metric.Meter` | RED-метрики на chi route-pattern |
-| 9 | `OTel` | всегда | `otelhttp` server-span (внутренний слой) |
+| 1 | `RequestID` | всегда | `X-Request-ID` в ctx до всего остального: логи и спан его увидят |
+| 2 | `OTel` | всегда | server-span и входящий `traceparent`; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log |
+| 3 | `Recovery` | всегда | ловит panic из всего, что ниже: 500 + `http_panics_total`; `http.ErrAbortHandler` пробрасывает |
+| 4 | `SecurityHeaders` | всегда | заголовки на любой ответ, включая 429 и 413 |
+| 5 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
+| 6 | `RateLimit` | если `RateLimit.RPS > 0` | per-IP bucket; дешёвый отказ до тяжёлой работы |
+| 7 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом |
+| 8 | `AccessLog` | всегда | строка на запрос с `route`, `status`, `bytes`, `dur` |
+| 9 | `Metrics` | всегда | RED на chi route-pattern; уточняет имя спана до `METHOD /route` |
 | 10 | `Idempotency` | если в DI есть `IdempotencyStore` | дедуп write-запросов по `Idempotency-Key` |
 
-`HumaAuth` — отдельный слой: регистрируется на `huma.API`
-(`api.UseMiddleware`), а не на chi.
+`HumaAuth` — отдельный слой на `huma.API`.
 
-### Почему именно такой порядок
+Почему так: `RequestID` и `OTel` первыми, чтобы контекст запроса был полным у
+всех остальных; `Recovery` выше остальных, чтобы panic в любом слое дала
+залогированную строку и метрику; `CORS`/`RateLimit` — до дорогой работы;
+`Metrics` внутри, чтобы route-pattern уже был известен.
 
-- `RequestID` **перед** `AccessLog` и `Recovery`: оба используют ctx с
-  request-id (через зарегистрированный `logkit.RegisterAttr`).
-- `Recovery` **выше** `AccessLog`/`Metrics`/`OTel`: panic, поднявшаяся из
-  handler'а, всё равно даст залогированную строку (recover вернёт управление, и
-  внешние middleware допишут ответ/метрику).
-- `CORS`/`RateLimit` — **самые внешние**: дешёвый отказ (preflight 204, 429) не
-  должен тратить downstream-ресурсы.
-- `OTel` — **внутренний** относительно `Metrics`: span охватывает только сам
-  handler, не накладные расходы цепочки.
+### Зависимости через fx
 
-### Зависимости через fx (optional)
+- `logkit.Logger` — обязателен (`Recovery`, `AccessLog`, `/ready`).
+- `IdempotencyStore` (`optional`) — есть в графе → `Idempotency` с
+  `Config.Idempotency` (`HTTP_IDEMPOTENCY_*`).
+- `AuthExtractor` (`optional`) → `HumaAuth`; нет → auth no-op.
+- `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI.
+- `[]healthkit.Probe` (группа `health`) → `/ready`. Тип именованный:
+  `httpkit.Probe` — alias `healthkit.Probe`, а `pgkit.DBProbe`, `natskit.Probe`,
+  `cachekit.Probe` возвращают его же. Регистрация — `healthkit.Provide(ctor)`.
 
-- `metric.Meter` (`optional:"true"`) — если потребитель подключил `metric.Meter`
-  в граф → добавляется `Metrics` с этим meter'ом. Нет — прочие instrument'ы берут
-  глобальный `otel.Meter` (no-op без `MeterProvider`), спаны идут через `OTel`.
-- `IdempotencyStore` (`optional:"true"`) — есть в графе (напр.
-  `cachekit` provide'ит Redis-store) → добавляется `Idempotency` с дефолтным
-  `IdempotencyConfig` (`Header: "Idempotency-Key"`, `TTL: 24h`,
-  `MaxBodyBytes: 65536`).
-- `AuthExtractor` (`optional:"true"`) — передаётся в `HumaAuth`. Нет → auth
-  no-op (next без проверки).
-- `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI
-  securitySchemes.
-- `[]Probe` (группа `health`) → readiness-проверки в `/ready`.
+## Wrapper ответа
 
-## RequestID и кросс-транспортный ключ
+Все middleware оборачивают `http.ResponseWriter` одним типом: он считает статус
+и байты, повторный `WriteHeader` игнорирует, реализует `Unwrap()` для
+`http.ResponseController`, `Flush()` для SSE/chunked и `Hijack()` для
+WebSocket-upgrade. Повторное оборачивание того же writer'а не создаёт новый слой.
 
-`RequestID` читает `X-Request-ID` из запроса (или генерирует UUID), пишет его в
-заголовок ответа и кладёт в ctx через `ContextWithRequestID` (общий
-unexported-ключ). `init()` регистрирует `logkit.RegisterAttr` так, что любой
-ctx-scoped лог-вызов автоматически получает атрибут `request_id` — дублировать
-его в `AccessLog` не нужно.
+## RequestID
 
-Ключ общий с `grpckit`: HTTP-middleware и gRPC-интерсептор пишут request-id под
-один ctx-ключ, поэтому `RequestIDFrom(ctx)` работает независимо от транспорта.
+Принимает `X-Request-ID` клиента только печатным ASCII без пробелов длиной до
+128 байт (id попадает в каждую строку лога), иначе генерирует UUIDv7
+(`idkit.NewV7`). Ключ ctx — `internal/requestid`, общий с `httpclient`
+(прокидывает заголовок дальше) и `grpckit` (интерсептор пишет тот же ключ).
+`init()` регистрирует `logkit.RegisterAttr`: любой ctx-scoped лог-вызов получает
+`request_id` автоматически.
 
 ## Error-маппинг
 
-`APIError` — единая модель ошибки в формате RFC 7807-подобного problem-объекта:
-`{type, title, status, detail, instance, code}` (все поля `omitempty`).
-Реализует `error` и `huma.StatusError` (`GetStatus()`), поэтому huma сериализует
-его с корректным HTTP-статусом.
+`APIError` — problem-объект `{type, title, status, detail, instance, code}`
+(`omitempty`), реализует `error` и `huma.StatusError`. Из middleware (до huma)
+ошибки пишутся тем же объектом с `Content-Type: application/problem+json`.
 
-- `Error(code, status, detail)` — базовый конструктор; `Title` берётся из
-  `http.StatusText(status)`.
-- Хелперы по статусу: `BadRequest`, `Unauthorized`, `Forbidden`, `NotFound`,
-  `Conflict`, `Internal` — `(code, detail)`.
-- `WithDefaults()` — проставляет `Type="about:blank"` и `Title` из статуса, если
-  пусты (явный `Type` не перетирается).
+- `Error(code, status, detail)`, хелперы `BadRequest`…`Internal`.
+- `MapErr(err, mappings...)` — таблица `ErrorMapping{Match, Code, Status, Detail}`.
+- `MapIs(err, target, code, status, detail)` — `errors.Is`.
+- `MapAs[T](err, code, status, detail)` — `errors.As` по конкретному типу;
+  `T = error` запрещён (паника), потому что совпал бы с любой ошибкой.
 
-Перевод доменных ошибок в `APIError` — на границе handler'а:
-
-- `MapErr(err, mappings...)` — таблица правил `ErrorMapping{Match, Code, Status,
-  Detail}`; первое совпадение по `Match(err)` → `APIError`. Нет совпадений →
-  исходная ошибка возвращается как есть.
-- `MapSentinel[E error](err, target, code, status, detail)` — generic: матчит
-  `errors.Is(err, target)` **или** `errors.As(err, &typedE)`. Удобно для пары
-  «sentinel + типизированная ошибка одного домена».
-
-Решение-WHY: доменный код возвращает свои ошибки (`pgkit.ErrNotFound`,
-sentinel'ы) и **не** знает про HTTP; перевод в статус/код локализован в одном
-месте transport-слоя. `MapErr`/`MapSentinel` возвращают `error` (не паникуют),
-оставляя неузнанные ошибки нетронутыми — их подхватит дефолтный huma-обработчик
-(500).
+Неузнанная ошибка возвращается как есть — её подхватит дефолтный
+huma-обработчик (500). Доменный код не знает про HTTP; перевод в статус
+локализован на границе handler'а.
 
 ## Health / readiness
 
-`RegisterHealth(api, probes...)` (вызывается из `Module` через `registerHealth`)
-регистрирует:
+`RegisterHealth(api, log, probes...)`:
 
-- `GET /health` — liveness, всегда `{"status":"ok"}`, `Security: []` (без auth).
-- `GET /ready` — readiness: прогоняет все `Probe` (`func(ctx) error`); любая
-  ошибка → `503` (`huma.Error503ServiceUnavailable` со всеми ошибками). Probes
-  приходят через fx-группу `health` (напр. `pgkit.DBProbe`).
+- `GET /health` — liveness, всегда `{"status":"ok"}`.
+- `GET /ready` — прогоняет пробы; каждая ошибка логируется на `Warn` с индексом
+  пробы, ответ — общий `503 unhealthy` без текста ошибок: в них бывают DSN и
+  внутренние адреса.

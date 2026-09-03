@@ -1,7 +1,7 @@
 package httpkit_test
 
 import (
-	"bytes"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 func okHandler(w http.ResponseWriter, _ *http.Request) {
@@ -17,57 +18,68 @@ func okHandler(w http.ResponseWriter, _ *http.Request) {
 
 func TestCORS_Preflight(t *testing.T) {
 	cfg := httpkit.CORSConfig{
-		Origins: []string{"https://example.com"},
+		Origins: []string{"https://app.example.com"},
 		Methods: []string{"GET", "POST"},
-		Headers: []string{"Authorization", "Content-Type"},
+		Headers: []string{"Authorization"},
 		MaxAge:  600,
 	}
 	h := httpkit.CORS(cfg)(http.HandlerFunc(okHandler))
 
 	req := httptest.NewRequest(http.MethodOptions, "/", nil)
-	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Origin", "https://app.example.com")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusNoContent {
-		t.Errorf("preflight: want 204, got %d", rec.Code)
+		t.Fatalf("want 204, got %d", rec.Code)
 	}
-	if rec.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
-		t.Errorf("ACAO header not set: %s", rec.Header().Get("Access-Control-Allow-Origin"))
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "https://app.example.com" {
+		t.Errorf("ACAO = %q", got)
+	}
+	if got := rec.Header().Get("Vary"); got != "Origin" {
+		t.Errorf("Vary = %q, want Origin", got)
+	}
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "" {
+		t.Error("credentials header must be absent unless enabled")
 	}
 }
 
-func TestCORS_RegularRequest(t *testing.T) {
-	cfg := httpkit.CORSConfig{
-		Origins: []string{"https://example.com"},
-		Methods: []string{"GET"},
-		Headers: []string{"Content-Type"},
-		MaxAge:  600,
-	}
-	h := httpkit.CORS(cfg)(http.HandlerFunc(okHandler))
-
+func TestCORS_UnknownOriginNoHeaders(t *testing.T) {
+	h := httpkit.CORS(httpkit.CORSConfig{Origins: []string{"https://app.example.com"}})(http.HandlerFunc(okHandler))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Origin", "https://evil.example.com")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("want 200, got %d", rec.Code)
+	if rec.Code != http.StatusOK || rec.Header().Get("Access-Control-Allow-Origin") != "" {
+		t.Fatalf("unknown origin must pass through without ACAO: %d %v", rec.Code, rec.Header())
 	}
-	if rec.Header().Get("Access-Control-Allow-Origin") != "https://example.com" {
-		t.Errorf("ACAO header not set")
+}
+
+func TestCORS_WildcardAndCredentials(t *testing.T) {
+	h := httpkit.CORS(httpkit.CORSConfig{Origins: []string{"*"}})(http.HandlerFunc(okHandler))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://any.example.com")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("wildcard ACAO = %q", got)
+	}
+
+	h = httpkit.CORS(httpkit.CORSConfig{Origins: []string{"https://app.example.com"}, AllowCredentials: true})(http.HandlerFunc(okHandler))
+	req.Header.Set("Origin", "https://app.example.com")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if rec.Header().Get("Access-Control-Allow-Credentials") != "true" {
+		t.Error("credentials must be allowed for a listed origin")
 	}
 }
 
 func TestCORS_Disabled(t *testing.T) {
-	cfg := httpkit.CORSConfig{}
-	h := httpkit.CORS(cfg)(http.HandlerFunc(okHandler))
-
+	h := httpkit.CORS(httpkit.CORSConfig{})(http.HandlerFunc(okHandler))
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.Header.Set("Origin", "https://example.com")
+	req.Header.Set("Origin", "https://app.example.com")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
-
 	if rec.Header().Get("Access-Control-Allow-Origin") != "" {
 		t.Error("CORS should be disabled when origins empty")
 	}
@@ -75,43 +87,32 @@ func TestCORS_Disabled(t *testing.T) {
 
 func TestRateLimit_AllowAndReject(t *testing.T) {
 	// RPS=1: за время 101 запроса ведро не успевает пополниться, 101-й всегда 429.
-	cfg := httpkit.RateLimitConfig{RPS: 1, Burst: 100}
-	h := httpkit.RateLimit(cfg)(http.HandlerFunc(okHandler))
-
-	srv := httptest.NewServer(h)
-	defer srv.Close()
-
-	var last int
-	for i := 0; i < 101; i++ {
-		resp, err := http.Get(srv.URL + "/")
-		if err != nil {
-			t.Fatalf("request %d: %v", i, err)
-		}
-		resp.Body.Close()
-		last = resp.StatusCode
+	h := httpkit.RateLimit(httpkit.RateLimitConfig{RPS: 1, Burst: 100})(http.HandlerFunc(okHandler))
+	var last *httptest.ResponseRecorder
+	for range 101 {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "10.0.0.1:1234"
+		last = httptest.NewRecorder()
+		h.ServeHTTP(last, req)
 	}
-
-	if last != http.StatusTooManyRequests {
-		t.Errorf("101st request: want 429, got %d", last)
+	if last.Code != http.StatusTooManyRequests {
+		t.Fatalf("101st request: want 429, got %d", last.Code)
+	}
+	if last.Header().Get("Retry-After") == "" || last.Header().Get("Content-Type") != httpkit.ProblemContentType {
+		t.Errorf("429 must carry Retry-After and problem+json: %v", last.Header())
 	}
 }
 
 func TestRateLimit_Disabled(t *testing.T) {
-	cfg := httpkit.RateLimitConfig{RPS: 0}
-	h := httpkit.RateLimit(cfg)(http.HandlerFunc(okHandler))
-
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	h := httpkit.RateLimit(httpkit.RateLimitConfig{RPS: 0})(http.HandlerFunc(okHandler))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if rec.Code != http.StatusOK {
 		t.Errorf("want 200 when disabled, got %d", rec.Code)
 	}
 }
 
 func TestMaxBody_OK(t *testing.T) {
-	cfg := httpkit.MaxBodyConfig{MaxBytes: 1 << 20}
-
 	var received []byte
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		b, err := io.ReadAll(r.Body)
@@ -122,44 +123,96 @@ func TestMaxBody_OK(t *testing.T) {
 		received = b
 		w.WriteHeader(http.StatusOK)
 	})
-	h := httpkit.MaxBody(cfg)(handler)
-
-	body := bytes.Repeat([]byte("a"), 1<<20)
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+	h := httpkit.MaxBody(httpkit.MaxBodyConfig{MaxBytes: 1 << 20})(handler)
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Errorf("want 200, got %d", rec.Code)
-	}
-	if len(received) != 1<<20 {
-		t.Errorf("want %d bytes, got %d", 1<<20, len(received))
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader("hello")))
+	if rec.Code != http.StatusOK || string(received) != "hello" {
+		t.Fatalf("got %d %q", rec.Code, received)
 	}
 }
 
 func TestMaxBody_TooLarge(t *testing.T) {
-	cfg := httpkit.MaxBodyConfig{MaxBytes: 1 << 20}
-
 	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, err := io.ReadAll(r.Body)
-		if err != nil {
-			if strings.Contains(err.Error(), "too large") || strings.Contains(err.Error(), "request body too large") {
-				http.Error(w, "too large", http.StatusRequestEntityTooLarge)
-				return
+		if _, err := io.ReadAll(r.Body); err != nil {
+			if !httpkit.IsMaxBodyError(err) {
+				t.Errorf("want MaxBytesError, got %v", err)
 			}
-			http.Error(w, err.Error(), http.StatusInternalServerError)
+			http.Error(w, "too large", http.StatusRequestEntityTooLarge)
 			return
 		}
 		w.WriteHeader(http.StatusOK)
 	})
-	h := httpkit.MaxBody(cfg)(handler)
+	h := httpkit.MaxBody(httpkit.MaxBodyConfig{MaxBytes: 4})(handler)
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodPost, "/", strings.NewReader("way too long")))
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("want 413, got %d", rec.Code)
+	}
+}
 
-	body := bytes.Repeat([]byte("a"), 2<<20)
-	req := httptest.NewRequest(http.MethodPost, "/", bytes.NewReader(body))
+func TestRequestID_ValidatesClientValue(t *testing.T) {
+	var seen string
+	h := httpkit.RequestID()(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seen = httpkit.RequestIDFrom(r.Context())
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(httpkit.HeaderRequestID, "client-42")
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
+	if seen != "client-42" || rec.Header().Get(httpkit.HeaderRequestID) != "client-42" {
+		t.Fatalf("valid client id must be kept: ctx=%q header=%q", seen, rec.Header().Get(httpkit.HeaderRequestID))
+	}
 
-	if rec.Code != http.StatusRequestEntityTooLarge {
-		t.Errorf("want 413, got %d", rec.Code)
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set(httpkit.HeaderRequestID, strings.Repeat("x", 300)+"\n")
+	rec = httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	if seen == "" || len(seen) > 128 || strings.Contains(seen, "\n") {
+		t.Fatalf("invalid client id must be replaced, got %q", seen)
+	}
+}
+
+func TestRecovery_PanicTo500(t *testing.T) {
+	h := httpkit.Recovery(logkit.Nop())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	}))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if rec.Code != http.StatusInternalServerError || rec.Header().Get("Content-Type") != httpkit.ProblemContentType {
+		t.Fatalf("got %d %v", rec.Code, rec.Header())
+	}
+}
+
+func TestRecovery_AbortHandlerPropagates(t *testing.T) {
+	h := httpkit.Recovery(logkit.Nop())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic(http.ErrAbortHandler)
+	}))
+	defer func() {
+		err, _ := recover().(error)
+		if !errors.Is(err, http.ErrAbortHandler) {
+			t.Fatalf("ErrAbortHandler must propagate, got %v", err)
+		}
+	}()
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+}
+
+func TestChain_FlushReachesUnderlyingWriter(t *testing.T) {
+	var flushed bool
+	inner := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if _, ok := w.(http.Flusher); !ok {
+			t.Error("w must implement http.Flusher through the chain")
+		}
+		if err := http.NewResponseController(w).Flush(); err != nil {
+			t.Errorf("ResponseController.Flush: %v", err)
+		}
+		flushed = true
+	})
+	h := httpkit.Recovery(logkit.Nop())(httpkit.AccessLog(logkit.Nop())(httpkit.Metrics()(inner)))
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
+	if !flushed || !rec.Flushed {
+		t.Fatalf("flush must reach the recorder: handler=%v recorder=%v", flushed, rec.Flushed)
 	}
 }

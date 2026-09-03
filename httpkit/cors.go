@@ -7,10 +7,12 @@ import (
 )
 
 type CORSConfig struct {
-	Origins []string `envconfig:"HTTP_CORS_ORIGINS"`
-	Methods []string `envconfig:"HTTP_CORS_METHODS" default:"GET,POST,PUT,PATCH,DELETE,OPTIONS"`
-	Headers []string `envconfig:"HTTP_CORS_HEADERS" default:"Authorization,Content-Type,X-Request-ID"`
-	MaxAge  int      `envconfig:"HTTP_CORS_MAX_AGE" default:"600"`
+	// Origins пуст — CORS выключен. «*» разрешает любой origin (без credentials).
+	Origins          []string `envconfig:"HTTP_CORS_ORIGINS"`
+	Methods          []string `envconfig:"HTTP_CORS_METHODS" default:"GET,POST,PUT,PATCH,DELETE,OPTIONS"`
+	Headers          []string `envconfig:"HTTP_CORS_HEADERS" default:"Authorization,Content-Type,X-Request-ID"`
+	MaxAge           int      `envconfig:"HTTP_CORS_MAX_AGE" default:"600"`
+	AllowCredentials bool     `envconfig:"HTTP_CORS_ALLOW_CREDENTIALS" default:"false"`
 }
 
 func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
@@ -18,9 +20,15 @@ func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
 		return func(next http.Handler) http.Handler { return next }
 	}
 
+	any := false
 	originSet := make(map[string]struct{}, len(cfg.Origins))
 	for _, o := range cfg.Origins {
-		originSet[strings.TrimSpace(o)] = struct{}{}
+		o = strings.TrimSpace(o)
+		if o == "*" {
+			any = true
+			continue
+		}
+		originSet[o] = struct{}{}
 	}
 
 	methods := strings.Join(cfg.Methods, ", ")
@@ -30,24 +38,24 @@ func CORS(cfg CORSConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			origin := r.Header.Get("Origin")
-			_, allowed := originSet[origin]
-			if !allowed {
-				for o := range originSet {
-					if o == "*" {
-						allowed = true
-						origin = "*"
-						break
-					}
-				}
-			}
+			h := w.Header()
+			// Ответ зависит от Origin: кэш не должен отдать чужой ACAO.
+			h.Add("Vary", "Origin")
 
+			_, listed := originSet[origin]
+			allowed := origin != "" && (listed || any)
 			if allowed {
-				h := w.Header()
-				h.Set("Access-Control-Allow-Origin", origin)
+				echo := origin
+				if any && !listed && !cfg.AllowCredentials {
+					echo = "*"
+				}
+				h.Set("Access-Control-Allow-Origin", echo)
 				h.Set("Access-Control-Allow-Methods", methods)
 				h.Set("Access-Control-Allow-Headers", headers)
 				h.Set("Access-Control-Max-Age", maxAge)
-
+				if cfg.AllowCredentials && echo != "*" {
+					h.Set("Access-Control-Allow-Credentials", "true")
+				}
 				if r.Method == http.MethodOptions {
 					w.WriteHeader(http.StatusNoContent)
 					return

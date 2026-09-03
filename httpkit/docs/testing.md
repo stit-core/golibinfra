@@ -1,44 +1,33 @@
 # httpkit — тестирование
 
-## Тестирование handler'ов через testkit/handlertest
+## Handler'ы через testkit/handlertest
 
-`testkit/handlertest` поднимает huma-API на `humatest` и предоставляет хелперы
-для проверки ответов и `APIError`. Это путь для consumer-сервисов: тестировать
-свои роуты, не поднимая реальный `*http.Server`.
+`testkit/handlertest` поднимает huma-API на `humatest` без реального
+`*http.Server`:
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 
 func TestGetUser(t *testing.T) {
     api := handlertest.NewAPI(t, func(api huma.API) {
-        registerRoutes(api, svc) // ваши huma.Get/huma.Register
+        registerRoutes(api, svc)
     })
 
     resp := api.Get("/users/42")
     handlertest.AssertStatus(t, resp, http.StatusOK)
 
-    // Для ошибочного ответа — проверка статуса + APIError.Code разом:
     resp = api.Get("/users/missing")
     handlertest.AssertAPIError(t, resp, http.StatusNotFound, "USER_NOT_FOUND")
 }
 ```
 
-Хелперы:
+Хелперы: `NewAPI`, `AssertStatus`, `DecodeAPIError`, `AssertAPIError`.
+`handlertest.APIError` — локальная структура для декода, не `httpkit.APIError`.
 
-- `NewAPI(t, register) API` — `humatest.TestAPI` с зарегистрированными роутами.
-- `AssertStatus(t, resp, want)` — проверка HTTP-кода (при несовпадении печатает
-  тело).
-- `DecodeAPIError(t, resp) APIError` — разбирает тело как `{code,status,title,
-  detail}`; понимает и huma-обёртку `{"errors":[...]}`, и прямой объект.
-- `AssertAPIError(t, resp, status, code)` — статус + `code` за один вызов.
+## Middleware напрямую
 
-`handlertest.APIError` — локальная структура для декода (поля `code`, `status`,
-`title`, `detail`), не путать с `httpkit.APIError`.
-
-## Тестирование middleware напрямую
-
-Каждый middleware — обычный `func(http.Handler) http.Handler`, тестируется через
-`net/http/httptest` без сервера:
+Каждый middleware — `func(http.Handler) http.Handler`, тестируется через
+`httptest` без сервера:
 
 ```go
 h := httpkit.CORS(cfg)(http.HandlerFunc(okHandler))
@@ -46,21 +35,40 @@ req := httptest.NewRequest(http.MethodOptions, "/", nil)
 req.Header.Set("Origin", "https://example.com")
 rec := httptest.NewRecorder()
 h.ServeHTTP(rec, req)
-// rec.Code, rec.Header() ...
 ```
 
-RateLimit удобнее проверять через `httptest.NewServer` (нужен реальный
-`RemoteAddr` для per-IP bucket).
+Для `RateLimit` задайте `req.RemoteAddr` (или `X-Forwarded-For` с
+`TrustProxy`), чтобы запросы попали в один bucket.
 
-## Метрики в тестах
+## Метрики
 
-`Metrics(meter)` принимает `metric.Meter` аргументом — подайте
-`sdkmetric.NewManualReader` + `NewMeterProvider`, прогоните запрос и соберите
-`ResourceMetrics`, чтобы проверить `http_requests_total` /
-`http_request_duration_seconds` и их labels (`method`/`path`/`status`).
+`Metrics()` пишет в глобальный `otel.Meter`: в тесте зарегистрируйте
+`sdkmetric.NewMeterProvider` с `ManualReader` через `otel.SetMeterProvider` до
+создания middleware и соберите `ResourceMetrics`. Label `path` — route-pattern
+или `unmatched`.
 
-## Идемпотентность в тестах
+## Идемпотентность
 
-`httpkit.NewMemoryStore(ttl)` — in-memory `IdempotencyStore` для тестов: первый
-write-запрос вызывает handler, повторный с тем же `Idempotency-Key` отдаёт
-закэшированный ответ без повторного вызова. GET игнорируется.
+`httpkit.NewMemoryStore()` — in-memory `IdempotencyStore`: первый write-запрос
+вызывает handler, повтор с тем же ключом, телом и `Authorization` отдаёт
+сохранённый ответ; другое тело → `422`.
+
+## fx-проводка целиком
+
+Поднимите `Module` на свободном порту и ходите по HTTP — так проверяется, что
+пробы из группы `health` доезжают до `/ready`:
+
+```go
+t.Setenv("HTTP_ADDR", "127.0.0.1:0")
+cfg, _ := httpkit.NewConfig()
+var srv *httpkit.Server
+app := fx.New(
+    fx.Supply(cfg),
+    fx.Provide(func() logkit.Logger { return logkit.Nop() }),
+    httpkit.Module,
+    healthkit.Provide(func() healthkit.Probe { return failingProbe }),
+    fx.Populate(&srv),
+)
+_ = app.Start(ctx)
+resp, _ := http.Get("http://" + srv.Addr().String() + "/ready") // 503
+```

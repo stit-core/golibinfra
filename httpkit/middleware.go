@@ -2,17 +2,20 @@ package httpkit
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"runtime/debug"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
-	"github.com/google/uuid"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 
+	"git.stit.tech/stit-core/golibinfra/idkit"
+	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -25,95 +28,89 @@ func init() {
 	})
 }
 
-const HeaderRequestID = "X-Request-ID"
+const HeaderRequestID = requestid.Header
 
-type requestIDKey struct{}
+func RequestIDFrom(ctx context.Context) string { return requestid.From(ctx) }
 
-func RequestIDFrom(ctx context.Context) string {
-	if v, ok := ctx.Value(requestIDKey{}).(string); ok {
-		return v
-	}
-	return ""
-}
-
-// ContextWithRequestID кладёт request-id в ctx под общим ключом httpkit, чтобы
-// RequestIDFrom и зарегистрированный logkit-attr видели его независимо от
-// транспорта: HTTP-middleware и gRPC-интерсептор (grpckit) пишут один ключ.
+// ContextWithRequestID кладёт request-id под общий ключ: HTTP-middleware и
+// gRPC-интерсептор (grpckit) пишут одно и то же место.
 func ContextWithRequestID(ctx context.Context, id string) context.Context {
-	return context.WithValue(ctx, requestIDKey{}, id)
+	return requestid.With(ctx, id)
 }
 
+// RequestID принимает X-Request-ID клиента только печатным ASCII до 128 байт,
+// иначе выдаёт свой UUIDv7: id попадает в каждую строку лога.
 func RequestID() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			id := r.Header.Get(HeaderRequestID)
-			if id == "" {
-				id = uuid.NewString()
+			if !requestid.Valid(id) {
+				id = idkit.NewV7()
 			}
 			w.Header().Set(HeaderRequestID, id)
-			ctx := ContextWithRequestID(r.Context(), id)
-			next.ServeHTTP(w, r.WithContext(ctx))
+			next.ServeHTTP(w, r.WithContext(ContextWithRequestID(r.Context(), id)))
 		})
 	}
 }
 
+// Recovery переводит panic в 500; http.ErrAbortHandler пробрасывает дальше —
+// это штатный способ оборвать соединение.
 func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
-	instr := newHTTPInstruments()
+	instr := newInstruments()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ww := wrap(w)
 			defer func() {
-				if rec := recover(); rec != nil {
-					log.Error(
-						r.Context(), "panic recovered",
-						"panic", rec,
-						"stack", string(debug.Stack()),
-					)
-					instr.panicsTotal.Add(r.Context(), 1, metric.WithAttributes(
-						attribute.String("path", r.URL.Path),
-					))
-					http.Error(w, "internal server error", http.StatusInternalServerError)
+				rec := recover()
+				if rec == nil {
+					return
+				}
+				if err, ok := rec.(error); ok && errors.Is(err, http.ErrAbortHandler) {
+					panic(rec)
+				}
+				log.Error(r.Context(), "panic recovered",
+					"panic", rec,
+					"stack", string(debug.Stack()),
+				)
+				instr.panicsTotal.Add(r.Context(), 1, metric.WithAttributes(
+					attribute.String("path", routeLabel(r)),
+				))
+				if !ww.wroteHeader {
+					writeAPIError(ww, Internal("INTERNAL", "internal server error"))
 				}
 			}()
-			next.ServeHTTP(w, r)
+			next.ServeHTTP(ww, r)
 		})
 	}
 }
 
+// AccessLog пишет одну строку на запрос; request_id и trace_id добавляет logkit
+// из ctx, поэтому middleware стоит после RequestID и OTel.
 func AccessLog(log logkit.Logger) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
-			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-			next.ServeHTTP(rec, r)
+			ww := wrap(w)
+			next.ServeHTTP(ww, r)
 
-			// request_id не дублируем — Attr-registrar в init() добавит автоматом
-			// в любом ctx-scoped лог-вызове.
 			kv := []any{
 				"method", r.Method,
 				"path", r.URL.Path,
-				"status", rec.status,
+				"route", routeLabel(r),
+				"status", ww.status,
+				"bytes", ww.bytes,
 				"dur", time.Since(start),
 			}
 			switch {
-			case rec.status >= 500:
+			case ww.status >= 500:
 				log.Error(r.Context(), "http", kv...)
-			case rec.status >= 400:
+			case ww.status >= 400:
 				log.Warn(r.Context(), "http", kv...)
 			default:
 				log.Info(r.Context(), "http", kv...)
 			}
 		})
 	}
-}
-
-type statusRecorder struct {
-	http.ResponseWriter
-	status int
-}
-
-func (r *statusRecorder) WriteHeader(s int) {
-	r.status = s
-	r.ResponseWriter.WriteHeader(s)
 }
 
 type AuthExtractor func(r *http.Request) (context.Context, error)
@@ -134,8 +131,14 @@ func HumaAuth(api huma.API, extract AuthExtractor) func(huma.Context, func(huma.
 	}
 }
 
+// OTel открывает server-спан и извлекает входящий traceparent. RED-метрики
+// otelhttp выключены: их эмитит Metrics в одном словаре с остальными китами.
+// Имя спана уточняет Metrics после роутинга.
 func OTel() func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
-		return otelhttp.NewHandler(next, "http")
+		return otelhttp.NewHandler(next, "http",
+			otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()),
+			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method }),
+		)
 	}
 }

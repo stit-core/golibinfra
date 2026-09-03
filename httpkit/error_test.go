@@ -3,180 +3,106 @@ package httpkit_test
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
-	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 )
 
-func TestAPIError_JSON(t *testing.T) {
-	e := httpkit.Error("TEST_CODE", http.StatusBadRequest, "bad input")
-
-	rec := httptest.NewRecorder()
-	rec.Header().Set("Content-Type", "application/json")
-	body, err := json.Marshal(e)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	rec.Write(body)
-
-	var m map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-
-	tests := []struct {
-		field string
-		want  any
-	}{
-		{"code", "TEST_CODE"},
-		{"status", float64(http.StatusBadRequest)},
-		{"title", "Bad Request"},
-		{"detail", "bad input"},
-	}
-	for _, tc := range tests {
-		if m[tc.field] != tc.want {
-			t.Errorf("field %q: want %v, got %v", tc.field, tc.want, m[tc.field])
-		}
-	}
-}
-
-func TestAPIError_ProblemJSON_OmitEmpty(t *testing.T) {
-	e := httpkit.Error("X", http.StatusBadRequest, "d")
-	body, err := json.Marshal(e)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var m map[string]any
-	if err := json.Unmarshal(body, &m); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if _, ok := m["type"]; ok {
-		t.Errorf("type should be omitted when empty, got %v", m["type"])
-	}
-	if _, ok := m["instance"]; ok {
-		t.Errorf("instance should be omitted when empty")
-	}
-}
-
-func TestAPIError_WithDefaults(t *testing.T) {
-	e := httpkit.APIError{Status: http.StatusBadRequest, Detail: "d"}
-	got := e.WithDefaults()
-	if got.Type != "about:blank" {
-		t.Errorf("Type: want about:blank, got %q", got.Type)
-	}
-	if got.Title != "Bad Request" {
-		t.Errorf("Title: want Bad Request, got %q", got.Title)
-	}
-
-	body, err := json.Marshal(got)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	var m map[string]any
-	_ = json.Unmarshal(body, &m)
-	if m["type"] != "about:blank" {
-		t.Errorf("serialised type: want about:blank, got %v", m["type"])
-	}
-
-	custom := httpkit.APIError{Type: "https://errors.example/foo", Status: 400}.WithDefaults()
-	if custom.Type != "https://errors.example/foo" {
-		t.Errorf("explicit Type overwritten: %q", custom.Type)
-	}
-}
-
-func TestProblemContentType(t *testing.T) {
-	if httpkit.ProblemContentType != "application/problem+json" {
-		t.Errorf("unexpected: %s", httpkit.ProblemContentType)
-	}
-}
-
-func TestAPIError_GetStatus(t *testing.T) {
-	tests := []struct {
-		name string
-		fn   func() *httpkit.APIError
-		code int
-	}{
-		{"BadRequest", func() *httpkit.APIError { return httpkit.BadRequest("c", "d") }, http.StatusBadRequest},
-		{"Unauthorized", func() *httpkit.APIError { return httpkit.Unauthorized("c", "d") }, http.StatusUnauthorized},
-		{"Forbidden", func() *httpkit.APIError { return httpkit.Forbidden("c", "d") }, http.StatusForbidden},
-		{"NotFound", func() *httpkit.APIError { return httpkit.NotFound("c", "d") }, http.StatusNotFound},
-		{"Conflict", func() *httpkit.APIError { return httpkit.Conflict("c", "d") }, http.StatusConflict},
-		{"Internal", func() *httpkit.APIError { return httpkit.Internal("c", "d") }, http.StatusInternalServerError},
-	}
-	for _, tc := range tests {
-		t.Run(tc.name, func(t *testing.T) {
-			e := tc.fn()
-			if e.GetStatus() != tc.code {
-				t.Errorf("want %d, got %d", tc.code, e.GetStatus())
-			}
-		})
-	}
-}
-
-var errSentinel = errors.New("sentinel error")
+var errSentinel = errors.New("sentinel")
 
 type typedErr struct{ msg string }
 
 func (e *typedErr) Error() string { return e.msg }
 
-func TestMapErr(t *testing.T) {
-	t.Run("nil returns nil", func(t *testing.T) {
-		if httpkit.MapErr(nil) != nil {
-			t.Error("expected nil")
+func TestAPIError_JSON(t *testing.T) {
+	raw, err := json.Marshal(httpkit.Error("USER_NOT_FOUND", http.StatusNotFound, "user not found"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := string(raw)
+	for _, want := range []string{`"code":"USER_NOT_FOUND"`, `"status":404`, `"title":"Not Found"`, `"detail":"user not found"`} {
+		if !strings.Contains(s, want) {
+			t.Errorf("json %s lacks %s", s, want)
 		}
-	})
-
-	t.Run("sentinel match", func(t *testing.T) {
-		mapped := httpkit.MapErr(errSentinel, httpkit.ErrorMapping{
-			Match:  func(err error) bool { return errors.Is(err, errSentinel) },
-			Code:   "SENTINEL",
-			Status: http.StatusNotFound,
-			Detail: "not found",
-		})
-		var apiErr *httpkit.APIError
-		if !errors.As(mapped, &apiErr) {
-			t.Fatalf("expected *APIError, got %T", mapped)
+	}
+	for _, absent := range []string{`"type"`, `"instance"`} {
+		if strings.Contains(s, absent) {
+			t.Errorf("json %s must omit empty %s", s, absent)
 		}
-		if apiErr.Code != "SENTINEL" {
-			t.Errorf("unexpected code: %s", apiErr.Code)
-		}
-	})
-
-	t.Run("no match returns original", func(t *testing.T) {
-		orig := errors.New("other")
-		result := httpkit.MapErr(orig)
-		if !errors.Is(result, orig) {
-			t.Error("expected original error returned")
-		}
-	})
+	}
 }
 
-func TestMapSentinel(t *testing.T) {
-	t.Run("nil returns nil", func(t *testing.T) {
-		if httpkit.MapSentinel(nil, errSentinel, "C", 404, "d") != nil {
-			t.Error("expected nil")
-		}
-	})
+func TestAPIError_GetStatusAndError(t *testing.T) {
+	e := httpkit.Conflict("DUP", "already exists")
+	if e.GetStatus() != http.StatusConflict {
+		t.Fatalf("status %d", e.GetStatus())
+	}
+	if e.Error() != "DUP: already exists" {
+		t.Fatalf("error %q", e.Error())
+	}
+}
 
-	t.Run("sentinel match", func(t *testing.T) {
-		mapped := httpkit.MapSentinel(errSentinel, errSentinel, "SENT", http.StatusNotFound, "detail")
-		var apiErr *httpkit.APIError
-		if !errors.As(mapped, &apiErr) {
-			t.Fatalf("expected *APIError, got %T", mapped)
-		}
-		if apiErr.Status != http.StatusNotFound {
-			t.Errorf("unexpected status: %d", apiErr.Status)
-		}
+func TestMapErr(t *testing.T) {
+	if httpkit.MapErr(nil) != nil {
+		t.Error("nil must stay nil")
+	}
+	mapped := httpkit.MapErr(fmt.Errorf("wrap: %w", errSentinel), httpkit.ErrorMapping{
+		Match:  func(err error) bool { return errors.Is(err, errSentinel) },
+		Code:   "SENTINEL",
+		Status: http.StatusNotFound,
+		Detail: "not found",
 	})
+	var apiErr *httpkit.APIError
+	if !errors.As(mapped, &apiErr) || apiErr.Code != "SENTINEL" {
+		t.Fatalf("expected mapped APIError, got %v", mapped)
+	}
+	orig := errors.New("other")
+	if got := httpkit.MapErr(orig); !errors.Is(got, orig) {
+		t.Error("unmatched error must be returned as is")
+	}
+}
 
-	t.Run("typed error match", func(t *testing.T) {
-		orig := &typedErr{msg: "typed"}
-		mapped := httpkit.MapSentinel(orig, &typedErr{}, "TYPED", http.StatusBadRequest, "typed")
-		var apiErr *httpkit.APIError
-		if !errors.As(mapped, &apiErr) {
-			t.Fatalf("expected *APIError, got %T", mapped)
+func TestMapIs(t *testing.T) {
+	if httpkit.MapIs(nil, errSentinel, "C", 404, "d") != nil {
+		t.Error("nil must stay nil")
+	}
+	mapped := httpkit.MapIs(fmt.Errorf("repo: %w", errSentinel), errSentinel, "SENT", http.StatusNotFound, "detail")
+	var apiErr *httpkit.APIError
+	if !errors.As(mapped, &apiErr) || apiErr.Status != http.StatusNotFound {
+		t.Fatalf("expected 404 APIError, got %v", mapped)
+	}
+
+	// Регрессия: посторонняя ошибка (например, упавшая БД) не должна стать 404.
+	dbDown := errors.New("connection refused")
+	if got := httpkit.MapIs(dbDown, errSentinel, "SENT", http.StatusNotFound, "detail"); !errors.Is(got, dbDown) {
+		t.Fatalf("unrelated error must pass through, got %v", got)
+	}
+}
+
+func TestMapAs(t *testing.T) {
+	orig := fmt.Errorf("svc: %w", &typedErr{msg: "typed"})
+	mapped := httpkit.MapAs[*typedErr](orig, "TYPED", http.StatusBadRequest, "typed")
+	var apiErr *httpkit.APIError
+	if !errors.As(mapped, &apiErr) || apiErr.Code != "TYPED" {
+		t.Fatalf("expected APIError, got %v", mapped)
+	}
+	other := errors.New("other")
+	if got := httpkit.MapAs[*typedErr](other, "TYPED", http.StatusBadRequest, "typed"); !errors.Is(got, other) {
+		t.Fatalf("unrelated error must pass through, got %v", got)
+	}
+	if httpkit.MapAs[*typedErr](nil, "TYPED", http.StatusBadRequest, "typed") != nil {
+		t.Error("nil must stay nil")
+	}
+}
+
+func TestMapAs_ErrorInterfaceForbidden(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MapAs[error] must panic: it would match every error")
 		}
-	})
+	}()
+	_ = httpkit.MapAs[error](errors.New("x"), "C", 500, "d")
 }

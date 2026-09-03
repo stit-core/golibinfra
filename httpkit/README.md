@@ -1,14 +1,14 @@
 # httpkit
 
 HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) поверх
-[chi](https://github.com/go-chi/chi) с готовой middleware-цепочкой и
-унифицированной error-моделью. Один `Server` несёт `*chi.Mux` (транспорт) и
-`huma.API` (типобезопасные операции + OpenAPI). Из коробки: `RequestID`,
-`Recovery`, `AccessLog`, `OTel`, `CORS`, `RateLimit`, `MaxBody`, `Metrics`,
-`HumaAuth`, `SecurityHeaders`, опц. `Idempotency`; ошибки сериализуются как
-`APIError` (`{code,status,title,detail}`). `/health` и `/ready` (с
-readiness-probes) регистрируются автоматически. Observability — by default:
-RED-метрики и server-span через `otelhttp`.
+[chi](https://github.com/go-chi/chi) с готовой middleware-цепочкой и единой
+error-моделью. Один `Server` несёт `*chi.Mux` (транспорт) и `huma.API`
+(типобезопасные операции + OpenAPI). Из коробки: `RequestID`, `OTel`,
+`Recovery`, `SecurityHeaders`, `CORS`, `RateLimit`, `MaxBody`, `AccessLog`,
+`Metrics`, опц. `Idempotency`, `HumaAuth`; ошибки — `APIError`
+(`{code,status,title,detail}`, `application/problem+json`). `/health` и `/ready`
+(по пробам из fx-группы `health`) регистрируются автоматически. RED-метрики и
+server-span — by default.
 
 ## Импорт
 
@@ -16,22 +16,25 @@ RED-метрики и server-span через `otelhttp`.
 import "git.stit.tech/stit-core/golibinfra/httpkit"
 ```
 
-Версия и `go get` — см. [корневой README](../README.md) § Использование в проекте.
-
 ## Быстрый старт
 
-Через fx: `Module` provide'ит `*Server` и `huma.API`, собирает middleware-цепочку
-из `Config`, регистрирует `/health` + `/ready` и привязывает lifecycle (старт в
-goroutine на `OnStart`, graceful shutdown на `OnStop`). `Config` регистрирует
-caller — `Module` его **не** provide'ит (та же asymmetry, что в `pgkit`).
+`Module` provide'ит `*Server` и `huma.API`, собирает цепочку из `Config`,
+регистрирует `/health` + `/ready` и привязывает lifecycle: порт занимается
+синхронно в `OnStart` (занятый адрес — ошибка старта), graceful shutdown в
+`OnStop`. `Config` регистрирует caller.
 
 ```go
 app := fx.New(
     logkit.Module,                    // logkit.Logger
+    fx.Provide(httpkit.NewConfig),    // HTTP_* из ENV + Validate
     httpkit.Module,                   // *Server + huma.API
-    fx.Provide(httpkit.NewConfig),    // Config из ENV (envconfig)
+    healthkit.Provide(pgkit.DBProbe), // проба в /ready
     fx.Invoke(func(api huma.API) {
         huma.Get(api, "/users/{id}", func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
+            u, err := svc.Get(ctx, in.ID)
+            if err != nil {
+                return nil, httpkit.MapIs(err, ErrUserNotFound, "USER_NOT_FOUND", http.StatusNotFound, "user not found")
+            }
             // ...
         })
     }),
@@ -39,29 +42,27 @@ app := fx.New(
 app.Run()
 ```
 
-Прямой `New` без fx (caller сам ставит middleware и вызывает `BindAPI` ПОСЛЕ
-`router.Use`):
+Без fx (caller сам ставит middleware и вызывает `BindAPI` после `Use`):
 
 ```go
 s := httpkit.NewServer(cfg)
-s.Router().Use(httpkit.RequestID(), httpkit.Recovery(log))
-api := s.BindAPI() // регистрирует /openapi.json и /docs — после Use
+s.Router().Use(httpkit.RequestID(), httpkit.OTel(), httpkit.Recovery(log), httpkit.AccessLog(log), httpkit.Metrics())
+api := s.BindAPI()
+httpkit.RegisterHealth(api, log, pgkit.DBProbe(db))
 huma.Get(api, "/ping", handler)
-_ = s.Start()
+_ = s.Serve()
 ```
 
 ## Документация
 
-- [docs/architecture.md](docs/architecture.md) — устройство (huma + chi,
-  ленивый `BindAPI`), конвейер middleware и порядок, error-маппинг, ключевые
-  решения-WHY.
-- [docs/configuration.md](docs/configuration.md) — полный справочник ENV:
-  `Config`, `CORSConfig`, `RateLimitConfig`, `MaxBodyConfig`,
-  `SecurityHeadersConfig`, `IdempotencyConfig` (public API).
-- [docs/observability.md](docs/observability.md) — единый источник правды по
-  метрикам, labels и спанам.
-- [docs/usage.md](docs/usage.md) — рецепты: сервер через fx, добавление роута,
-  `APIError`/`MapErr`/`MapSentinel`, идемпотентность, security-headers,
-  CORS/RateLimit, auth.
-- [docs/testing.md](docs/testing.md) — httptest-хелперы из
-  `testkit/handlertest` и тестирование middleware.
+- [docs/architecture.md](docs/architecture.md) — huma + chi, ленивый `BindAPI`,
+  порядок middleware и почему он такой, wrapper ответа (`Flush`/`Hijack`),
+  error-маппинг, health.
+- [docs/configuration.md](docs/configuration.md) — справочник ENV: `Config`,
+  `CORSConfig`, `RateLimitConfig`, `MaxBodyConfig`, `SecurityHeadersConfig`,
+  `IdempotencyConfig`, правила `Validate`.
+- [docs/observability.md](docs/observability.md) — метрики, labels, спаны, логи.
+- [docs/usage.md](docs/usage.md) — рецепты: роуты, `MapIs`/`MapAs`,
+  идемпотентность, CORS/RateLimit за прокси, auth, readiness, SSE/WebSocket.
+- [docs/testing.md](docs/testing.md) — `testkit/handlertest`, тесты middleware,
+  метрик и fx-проводки.

@@ -3,20 +3,16 @@ package httpkit
 import (
 	"context"
 	"net/http"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/kelseyhightower/envconfig"
-	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module не provide'ит httpkit.Config — caller обязан зарегистрировать
-// его сам. Это однородно с pgkit: kit'ы ждут свой Config извне (типично
-// через App-структуру в app-config модуле). Если приложение не использует
-// App-pattern — добавить `fx.Provide(httpkit.NewConfig)` рядом с httpkit.Module.
+// Module не provide'ит Config: caller регистрирует его сам
+// (`fx.Provide(httpkit.NewConfig)` или из App-структуры).
 var Module = fx.Module(
 	"httpkit",
 	fx.Provide(
@@ -26,24 +22,17 @@ var Module = fx.Module(
 	fx.Invoke(registerHealth),
 )
 
+func NewConfig() (Config, error) {
+	var c Config
+	if err := envconfig.Process("", &c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
+}
+
 type idempotencyIn struct {
 	fx.In
 	Store IdempotencyStore `optional:"true"`
-}
-
-// meterIn — optional Meter. Если Meter provide'ен в DI — включаем Metrics
-// middleware; иначе пропускаем его (otelhttp всё равно даёт спаны через
-// OTel() middleware).
-type meterIn struct {
-	fx.In
-	Meter metric.Meter `optional:"true"`
-}
-
-// NewConfig — exported для приложений без App-pattern, которые хотят
-// дешевле провайдить httpkit.Config из ENV: `fx.Provide(httpkit.NewConfig)`.
-func NewConfig() (Config, error) {
-	var c Config
-	return c, envconfig.Process("", &c)
 }
 
 type AuthExtractorIn struct {
@@ -54,6 +43,7 @@ type AuthExtractorIn struct {
 type healthIn struct {
 	fx.In
 	API    huma.API
+	Log    logkit.Logger
 	Probes []Probe `group:"health"`
 }
 
@@ -63,43 +53,42 @@ type securitySchemesIn struct {
 }
 
 func registerHealth(in healthIn) {
-	RegisterHealth(in.API, in.Probes...)
+	RegisterHealth(in.API, in.Log, in.Probes...)
 }
 
-func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn, ss securitySchemesIn, mi meterIn) *Server {
+// Порядок цепочки: RequestID и OTel первыми, чтобы request_id и trace_id были
+// в ctx у всех остальных (включая access-log и panic-log).
+func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn, ss securitySchemesIn) (*Server, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	s := NewServer(cfg, ss.Schemes...)
 
 	mws := []func(http.Handler) http.Handler{
+		RequestID(),
+		OTel(),
+		Recovery(log),
+		SecurityHeaders(cfg.Security),
 		CORS(cfg.CORS),
 		RateLimit(cfg.RateLimit),
 		MaxBody(cfg.MaxBody),
-		RequestID(),
-		Recovery(log),
-		SecurityHeaders(cfg.Security),
 		AccessLog(log),
+		Metrics(),
 	}
-	if mi.Meter != nil {
-		mws = append(mws, Metrics(mi.Meter))
-	}
-	mws = append(mws, OTel())
 	if ii.Store != nil {
-		mws = append(mws, Idempotency(IdempotencyConfig{
-			Header:       "Idempotency-Key",
-			TTL:          24 * time.Hour,
-			MaxBodyBytes: 65536,
-		}, ii.Store))
+		mws = append(mws, Idempotency(cfg.Idempotency, ii.Store))
 	}
 	s.router.Use(mws...)
-	// BindAPI ПОСЛЕ Use — humachi.New регистрирует /openapi.json /docs
-	// route'ы, что блокирует chi.Mux.Use (panic "all middlewares must
-	// be defined before routes on a mux").
 	api := s.BindAPI()
 	api.UseMiddleware(HumaAuth(api, ai.Extract))
 
 	lc.Append(fx.Hook{
-		OnStart: func(_ context.Context) error {
-			go func() { //nolint:gosec // server goroutine outlives fx OnStart ctx; background ctx intentional for the terminal log
-				if err := s.Start(); err != nil {
+		OnStart: func(context.Context) error {
+			if err := s.Listen(); err != nil {
+				return err
+			}
+			go func() { //nolint:gosec // горутина сервера живёт дольше ctx OnStart; фоновый ctx только для терминального лога
+				if err := s.Serve(); err != nil {
 					log.Error(context.Background(), "http server stopped", "err", err)
 				}
 			}()
@@ -112,5 +101,5 @@ func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai A
 		},
 	})
 
-	return s
+	return s, nil
 }
