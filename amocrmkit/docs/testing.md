@@ -38,10 +38,14 @@ c, _ := amocrmkit.New(
 (`Subdomain` по `^[a-z0-9-]{1,63}$`, `TLD` `ru`/`com`) — иначе вызов упадёт с
 `ErrInvalidAccount` до сети.
 
+`HostOverride` заодно выключает allowlist доменов Drive, поэтому `driveURL` в
+тестах можно передавать как `https://drive-b.amocrm.ru` — трафик всё равно уйдёт
+на `httptest`.
+
 `WithTransport(rt)` подставляет транспорт под собираемый китом httpclient —
 удобно, когда нужен `http.RoundTripper`-стаб без сервера. `WithHTTPClient(hc)`
 подставляет готовый `*httpclient.Client` целиком (его ретраи лимитер аккаунта не
-видят).
+видят и `retry_after` из тела 429 не поднимают).
 
 ## Что проверять на стороне сервера
 
@@ -54,6 +58,12 @@ c, _ := amocrmkit.New(
   `X-Signature` (см. `assertAmojoSignature` в `amojo_test.go`).
 - **OAuth**: тело POST `/oauth2/access_token` (`grant_type`, `code`/`refresh_token`,
   обязательный `redirect_uri`); ответ с `server_time`/`expires_in`.
+- **Drive**: сессия отдаёт `upload_url` и `max_part_size`, промежуточный ответ на
+  часть — `{"session_id":…, "next_url":…}`, финальный — объект `File` с `uuid`;
+  у части проверяются `Content-Range` и `Content-Type: application/octet-stream`.
+
+Wire-контракт каждого метода (METHOD + path + query + тело + ключ `_embedded`)
+закреплён таблицей в `wire_test.go` — новый метод добавляется туда же.
 
 ## Классификация ошибок
 
@@ -72,12 +82,18 @@ if errors.As(err, &apiErr) {
 }
 ```
 
-`429` несёт `retry_after` как поле тела (не только заголовок) — `APIError.RetryAfter`
-парсит оба источника.
+`429` несёт `retry_after` как поле тела (не только заголовок) —
+`APIError.RetryAfter` парсит оба источника (заголовок — в обеих формах RFC 9110:
+секунды, в т.ч. дробные, и HTTP-дата).
+
+После 429 аккаунт встаёт на паузу до конца `retry_after`, поэтому в одном тесте
+не переиспользуйте аккаунт, которым уже поймали 429: следующий вызов вернёт
+`ErrRateLimited` до сети (или, при `MaxWait` больше паузы, будет её ждать).
+Пустой ответ на одиночный GET — `ErrNotFound`, на список и батч — «нет данных».
 
 ## Детерминированное время
 
-`clockkit` инъектируется в `New` — для проверки TTL-логики (`Tokens.ExpiresAt`),
+`clockkit` инъектируется в `New` — для проверки TTL-логики (`TokenPair.ExpiresAt`),
 фиксированного `Date` в amoJo-подписи или вытеснения лимитеров подставляйте
 `clockkit.Fixed`/`clockkit.Tickable` вместо `clockkit.Real{}`. Подпись
 (`signRequest`) принимает `now time.Time` явно, что делает её юнит-тестируемой
@@ -93,6 +109,13 @@ httpclient через лимитер проверяется интеграцио
 интеграционных тестах поднимайте `RateRPS` высоко, чтобы троттлинг не
 вмешивался; для проверки самого троттлинга задавайте низкий `RateRPS` и считайте
 `Allow()`.
+
+## Сериализация refresh
+
+`RefreshCoordinator` тестируется с `TokenStore`-фейком в памяти и сервером,
+который считает обмены: 10 параллельных `Refresh` одного аккаунта дают один
+сетевой вызов и одно сохранение пары. Чтобы вызовы гарантированно наложились,
+сервер блокируется на канале до `close(release)`.
 
 ## Верификация вебхуков
 

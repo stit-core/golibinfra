@@ -4,120 +4,60 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"slices"
+	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
+
+	"github.com/jackc/pgx/v5"
 
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
-	"git.stit.tech/stit-core/golibinfra/testkit/txkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 )
-
-type fakeRepo struct {
-	unpublished []outboxkit.Message
-	marked      []int64
-	failures    []outboxkit.Failure
-	markErr     error
-	listErr     error
-	listMode    outboxkit.PublishMode
-}
-
-func (r *fakeRepo) Insert(context.Context, string, any) error { return nil }
-
-func (r *fakeRepo) ListUnpublished(_ context.Context, limit int, mode outboxkit.PublishMode) ([]outboxkit.Message, error) {
-	r.listMode = mode
-	if r.listErr != nil {
-		return nil, r.listErr
-	}
-	if limit < len(r.unpublished) {
-		return r.unpublished[:limit], nil
-	}
-	return r.unpublished, nil
-}
-
-func (r *fakeRepo) MarkPublished(_ context.Context, ids []int64) error {
-	if r.markErr != nil {
-		return r.markErr
-	}
-	r.marked = append(r.marked, ids...)
-	return nil
-}
-
-func (r *fakeRepo) RecordFailures(_ context.Context, failures []outboxkit.Failure) error {
-	r.failures = append(r.failures, failures...)
-	return nil
-}
 
 func deadIDs(fs []outboxkit.Failure) []int64 {
 	var ids []int64
 	for _, f := range fs {
 		if f.Dead {
-			ids = append(ids, f.ID)
+			ids = append(ids, f.Ref.ID)
 		}
 	}
 	return ids
 }
 
-type fakeTransport struct {
-	published []string
-	failOn    map[string]error
-	batchErr  error
-	deadline  bool
-}
-
-func (t *fakeTransport) Publish(ctx context.Context, m outboxkit.OutMsg) error {
-	_, t.deadline = ctx.Deadline()
-	if e, ok := t.failOn[m.Subject]; ok {
-		return e
-	}
-	t.published = append(t.published, m.Subject)
-	return nil
-}
-
-func (t *fakeTransport) PublishBatch(ctx context.Context, msgs []outboxkit.OutMsg) ([]error, error) {
-	_, t.deadline = ctx.Deadline()
-	if t.batchErr != nil {
-		return nil, t.batchErr
-	}
-	errs := make([]error, len(msgs))
-	for i, m := range msgs {
-		if e, ok := t.failOn[m.Subject]; ok {
-			errs[i] = e
-			continue
-		}
-		t.published = append(t.published, m.Subject)
-	}
-	return errs, nil
-}
-
 func contains(ids []int64, want int64) bool {
-	for _, id := range ids {
-		if id == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(ids, want)
 }
 
-func newWorker(repo *fakeRepo, tr *fakeTransport, cfg outboxkit.Config) (*outboxkit.Worker, *txkit.Recorder) {
-	tx := &txkit.Recorder{}
+func msg(id int64, subject string) outboxkit.Message {
+	return outboxkit.Message{
+		ID:        id,
+		CreatedAt: time.Date(2026, 5, 1, 12, 0, 0, 0, time.UTC).Add(time.Duration(id) * time.Second),
+		Subject:   subject,
+		Payload:   json.RawMessage(`{}`),
+	}
+}
+
+func newWorker(repo outboxkit.Repository, tr outboxkit.Transport, cfg outboxkit.Config) (*outboxkit.Worker, *pgtest.Recorder) {
+	tx := &pgtest.Recorder{}
 	return outboxkit.NewWorker("test", repo, tr, tx, cfg), tx
 }
 
 func TestWorkerPublishesAndMarksInOneTx(t *testing.T) {
-	repo := &fakeRepo{unpublished: []outboxkit.Message{
-		{ID: 1, Subject: "a", Payload: json.RawMessage(`{}`)},
-		{ID: 2, Subject: "b", Payload: json.RawMessage(`{}`)},
-	}}
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a"), msg(2, "b")}}
 	tr := &fakeTransport{}
 	w, tx := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
 
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("Run: %v", err)
 	}
-	if len(tr.published) != 2 {
-		t.Fatalf("published = %d, want 2", len(tr.published))
+	if len(tr.publishedSubjects()) != 2 {
+		t.Fatalf("published = %d, want 2", len(tr.publishedSubjects()))
 	}
-	if len(repo.marked) != 2 {
-		t.Fatalf("marked = %d, want 2", len(repo.marked))
+	if len(repo.markedIDs()) != 2 {
+		t.Fatalf("marked = %d, want 2", len(repo.markedIDs()))
 	}
 	if tx.Calls() != 1 {
 		t.Fatalf("tx calls = %d, want 1 (тик — одна транзакция)", tx.Calls())
@@ -125,14 +65,14 @@ func TestWorkerPublishesAndMarksInOneTx(t *testing.T) {
 	if repo.listMode != outboxkit.PublishBatch {
 		t.Fatalf("list mode = %q, want batch", repo.listMode)
 	}
+	// MarkPublished получает ключ партиционирования, а не только id.
+	if got := repo.marked[0].CreatedAt; got.IsZero() {
+		t.Fatal("MessageRef.CreatedAt is zero — partition pruning key lost")
+	}
 }
 
 func TestWorkerBatchMarksOnlyAckedOnPartialFailure(t *testing.T) {
-	repo := &fakeRepo{unpublished: []outboxkit.Message{
-		{ID: 1, Subject: "a", Payload: json.RawMessage(`{}`)},
-		{ID: 2, Subject: "boom", Payload: json.RawMessage(`{}`)},
-		{ID: 3, Subject: "c", Payload: json.RawMessage(`{}`)},
-	}}
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a"), msg(2, "boom"), msg(3, "c")}}
 	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
 	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
 
@@ -140,17 +80,13 @@ func TestWorkerBatchMarksOnlyAckedOnPartialFailure(t *testing.T) {
 		t.Fatal("expected error on partial publish failure")
 	}
 	// id=2 (boom) не подтверждён → не помечен; 1 и 3 помечены.
-	if got := repo.marked; len(got) != 2 || !contains(got, 1) || !contains(got, 3) || contains(got, 2) {
+	if got := repo.markedIDs(); len(got) != 2 || !contains(got, 1) || !contains(got, 3) || contains(got, 2) {
 		t.Fatalf("marked = %v, want {1,3}", got)
 	}
 }
 
 func TestWorkerOrderedStopsAtFirstFailure(t *testing.T) {
-	repo := &fakeRepo{unpublished: []outboxkit.Message{
-		{ID: 1, Subject: "a", Payload: json.RawMessage(`{}`)},
-		{ID: 2, Subject: "boom", Payload: json.RawMessage(`{}`)},
-		{ID: 3, Subject: "c", Payload: json.RawMessage(`{}`)},
-	}}
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a"), msg(2, "boom"), msg(3, "c")}}
 	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
 	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishOrdered})
 
@@ -158,11 +94,11 @@ func TestWorkerOrderedStopsAtFirstFailure(t *testing.T) {
 		t.Fatal("expected error on ordered publish failure")
 	}
 	// Стоп на id=2: помечен только префикс {1}; id=3 не публиковался.
-	if got := repo.marked; len(got) != 1 || !contains(got, 1) {
+	if got := repo.markedIDs(); len(got) != 1 || !contains(got, 1) {
 		t.Fatalf("marked = %v, want {1}", got)
 	}
-	if len(tr.published) != 1 || tr.published[0] != "a" {
-		t.Fatalf("published = %v, want [a] (stop before id=3)", tr.published)
+	if pub := tr.publishedSubjects(); len(pub) != 1 || pub[0] != "a" {
+		t.Fatalf("published = %v, want [a] (stop before id=3)", pub)
 	}
 	if repo.listMode != outboxkit.PublishOrdered {
 		t.Fatalf("list mode = %q, want ordered", repo.listMode)
@@ -177,13 +113,23 @@ func TestWorkerBusySkipsTick(t *testing.T) {
 	if err := w.Run(context.Background()); err != nil {
 		t.Fatalf("ErrBusy must be a silent skip, got %v", err)
 	}
-	if len(tr.published) != 0 || len(repo.marked) != 0 {
+	if len(tr.publishedSubjects()) != 0 || len(repo.markedIDs()) != 0 {
 		t.Fatal("busy tick must not publish or mark")
 	}
 }
 
+func TestWorkerListErrorSurfaces(t *testing.T) {
+	repo := &fakeRepo{listErr: errors.New("db down")}
+	w, _ := newWorker(repo, &fakeTransport{}, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
+
+	err := w.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "list") {
+		t.Fatalf("err = %v, want list error", err)
+	}
+}
+
 func TestWorkerTickTimeoutBoundsPublish(t *testing.T) {
-	repo := &fakeRepo{unpublished: []outboxkit.Message{{ID: 1, Subject: "a", Payload: json.RawMessage(`{}`)}}}
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a")}}
 	tr := &fakeTransport{}
 	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, TickTimeout: time.Minute})
 
@@ -197,10 +143,8 @@ func TestWorkerTickTimeoutBoundsPublish(t *testing.T) {
 
 func TestWorkerMarkErrorSurfaces(t *testing.T) {
 	repo := &fakeRepo{
-		unpublished: []outboxkit.Message{
-			{ID: 1, Subject: "a", Payload: json.RawMessage(`{}`)},
-		},
-		markErr: errors.New("db down"),
+		unpublished: []outboxkit.Message{msg(1, "a")},
+		markErr:     errors.New("db down"),
 	}
 	tr := &fakeTransport{}
 	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
@@ -210,57 +154,272 @@ func TestWorkerMarkErrorSurfaces(t *testing.T) {
 	if err := w.Run(context.Background()); err == nil {
 		t.Fatal("expected error when MarkPublished fails")
 	}
-	if len(repo.marked) != 0 {
-		t.Fatalf("marked = %v, want none", repo.marked)
+	if len(repo.markedIDs()) != 0 {
+		t.Fatalf("marked = %v, want none", repo.markedIDs())
+	}
+}
+
+func TestWorkerRecordFailuresErrorSurfaces(t *testing.T) {
+	repo := &fakeRepo{
+		unpublished: []outboxkit.Message{msg(1, "boom")},
+		recordErr:   errors.New("db down"),
+	}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
+	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
+
+	err := w.Run(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "record failures") {
+		t.Fatalf("err = %v, want record failures error", err)
 	}
 }
 
 func TestWorkerPoisonGoesDeadAfterMaxAttempts(t *testing.T) {
-	repo := &fakeRepo{unpublished: []outboxkit.Message{
-		{ID: 1, Subject: "boom", Payload: json.RawMessage(`{}`), Attempts: 1}, // след. попытка — 2-я
-		{ID: 2, Subject: "young", Payload: json.RawMessage(`{}`), Attempts: 0},
-	}}
+	first, second := msg(1, "boom"), msg(2, "young")
+	first.Attempts = 1 // след. попытка — 2-я
+	repo := &fakeRepo{unpublished: []outboxkit.Message{first, second}}
 	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak"), "young": errors.New("nak")}}
 	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, MaxAttempts: 2})
 
 	if err := w.Run(context.Background()); err == nil {
 		t.Fatal("expected error on publish failure")
 	}
-	if len(repo.failures) != 2 {
-		t.Fatalf("failures = %d, want 2", len(repo.failures))
+	fs := repo.recordedFailures()
+	if len(fs) != 2 {
+		t.Fatalf("failures = %d, want 2", len(fs))
 	}
 	// id=1 достиг 2 попыток → dead; id=2 (1-я попытка) — нет.
-	if got := deadIDs(repo.failures); len(got) != 1 || got[0] != 1 {
+	if got := deadIDs(fs); len(got) != 1 || got[0] != 1 {
 		t.Fatalf("dead = %v, want {1}", got)
 	}
 }
 
 func TestWorkerUnlimitedAttemptsNeverDead(t *testing.T) {
-	repo := &fakeRepo{unpublished: []outboxkit.Message{
-		{ID: 1, Subject: "boom", Payload: json.RawMessage(`{}`), Attempts: 99},
-	}}
+	m := msg(1, "boom")
+	m.Attempts = 99
+	repo := &fakeRepo{unpublished: []outboxkit.Message{m}}
 	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
 	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, MaxAttempts: 0})
 
 	if err := w.Run(context.Background()); err == nil {
 		t.Fatal("expected error")
 	}
-	if got := deadIDs(repo.failures); len(got) != 0 {
+	if got := deadIDs(repo.recordedFailures()); len(got) != 0 {
 		t.Fatalf("dead = %v, want none (MaxAttempts=0 → unlimited)", got)
 	}
 }
 
 func TestWorkerBatchErrorMarksNothing(t *testing.T) {
-	repo := &fakeRepo{unpublished: []outboxkit.Message{
-		{ID: 1, Subject: "a", Payload: json.RawMessage(`{}`)},
-	}}
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a")}}
 	tr := &fakeTransport{batchErr: errors.New("jetstream disabled")}
 	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
 
 	if err := w.Run(context.Background()); err == nil {
 		t.Fatal("expected batch-level error")
 	}
-	if len(repo.marked) != 0 {
-		t.Fatalf("marked = %v, want none", repo.marked)
+	if len(repo.markedIDs()) != 0 {
+		t.Fatalf("marked = %v, want none", repo.markedIDs())
+	}
+}
+
+// Неудача откладывает следующую попытку: без backoff строка ретраилась бы
+// каждый тик и выжигала MaxAttempts за секунды недоступности брокера.
+func TestWorkerBackoffGrowsWithAttempts(t *testing.T) {
+	first, second, third := msg(1, "boom"), msg(2, "boom"), msg(3, "boom")
+	second.Attempts = 3
+	third.Attempts = 40 // насыщение потолком
+	repo := &fakeRepo{unpublished: []outboxkit.Message{first, second, third}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
+	w, _ := newWorker(repo, tr, outboxkit.Config{
+		BatchSize:       10,
+		PublishMode:     outboxkit.PublishBatch,
+		RetryBackoff:    time.Second,
+		RetryMaxBackoff: time.Minute,
+	})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected publish error")
+	}
+	want := []time.Duration{time.Second, 8 * time.Second, time.Minute}
+	fs := repo.recordedFailures()
+	for i, f := range fs {
+		if f.RetryAfter != want[i] {
+			t.Fatalf("failure %d: RetryAfter = %v, want %v", i, f.RetryAfter, want[i])
+		}
+	}
+}
+
+func TestWorkerBackoffDisabled(t *testing.T) {
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "boom")}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
+	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, RetryBackoff: 0})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected publish error")
+	}
+	if got := repo.recordedFailures()[0].RetryAfter; got != 0 {
+		t.Fatalf("RetryAfter = %v, want 0 (backoff disabled)", got)
+	}
+}
+
+// Zero-value Config не должен давать LIMIT 0 — тик молча ничего не публиковал бы.
+func TestWorkerZeroConfigUsesDefaults(t *testing.T) {
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a")}}
+	tr := &fakeTransport{}
+	w, _ := newWorker(repo, tr, outboxkit.Config{})
+
+	if err := w.Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if repo.limit != outboxkit.DefaultBatchSize {
+		t.Fatalf("limit = %d, want %d", repo.limit, outboxkit.DefaultBatchSize)
+	}
+	if repo.listMode != outboxkit.PublishBatch {
+		t.Fatalf("list mode = %q, want batch", repo.listMode)
+	}
+	if len(repo.markedIDs()) != 1 {
+		t.Fatal("zero-value Config published nothing")
+	}
+	// Тик идёт на context.WithoutCancel — без дедлайна его не оборвала бы и
+	// остановка сервиса.
+	if !repo.listHasDue {
+		t.Fatal("zero-value Config оставил тик без дедлайна")
+	}
+	if left := time.Until(repo.listDue); left <= 0 || left > outboxkit.DefaultTickTimeout {
+		t.Fatalf("дедлайн тика через %v, want (0, %v]", left, outboxkit.DefaultTickTimeout)
+	}
+}
+
+// last_error режется по границе руны: обрывок многобайтового символа —
+// невалидный UTF-8, который Postgres отвергает вместе со всем тиком.
+func TestWorkerTruncatesErrorOnRuneBoundary(t *testing.T) {
+	long := errors.New(strings.Repeat("ошибка ", 400)) // > 1000 рун, многобайтовые
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "boom")}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": long}}
+	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected publish error")
+	}
+	got := repo.recordedFailures()[0].Err
+	if !utf8.ValidString(got) {
+		t.Fatal("last_error is not valid UTF-8 — Postgres would reject the whole tick")
+	}
+	if n := utf8.RuneCountInString(got); n != 1000 {
+		t.Fatalf("last_error = %d runes, want 1000", n)
+	}
+}
+
+func TestWorkerKeepsInvalidUTF8Out(t *testing.T) {
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "boom")}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("bad \xff\xfe payload")}}
+	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected publish error")
+	}
+	if got := repo.recordedFailures()[0].Err; !utf8.ValidString(got) {
+		t.Fatalf("last_error %q is not valid UTF-8", got)
+	}
+}
+
+// Остановка сервиса обрывает публикацию, но не фазу mark/commit: уже
+// подтверждённые PubAck'ом строки должны дойти до published_at.
+func TestWorkerMarksAfterContextCancel(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a")}}
+	tr := &fakeTransport{beforePublish: cancel}
+	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, TickTimeout: time.Minute})
+
+	if err := w.Run(ctx); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(repo.markedIDs()) != 1 {
+		t.Fatalf("marked = %v, want {1} despite cancelled ctx", repo.markedIDs())
+	}
+	if repo.markCtxErr != nil {
+		t.Fatalf("mark ctx err = %v, want nil (mark runs on WithoutCancel)", repo.markCtxErr)
+	}
+}
+
+// commitFailTx — Transactor, у которого коммит не удаётся после успешного fn.
+type commitFailTx struct{ err error }
+
+func (t commitFailTx) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
+	if err := fn(pgkit.WithTestTx(ctx)); err != nil {
+		return err
+	}
+	return t.err
+}
+
+func (t commitFailTx) WithTxOptions(ctx context.Context, _ pgx.TxOptions, fn func(ctx context.Context) error) error {
+	return t.WithTx(ctx, fn)
+}
+
+// Счётчики состоявшихся исходов эмитятся после коммита: откат тика не должен
+// оставлять published/dead в метриках.
+func TestWorkerCountersOnlyAfterCommit(t *testing.T) {
+	collect := collectMetrics(t)
+	m := msg(1, "boom")
+	m.Attempts = 1
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(2, "ok"), m}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
+	w := outboxkit.NewWorker("commitfail", repo, tr, commitFailTx{err: errors.New("commit failed")},
+		outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, MaxAttempts: 2})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected commit error")
+	}
+	rm := collect()
+	inst := map[string]string{"instance": "commitfail"}
+	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "commitfail", "status": "published"}); got != 0 {
+		t.Fatalf("published counter = %d after rollback, want 0", got)
+	}
+	if got := counterValue(rm, "outbox_events_dead_total", inst); got != 0 {
+		t.Fatalf("dead counter = %d after rollback, want 0", got)
+	}
+	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "commitfail", "status": "publish_error"}); got != 1 {
+		t.Fatalf("publish_error counter = %d, want 1", got)
+	}
+}
+
+func TestWorkerCountersAfterSuccessfulCommit(t *testing.T) {
+	collect := collectMetrics(t)
+	m := msg(1, "boom")
+	m.Attempts = 1
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(2, "ok"), m}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("nak")}}
+	w, _ := newWorker(repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, MaxAttempts: 2})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected publish error after commit")
+	}
+	rm := collect()
+	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "test", "status": "published"}); got != 1 {
+		t.Fatalf("published counter = %d, want 1", got)
+	}
+	if got := counterValue(rm, "outbox_events_dead_total", map[string]string{"instance": "test"}); got != 1 {
+		t.Fatalf("dead counter = %d, want 1", got)
+	}
+	for _, name := range []string{"outbox_batch_duration_seconds", "outbox_publish_duration_seconds"} {
+		bounds := histogramBounds(rm, name)
+		if len(bounds) == 0 || bounds[0] != 0.005 {
+			t.Fatalf("%s has no shared duration buckets: %v", name, bounds)
+		}
+	}
+}
+
+func TestWorkerMarkErrorCounted(t *testing.T) {
+	collect := collectMetrics(t)
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a")}, markErr: errors.New("db down")}
+	w := outboxkit.NewWorker("markfail", repo, &fakeTransport{}, &pgtest.Recorder{},
+		outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected mark error")
+	}
+	rm := collect()
+	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "markfail", "status": "mark_error"}); got != 1 {
+		t.Fatalf("mark_error counter = %d, want 1", got)
 	}
 }

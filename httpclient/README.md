@@ -1,9 +1,10 @@
 # httpclient
 
 Исходящий HTTP-клиент для сервисов stit: retry с экспоненциальным backoff,
-circuit breaker на каждый upstream-хост (`sony/gobreaker/v2`), OTel-спаны через
-`otelhttp.Transport`, прокидывание `X-Request-ID` из контекста и SSE-стримы для
-long-lived соединений. Один `*httpclient.Client` обслуживает любое число хостов.
+circuit breaker на каждый upstream-хост (`sony/gobreaker/v2`), политика
+редиректов, SSE-стримы и OTel-инструментация (спан на вызов + спаны попыток
+через `otelhttp`, метрики, `X-Request-ID` из контекста). Один
+`*httpclient.Client` обслуживает любое число хостов.
 
 ## Импорт
 
@@ -16,13 +17,27 @@ import "git.stit.tech/stit-core/golibinfra/httpclient"
 ```go
 fx.New(
     fx.Provide(httpclient.NewConfig), // HTTPCLIENT_* из ENV (caller провайдит явно)
-    httpclient.Module,                // *httpclient.Client
+    httpclient.Module,                // *httpclient.Client, idle-соединения закрываются на OnStop
 
-    fx.Invoke(func(hc *httpclient.Client) {
-        req, _ := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example.com/v1/items", nil)
+    // Опции, которые нельзя задать через ENV, приезжают fx-группой:
+    httpclient.ProvideOption(func(rl *Limiter) httpclient.Option { // Limiter — тип сервиса
+        return httpclient.WithBeforeAttempt(func(ctx context.Context, _ int) error {
+            return rl.Wait(ctx)
+        })
+    }),
+
+    fx.Invoke(func(hc *httpclient.Client) error {
+        ctx := context.Background() // в обработчике — ctx запроса
+        req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.example.com/v1/items", nil)
+        if err != nil {
+            return err
+        }
         resp, err := hc.Do(req)      // retry + breaker; 5xx после ретраев — это ответ, не ошибка
-        if err != nil { return }     // транспорт, ctx или httpclient.ErrBreakerOpen
+        if err != nil {              // транспорт, ctx или httpclient.ErrBreakerOpen
+            return err
+        }
         defer resp.Body.Close()
+        return nil
     }),
 )
 ```
@@ -36,23 +51,35 @@ hc, err := httpclient.New(cfg,
         return limiter.Wait(ctx)                               // rate-limit на каждую попытку
     }),
 )
+defer hc.Close()
 ```
+
+Несколько клиентов с разной политикой в одном процессе — `NewConfigPrefixed`:
+`NewConfigPrefixed("AMOCRM")` читает `<PREFIX>_HTTPCLIENT_*` и падает обратно на
+голые `HTTPCLIENT_*` для незаданных переменных (базовая политика сервиса +
+точечные переопределения на upstream).
 
 ## Конфигурация
 
 `httpclient.Config` и `httpclient.BreakerConfig` — public API (см. корневой
-`README.md` § Стабильность API). `NewConfig` читает ENV и валидирует
-(`ErrConfig`); `New` валидирует ещё раз для конфигов, собранных вручную.
+`README.md` § Стабильность API). `NewConfig`/`NewConfigPrefixed` читают ENV и
+валидируют (`ErrConfig`); `New` валидирует ещё раз для конфигов, собранных
+вручную. `Validate` отвергает отрицательные значения и подставляет дефолты
+вместо нулей — `httpclient.Config{}` даёт тот же клиент, что и пустое окружение,
+клиент без таймаута собрать нельзя.
 
-| Env | Поле | Тип | Default | Назначение |
+| Env | Поле | Тип | Default | Правило `Validate` |
 |---|---|---|---|---|
-| `HTTPCLIENT_TIMEOUT` | `Config.Timeout` | `time.Duration` | `10s` | Таймаут одной попытки (`http.Client.Timeout`), не всего цикла retry |
-| `HTTPCLIENT_MAX_RETRIES` | `Config.MaxRetries` | `int` | `3` | Повторов сверх первой попытки; `0` — без retry |
-| `HTTPCLIENT_RETRY_WAIT` | `Config.RetryWait` | `time.Duration` | `200ms` | База backoff: пауза перед повтором `RetryWait·2^(attempt-1)` + jitter `[0, RetryWait)`; обязателен `> 0` при `MaxRetries > 0` |
-| `HTTPCLIENT_RETRY_MAX_WAIT` | `Config.RetryMaxWait` | `time.Duration` | `5s` | Потолок паузы, в том числе для `Retry-After`; `0` — без потолка |
+| `HTTPCLIENT_TIMEOUT` | `Config.Timeout` | `time.Duration` | `10s` | `< 0` — ошибка; `0` → `10s`. Таймаут одной попытки (`http.Client.Timeout`), не всего цикла retry; для `Stream` — только фаза заголовков |
+| `HTTPCLIENT_MAX_RETRIES` | `Config.MaxRetries` | `int` | `3` | `< 0` — ошибка; `0` — без retry (осознанный выбор, дефолт не подставляется) |
+| `HTTPCLIENT_RETRY_WAIT` | `Config.RetryWait` | `time.Duration` | `200ms` | `< 0` — ошибка; `0` → `200ms`. База backoff: `RetryWait·2^(attempt-1)` + jitter `[0, RetryWait)` |
+| `HTTPCLIENT_RETRY_MAX_WAIT` | `Config.RetryMaxWait` | `time.Duration` | `5s` | `< 0` или `< RetryWait` — ошибка; `0` → `5s`. Потолок паузы, в том числе для `Retry-After` |
 | `HTTPCLIENT_RETRY_NON_IDEMPOTENT` | `Config.RetryNonIdempotent` | `bool` | `false` | Ретраить POST/PATCH без явного разрешения (см. § Retry) |
-| `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD` | `BreakerConfig.FailureThreshold` | `int` | `5` | Подряд идущих провалов до Open; `0` выключает breaker |
-| `HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT` | `BreakerConfig.RecoveryTimeout` | `time.Duration` | `30s` | Сколько breaker держится в Open до пробного запроса |
+| `HTTPCLIENT_MAX_REDIRECTS` | `Config.MaxRedirects` | `int` | `10` | `< 0` — ошибка; `0` → `10`. Длиннее цепочка — `ErrTooManyRedirects` |
+| `HTTPCLIENT_ALLOW_CROSS_HOST_REDIRECTS` | `Config.AllowCrossHostRedirects` | `bool` | `false` | `false` — редирект на другой хост это `ErrCrossHostRedirect` (см. § Редиректы) |
+| `HTTPCLIENT_SSE_MAX_EVENT_BYTES` | `Config.SSEMaxEventBytes` | `int` | `1048576` | `< 0` — ошибка; `0` → 1 MiB. Потолок строки и события SSE (`ErrEventTooLarge`) |
+| `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD` | `BreakerConfig.FailureThreshold` | `int` | `5` | `< 0` — ошибка; `0` выключает breaker (осознанный выбор) |
+| `HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT` | `BreakerConfig.RecoveryTimeout` | `time.Duration` | `30s` | `< 0` — ошибка; `0` → `30s`. Сколько breaker держится в Open до пробного запроса |
 
 ## Retry
 
@@ -65,28 +92,70 @@ hc, err := httpclient.New(cfg,
   `bytes.Reader`, `strings.Reader`, `bytes.Buffer`). Потоковое тело без `GetBody`
   не ретраится.
 
-Ретраятся транспортные ошибки (кроме отмены/дедлайна ctx) и статусы `408`,
-`429`, `500`, `502`, `503`, `504`. Пауза — `Retry-After` сервера (секунды или
-HTTP-дата), иначе экспоненциальный backoff с jitter; и то и другое под
-`RetryMaxWait`. После исчерпания ретраев возвращается **последний ответ** с его
-статусом и телом (`err == nil`): статус разбирает вызывающий.
+Ретраятся статусы `408`, `429`, `502`, `503`, `504` и транспортные ошибки,
+включая таймаут попытки (`Timeout`). `500` не ретраится: у большинства
+upstream'ов он детерминирован, повтор только жжёт бюджет.
+
+Не ретраятся: отмена или дедлайн ctx вызывающего, ошибка hook'а
+`WithBeforeAttempt` и перманентные ошибки транспорта — проверка сертификата
+(x509/TLS), неподдерживаемая схема URL, превышенный лимит редиректов.
+
+Пауза — `Retry-After` сервера (секунды или HTTP-дата, максимум 5 минут), иначе
+экспоненциальный backoff с jitter; и то и другое под `RetryMaxWait`. Разбор
+заголовка экспортирован — `httpclient.ParseRetryAfter(value, now)`: одно правило
+RFC 9110 на всех потребителей заголовка. После
+исчерпания ретраев возвращается **последний ответ** с его статусом и телом
+(`err == nil`): статус разбирает вызывающий.
 
 `WithBeforeAttempt` вызывается перед каждой попыткой, включая первую, с номером
-попытки от нуля: место для per-host rate-limiter'а. Ошибка hook'а прерывает запрос.
+попытки от нуля: место для per-host rate-limiter'а. Ошибка hook'а прерывает
+запрос и не считается провалом breaker'а.
 
 ## Circuit breaker
 
 Breaker заводится на каждый `req.URL.Host`: отказ одного upstream не размыкает
-цепь остальным. Провалом считается транспортная ошибка или ответ `5xx` после
-ретраев. В открытом состоянии `Do` возвращает `httpclient.ErrBreakerOpen`
-(оборачивает `gobreaker.ErrOpenState` / `ErrTooManyRequests`).
+цепь остальным. Провалом считается транспортная ошибка (включая таймаут
+попытки, отказ TLS и нарушение redirect-политики) или ответ `502`/`503`/`504`
+после ретраев — сигналы «хоста нет». `500`/`501` от живого upstream'а провалом
+не считаются, как и отмена ctx вызывающего и ошибка `WithBeforeAttempt`: всплеск
+barge-in или ожидания лимитера не должен отключать здоровый хост.
+
+В открытом состоянии `Do` возвращает `httpclient.ErrBreakerOpen` (оборачивает
+`gobreaker.ErrOpenState` / `ErrTooManyRequests`) не отправляя запрос.
+
+## Редиректы
+
+Редиректы следуются в пределах `MaxRedirects` и **только в пределах исходного
+хоста**: кросс-хостовый редирект — `ErrCrossHostRedirect`. Так API-клиент не
+уносит секреты на чужой хост при компрометации DNS или upstream'а.
+
+`HTTPCLIENT_ALLOW_CROSS_HOST_REDIRECTS=true` разрешает переход, но на чужой хост
+уезжают только `Accept`, `Accept-Encoding`, `Accept-Language`, `Content-Type`,
+`Content-Length`, `Referer`, `User-Agent` и `X-Request-ID` — все остальные
+заголовки (в том числе кастомные ключи и подписи) снимаются. `net/http` сам
+чистит только `Authorization`, `Cookie`, `WWW-Authenticate` и `Proxy-*`.
 
 ## SSE
 
-`Stream(req)` открывает `text/event-stream` без `Timeout`, retry и breaker'а:
-стрим живёт, пока жив `req.Context()`, а `SSEStream.Close()` останавливает
-фоновую горутину. События — по спеке WHATWG (`ID`, `Event`, `Data`); терминатор
-вроде `[DONE]` приходит обычным событием, его интерпретирует вызывающий.
+`Stream(req)` открывает `text/event-stream`. У стрима нет retry и breaker'а:
+частично прочитанный поток неретраябелен, а Open-состояние breaker'а рассчитано
+на короткие запросы.
+
+- `Timeout` ограничивает **только соединение и ожидание заголовков**
+  (`ErrHeaderTimeout`); тело живёт, пока жив `req.Context()` или пока не вызван
+  `SSEStream.Close()` — и то и другое завершает фоновую горутину без утечки,
+  даже если потребитель перестал читать `Events()` (barge-in).
+- Ответ не с `Content-Type: text/event-stream` отвергается (`ErrNotEventStream`),
+  неуспешный статус — `*StatusError` с усечённым телом (`errors.As`).
+- Строка и событие ограничены `SSEMaxEventBytes`; превышение закрывает поток с
+  `ErrEventTooLarge` в `Err()`.
+- Парсинг по спеке WHATWG: терминатор строки — CR, LF или CRLF; `data` склеены
+  через `\n`; блок без `data` не диспатчится и сбрасывает тип события; `id`
+  живёт между событиями (`Event.ID`, `SSEStream.LastEventID()`); `retry`
+  доступен как `SSEStream.Retry()` (значение больше `time.Duration` насыщается
+  её максимумом) — реконнект httpclient не делает сам.
+- Терминатор потока вроде `[DONE]` приходит обычным событием: полезную нагрузку
+  интерпретирует вызывающий.
 
 ## Observability
 
@@ -95,31 +164,56 @@ OTel-провайдеры (no-op без `MeterProvider`/`TracerProvider`).
 
 | Сигнал | Тип | Labels | Назначение |
 |---|---|---|---|
-| `http_client_request_duration_seconds` | Float64 Histogram (`s`) | `host`, `method`, `status` | Длительность `Do` целиком, включая ретраи и ожидание breaker'а; `status` — код ответа или `error` |
-| `http_client_retry_attempts_total` | Int64 Counter | `host` | Инкремент на каждый повтор |
+| `http_client_request_duration_seconds` | Float64 Histogram (`s`) | `host`, `method`, `status`, `mode` | Длительность вызова целиком, включая ретраи и backoff; `mode="sse"` только у `Stream` (у `Do` label отсутствует) |
+| `http_client_retry_attempts_total` | Int64 Counter | `host` | Инкремент на каждый состоявшийся повтор (после ожидания backoff) |
 | `http_client_breaker_transitions_total` | Int64 Counter | `host`, `from`, `to` | Переходы состояния breaker'а хоста |
 | `http_client_breaker_open` | Int64 UpDownCounter | `host` | `1`, пока breaker хоста открыт |
-| client span | OTel span (`otelhttp`) | — | Клиентский HTTP-спан на каждую попытку, W3C trace-context в upstream |
+| `httpclient.Do <METHOD>` | OTel span (client) | `http.request.method`, `server.address`, `url.full`, `http.response.status_code` | Спан на вызов: покрывает все попытки и паузы между ними |
+| `httpclient.Stream <METHOD>` | OTel span (client) | те же | Спан на весь стрим: закрывается вместе с потоком |
+| HTTP-спан попытки | OTel span (`otelhttp`) | + `http.request.resend_count` | Дочерний спан на каждую попытку, W3C trace-context в upstream |
 
-`host` ограничен числом upstream'ов сервиса; `method`/`status` — конечные множества.
+Значения `status`: код ответа (`200`, `503`), `breaker_open` при отказе открытой
+цепи, `error` для транспортных ошибок и отмены ctx. Для `Stream` `status` — код
+ответа при чистом завершении потока и `error`, если поток оборвался.
+`host` ограничен числом upstream'ов сервиса; `method`, `status`, `mode` —
+конечные множества. Гистограмма использует общие бакеты длительностей
+golibinfra (`internal/otelkit`).
 
 ## API
 
 ```go
 func New(cfg Config, opts ...Option) (*Client, error)
 func NewConfig() (Config, error)
-func (c Config) Validate() error
+func NewConfigPrefixed(prefix string) (Config, error)
+func (c *Config) Validate() error
+
+var Module fx.Option                      // *Client + OnStop → Close
+func ProvideOption(ctor any) fx.Option    // конструктор Option в группу "httpclient.options"
+const OptionGroup = "httpclient.options"
+type Params struct{ … }                   // вход Module: Config + Options
 
 func WithTransport(rt http.RoundTripper) Option
 func WithBeforeAttempt(fn BeforeAttemptFunc) Option
 type BeforeAttemptFunc func(ctx context.Context, attempt int) error
 
 func AllowRetry(ctx context.Context) context.Context
+func ParseRetryAfter(v string, now time.Time) (time.Duration, bool)
 
 func (c *Client) Do(req *http.Request) (*http.Response, error)
 func (c *Client) Stream(req *http.Request) (*SSEStream, error)
+func (c *Client) Close() error
 
-var ErrConfig, ErrBreakerOpen error
+type Event struct{ ID, Event, Data string }
+func (s *SSEStream) Events() <-chan Event
+func (s *SSEStream) Err() error
+func (s *SSEStream) LastEventID() string
+func (s *SSEStream) Retry() time.Duration
+func (s *SSEStream) Close() error
+
+type StatusError struct{ Status int; Body string }
+
+var ErrConfig, ErrBreakerOpen, ErrTooManyRedirects, ErrCrossHostRedirect,
+    ErrNotEventStream, ErrEventTooLarge, ErrHeaderTimeout error
 ```
 
 ## Тестирование
@@ -136,7 +230,17 @@ var ErrConfig, ErrBreakerOpen error
   дедуплицирует.
 - **`Timeout` — на попытку.** Общее время `Do` может достигать
   `(MaxRetries+1)·Timeout + Σ backoff`; ограничивайте дедлайном ctx.
-- **Breaker на хост считает 5xx провалом.** Upstream, стабильно отвечающий
-  `503`, откроет цепь через `FailureThreshold` запросов; полностью выключить —
-  `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`.
+- **Breaker на хост считает 502/503/504 провалом.** Upstream, стабильно
+  отвечающий `503`, откроет цепь через `FailureThreshold` вызовов; полностью
+  выключить — `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`.
+- **Не для user-supplied URL.** Breaker и label `host` заводятся на каждый
+  `req.URL.Host`: на webhook'ах по чужим адресам это рост map'ы breaker'ов и
+  кардинальности метрик. Нужен исходящий вызов по адресу пользователя — держите
+  для него отдельный `Client` с `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`,
+  валидируйте хост до вызова и не переиспользуйте клиент основных upstream'ов.
+- **Секреты не в query.** `url.full` уходит в спан вызова без query, но спан
+  попытки от `otelhttp` пишет полный URL — передавайте токены заголовками.
 - **`X-Request-ID`** ставится из ctx только если вызывающий не задал свой заголовок.
+- **`Close()` не обязателен** при использовании `Module` (вешает `OnStop`); при
+  ручной сборке закрывайте клиент сами — он держит собственный пул соединений
+  (клон `http.DefaultTransport` со 100 idle-соединениями на хост).

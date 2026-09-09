@@ -3,17 +3,18 @@ package sso
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
 
+	"git.stit.tech/stit-core/golibinfra/hubkit/hubclaims"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // Kind* — контуры identity экосистемы: сотрудник (сессия id.stit.tech) и
-// заказчик (сессия api.hub.stit.tech). Контур — первое, что проверяет доменная
-// политика: набор полей и допустимых действий у них разный.
+// заказчик (сессия api.hub.stit.tech). Значения — из hubkit/hubclaims.
 const (
-	KindEmployee = "employee"
-	KindCustomer = "customer"
+	KindEmployee = hubclaims.KindEmployee
+	KindCustomer = hubclaims.KindCustomer
 )
 
 var (
@@ -24,24 +25,26 @@ var (
 )
 
 // Identity — principal hub-сессии, восстановленный Extractor'ом из session-JWT.
-// EmployeeID — канонический hub-UUID сотрудника (claim employee_id), Subject —
-// Authentik subject у сотрудника и customer_account_id у заказчика. Семантику
-// Role kit не трактует — это делает сервис.
-//
-// Kind разделяет два контура; поля CompanyID/AccountRole/Products заполнены
-// только у заказчика. Проверяй контур ДО применения любой доменной политики:
-// правила, написанные под сотрудника, к заказчику не применимы.
+// Непустой Subject — признак заполненной Identity: нулевое значение не проходит
+// ни один гейт контура.
 type Identity struct {
+	// EmployeeID — канонический hub-UUID сотрудника (claim employee_id).
 	EmployeeID string
-	Subject    string
-	Username   string // логин (напр. n.sycheva)
-	Name       string // ФИО (напр. Наталья Сычева)
-	Email      string
-	Role       string
-	SID        string // id сессии (для онлайн-отзыва критичных операций)
+	// Subject — Authentik subject у сотрудника, customer_account_id у заказчика.
+	Subject string
+	// Username — логин сотрудника (напр. n.sycheva).
+	Username string
+	// Name — ФИО.
+	Name string
+	// Email — почта принципала.
+	Email string
+	// Role — роль в экосистеме; семантику трактует сервис, не кит.
+	Role string
+	// SID — id сессии (для онлайн-отзыва критичных операций).
+	SID string
 
-	// Kind — контур сессии: KindEmployee | KindCustomer. Пустой claim читается
-	// как employee — токены, выпущенные до появления второго контура, валидны.
+	// Kind — контур сессии: KindEmployee | KindCustomer. Пустой claim токена
+	// читается верификатором как employee.
 	Kind string
 	// CompanyID — компания заказчика (hub-UUID); у сотрудника пуст.
 	CompanyID string
@@ -53,11 +56,28 @@ type Identity struct {
 	Products []string
 }
 
-// IsEmployee — сотрудник (в т.ч. токен без claim kind).
-func (i Identity) IsEmployee() bool { return i.Kind == "" || i.Kind == KindEmployee }
+// IsEmployee — заполненная identity сотруднического контура (в т.ч. токен без
+// claim kind).
+func (i Identity) IsEmployee() bool {
+	return i.Subject != "" && (i.Kind == "" || i.Kind == KindEmployee)
+}
 
-// IsCustomer — заказчик.
-func (i Identity) IsCustomer() bool { return i.Kind == KindCustomer }
+// IsCustomer — заполненная identity контура заказчика.
+func (i Identity) IsCustomer() bool { return i.Subject != "" && i.Kind == KindCustomer }
+
+// SubjectKey — стабильный ключ принципала для scope'а идемпотентности и
+// логов: контур + subject (subject'ы двух контуров живут в разных
+// пространствах имён и могли бы совпасть).
+func (i Identity) SubjectKey() string {
+	if i.Subject == "" {
+		return ""
+	}
+	kind := i.Kind
+	if kind == "" {
+		kind = KindEmployee
+	}
+	return kind + ":" + i.Subject
+}
 
 // CanUseProduct — пускать ли identity в продукт по имени (`deal`, `telemost`,
 // `task`, `calendar`). Сотруднику — всегда да; заказчику — только если продукт
@@ -67,6 +87,9 @@ func (i Identity) IsCustomer() bool { return i.Kind == KindCustomer }
 func (i Identity) CanUseProduct(name string) bool {
 	if i.IsEmployee() {
 		return true
+	}
+	if !i.IsCustomer() {
+		return false
 	}
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -83,9 +106,9 @@ func (i Identity) CanUseProduct(name string) bool {
 // RequireEmployee — гейт сотруднического контура для доменных политик: Identity
 // из ctx + проверка Kind (ErrNoIdentity → 401, ErrWrongKind → 403).
 func RequireEmployee(ctx context.Context) (Identity, error) {
-	id, ok := IdentityFrom(ctx)
-	if !ok {
-		return Identity{}, ErrNoIdentity
+	id, err := requireIdentity(ctx)
+	if err != nil {
+		return Identity{}, err
 	}
 	if !id.IsEmployee() {
 		return Identity{}, ErrWrongKind
@@ -95,9 +118,9 @@ func RequireEmployee(ctx context.Context) (Identity, error) {
 
 // RequireCustomer — гейт контура заказчика (симметрично RequireEmployee).
 func RequireCustomer(ctx context.Context) (Identity, error) {
-	id, ok := IdentityFrom(ctx)
-	if !ok {
-		return Identity{}, ErrNoIdentity
+	id, err := requireIdentity(ctx)
+	if err != nil {
+		return Identity{}, err
 	}
 	if !id.IsCustomer() {
 		return Identity{}, ErrWrongKind
@@ -105,17 +128,31 @@ func RequireCustomer(ctx context.Context) (Identity, error) {
 	return id, nil
 }
 
+// requireIdentity — нулевая Identity в ctx неотличима от «принципала нет»:
+// гейт не должен принимать литерал Identity{} за сотрудника.
+func requireIdentity(ctx context.Context) (Identity, error) {
+	id, ok := IdentityFrom(ctx)
+	if !ok || id.Subject == "" {
+		return Identity{}, ErrNoIdentity
+	}
+	return id, nil
+}
+
 type identityCtxKey struct{}
 
+// WithIdentity кладёт Identity в ctx (ключ неэкспортируемый — подделать нельзя).
 func WithIdentity(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, identityCtxKey{}, id)
 }
 
+// IdentityFrom достаёт Identity из ctx; второй результат — была ли она положена.
 func IdentityFrom(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(identityCtxKey{}).(Identity)
 	return id, ok
 }
 
+// MustIdentityFrom — Identity из ctx хендлера за security-гейтом; паникует,
+// если её нет (значит операция не защищена, а код это предполагает).
 func MustIdentityFrom(ctx context.Context) Identity {
 	id, ok := IdentityFrom(ctx)
 	if !ok {
@@ -125,18 +162,18 @@ func MustIdentityFrom(ctx context.Context) Identity {
 }
 
 // RegisterIdentityLogAttr пробрасывает employee_id сессии в каждый log-record
-// как user_id (fallback — subject, если employee_id пуст). Дёргается один раз на
-// старте (Module делает это сам).
+// как user_id (fallback — subject, если employee_id пуст); повторный вызов
+// заменяет регистрацию, а не дублирует поле.
 func RegisterIdentityLogAttr() {
-	logkit.RegisterAttr(func(ctx context.Context) (string, any, bool) {
+	logkit.RegisterAttr("user_id", func(ctx context.Context) (slog.Value, bool) {
 		id, ok := IdentityFrom(ctx)
-		if !ok {
-			return "", nil, false
+		if !ok || id.Subject == "" {
+			return slog.Value{}, false
 		}
 		uid := id.EmployeeID
 		if uid == "" {
 			uid = id.Subject
 		}
-		return "user_id", uid, true
+		return slog.StringValue(uid), true
 	})
 }

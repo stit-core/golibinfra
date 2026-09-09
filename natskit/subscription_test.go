@@ -11,23 +11,20 @@ import (
 )
 
 func TestBus_SubscriptionUnsubscribe(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	url := startJetStreamNATS(t)
-	conn := connect(t, url)
+	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
 	ctx := context.Background()
+	subject := subj(t, "one-off")
 
 	got := make(chan struct{}, 4)
-	sub, err := bus.Subscribe(ctx, "one.off", func(context.Context, []byte) error {
+	sub, err := bus.Subscribe(ctx, subject, func(context.Context, []byte) error {
 		got <- struct{}{}
 		return nil
 	})
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := bus.Publish(ctx, "one.off", 1); err != nil {
+	if err := bus.Publish(ctx, subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	recv(t, got, 3*time.Second, "first message")
@@ -35,24 +32,21 @@ func TestBus_SubscriptionUnsubscribe(t *testing.T) {
 	if err := sub.Unsubscribe(); err != nil {
 		t.Fatalf("unsubscribe: %v", err)
 	}
-	if err := bus.Publish(ctx, "one.off", 2); err != nil {
+	if err := bus.Publish(ctx, subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	expectSilence(t, got, 500*time.Millisecond, "delivery after Unsubscribe")
 }
 
 func TestBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	url := startJetStreamNATS(t)
-	conn := connect(t, url)
+	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
 	ctx := context.Background()
+	subject := subj(t, "drain")
 
-	started := make(chan struct{}, 1)
+	started := make(chan struct{}, 2)
 	var finished atomic.Bool
-	sub, err := bus.Subscribe(ctx, "drain.me", func(context.Context, []byte) error {
+	sub, err := bus.Subscribe(ctx, subject, func(context.Context, []byte) error {
 		started <- struct{}{}
 		time.Sleep(500 * time.Millisecond)
 		finished.Store(true)
@@ -61,7 +55,7 @@ func TestBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := bus.Publish(ctx, "drain.me", 1); err != nil {
+	if err := bus.Publish(ctx, subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	recv(t, started, 3*time.Second, "handler start")
@@ -75,27 +69,21 @@ func TestBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
 		t.Fatal("Drain returned before the handler finished")
 	}
 
-	if err := bus.Publish(ctx, "drain.me", 2); err != nil {
+	if err := bus.Publish(ctx, subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	time.Sleep(300 * time.Millisecond)
-	if len(started) != 0 {
-		t.Fatal("subscription still receives after Drain")
-	}
+	expectSilence(t, started, time.Second, "delivery after Drain")
 }
 
 func TestBus_SubscriptionDrainHonoursContext(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	url := startJetStreamNATS(t)
-	conn := connect(t, url)
+	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
 	ctx := context.Background()
+	subject := subj(t, "stuck")
 
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
-	sub, err := bus.Subscribe(ctx, "stuck", func(context.Context, []byte) error {
+	sub, err := bus.Subscribe(ctx, subject, func(context.Context, []byte) error {
 		started <- struct{}{}
 		<-release
 		return nil
@@ -103,7 +91,7 @@ func TestBus_SubscriptionDrainHonoursContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := bus.Publish(ctx, "stuck", 1); err != nil {
+	if err := bus.Publish(ctx, subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	recv(t, started, 3*time.Second, "handler start")
@@ -117,20 +105,14 @@ func TestBus_SubscriptionDrainHonoursContext(t *testing.T) {
 }
 
 func TestStreamBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	url := startJetStreamNATS(t)
-	conn := connect(t, url)
-	sb, err := natskit.NewStreamBus(conn, logkit.Nop(), jsConfig("ORDERS"))
-	if err != nil {
-		t.Fatalf("NewStreamBus: %v", err)
-	}
+	stream := nameFor(t)
+	sb := newStreamBus(t, jsConfig(stream))
 	ctx := context.Background()
+	subject := subj(t, "drain")
 
-	started := make(chan struct{}, 1)
+	started := make(chan struct{}, 2)
 	var finished atomic.Bool
-	sub, err := sb.SubscribeStream(ctx, "ORDERS", "ORDERS.drain", "drain", func(context.Context, []byte) error {
+	sub, err := sb.SubscribeStream(ctx, stream, subject, "drain", func(context.Context, []byte) error {
 		started <- struct{}{}
 		time.Sleep(500 * time.Millisecond)
 		finished.Store(true)
@@ -139,7 +121,7 @@ func TestStreamBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := sb.PublishStream(ctx, "ORDERS.drain", []byte(`{}`)); err != nil {
+	if err := sb.PublishStream(ctx, subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	recv(t, started, 10*time.Second, "handler start")
@@ -153,8 +135,38 @@ func TestStreamBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
 		t.Fatal("Drain returned before the handler finished")
 	}
 
-	if err := sb.PublishStream(ctx, "ORDERS.drain", []byte(`{}`)); err != nil {
+	if err := sb.PublishStream(ctx, subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	expectSilence(t, started, time.Second, "delivery after Drain")
+}
+
+// Unsubscribe останавливает pull-консьюмер: доставки прекращаются сразу,
+// неподтверждённое сообщение сервер переотправит после AckWait.
+func TestStreamBus_SubscriptionUnsubscribe(t *testing.T) {
+	stream := nameFor(t)
+	sb := newStreamBus(t, jsConfig(stream))
+	ctx := context.Background()
+	subject := subj(t, "unsub")
+
+	got := make(chan struct{}, 4)
+	sub, err := sb.SubscribeStream(ctx, stream, subject, "unsub", func(context.Context, []byte) error {
+		got <- struct{}{}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := sb.PublishStream(ctx, subject, []byte(`{}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	recv(t, got, 10*time.Second, "first message")
+
+	if err := sub.Unsubscribe(); err != nil {
+		t.Fatalf("unsubscribe: %v", err)
+	}
+	if err := sb.PublishStream(ctx, subject, []byte(`{}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	expectSilence(t, got, time.Second, "delivery after Unsubscribe")
 }

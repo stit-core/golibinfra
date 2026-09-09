@@ -4,7 +4,7 @@
 (`pgxpool`), `Transactor` с проброской транзакции через `context`, migrate-runner
 поверх [golang-migrate](https://github.com/golang-migrate/migrate), маппинг
 pg-ошибок в булевы предикаты, health-probe и опциональная read-replica. Пул
-инструментируется метриками `db_pool_*` и per-query спанами через
+инструментируется метриками `pg_pool_*` и спанами через
 [otelpgx](https://github.com/exaring/otelpgx).
 
 Kit даёт сервису соединение, надёжность пула и атомарность записи; SQL, схема и
@@ -15,7 +15,7 @@ Kit даёт сервису соединение, надёжность пула 
 ```
 PoolConfig ──► NewPool ──► *pgxpool.Pool ──┬─► DB (фасад Exec/Query/QueryRow)
                                            ├─► PoolTransactor (Transactor)
-                                           └─► InstrumentPool (db_pool_*{role})
+                                           └─► InstrumentPool (pg_pool_*{role})
 
 ReplicaConfig ──► ReadWriteDB { Master, Replica }
 ```
@@ -25,24 +25,33 @@ ReplicaConfig ──► ReadWriteDB { Master, Replica }
 
 ## Пул соединений (`pool.go`)
 
-`NewPool(ctx, PoolConfig)` парсит DSN через `pgxpool.ParseConfig`, накладывает
+`NewPool(ctx, PoolConfig)` проверяет конфиг (`Validate`, ошибка обёрнута
+`ErrConfig`), парсит DSN через `pgxpool.ParseConfig`, накладывает
 размеры/таймауты пула и возвращает уже проверенный `Ping`-ом пул. `ctx` живёт
 вместе с пулом: на нём в фоне прогреваются `MinConns`. `ConnectTimeout`
 ограничивает установку каждого физического соединения
 (`ConnConfig.ConnectTimeout`) и стартовый `Ping`. Если `OTelTrace` включён
 (default), на `ConnConfig.Tracer` ставится `otelpgx.NewTracer()` — это даёт
-per-query спаны.
+спаны запросов, connect и acquire.
+
+Нулевое значение размера или таймаута пула означает **дефолт pgxpool**: оно не
+переносится в `pgxpool.Config`. WHY: перенесённые нули ломают пул изнутри —
+`HealthCheckPeriod = 0` роняет процесс паникой `time.NewTicker(0)` из фоновой
+горутины, `MaxConnLifetime = 0` протухает каждое соединение к первому
+health-check'у, `MaxConns = 0` отвергается puddle. `PoolConfig{DSN: dsn}` обязан
+быть рабочим пулом, а не миной.
 
 Сессионные таймауты (`statement_timeout`, `idle_in_transaction_session_timeout`,
-`lock_timeout`) применяются в `AfterConnect`-хуке: на каждое новое физическое
-соединение выполняется `SET <name> = '<ms>ms'`. Хук сохраняет ранее
-установленный `AfterConnect` и вызывает его первым, чтобы не затирать кастомную
-инициализацию из DSN. Отрицательные значения нормализуются в `0` (без лимита).
+`lock_timeout`) переводятся в миллисекунды и кладутся в
+`ConnConfig.RuntimeParams` — они уезжают в StartupMessage при установке
+соединения. Отрицательные значения нормализуются в `0` (без лимита).
 
-WHY именно `AfterConnect`, а не параметры DSN: таймауты задаются как
-`time.Duration` в конфиге и переводятся в миллисекунды единообразно; это держит
-их частью `PoolConfig` (а значит — частью ENV-контракта), а не «магией» внутри
-строки подключения.
+WHY `RuntimeParams`, а не `SET` в `AfterConnect`: `SET` стоит трёх round-trip'ов
+на каждое новое физическое соединение (ротация по `MaxConnLifetime`,
+реконнекты), а StartupMessage — ноль. WHY не параметры DSN: таймауты задаются
+как `time.Duration` в конфиге, то есть остаются частью ENV-контракта, а не
+«магией» внутри строки подключения. За PgBouncer в `transaction`-режиме
+сессионные параметры не гарантируются.
 
 ## Фасад `DB` (`db.go`)
 
@@ -80,9 +89,12 @@ type Transactor interface {
   pgx.ReadCommitted}`; `WithTxOptions` — с переданными опциями (`Serializable`,
   `ReadOnly`, `Deferrable`).
 - **Commit/Rollback.** Если `fn` вернула ошибку — `Rollback`; ошибка `fn`
-  пробрасывается как есть (сохраняя sentinel'ы), а ошибка отката добавляется
-  обёрткой `pgkit: rollback: … (after: …)`, кроме `pgx.ErrTxClosed` (транзакция
-  уже завершена — это не ошибка). Если `fn` успешна — `Commit`.
+  пробрасывается как есть (сохраняя sentinel'ы), а ошибка отката **присоединяется**
+  через `errors.Join`, не подменяя причину. Не присоединяются два случая:
+  `pgx.ErrTxClosed` (транзакция уже завершена) и отменённый `ctx` вызывающего —
+  pgx уничтожает соединение при отмене запроса, поэтому «rollback: conn closed»
+  там гарантирован и уводит от настоящей причины. Если `fn` успешна — `Commit` на
+  `ctx` вызывающего: отменённый `ctx` означает «не коммитим».
 - **Panic.** Откат подвешен в `defer`: panic внутри `fn` откатывает транзакцию,
   возвращает соединение в пул и продолжает раскрутку стека. Откат идёт на
   `context.WithoutCancel(ctx)`, чтобы отменённый `ctx` не оставил соединение в
@@ -95,6 +107,10 @@ type Transactor interface {
 - `InTx(ctx) bool` — сообщает, есть ли в `ctx` активная транзакция. Нужен коду,
   которому важна атомарность с бизнес-записью (например, outbox-insert, который
   обязан выполняться внутри той же транзакции, что и доменная запись).
+- `WithTestTx(ctx) context.Context` — кладёт в `ctx` маркер транзакции без
+  `pgx.Tx`: `InTx` его видит, `Conn` игнорирует (запрос уходит в пул). Нужен
+  фейкам `Transactor` (`testkit/pgtest`), чтобы код с гейтом на `InTx`
+  тестировался без Postgres.
 
 ## Маппинг ошибок (`errors.go`)
 
@@ -129,13 +145,17 @@ NOWAIT`), `IsQueryCanceled` — чтобы отличить срабатыван
 
 ```go
 type Source struct {
-    Name string // ^[a-z][a-z0-9_]*$ — суффикс таблицы версий
+    Name string // ^[a-z][a-z0-9_]{0,44}$ — суффикс таблицы версий
     FS   fs.FS  // embed.FS кита или os.DirFS каталога приложения
     Dir  string // каталог внутри FS с *.up.sql/*.down.sql; "." для os.DirFS
 }
 func DirSource(name, path string) Source // os.DirFS(path), Dir "."
 func (s Source) VersionTable() string   // "schema_migrations_" + Name
 ```
+
+Имя источника — не длиннее **45 символов**: `schema_migrations_<Name>` должен
+уложиться в 63 байта идентификатора Postgres. Нарушение регекспа — ошибка
+`pgkit: migrate: invalid source name %q` на прогоне.
 
 У каждого источника **своя таблица версий** `schema_migrations_<Name>`. Версии
 источников независимы: новая миграция `0002` в `auditkit` применяется как
@@ -151,11 +171,16 @@ WHY не одна общая таблица: golang-migrate ведёт един�
 
 `MigrateUp` / `MigrateDown` (один шаг) / `MigrateVersion` работают с одним
 источником. Внутри: `source/iofs` читает `fs.FS` напрямую (без временных
-каталогов), `database/postgres` через `WithInstance` поверх `*sql.DB` из
+каталогов), драйвер `database/pgx/v5` через `WithInstance` поверх `*sql.DB` из
 `pgx/v5/stdlib` — на wire работает pgx, поэтому DSN может быть и URL, и
-keyword/value. Соединение мигратора использует simple protocol (файлы миграций
-многооператорные) и наследует таймаут коннекта из дедлайна `ctx`. Пустой
-источник (нет `*.sql`) — ошибка: это почти всегда неверный путь.
+keyword/value, а `lib/pq` в зависимости не приходит. Соединение мигратора
+использует simple protocol (файлы миграций многооператорные) и наследует таймаут
+коннекта из дедлайна `ctx`. Пустой источник (нет `*.sql`) — ошибка: это почти
+всегда неверный путь.
+
+golang-migrate не принимает `ctx`, поэтому дедлайн вызывающего ограничивает
+коннект и ожидание lock'а, но не прерывает уже идущий SQL-оператор: прерванный
+процессом прогон оставляет версию `dirty=true`.
 
 ### Advisory-lock (`migrate_lock.go`)
 
@@ -164,7 +189,13 @@ keyword/value. Соединение мигратора использует simp
 `golibinfra-migrate`) на отдельном соединении; lock снимается в `defer`. Имена
 источников проверяются на уникальность. WHY: при нескольких инстансах сервиса,
 стартующих одновременно, миграции должен применять ровно один — остальные ждут
-на advisory-lock и находят схему уже применённой, а не падают на гонке.
+на advisory-lock и находят схему уже применённой, а не гонятся за неё.
+
+Ожидание lock'а ограничено дедлайном `ctx`: `pg_advisory_lock` сам ждёт
+бесконечно, поэтому дедлайн — единственный выход из очереди. У прямых
+`MigrateUp*` его ставит вызывающий, у `MigrateModule` — `PG_MIGRATE_TIMEOUT`
+(и `fx.StartTimeout` сверху). Инстанс, не дождавшийся lock'а, падает на старте
+и уходит в рестарт — схему он не применяет.
 
 ### fx: `MigrateModule` и группа `pgkit.migrations` (`migrate_module.go`)
 
@@ -173,12 +204,30 @@ keyword/value. Соединение мигратора использует simp
 `outboxkit/pgstore`, `bruteforcekit/pgstore` делают это внутри своих `Module`.
 `MigrateModule` в `OnStart` собирает группу, сортирует источники по имени (порядок
 fx-группы не определён), добавляет последним каталог приложения из
-`PG_MIGRATIONS_PATH` (если он не пуст) и вызывает `MigrateUpAll`. Приложение
-идёт последним, потому что его схема может ссылаться на таблицы китов.
+`PG_MIGRATIONS_PATH` (если он не пуст) и вызывает `MigrateUpAll` под
+`PG_MIGRATE_TIMEOUT`. Приложение идёт последним, потому что его схема может
+ссылаться на таблицы китов.
 
-`OnStart`-хуки fx выполняются в порядке регистрации: `pgkit.MigrateModule`
-перечисляется в `fx.New` раньше модулей, которым схема нужна на старте
-(например, `outboxkit/pgstore.Module` создаёт партиции в своём `OnStart`).
+`OnStart`-хуки fx выполняются в порядке регистрации, а он зависит от порядка
+модулей в `fx.New`. Чтобы схема не зависела от этого порядка, `MigrateModule`
+провайдит маркер **`pgkit.Migrated`** (пустая структура): его конструктор и
+вешает хук миграций. Модуль, которому схема нужна на старте, объявляет
+`Migrated` зависимостью — fx строит маркер первым, а значит и хук миграций
+встаёт в очередь раньше:
+
+```go
+type params struct {
+    fx.In
+
+    LC       fx.Lifecycle
+    Store    *Store
+    Migrated pgkit.Migrated `optional:"true"` // сборка без MigrateModule остаётся рабочей
+}
+```
+
+Так сделано в `outboxkit/pgstore` (создание партиций). `optional:"true"` нужен,
+чтобы приложение, накатывающее миграции отдельным шагом CI, собиралось без
+`MigrateModule`.
 
 ## Read-replica (`replica.go`)
 
@@ -200,11 +249,13 @@ WHY роутинг — explicit, а не автоматический: kit не 
 (включая read-after-write в рамках одной операции). Подробности и подводные
 камни — в [usage.md § Read-replica](usage.md).
 
-## Health-probe (`probe.go`)
+## Health-пробы (`probe.go`)
 
-`DBProbe(db) healthkit.Probe` возвращает пробу, выполняющую `SELECT 1`.
-Регистрируется в fx-группе `health` через `healthkit.Provide(pgkit.DBProbe)`;
-`httpkit` собирает группу в `/ready`.
+`Probe(db)` (`Name` — `pgkit`) выполняет `SELECT 1` на пуле primary,
+`ReplicaProbe(rw)` (`Name` — `pgkit/replica`) — на пуле реплики; без реплики
+вторая проходит без запроса, потому что мастер уже покрыт первой. Обе
+регистрируются в fx-группе `healthkit.probes` через `healthkit.Provide`; `httpkit`
+собирает группу в `/ready`.
 
 ## fx-композиция (`module.go`, `migrate_module.go`)
 
@@ -215,16 +266,18 @@ WHY роутинг — explicit, а не автоматический: kit не 
   отменяет его контекст).
 - `NewDB` — фасад `*DB` поверх пула.
 - `NewPoolTransactor` под интерфейсом `Transactor` (`fx.As`).
-- `newReadWriteDB` — `*ReadWriteDB`; при пустом `PG_REPLICA_DSN` обе стороны
-  указывают на мастер, иначе поднимается пул реплики (`PoolConfig` с DSN и
-  `MaxConns` реплики, остальное наследуется) и инструментируется как
-  `role=replica`.
+- `newReadWriteDB` — `*ReadWriteDB`; `ReplicaConfig` берётся как
+  `optional:"true"`, поэтому сервис без реплики не обязан его провайдить. При
+  пустом `PG_REPLICA_DSN` обе стороны указывают на мастер, иначе поднимается пул
+  реплики (`PoolConfig` с DSN и `MaxConns` реплики, остальное наследуется) и
+  инструментируется как `role=replica`.
 - `fx.Invoke(func(*ReadWriteDB) {})` — пулы поднимаются на старте, а не при
   первом запросе: недоступная БД валит запуск приложения.
 
 Метрики идут в глобальный `otel.Meter` (`internal/otelkit`): без
 `MeterProvider` инструменты — no-op, `Module` при этом поднимается. Config'и
 `Module` не provide'ит — это делает caller (App-структура или
-`fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig)`), единообразно с
-остальными китами. `MigrateModule` — отдельный модуль (см. выше), ему нужны
-`PoolConfig` и `MigrateRunnerConfig` (`pgkit.NewMigrateRunnerConfig`).
+`fx.Provide(pgkit.NewPoolConfig)`), единообразно с остальными китами.
+`MigrateModule` — отдельный модуль (см. выше), ему нужны `PoolConfig` и
+`MigrateRunnerConfig` (`pgkit.NewMigrateRunnerConfig`), а провайдит он
+`pgkit.Migrated`.

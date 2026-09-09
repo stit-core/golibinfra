@@ -18,7 +18,8 @@ func TestClassify_StatusToSentinel(t *testing.T) {
 		{429, ErrRateLimited},
 		{500, ErrServer},
 		{503, ErrServer},
-		{402, ErrValidation}, // прочие 4xx → validation
+		{402, ErrPaymentRequired},
+		{409, ErrValidation}, // прочие 4xx → validation
 	}
 	for _, tc := range cases {
 		if got := classify(tc.status, nil); !errors.Is(got, tc.want) {

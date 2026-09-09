@@ -2,6 +2,7 @@ package audittest_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"git.stit.tech/stit-core/golibinfra/auditkit"
@@ -41,5 +42,59 @@ func mustLog(t *testing.T, r *audittest.Recorder, e auditkit.Entry) {
 	t.Helper()
 	if err := r.Log(context.Background(), e); err != nil {
 		t.Fatalf("log: %v", err)
+	}
+}
+
+func TestRecorder_HasAndEntriesCopy(t *testing.T) {
+	t.Parallel()
+	r := &audittest.Recorder{}
+	mustLog(t, r, auditkit.Entry{Action: "login", Resource: "auth"})
+
+	if !r.Has("login") {
+		t.Error("Has(login) = false")
+	}
+	if r.Has("logout") {
+		t.Error("Has(logout) = true, want false")
+	}
+
+	entries := r.Entries()
+	entries[0].Action = "tampered"
+	if r.Entries()[0].Action != "login" {
+		t.Error("Entries must return a copy of the slice")
+	}
+}
+
+// Паритет с pgstore: фейк отвергает те же записи, что и Store.
+func TestRecorder_RejectsInvalidEntry(t *testing.T) {
+	t.Parallel()
+	r := &audittest.Recorder{}
+	for _, e := range []auditkit.Entry{{}, {Action: "login"}, {Resource: "auth"}} {
+		if err := r.Log(context.Background(), e); !errors.Is(err, auditkit.ErrInvalidEntry) {
+			t.Fatalf("Log(%+v) = %v, want ErrInvalidEntry", e, err)
+		}
+	}
+	if len(r.Entries()) != 0 {
+		t.Fatalf("invalid entries must not be recorded: %+v", r.Entries())
+	}
+}
+
+// Метаданные копируются на входе и на выходе: мутация чужой map не переписывает
+// историю, как не переписывает её pgstore (он маршалит map сразу).
+func TestRecorder_ClonesMetadata(t *testing.T) {
+	t.Parallel()
+	r := &audittest.Recorder{}
+	meta := map[string]any{"k": "v"}
+	mustLog(t, r, auditkit.Entry{Action: "login", Resource: "auth", Metadata: meta})
+
+	meta["k"] = "tampered"
+	if got := r.Entries()[0].Metadata["k"]; got != "v" {
+		t.Fatalf("Metadata mutated through caller map: %v", got)
+	}
+
+	r.Entries()[0].Metadata["k"] = "tampered"
+	r.Last("login").Metadata["k"] = "tampered"
+	r.ByResource("auth")[0].Metadata["k"] = "tampered"
+	if got := r.Entries()[0].Metadata["k"]; got != "v" {
+		t.Fatalf("Metadata mutated through returned entry: %v", got)
 	}
 }

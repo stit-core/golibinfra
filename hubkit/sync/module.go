@@ -1,30 +1,29 @@
 package sync
 
 import (
+	"context"
+	"errors"
+
 	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
-// Module провайдит HTTPFetcher (поверх hubkit/client) и превращает движки,
-// зарегистрированные продуктом в group `hubkit.sync.engine`, в timerkit.Job'ы
-// (group `timer.job` — их подхватит timerkit.Module с graceful shutdown).
-//
-// Config не provide'ится (asymmetry-нота как в pgkit — caller добавляет
-// `fx.Provide(sync.NewConfig)`). Продукт регистрирует по движку на ресурс,
-// реализуя ProjectionStore/CursorStore и собирая NewEngine; requires
-// timerkit.Module и hubkit/client в графе.
+// EngineGroup — fx-группа движков синка; Module разворачивает их в timerkit.Job'ы.
+const EngineGroup = "hubkit.sync.engine"
+
+// Module провайдит HTTPFetcher (поверх hubkit/client), разворачивает движки
+// группы EngineGroup в job'ы timerkit.Group (graceful shutdown — за timerkit)
+// и снимает их метрики на остановке приложения.
+// Config не provide'ится: caller добавляет `fx.Provide(sync.NewConfig)`.
 var Module = fx.Module(
-	"hubkit-sync",
+	"hubkit/sync",
 	fx.Provide(
 		fx.Annotate(NewHTTPFetcher, fx.As(new(Fetcher))),
-		fx.Annotate(
-			jobsFromEngines,
-			fx.ParamTags(`group:"hubkit.sync.engine"`),
-			fx.ResultTags(`group:"timer.job,flatten"`),
-		),
 	),
+	timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"`+EngineGroup+`"`)),
+	fx.Invoke(fx.Annotate(closeEnginesOnStop, fx.ParamTags(``, `group:"`+EngineGroup+`"`))),
 )
 
 // jobsFromEngines разворачивает движки в timer-jobs (flatten group → group).
@@ -36,7 +35,23 @@ func jobsFromEngines(engines []*Engine) []timerkit.Job {
 	return jobs
 }
 
+// closeEnginesOnStop снимает observable-callback'и движков при остановке:
+// иначе meter продолжал бы наблюдать серии ресурса, который больше не тикает.
+func closeEnginesOnStop(lc fx.Lifecycle, engines []*Engine) {
+	lc.Append(fx.Hook{OnStop: func(context.Context) error {
+		errs := make([]error, 0, len(engines))
+		for _, e := range engines {
+			errs = append(errs, e.Close())
+		}
+		return errors.Join(errs...)
+	}})
+}
+
+// NewConfig читает HUB_SYNC_* из ENV и валидирует их (ErrConfig на старте).
 func NewConfig() (Config, error) {
 	var c Config
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return Config{}, err
+	}
+	return c, c.Validate()
 }

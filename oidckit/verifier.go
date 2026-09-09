@@ -1,8 +1,6 @@
-// Package oidckit — Authentik/OIDC BFF-контур для SSO-входа сотрудника:
-// relying-party (discovery, JWKS-кэш, verify ID-token, Authorization Code + PKCE),
-// huma-роуты login/callback/me/logout, cookie-сессия HS256 (authnkit) и extractor
-// для httpkit.HumaAuth. State логин-флоу — через StateStore поверх cachekit.
-// Эмитит oidc_verifications_total{result} и oidc_jwks_refresh_total{result}.
+// Package oidckit — OIDC BFF-контур: relying-party (discovery, JWKS-кэш,
+// verify ID-token, Authorization Code + PKCE), huma-роуты login/callback/me/logout,
+// cookie-сессия HS256 (authnkit) и extractor для httpkit.AuthExtractor.
 package oidckit
 
 import (
@@ -19,20 +17,35 @@ import (
 	jose "github.com/go-jose/go-jose/v4"
 	"github.com/go-jose/go-jose/v4/jwt"
 
+	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/internal/jwks"
 )
 
 var (
-	ErrRPConfig       = errors.New("oidckit: issuer and client id required")
+	// ErrRPConfig — не задан issuer или client id relying-party.
+	ErrRPConfig = errors.New("oidckit: issuer and client id required")
+	// ErrIssuerMismatch — issuer в discovery-документе не совпал с настроенным.
 	ErrIssuerMismatch = errors.New("oidckit: discovery issuer mismatch")
-	ErrNoJWKS         = errors.New("oidckit: discovery has no jwks_uri")
-	ErrNoEndpoints    = errors.New("oidckit: discovery has no authorization/token endpoint")
-	ErrInvalidToken   = errors.New("oidckit: malformed id token")
-	ErrUnknownKey     = errors.New("oidckit: no signing key for kid")
-	ErrNoSubject      = errors.New("oidckit: id token has no subject")
-	ErrNonceMismatch  = errors.New("oidckit: id token nonce mismatch")
-	ErrNoIDToken      = errors.New("oidckit: token response has no id_token")
-	ErrExchange       = errors.New("oidckit: code exchange failed")
+	// ErrNoJWKS — в discovery-документе нет jwks_uri.
+	ErrNoJWKS = errors.New("oidckit: discovery has no jwks_uri")
+	// ErrNoEndpoints — в discovery-документе нет пригодного authorization/token endpoint'а.
+	ErrNoEndpoints = errors.New("oidckit: discovery has no authorization/token endpoint")
+	// ErrInvalidToken — ID-token не разобран или подписан неприемлемым алгоритмом.
+	ErrInvalidToken = errors.New("oidckit: malformed id token")
+	// ErrUnknownKey — в JWKS нет ключа с kid из заголовка токена.
+	ErrUnknownKey = errors.New("oidckit: no signing key for kid")
+	// ErrNoSubject — в ID-token'е нет claim'а sub.
+	ErrNoSubject = errors.New("oidckit: id token has no subject")
+	// ErrNoExpiry — в ID-token'е нет claim'а exp (OIDC Core §2 — REQUIRED).
+	ErrNoExpiry = errors.New("oidckit: id token has no expiry")
+	// ErrAudience — aud/azp не указывают на этого клиента.
+	ErrAudience = errors.New("oidckit: id token audience mismatch")
+	// ErrNonceMismatch — nonce токена не совпал с сохранённым в state.
+	ErrNonceMismatch = errors.New("oidckit: id token nonce mismatch")
+	// ErrNoIDToken — ответ token endpoint'а без id_token.
+	ErrNoIDToken = errors.New("oidckit: token response has no id_token")
+	// ErrExchange — token endpoint ответил не-200.
+	ErrExchange = errors.New("oidckit: code exchange failed")
 )
 
 // allowedAlgs — асимметричные подписи IdP (симметрию не принимаем: RP не делит
@@ -43,7 +56,17 @@ const (
 	oidcScope          = "openid profile email"
 	defaultHTTPTimeout = 10 * time.Second
 	maxDiscoveryBody   = 1 << 20
+
+	// keyGrace — выведенный из JWKS ключ проверяет подписи ещё столько после
+	// ротации: токен, выпущенный за миг до неё, не должен отвергаться.
+	keyGrace = 10 * time.Minute
 )
+
+// Doer — минимальный HTTP-клиент похода в IdP; ему удовлетворяют
+// *httpclient.Client (retry + breaker + OTel-спаны) и *http.Client.
+type Doer interface {
+	Do(*http.Request) (*http.Response, error)
+}
 
 // RPConfig — параметры relying-party для Verifier (программные; env-контур
 // BFF читает Config и строит RPConfig сам).
@@ -52,18 +75,28 @@ type RPConfig struct {
 	ClientID     string
 	ClientSecret string
 	RedirectURL  string
+	// Leeway — допуск часов при проверке exp/nbf/iat; 0 → DefaultLeeway.
+	Leeway time.Duration
+	// AllowInsecure разрешает issuer и endpoint'ы по http (dev-стенд).
+	AllowInsecure bool
+	// Clock — часы проверки claim'ов; nil → clockkit.Real.
+	Clock clockkit.Clock
 }
 
 // Claims — то, что вытащили из проверенного ID-token'а.
 type Claims struct {
 	Subject  string
-	Username string // preferred_username — логин (напр. n.sycheva)
-	Name     string // name — ФИО (напр. Наталья Сычева)
+	Username string // preferred_username — логин (напр. j.doe)
+	Name     string // name — отображаемое имя (напр. Jane Doe)
 	Email    string
+	// Groups — claim `groups` IdP, если он есть: основа маппинга «группа → роль».
+	Groups []string
+	// Raw — все claims проверенного токена: то, чего нет в типизированных полях.
+	Raw map[string]any
 }
 
 // Verifier — OIDC relying-party: discovery /.well-known, JWKS-кэш (refresh по
-// неизвестному kid не чаще раза в минуту, singleflight), verify iss/aud/exp/nonce,
+// неизвестному kid не чаще раза в минуту, singleflight), verify iss/aud/azp/exp/nonce,
 // обмен authorization code.
 type Verifier struct {
 	issuer        string
@@ -73,41 +106,75 @@ type Verifier struct {
 	authEndpoint  string
 	tokenEndpoint string
 	jwksURI       string
-	http          *http.Client
+	leeway        time.Duration
+	clock         clockkit.Clock
+	http          Doer
 	keys          *jwks.Cache
 	instr         *instruments
 }
 
-// NewVerifier делает discovery и первичную загрузку JWKS; nil client →
+// NewVerifier делает discovery и первичную загрузку JWKS; nil doer →
 // http.Client с таймаутом 10s.
-func NewVerifier(ctx context.Context, cfg RPConfig, client *http.Client) (*Verifier, error) {
+func NewVerifier(ctx context.Context, cfg RPConfig, doer Doer) (*Verifier, error) {
 	if cfg.Issuer == "" || cfg.ClientID == "" {
 		return nil, ErrRPConfig
 	}
-	if client == nil {
-		client = &http.Client{Timeout: defaultHTTPTimeout}
+	if doer == nil {
+		doer = &http.Client{Timeout: defaultHTTPTimeout}
+	}
+	leeway := cfg.Leeway
+	if leeway <= 0 {
+		leeway = DefaultLeeway
+	}
+	clock := cfg.Clock
+	if clock == nil {
+		clock = clockkit.Real{}
 	}
 	v := &Verifier{
-		issuer:       cfg.Issuer,
+		issuer:       strings.TrimRight(cfg.Issuer, "/"),
 		clientID:     cfg.ClientID,
 		clientSecret: cfg.ClientSecret,
 		redirectURL:  cfg.RedirectURL,
-		http:         client,
+		leeway:       leeway,
+		clock:        clock,
+		http:         doer,
 		instr:        newInstruments(),
 	}
-	if err := v.discover(ctx); err != nil {
+
+	start := time.Now()
+	err := v.bootstrap(ctx, cfg.AllowInsecure)
+	v.instr.discovered(ctx, time.Since(start), err)
+	if err != nil {
 		return nil, err
-	}
-	v.keys = jwks.New(v.jwksURI, client, jwks.Options{Timeout: defaultHTTPTimeout, OnRefresh: v.instr.refreshed})
-	if err := v.keys.Refresh(ctx); err != nil {
-		return nil, fmt.Errorf("oidckit: jwks: %w", err)
 	}
 	return v, nil
 }
 
+func (v *Verifier) bootstrap(ctx context.Context, allowInsecure bool) error {
+	if err := v.discover(ctx, allowInsecure); err != nil {
+		return err
+	}
+	v.keys = jwks.New(v.jwksURI, v.http,
+		jwks.WithTimeout(defaultHTTPTimeout),
+		jwks.WithRetainPrevious(keyGrace),
+		jwks.WithOnRefresh(v.instr.refreshed),
+	)
+	if err := v.keys.Refresh(ctx); err != nil {
+		return fmt.Errorf("oidckit: jwks: %w", err)
+	}
+	return nil
+}
+
+// KeysLoaded — загружен ли набор ключей проверки подписи (health-проба).
+func (v *Verifier) KeysLoaded() bool { return v.keys.Loaded() }
+
 // AuthCodeURL строит redirect на authorization_endpoint (Authorization Code + PKCE S256).
 func (v *Verifier) AuthCodeURL(state, nonce, challenge string) string {
-	q := url.Values{}
+	u, err := url.Parse(v.authEndpoint)
+	if err != nil {
+		return v.authEndpoint
+	}
+	q := u.Query()
 	q.Set("client_id", v.clientID)
 	q.Set("redirect_uri", v.redirectURL)
 	q.Set("response_type", "code")
@@ -116,7 +183,8 @@ func (v *Verifier) AuthCodeURL(state, nonce, challenge string) string {
 	q.Set("nonce", nonce)
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
-	return v.authEndpoint + "?" + q.Encode()
+	u.RawQuery = q.Encode()
+	return u.String()
 }
 
 // Exchange меняет authorization code на ID-token (token_endpoint), проверяет его и nonce.
@@ -189,22 +257,32 @@ func (v *Verifier) verify(ctx context.Context, rawIDToken, expectedNonce string)
 		Name              string `json:"name"`
 		Email             string `json:"email"`
 		Nonce             string `json:"nonce"`
+		AZP               string `json:"azp"`
 	}
-	if err := tok.Claims(key.Key, &claims, &custom); err != nil {
+	raw := map[string]any{}
+	if err := tok.Claims(key.Key, &claims, &custom, &raw); err != nil {
 		if errors.Is(err, jose.ErrCryptoFailure) {
 			return Claims{}, "signature_invalid", fmt.Errorf("oidckit: verify signature: %w", err)
 		}
 		return Claims{}, "malformed", fmt.Errorf("%w: %w", ErrInvalidToken, err)
 	}
-	if err := claims.Validate(jwt.Expected{
+	if err := claims.ValidateWithLeeway(jwt.Expected{
 		Issuer:      v.issuer,
 		AnyAudience: jwt.Audience{v.clientID},
-		Time:        time.Now(),
-	}); err != nil {
+		Time:        v.clock.Now(),
+	}, v.leeway); err != nil {
 		return Claims{}, "invalid_claims", fmt.Errorf("oidckit: claims: %w", err)
+	}
+	if claims.Expiry == nil {
+		return Claims{}, "invalid_claims", ErrNoExpiry
 	}
 	if claims.Subject == "" {
 		return Claims{}, "invalid_claims", ErrNoSubject
+	}
+	// OIDC Core §3.1.3.7: при нескольких aud обязателен azp, а заданный azp
+	// обязан совпасть с client_id — иначе это токен другого клиента того же IdP.
+	if (len(claims.Audience) > 1 && custom.AZP == "") || (custom.AZP != "" && custom.AZP != v.clientID) {
+		return Claims{}, "invalid_claims", ErrAudience
 	}
 	if expectedNonce != "" && custom.Nonce != expectedNonce {
 		return Claims{}, "nonce_mismatch", ErrNonceMismatch
@@ -214,11 +292,30 @@ func (v *Verifier) verify(ctx context.Context, rawIDToken, expectedNonce string)
 		Username: custom.PreferredUsername,
 		Name:     custom.Name,
 		Email:    custom.Email,
+		Groups:   groupsFrom(raw),
+		Raw:      raw,
 	}, "ok", nil
 }
 
-func (v *Verifier) discover(ctx context.Context) error {
-	endpoint := strings.TrimRight(v.issuer, "/") + "/.well-known/openid-configuration"
+func groupsFrom(raw map[string]any) []string {
+	switch v := raw["groups"].(type) {
+	case []any:
+		groups := make([]string, 0, len(v))
+		for _, item := range v {
+			if s, ok := item.(string); ok {
+				groups = append(groups, s)
+			}
+		}
+		return groups
+	case string:
+		return []string{v}
+	default:
+		return nil
+	}
+}
+
+func (v *Verifier) discover(ctx context.Context, allowInsecure bool) error {
+	endpoint := v.issuer + "/.well-known/openid-configuration"
 	var doc struct {
 		Issuer                string `json:"issuer"`
 		JWKSURI               string `json:"jwks_uri"`
@@ -228,19 +325,29 @@ func (v *Verifier) discover(ctx context.Context) error {
 	if err := v.getJSON(ctx, endpoint, &doc); err != nil {
 		return fmt.Errorf("oidckit: discovery: %w", err)
 	}
-	if doc.Issuer != v.issuer {
+	if strings.TrimRight(doc.Issuer, "/") != v.issuer {
 		return ErrIssuerMismatch
 	}
-	if doc.JWKSURI == "" {
+	if doc.JWKSURI == "" || !absoluteURL(doc.JWKSURI, allowInsecure) {
 		return ErrNoJWKS
 	}
-	if doc.AuthorizationEndpoint == "" || doc.TokenEndpoint == "" {
+	if !absoluteURL(doc.AuthorizationEndpoint, allowInsecure) || !absoluteURL(doc.TokenEndpoint, allowInsecure) {
 		return ErrNoEndpoints
 	}
+	// iss в токенах сверяется с тем, что опубликовал сам IdP.
+	v.issuer = doc.Issuer
 	v.jwksURI = doc.JWKSURI
 	v.authEndpoint = doc.AuthorizationEndpoint
 	v.tokenEndpoint = doc.TokenEndpoint
 	return nil
+}
+
+func absoluteURL(raw string, allowInsecure bool) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return u.Scheme == "https" || (allowInsecure && u.Scheme == "http")
 }
 
 func (v *Verifier) getJSON(ctx context.Context, endpoint string, dst any) error {

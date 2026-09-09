@@ -10,32 +10,29 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module поднимает инстанс шины: Config, *Client, Bus и StreamBus. Пустое имя —
-// дефолтный инстанс (конфиг из `NATS_*`, provide без тега). Именованный инстанс
-// читает `<NAME>_NATS_*` и provide'ится под fx-тегом `name:"<name>"` — так в
-// одном графе живут несколько шин.
+// Module поднимает инстанс шины: *Client, Bus и StreamBus. Config провайдит
+// caller — `fx.Provide(natskit.NewConfig)` для дефолтного инстанса, для
+// именованного `natskit.ProvideConfig(name)` (конфиг из `<NAME>_NATS_*` под
+// fx-тегом `name:"<name>"`). Пустое имя — дефолтный инстанс, provide без тега.
 func Module(name string) fx.Option {
 	if name == "" {
 		return fx.Module(
 			"natskit",
 			fx.Provide(
-				NewConfig,
 				newDefaultClient,
 				func(c *Client) Bus { return c.Bus() },
 				func(c *Client) StreamBus { return c.Stream() },
 			),
 		)
 	}
+	if !validInstanceName(name) {
+		return fx.Error(fmt.Errorf("%w: instance %q: allowed characters are letters, digits, '_', '-', '.'", ErrConfig, name))
+	}
 
 	tag := nameTag(name)
-	prefix := envPrefix(name)
 	return fx.Module(
 		"natskit:"+name,
 		fx.Provide(
-			fx.Annotate(
-				func() (Config, error) { return NewConfigPrefixed(prefix) },
-				fx.ResultTags(tag),
-			),
 			fx.Annotate(
 				func(lc fx.Lifecycle, cfg Config, log logkit.Logger) (*Client, error) {
 					return newClient(lc, name, cfg, log)
@@ -54,16 +51,29 @@ func Module(name string) fx.Option {
 	)
 }
 
-// HealthProbe регистрирует пробу инстанса в fx-группе `health`. Отдельной
+// ProvideConfig регистрирует конфиг именованного инстанса (`<NAME>_NATS_*`) под
+// fx-тегом `name:"<name>"` — форма, которую ждёт Module(name). Пустое имя —
+// эквивалент `fx.Provide(natskit.NewConfig)`.
+func ProvideConfig(name string) fx.Option {
+	if name == "" {
+		return fx.Provide(NewConfig)
+	}
+	if !validInstanceName(name) {
+		return fx.Error(fmt.Errorf("%w: instance %q: allowed characters are letters, digits, '_', '-', '.'", ErrConfig, name))
+	}
+	return fx.Provide(fx.Annotate(
+		func() (Config, error) { return NewConfigPrefixed(name) },
+		fx.ResultTags(nameTag(name)),
+	))
+}
+
+// HealthProbe регистрирует пробу инстанса в fx-группе `healthkit.probes`. Отдельной
 // опцией, а не внутри Module: caller решает, какие инстансы валят readiness.
 func HealthProbe(name string) fx.Option {
 	if name == "" {
 		return healthkit.Provide(Probe)
 	}
-	return fx.Provide(fx.Annotate(
-		Probe,
-		fx.ParamTags(nameTag(name)), fx.ResultTags(`group:"`+healthkit.Group+`"`),
-	))
+	return healthkit.Provide(Probe, fx.ParamTags(nameTag(name)))
 }
 
 func newDefaultClient(lc fx.Lifecycle, cfg Config, log logkit.Logger) (*Client, error) {
@@ -76,8 +86,8 @@ func newClient(lc fx.Lifecycle, name string, cfg Config, log logkit.Logger) (*Cl
 		return nil, err
 	}
 	lc.Append(fx.Hook{
-		OnStop: func(context.Context) error {
-			c.Close()
+		OnStop: func(ctx context.Context) error {
+			c.CloseContext(ctx)
 			return nil
 		},
 	})

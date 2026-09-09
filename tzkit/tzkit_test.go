@@ -114,7 +114,10 @@ func TestParseDayIsStrict(t *testing.T) {
 		t.Fatalf("ParseDay = %v, %v", d, err)
 	}
 
-	for _, bad := range []string{"2026-8-8", "08-08-2026", "2026-08-08T00:00:00Z", "", "2026-13-01"} {
+	for _, bad := range []string{
+		"2026-8-8", "2026-08-8", "08-08-2026", "2026-08-08T00:00:00Z", "", "2026-13-01",
+		"2026-02-30", "12026-08-08", " 2026-08-08", "2026-08-08 ", "2026-08-08\n",
+	} {
 		if _, err := tzkit.ParseDay(bad); err == nil {
 			t.Errorf("ParseDay(%q) must fail", bad)
 		}
@@ -204,7 +207,7 @@ func TestDayAt(t *testing.T) {
 	t.Parallel()
 
 	msk := tzkit.MustLoad("Europe/Moscow")
-	at := tzkit.NewDay(2026, time.August, 8).At(mustWall(t, "17:00"), msk)
+	at := tzkit.NewDay(2026, time.August, 8).At(tzkit.MustParseWallTime("17:00"), msk)
 
 	wantEqual(t, "At", at.UTC(), time.Date(2026, 8, 8, 14, 0, 0, 0, time.UTC))
 }
@@ -212,7 +215,7 @@ func TestDayAt(t *testing.T) {
 func TestWallTime(t *testing.T) {
 	t.Parallel()
 
-	w := mustWall(t, "17:05")
+	w := tzkit.MustParseWallTime("17:05")
 	if w.Hour() != 17 || w.Minute() != 5 || w.String() != "17:05" || w.Duration() != 17*time.Hour+5*time.Minute || !w.Valid() {
 		t.Fatalf("WallTime 17:05 = %d:%d %q %v valid=%v", w.Hour(), w.Minute(), w.String(), w.Duration(), w.Valid())
 	}
@@ -234,13 +237,13 @@ func TestWallTimeJSON(t *testing.T) {
 		From tzkit.WallTime `json:"from"`
 	}
 
-	out, err := json.Marshal(payload{From: mustWall(t, "08:00")})
+	out, err := json.Marshal(payload{From: tzkit.MustParseWallTime("08:00")})
 	if err != nil || string(out) != `{"from":"08:00"}` {
 		t.Fatalf("Marshal = %s, %v", out, err)
 	}
 
 	var got payload
-	if err := json.Unmarshal([]byte(`{"from":"20:30"}`), &got); err != nil || got.From != mustWall(t, "20:30") {
+	if err := json.Unmarshal([]byte(`{"from":"20:30"}`), &got); err != nil || got.From != tzkit.MustParseWallTime("20:30") {
 		t.Fatalf("Unmarshal = %v, %v", got.From, err)
 	}
 	if err := json.Unmarshal([]byte(`{"from":"20:30:00"}`), &got); err == nil {
@@ -288,7 +291,7 @@ func TestPgDateKeepsApplicationDay(t *testing.T) {
 func TestPgTimeRoundTrip(t *testing.T) {
 	t.Parallel()
 
-	w := mustWall(t, "19:00")
+	w := tzkit.MustParseWallTime("19:00")
 	got, ok := tzkit.WallTimeFromPg(w.PgTime())
 	if !ok || got != w {
 		t.Errorf("round trip = %v, %v", got, ok)
@@ -317,15 +320,6 @@ func TestNewZone(t *testing.T) {
 	if _, err := tzkit.NewZone(tzkit.Config{}); !errors.Is(err, tzkit.ErrEmptyZone) {
 		t.Fatalf("NewZone(empty) err = %v, want ErrEmptyZone", err)
 	}
-}
-
-func mustWall(t *testing.T, s string) tzkit.WallTime {
-	t.Helper()
-	w, err := tzkit.ParseWallTime(s)
-	if err != nil {
-		t.Fatalf("ParseWallTime(%q): %v", s, err)
-	}
-	return w
 }
 
 func wantEqual(t *testing.T, what string, got, want time.Time) {

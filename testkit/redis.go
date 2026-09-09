@@ -1,51 +1,45 @@
 package testkit
 
 import (
-	"context"
-	"fmt"
 	"testing"
-	"time"
 
 	"github.com/testcontainers/testcontainers-go"
+	tclog "github.com/testcontainers/testcontainers-go/log"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
+// RedisImage — образ StartRedis по умолчанию; переопределяется WithImage.
+const RedisImage = "redis:7-alpine"
+
+// RedisFixture — живой Redis теста: клиентский URL и handle контейнера.
 type RedisFixture struct {
 	URL       string
 	Container testcontainers.Container
 }
 
-func StartRedis(t *testing.T) *RedisFixture {
+// StartRedis поднимает Redis.
+// Пропускает тест под -short и без Docker; контейнер снимается в t.Cleanup.
+func StartRedis(t testing.TB, opts ...Option) *RedisFixture {
 	t.Helper()
-	ctx := context.Background()
+	RequireDocker(t)
+	o := newOptions(t, support{helper: "StartRedis"}, RedisImage, opts)
 
-	req := testcontainers.ContainerRequest{
-		Image:        "redis:7-alpine",
-		ExposedPorts: []string{"6379/tcp"},
-		WaitingFor:   wait.ForLog("Ready to accept connections").WithStartupTimeout(60 * time.Second),
-	}
-	c, err := testcontainers.GenericContainer(ctx, testcontainers.GenericContainerRequest{
-		ContainerRequest: req,
-		Started:          true,
+	c, err := testcontainers.GenericContainer(t.Context(), testcontainers.GenericContainerRequest{
+		ContainerRequest: testcontainers.ContainerRequest{
+			Image:        o.image,
+			ExposedPorts: []string{"6379/tcp"},
+			WaitingFor: wait.ForAll(
+				wait.ForLog("Ready to accept connections"),
+				wait.ForListeningPort("6379/tcp"),
+			).WithStartupTimeoutDefault(startupTimeout),
+		},
+		Started: true,
+		Logger:  tclog.TestLogger(t),
 	})
+	testcontainers.CleanupContainer(t, c)
 	if err != nil {
 		t.Fatalf("testkit: start redis: %v", err)
 	}
-	t.Cleanup(func() {
-		_ = c.Terminate(context.Background())
-	})
 
-	host, err := c.Host(ctx)
-	if err != nil {
-		t.Fatalf("testkit: redis host: %v", err)
-	}
-	port, err := c.MappedPort(ctx, "6379")
-	if err != nil {
-		t.Fatalf("testkit: redis port: %v", err)
-	}
-
-	return &RedisFixture{
-		URL:       fmt.Sprintf("redis://%s:%s", host, port.Port()),
-		Container: c,
-	}
+	return &RedisFixture{URL: endpointURL(t, c, "redis", "6379"), Container: c}
 }

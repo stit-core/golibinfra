@@ -1,3 +1,5 @@
+// Package pgstore — реализация auditkit.Logger поверх Postgres (pgkit):
+// один INSERT в таблицу audit_log, миграции кита и fx-проводка.
 package pgstore
 
 import (
@@ -10,10 +12,14 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
+// Store — auditkit.Logger на таблице audit_log.
 type Store struct {
 	db *pgkit.DB
 }
 
+var _ auditkit.Logger = (*Store)(nil)
+
+// NewStore собирает Store поверх пула/транзакции pgkit.
 func NewStore(db *pgkit.DB) *Store {
 	return &Store{db: db}
 }
@@ -24,16 +30,27 @@ INSERT INTO audit_log (actor_id, action, resource, resource_id, metadata, ip, re
 VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, NOW()))
 `
 
+// Log пишет запись в audit_log. Если ctx получен из pgkit.Transactor.WithTx,
+// INSERT участвует в этой транзакции (откат домена откатывает и запись аудита);
+// иначе идёт отдельным соединением пула в autocommit. Невалидная Entry —
+// auditkit.ErrInvalidEntry, запрос не выполняется.
 func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
+	if err := e.Validate(); err != nil {
+		writes.Add(ctx, 1, resultAttr(resultInvalid))
+		return err
+	}
+
 	var metaJSON []byte
 	if len(e.Metadata) > 0 {
 		var err error
 		metaJSON, err = json.Marshal(e.Metadata)
 		if err != nil {
+			writes.Add(ctx, 1, resultAttr(resultInvalid))
 			return fmt.Errorf("auditkit: marshal metadata: %w", err)
 		}
 	}
 
+	start := time.Now()
 	_, err := s.db.Exec(
 		ctx, insertAuditSQL,
 		nullStr(e.ActorID),
@@ -45,6 +62,7 @@ func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 		nullStr(e.RequestID),
 		pgkit.Timestamptz(nullTime(e)),
 	)
+	observeWrite(ctx, start, err)
 	if err != nil {
 		return fmt.Errorf("auditkit: insert: %w", err)
 	}

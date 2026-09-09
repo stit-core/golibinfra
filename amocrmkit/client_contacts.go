@@ -2,26 +2,25 @@ package amocrmkit
 
 import (
 	"context"
+	"fmt"
 	"net/http"
 )
 
-// contacts + companies.
-
 // Contact — объект контакта (GET-ответ).
 type Contact struct {
-	ID                 int                `json:"id"`
+	ID                 int64              `json:"id"`
 	Name               string             `json:"name"`
 	FirstName          string             `json:"first_name"`
 	LastName           string             `json:"last_name"`
-	ResponsibleUserID  int                `json:"responsible_user_id"`
-	GroupID            int                `json:"group_id"`
-	CreatedBy          int                `json:"created_by"`
-	UpdatedBy          int                `json:"updated_by"`
+	ResponsibleUserID  int64              `json:"responsible_user_id"`
+	GroupID            int64              `json:"group_id"`
+	CreatedBy          int64              `json:"created_by"`
+	UpdatedBy          int64              `json:"updated_by"`
 	CreatedAt          int64              `json:"created_at"`
 	UpdatedAt          int64              `json:"updated_at"`
 	ClosestTaskAt      *int64             `json:"closest_task_at"`
 	IsDeleted          bool               `json:"is_deleted"`
-	AccountID          int                `json:"account_id"`
+	AccountID          int64              `json:"account_id"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values"`
 	Embedded           *ContactEmbedded   `json:"_embedded,omitempty"`
 }
@@ -34,13 +33,13 @@ type ContactEmbedded struct {
 
 // ContactInput — тело POST/PATCH /contacts.
 type ContactInput struct {
-	ID                 int                `json:"id,omitempty"`
+	ID                 int64              `json:"id,omitempty"`
 	Name               string             `json:"name,omitempty"`
 	FirstName          string             `json:"first_name,omitempty"`
 	LastName           string             `json:"last_name,omitempty"`
-	ResponsibleUserID  int                `json:"responsible_user_id,omitempty"`
-	CreatedBy          *int               `json:"created_by,omitempty"`
-	UpdatedBy          *int               `json:"updated_by,omitempty"`
+	ResponsibleUserID  int64              `json:"responsible_user_id,omitempty"`
+	CreatedBy          *int64             `json:"created_by,omitempty"`
+	UpdatedBy          *int64             `json:"updated_by,omitempty"`
 	CreatedAt          int64              `json:"created_at,omitempty"`
 	UpdatedAt          int64              `json:"updated_at,omitempty"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values,omitempty"`
@@ -51,17 +50,17 @@ type ContactInput struct {
 
 // Company — объект компании (GET-ответ).
 type Company struct {
-	ID                 int                `json:"id"`
+	ID                 int64              `json:"id"`
 	Name               string             `json:"name"`
-	ResponsibleUserID  int                `json:"responsible_user_id"`
-	GroupID            int                `json:"group_id"`
-	CreatedBy          int                `json:"created_by"`
-	UpdatedBy          int                `json:"updated_by"`
+	ResponsibleUserID  int64              `json:"responsible_user_id"`
+	GroupID            int64              `json:"group_id"`
+	CreatedBy          int64              `json:"created_by"`
+	UpdatedBy          int64              `json:"updated_by"`
 	CreatedAt          int64              `json:"created_at"`
 	UpdatedAt          int64              `json:"updated_at"`
 	ClosestTaskAt      *int64             `json:"closest_task_at"`
 	IsDeleted          bool               `json:"is_deleted"`
-	AccountID          int                `json:"account_id"`
+	AccountID          int64              `json:"account_id"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values"`
 	Embedded           *CompanyEmbedded   `json:"_embedded,omitempty"`
 }
@@ -73,11 +72,11 @@ type CompanyEmbedded struct {
 
 // CompanyInput — тело POST/PATCH /companies.
 type CompanyInput struct {
-	ID                 int                `json:"id,omitempty"`
+	ID                 int64              `json:"id,omitempty"`
 	Name               string             `json:"name,omitempty"`
-	ResponsibleUserID  int                `json:"responsible_user_id,omitempty"`
-	CreatedBy          *int               `json:"created_by,omitempty"`
-	UpdatedBy          *int               `json:"updated_by,omitempty"`
+	ResponsibleUserID  int64              `json:"responsible_user_id,omitempty"`
+	CreatedBy          *int64             `json:"created_by,omitempty"`
+	UpdatedBy          *int64             `json:"updated_by,omitempty"`
 	CreatedAt          int64              `json:"created_at,omitempty"`
 	UpdatedAt          int64              `json:"updated_at,omitempty"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values,omitempty"`
@@ -88,8 +87,18 @@ type CompanyInput struct {
 
 // ContactChat — связь контакта с чатом (_embedded.chats).
 type ContactChat struct {
-	ContactID int    `json:"contact_id,omitempty"`
+	ContactID int64  `json:"contact_id,omitempty"`
 	ChatID    string `json:"chat_id"`
+}
+
+// GetContact — GET /api/v4/contacts/{id}. Пустой ответ — ErrNotFound.
+func (c *Client) GetContact(ctx context.Context, acc Account, id int64, with ...string) (Contact, error) {
+	return getOne[Contact](ctx, c, acc, "contacts.get", fmt.Sprintf("/api/v4/contacts/%d", id), withValues(with))
+}
+
+// GetCompany — GET /api/v4/companies/{id}. Пустой ответ — ErrNotFound.
+func (c *Client) GetCompany(ctx context.Context, acc Account, id int64, with ...string) (Company, error) {
+	return getOne[Company](ctx, c, acc, "companies.get", fmt.Sprintf("/api/v4/companies/%d", id), withValues(with))
 }
 
 // ListContacts — GET /api/v4/contacts.

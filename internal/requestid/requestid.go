@@ -5,6 +5,7 @@ package requestid
 import "context"
 
 const (
+	// Header — HTTP-заголовок и gRPC-metadata-ключ request-id.
 	Header = "X-Request-ID"
 	// MaxLen ограничивает id, принятый от клиента: он попадает в каждую строку лога.
 	MaxLen = 128
@@ -12,6 +13,7 @@ const (
 
 type ctxKey struct{}
 
+// From возвращает request-id из ctx или "" — идентификатор не обязателен.
 func From(ctx context.Context) string {
 	if v, ok := ctx.Value(ctxKey{}).(string); ok {
 		return v
@@ -19,6 +21,7 @@ func From(ctx context.Context) string {
 	return ""
 }
 
+// With кладёт request-id в ctx.
 func With(ctx context.Context, id string) context.Context {
 	return context.WithValue(ctx, ctxKey{}, id)
 }

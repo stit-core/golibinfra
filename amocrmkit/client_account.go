@@ -5,14 +5,12 @@ import (
 	"net/url"
 )
 
-// account/meta: amojo_id, drive_url, типы задач и событий.
-
 // AccountInfo — объект GET /api/v4/account (с нужными with=).
 type AccountInfo struct {
-	ID                      int              `json:"id"`
+	ID                      int64            `json:"id"`
 	Name                    string           `json:"name"`
 	Subdomain               string           `json:"subdomain"`
-	CurrentUserID           int              `json:"current_user_id"`
+	CurrentUserID           int64            `json:"current_user_id"`
 	Country                 string           `json:"country"`
 	CustomersMode           string           `json:"customers_mode"`
 	IsUnsortedOn            bool             `json:"is_unsorted_on"`
@@ -33,10 +31,10 @@ type AccountEmbedded struct {
 
 // TaskType — тип задачи аккаунта.
 type TaskType struct {
-	ID     int    `json:"id"`
+	ID     int64  `json:"id"`
 	Name   string `json:"name"`
 	Color  string `json:"color"`
-	IconID int    `json:"icon_id"`
+	IconID int64  `json:"icon_id"`
 	Code   string `json:"code"`
 }
 

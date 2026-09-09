@@ -1,11 +1,31 @@
 package outboxkit_test
 
 import (
+	"errors"
 	"testing"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 )
+
+func TestNewConfig_Defaults(t *testing.T) {
+	cfg, err := outboxkit.NewConfig()
+	if err != nil {
+		t.Fatalf("NewConfig: %v", err)
+	}
+	want := outboxkit.Config{
+		BatchSize:       100,
+		Interval:        time.Second,
+		PublishMode:     outboxkit.PublishBatch,
+		MaxAttempts:     0,
+		TickTimeout:     30 * time.Second,
+		RetryBackoff:    time.Second,
+		RetryMaxBackoff: 5 * time.Minute,
+	}
+	if cfg != want {
+		t.Fatalf("defaults = %+v, want %+v", cfg, want)
+	}
+}
 
 func TestNewConfig_ValidModes(t *testing.T) {
 	for _, mode := range []string{"batch", "ordered"} {
@@ -17,32 +37,68 @@ func TestNewConfig_ValidModes(t *testing.T) {
 		if string(cfg.PublishMode) != mode {
 			t.Fatalf("PublishMode = %q, want %q", cfg.PublishMode, mode)
 		}
-		if cfg.TickTimeout != 30*time.Second {
-			t.Fatalf("TickTimeout default = %v, want 30s", cfg.TickTimeout)
-		}
 	}
 }
 
-func TestNewConfig_InvalidMode(t *testing.T) {
+func TestNewConfig_InvalidValueIsErrConfig(t *testing.T) {
 	t.Setenv("OUTBOX_PUBLISH_MODE", "bogus")
+	_, err := outboxkit.NewConfig()
+	if !errors.Is(err, outboxkit.ErrConfig) {
+		t.Fatalf("err = %v, want ErrConfig", err)
+	}
+}
+
+func TestNewConfig_UnparsableValue(t *testing.T) {
+	t.Setenv("OUTBOX_BATCH_SIZE", "many")
 	if _, err := outboxkit.NewConfig(); err == nil {
-		t.Fatal("expected error for invalid OUTBOX_PUBLISH_MODE")
+		t.Fatal("expected error for unparsable OUTBOX_BATCH_SIZE")
+	}
+}
+
+func TestNewConfig_BackoffFromEnv(t *testing.T) {
+	t.Setenv("OUTBOX_RETRY_BACKOFF", "2s")
+	t.Setenv("OUTBOX_RETRY_MAX_BACKOFF", "1m")
+	cfg, err := outboxkit.NewConfig()
+	if err != nil {
+		t.Fatalf("NewConfig: %v", err)
+	}
+	if cfg.RetryBackoff != 2*time.Second || cfg.RetryMaxBackoff != time.Minute {
+		t.Fatalf("backoff = %v/%v, want 2s/1m", cfg.RetryBackoff, cfg.RetryMaxBackoff)
 	}
 }
 
 func TestConfig_Validate(t *testing.T) {
-	base := outboxkit.Config{BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	base := outboxkit.Config{
+		BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch,
+		TickTimeout: 30 * time.Second, RetryBackoff: time.Second, RetryMaxBackoff: time.Minute,
+	}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
 	}
-	bad := []outboxkit.Config{
-		{BatchSize: 0, Interval: time.Second, PublishMode: outboxkit.PublishBatch},
-		{BatchSize: 1, Interval: 0, PublishMode: outboxkit.PublishBatch},
-		{BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch, TickTimeout: -time.Second},
+
+	bad := map[string]func(c outboxkit.Config) outboxkit.Config{
+		"batch size": func(c outboxkit.Config) outboxkit.Config { c.BatchSize = 0; return c },
+		"interval":   func(c outboxkit.Config) outboxkit.Config { c.Interval = 0; return c },
+		"tick":       func(c outboxkit.Config) outboxkit.Config { c.TickTimeout = -time.Second; return c },
+		// Тик идёт на WithoutCancel: «без дедлайна» — транзакция, которую не
+		// обрывает ни остановка сервиса, ни таймер.
+		"tick zero":   func(c outboxkit.Config) outboxkit.Config { c.TickTimeout = 0; return c },
+		"mode":        func(c outboxkit.Config) outboxkit.Config { c.PublishMode = "sync"; return c },
+		"backoff":     func(c outboxkit.Config) outboxkit.Config { c.RetryBackoff = -time.Second; return c },
+		"max backoff": func(c outboxkit.Config) outboxkit.Config { c.RetryMaxBackoff = -time.Second; return c },
+		"backoff cap": func(c outboxkit.Config) outboxkit.Config { c.RetryMaxBackoff = time.Millisecond; return c },
 	}
-	for _, c := range bad {
-		if err := c.Validate(); err == nil {
-			t.Fatalf("invalid config accepted: %+v", c)
+	for name, mutate := range bad {
+		if err := mutate(base).Validate(); !errors.Is(err, outboxkit.ErrConfig) {
+			t.Fatalf("%s: err = %v, want ErrConfig", name, err)
 		}
+	}
+}
+
+func TestNewConfig_ZeroTickTimeoutIsErrConfig(t *testing.T) {
+	t.Setenv("OUTBOX_TICK_TIMEOUT", "0")
+	_, err := outboxkit.NewConfig()
+	if !errors.Is(err, outboxkit.ErrConfig) {
+		t.Fatalf("err = %v, want ErrConfig", err)
 	}
 }

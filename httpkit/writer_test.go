@@ -1,6 +1,7 @@
 package httpkit
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -39,5 +40,42 @@ func TestResponseWriter_HijackWithoutHijacker(t *testing.T) {
 	w := wrap(httptest.NewRecorder())
 	if _, _, err := w.Hijack(); err == nil {
 		t.Fatal("recorder is not a Hijacker; error expected")
+	}
+}
+
+// Регрессия: WebSocket-upgrade проходит сквозь всю цепочку — Hijack и Unwrap
+// должны доходить до реального соединения.
+func TestResponseWriter_HijackAndUnwrapReachConn(t *testing.T) {
+	hijacked := make(chan error, 1)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		ww := wrap(wrap(w))
+		if ww.Unwrap() == nil {
+			hijacked <- errors.New("Unwrap must expose the underlying writer")
+			return
+		}
+		conn, buf, err := ww.Hijack()
+		if err != nil {
+			hijacked <- err
+			return
+		}
+		defer conn.Close()
+		_, err = buf.WriteString("HTTP/1.1 101 Switching Protocols\r\n\r\n")
+		if err == nil {
+			err = buf.Flush()
+		}
+		hijacked <- err
+	}))
+	defer srv.Close()
+
+	resp, err := http.Get(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if err := <-hijacked; err != nil {
+		t.Fatalf("hijack through the wrapper: %v", err)
+	}
+	if resp.StatusCode != http.StatusSwitchingProtocols {
+		t.Fatalf("status = %d", resp.StatusCode)
 	}
 }

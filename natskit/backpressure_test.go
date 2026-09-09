@@ -2,62 +2,46 @@ package natskit_test
 
 import (
 	"context"
+	"fmt"
 	"sync/atomic"
 	"testing"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
-	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
 func TestBus_PanicRecovery(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	fix := testkit.StartNATS(t)
-	conn := connect(t, fix.URL)
+	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
-	subject := "test.panic"
+	subject := subj(t, "panic")
 
-	var afterPanic int32
+	afterPanic := make(chan struct{}, 4)
 	if _, err := bus.Subscribe(ctx, subject, func(_ context.Context, payload []byte) error {
-		if string(payload) == `"panic"` {
+		if string(payload) == "panic" {
 			panic("test panic")
 		}
-		atomic.AddInt32(&afterPanic, 1)
+		afterPanic <- struct{}{}
 		return nil
 	}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	if err := bus.Publish(ctx, subject, "panic"); err != nil {
+	if err := bus.Publish(ctx, subject, []byte("panic")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if err := bus.Publish(ctx, subject, []byte("ok")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 
-	time.Sleep(100 * time.Millisecond)
-
-	if err := bus.Publish(ctx, subject, "ok"); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-
-	time.Sleep(200 * time.Millisecond)
-
-	if atomic.LoadInt32(&afterPanic) != 1 {
-		t.Errorf("expected 1 message after panic, got %d", atomic.LoadInt32(&afterPanic))
-	}
+	recv(t, afterPanic, 5*time.Second, "message after panic")
+	expectSilence(t, afterPanic, 200*time.Millisecond, "extra delivery")
 }
 
 func TestBus_Backpressure(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-
-	fix := testkit.StartNATS(t)
-	conn := connect(t, fix.URL)
+	conn := connect(t, natsURL(t))
 
 	maxInFlight := 10
 	cfg := natskit.Config{
@@ -66,7 +50,7 @@ func TestBus_Backpressure(t *testing.T) {
 	bus := natskit.NewBus(conn, logkit.Nop(), cfg)
 
 	ctx := context.Background()
-	subject := "test.backpressure"
+	subject := subj(t, "backpressure")
 
 	total := 200
 	var current, peak int32
@@ -90,8 +74,8 @@ func TestBus_Backpressure(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	for i := 0; i < total; i++ {
-		if err := bus.Publish(ctx, subject, i); err != nil {
+	for i := range total {
+		if err := bus.Publish(ctx, subject, fmt.Appendf(nil, "%d", i)); err != nil {
 			t.Fatalf("publish %d: %v", i, err)
 		}
 	}
@@ -110,5 +94,32 @@ func TestBus_Backpressure(t *testing.T) {
 	p := atomic.LoadInt32(&peak)
 	if p > int32(maxInFlight) {
 		t.Errorf("peak concurrent %d exceeds maxInFlight %d", p, maxInFlight)
+	}
+}
+
+// Core-обработчик получает deadline NATS_HANDLER_TIMEOUT: зависший не держит
+// слот семафора вечно.
+func TestBus_HandlerTimeout(t *testing.T) {
+	conn := connect(t, natsURL(t))
+	cfg := natskit.Config{HandlerTimeout: 200 * time.Millisecond}
+	bus := natskit.NewBus(conn, logkit.Nop(), cfg)
+
+	ctx := context.Background()
+	subject := subj(t, "slow")
+
+	cancelled := make(chan error, 1)
+	if _, err := bus.Subscribe(ctx, subject, func(hctx context.Context, _ []byte) error {
+		<-hctx.Done()
+		cancelled <- hctx.Err()
+		return hctx.Err()
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := bus.Publish(ctx, subject, []byte("{}")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	if err := recv(t, cancelled, 5*time.Second, "handler cancellation"); err == nil {
+		t.Fatal("handler ctx err = nil, want DeadlineExceeded")
 	}
 }

@@ -5,29 +5,20 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"runtime"
+	"time"
 
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/metric"
-
-	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 )
 
-var logMessagesCounter = otelkit.Must(otelkit.Meter("logkit").Int64Counter(
-	"log_messages_total",
-	metric.WithDescription("Log messages by level"),
-))
-
-func recordLog(ctx context.Context, level string) {
-	logMessagesCounter.Add(ctx, 1, metric.WithAttributes(attribute.String("level", level)))
-}
-
+// Option настраивает сборку логгера; порядок применения — порядок аргументов.
 type Option func(*options)
 
 type options struct {
 	redact  RedactConfig
 	otel    log.LoggerProvider
 	service *ServiceConfig
+	writer  io.Writer
 }
 
 // WithRedact включает PII-redact по RedactConfig (при cfg.Enabled).
@@ -41,48 +32,54 @@ func WithOTel(lp log.LoggerProvider) Option {
 	return func(o *options) { o.otel = lp }
 }
 
+// WithoutOTel убирает OTel-sink, заданный предыдущими опциями: логгер пишет
+// только в локальный sink.
+func WithoutOTel() Option {
+	return func(o *options) { o.otel = nil }
+}
+
 // WithService добавляет статические поля service/env/version в каждую запись.
 func WithService(cfg ServiceConfig) Option {
 	return func(o *options) { o.service = &cfg }
 }
 
-// New — JSON в stdout при cfg.Stdout, иначе JSON-sink отбрасывает записи.
+// WithWriter отправляет локальный sink в w вместо stdout; приоритетнее
+// Config.Silent.
+func WithWriter(w io.Writer) Option {
+	return func(o *options) { o.writer = w }
+}
+
+// New собирает Logger по cfg и опциям.
 func New(cfg Config, opts ...Option) (Logger, error) {
 	l, err := NewSlog(cfg, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &slogLogger{l: l}, nil
+	return FromSlog(l), nil
 }
 
+// NewSlog собирает *slog.Logger с той же цепочкой handler'ов, что и New — для
+// библиотек, принимающих *slog.Logger.
 func NewSlog(cfg Config, opts ...Option) (*slog.Logger, error) {
-	var w io.Writer = os.Stdout
-	if !cfg.Stdout {
-		w = io.Discard
-	}
-	return NewSlogWithWriter(cfg, w, opts...)
-}
-
-// NewWithWriter — JSON в произвольный writer без gating по cfg.Stdout.
-func NewWithWriter(cfg Config, w io.Writer, opts ...Option) (Logger, error) {
-	l, err := NewSlogWithWriter(cfg, w, opts...)
-	if err != nil {
-		return nil, err
-	}
-	return &slogLogger{l: l}, nil
-}
-
-func NewSlogWithWriter(cfg Config, w io.Writer, opts ...Option) (*slog.Logger, error) {
-	h, err := buildHandler(cfg, w, opts)
+	h, err := buildHandler(cfg, opts)
 	if err != nil {
 		return nil, err
 	}
 	return slog.New(h), nil
 }
 
-// buildHandler собирает цепочку: redact → RegisterAttr-атрибуты → fan-out
-// (JSON с trace_id/span_id, OTel). Redact снаружи, чтобы покрыть и With()-attrs.
-func buildHandler(cfg Config, w io.Writer, opts []Option) (slog.Handler, error) {
+// FromSlog оборачивает готовый *slog.Logger: обе формы логгера делят одну
+// цепочку handler'ов и одну метрику. nil даёт Nop().
+func FromSlog(l *slog.Logger) Logger {
+	if l == nil {
+		return Nop()
+	}
+	return &slogLogger{l: l}
+}
+
+// Redact — снаружи цепочки, чтобы покрыть и With()-attrs; метрика — под ним,
+// чтобы считать эмитированные записи, а не вызовы.
+func buildHandler(cfg Config, opts []Option) (slog.Handler, error) {
 	var o options
 	for _, opt := range opts {
 		opt(&o)
@@ -91,15 +88,42 @@ func buildHandler(cfg Config, w io.Writer, opts []Option) (slog.Handler, error) 
 	if err != nil {
 		return nil, err
 	}
+	format, err := parseFormat(cfg.Format)
+	if err != nil {
+		return nil, err
+	}
 
-	var h slog.Handler = &traceHandler{Handler: slog.NewJSONHandler(w, &slog.HandlerOptions{Level: lvl})}
-	if o.otel != nil {
-		h = newFanout(h, NewOTelHandler(o.otel, lvl))
+	w := o.writer
+	if w == nil {
+		w = os.Stdout
+		if cfg.Silent {
+			w = io.Discard
+		}
 	}
-	h = &ctxAttrsHandler{Handler: h}
+	ho := &slog.HandlerOptions{Level: lvl, AddSource: cfg.Source}
+	var local slog.Handler = slog.NewJSONHandler(w, ho)
+	if format == formatText {
+		local = slog.NewTextHandler(w, ho)
+	}
+
+	var service []slog.Attr
 	if o.service != nil {
-		h = h.WithAttrs(serviceAttrs(*o.service))
+		service = serviceAttrs(*o.service)
 	}
+	if len(service) > 0 {
+		local = local.WithAttrs(service)
+	}
+
+	var h slog.Handler = newCtxHandler(local, traceCtxAttrs)
+	if o.otel != nil {
+		otelSink := NewOTelHandler(o.otel, lvl)
+		if len(service) > 0 {
+			otelSink = otelSink.WithAttrs(service)
+		}
+		h = newFanout(h, otelSink)
+	}
+	h = newCtxHandler(h, registeredCtxAttrs)
+	h = &metricHandler{Handler: h}
 	if o.redact.Enabled {
 		if h, err = NewRedactHandler(h, o.redact); err != nil {
 			return nil, err
@@ -127,25 +151,44 @@ type slogLogger struct {
 }
 
 func (s *slogLogger) Debug(ctx context.Context, msg string, kv ...any) {
-	recordLog(ctx, "debug")
-	s.l.DebugContext(ctx, msg, kv...)
+	s.log(ctx, slog.LevelDebug, msg, kv)
 }
 
 func (s *slogLogger) Info(ctx context.Context, msg string, kv ...any) {
-	recordLog(ctx, "info")
-	s.l.InfoContext(ctx, msg, kv...)
+	s.log(ctx, slog.LevelInfo, msg, kv)
 }
 
 func (s *slogLogger) Warn(ctx context.Context, msg string, kv ...any) {
-	recordLog(ctx, "warn")
-	s.l.WarnContext(ctx, msg, kv...)
+	s.log(ctx, slog.LevelWarn, msg, kv)
 }
 
 func (s *slogLogger) Error(ctx context.Context, msg string, kv ...any) {
-	recordLog(ctx, "error")
-	s.l.ErrorContext(ctx, msg, kv...)
+	s.log(ctx, slog.LevelError, msg, kv)
 }
 
 func (s *slogLogger) With(kv ...any) Logger {
 	return &slogLogger{l: s.l.With(kv...)}
+}
+
+func (s *slogLogger) Enabled(ctx context.Context, level slog.Level) bool {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	return s.l.Enabled(ctx, level)
+}
+
+// log снимает PC вызывающего сам: с LOG_SOURCE поле source должно указывать на
+// код сервиса, а не на обёртку logkit.
+func (s *slogLogger) log(ctx context.Context, level slog.Level, msg string, kv []any) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if !s.l.Enabled(ctx, level) {
+		return
+	}
+	var pcs [1]uintptr
+	runtime.Callers(3, pcs[:])
+	r := slog.NewRecord(time.Now(), level, msg, pcs[0])
+	r.Add(kv...)
+	_ = s.l.Handler().Handle(ctx, r)
 }

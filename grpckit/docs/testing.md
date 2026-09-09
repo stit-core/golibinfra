@@ -2,13 +2,13 @@
 
 ## testkit/grpctest — bufconn-харнесс
 
-Сабпакет `git.stit.tech/stit-core/golibinfra/grpckit/testkit/grpctest` поднимает
+Сабпакет `git.stit.tech/stit-core/golibinfra/testkit/grpctest` поднимает
 `grpckit.Server` in-process поверх `bufconn` (без реального порта) и отдаёт
 готовый `*grpc.ClientConn`. Сервер, листенер и соединение закрываются в
 `t.Cleanup`.
 
 ```go
-func StartServer(t *testing.T, srv *grpckit.Server) *grpc.ClientConn
+func StartServer(t testing.TB, srv *grpckit.Server) *grpc.ClientConn
 ```
 
 ### Рецепт: тест потребителя
@@ -16,7 +16,7 @@ func StartServer(t *testing.T, srv *grpckit.Server) *grpc.ClientConn
 ```go
 func TestGreeter(t *testing.T) {
 	srv, err := grpckit.New(
-		grpckit.Config{MaxRecvMiB: 4, MaxSendMiB: 4, ShutdownGrace: time.Second},
+		grpckit.Config{ShutdownGrace: time.Second}, // остальное — дефолты
 		logkit.Nop(),
 		grpckit.WithService(func(s *grpc.Server) {
 			greeterpb.RegisterGreeterServer(s, &greeterServer{})
@@ -32,6 +32,10 @@ func TestGreeter(t *testing.T) {
 }
 ```
 
+`grpckit.Config{}` валиден: лимиты сообщений, keepalive и грейс получают дефолты.
+Короткий `ShutdownGrace` полезен тестам с висящими стримами — `t.Cleanup` не
+ждёт полный дефолтный грейс.
+
 Соединение использует `insecure` транспорт и passthrough-резолвер на bufconn —
 TLS/реальный сетевой стек в тесте не задействуются.
 
@@ -45,6 +49,24 @@ TLS/реальный сетевой стек в тесте не задейств
 ctx := metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer tok"))
 ```
 
+## Проверка логов
+
+Уровни и поля access-log проверяются `testkit/logtest` — `logkit.Logger`,
+копящий записи в памяти:
+
+```go
+rec := logtest.Capture()
+conn := grpctest.StartServer(t, mustNewServer(t, rec))
+// … вызов …
+if e, ok := rec.Find(slog.LevelWarn, "grpc call failed"); !ok || e.Str("code") != "NotFound" {
+	t.Fatalf("access log = %+v ok=%v", e, ok)
+}
+```
+
+`request_id` и `trace_id` в записи добавляет handler боевого логгера, а не
+`Logger`, — их проверяют на `logkit.New(cfg, logkit.WithWriter(&buf))` с разбором
+JSON-строк.
+
 ## Health в тестах
 
 Health-сервис доступен сразу: после `Serve` overall-статус = `SERVING`. Проверка —
@@ -52,10 +74,17 @@ Health-сервис доступен сразу: после `Serve` overall-ст
 
 ```go
 resp, _ := healthpb.NewHealthClient(conn).Check(ctx, &healthpb.HealthCheckRequest{})
-// resp.Status == healthpb.HealthCheckResponse_SERVING
+// resp.GetStatus() == healthpb.HealthCheckResponse_SERVING
 ```
+
+Пробы зависимостей в тесте подключаются опцией `grpckit.WithHealthProbes(...)`
+вместе с коротким `GRPC_HEALTH_INTERVAL` (`Config.HealthInterval`), чтобы
+переоценка происходила за миллисекунды. Зависшую пробу ограничивает
+`Config.HealthProbeTimeout` — тест на деградацию не ждёт следующего тика.
 
 ## Gate перед claim «готово»
 
 Как в корневом CLAUDE.md — зелёные `golangci-lint run ./...`,
-`go test -short -race ./...`, `go build ./...`.
+`go test -short -race ./...`, `go build ./...`. Тест keepalive-политики кита
+идёт только в полном прогоне (`-short` его пропускает — он ждёт страйков пинга
+десятки секунд).

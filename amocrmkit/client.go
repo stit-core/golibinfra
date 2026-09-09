@@ -4,12 +4,15 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"strconv"
 	"strings"
+	"time"
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -19,10 +22,18 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
+// maxResponseBody — потолок тела успешного ответа: страница REST v4 (≤250
+// сущностей) и объекты Drive укладываются в единицы MiB.
+const maxResponseBody = 32 << 20
+
+// maxIdleConnsPerHost — как в httpclient: у gateway каждый аккаунт — свой хост.
+const maxIdleConnsPerHost = 100
+
 // Client — транспортный клиент к amoCRM (REST v4 + amoJo + OAuth2 + Drive). Один
 // экземпляр обслуживает все аккаунты: координаты аккаунта приходят аргументами.
 type Client struct {
 	cfg   Config
+	hcCfg httpclient.Config
 	hc    *httpclient.Client
 	clock clockkit.Clock
 	log   logkit.Logger
@@ -32,6 +43,7 @@ type Client struct {
 	hostOverride *url.URL // nil в проде; см. Config.HostOverride
 }
 
+// Option — параметр сборки Client, не выражаемый через Config.
 type Option func(*options)
 
 type options struct {
@@ -40,8 +52,8 @@ type options struct {
 }
 
 // WithHTTPClient подставляет готовый httpclient вместо собранного китом (тесты,
-// общий клиент). Его внутренние ретраи не проходят через лимитер аккаунта —
-// только первая попытка.
+// общий клиент): его ретраи не проходят через лимитер аккаунта и не поднимают
+// retry_after из тела 429 — для боевой проводки передавайте httpclient.Config.
 func WithHTTPClient(hc *httpclient.Client) Option {
 	return func(o *options) { o.hc = hc }
 }
@@ -52,12 +64,18 @@ func WithTransport(rt http.RoundTripper) Option {
 	return func(o *options) { o.transport = rt }
 }
 
-// New собирает Client: свой httpclient из hcCfg (retry/breaker/OTel) с хуком
-// лимитера на каждую попытку, clockkit и logkit.
+// New собирает Client: валидирует обе конфигурации и поднимает свой httpclient
+// (retry/breaker/OTel) с лимитером аккаунта на каждой попытке.
 func New(cfg Config, hcCfg httpclient.Config, clock clockkit.Clock, log logkit.Logger, opts ...Option) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	// Validate подставляет дефолты вместо нулей: клиента без таймаута кит не собирает.
+	if err := hcCfg.Validate(); err != nil {
+		return nil, fmt.Errorf("%w: httpclient: %w", ErrConfig, err)
+	}
+	// Мутации amoCRM не идемпотентны и не дедуплицируются сервером.
+	hcCfg.RetryNonIdempotent = false
 	if clock == nil {
 		clock = clockkit.Real{}
 	}
@@ -69,16 +87,20 @@ func New(cfg Config, hcCfg httpclient.Config, clock clockkit.Clock, log logkit.L
 		fn(&o)
 	}
 
-	rl := newAccountLimiter(cfg.RateRPS, limiterIdleTTL, clock)
+	rl := newAccountLimiter(cfg.RateRPS, cfg.MaxWait, limiterIdleTTL, clock)
 	hc := o.hc
 	if hc == nil {
-		hcOpts := []httpclient.Option{httpclient.WithBeforeAttempt(rl.beforeAttempt)}
-		if o.transport != nil {
-			hcOpts = append(hcOpts, httpclient.WithTransport(o.transport))
+		base := o.transport
+		if base == nil {
+			base = defaultTransport()
+		}
+		hcOpts := []httpclient.Option{
+			httpclient.WithBeforeAttempt(rl.beforeAttempt),
+			httpclient.WithTransport(&rateLimitTransport{next: base, rl: rl}),
 		}
 		var err error
 		if hc, err = httpclient.New(hcCfg, hcOpts...); err != nil {
-			return nil, fmt.Errorf("amocrmkit: httpclient: %w", err)
+			return nil, fmt.Errorf("%w: httpclient: %w", ErrConfig, err)
 		}
 	}
 
@@ -88,6 +110,7 @@ func New(cfg Config, hcCfg httpclient.Config, clock clockkit.Clock, log logkit.L
 	}
 	return &Client{
 		cfg:          cfg,
+		hcCfg:        hcCfg,
 		hc:           hc,
 		clock:        clock,
 		log:          log,
@@ -95,6 +118,16 @@ func New(cfg Config, hcCfg httpclient.Config, clock clockkit.Clock, log logkit.L
 		instr:        newInstruments(),
 		hostOverride: override,
 	}, nil
+}
+
+func defaultTransport() http.RoundTripper {
+	t, ok := http.DefaultTransport.(*http.Transport)
+	if !ok {
+		return http.DefaultTransport
+	}
+	c := t.Clone()
+	c.MaxIdleConnsPerHost = maxIdleConnsPerHost
+	return c
 }
 
 // Account — координаты вызова к REST v4 / Drive одного аккаунта. Не состояние:
@@ -107,6 +140,10 @@ type Account struct {
 
 func (a Account) restBase() string {
 	return "https://" + a.Subdomain + ".amocrm." + a.TLD
+}
+
+func (a Account) ref() accountRef {
+	return accountRef{Subdomain: a.Subdomain, TLD: a.TLD}
 }
 
 func (a Account) validate() error {
@@ -139,13 +176,72 @@ func validSubdomain(s string) bool {
 	return true
 }
 
-// resolveURL собирает URL вызова; при HostOverride подменяет только scheme://host,
-// сохраняя путь и query (upload_url Drive несёт путь).
-func (c *Client) resolveURL(base, path string, q url.Values) (string, error) {
+// seg экранирует динамический сегмент пути: id, uid и uuid приходят из внешних
+// систем, а «/», «?» и «#» в них переписали бы адрес вызова. Пустое значение и
+// dot-сегменты экранирование не ловит — их отвергает checkPath в resolveURL.
+func seg(s string) string { return url.PathEscape(s) }
+
+// checkPath отвергает пустые и dot-сегменты собранного пути: url.PathEscape не
+// трогает точки, а сервер, нормализующий путь, выполнил бы по «..» не тот вызов,
+// о котором просил потребитель.
+func checkPath(escaped string) error {
+	if escaped == "" || escaped == "/" {
+		return nil
+	}
+	for _, s := range strings.Split(strings.TrimPrefix(escaped, "/"), "/") {
+		if s == "" || s == "." || s == ".." {
+			return fmt.Errorf("%w: path %q: empty or dot segment", ErrInvalidRequest, escaped)
+		}
+	}
+	return nil
+}
+
+// entitySet — сущности, имя которых кит подставляет в путь как есть.
+var entitySet = map[string]bool{"leads": true, "contacts": true, "companies": true, "customers": true}
+
+// entitySegment проверяет имя сущности по allowlist: значение уходит в путь без
+// экранирования, поэтому «/» в нём недопустим.
+func entitySegment(entity string) (string, error) {
+	if entitySet[entity] {
+		return entity, nil
+	}
+	return "", fmt.Errorf("%w: unknown entity %q", ErrInvalidRequest, entity)
+}
+
+// customFieldsEntity — allowlist сущностей с доп-полями: к обычным добавляется
+// catalogs/{id} (доп-поля элементов каталога).
+func customFieldsEntity(entity string) (string, error) {
+	if entitySet[entity] {
+		return entity, nil
+	}
+	if id, ok := strings.CutPrefix(entity, "catalogs/"); ok && isDigits(id) {
+		return entity, nil
+	}
+	return "", fmt.Errorf("%w: unknown custom fields entity %q", ErrInvalidRequest, entity)
+}
+
+func isDigits(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveURL собирает адрес вызова; при HostOverride подменяет только
+// scheme://host, сохраняя путь и query (upload_url Drive несёт путь).
+func (c *Client) resolveURL(base, path string, q url.Values) (*url.URL, error) {
 	full := strings.TrimSuffix(base, "/") + path
 	u, err := url.Parse(full)
 	if err != nil || !u.IsAbs() || u.Host == "" {
-		return "", fmt.Errorf("amocrmkit: invalid url %q", full)
+		return nil, fmt.Errorf("%w: url %q", ErrInvalidRequest, full)
+	}
+	if err := checkPath(u.EscapedPath()); err != nil {
+		return nil, err
 	}
 	if len(q) > 0 {
 		u.RawQuery = q.Encode()
@@ -153,7 +249,22 @@ func (c *Client) resolveURL(base, path string, q url.Values) (string, error) {
 	if c.hostOverride != nil {
 		u.Scheme, u.Host = c.hostOverride.Scheme, c.hostOverride.Host
 	}
-	return u.String(), nil
+	return u, nil
+}
+
+// checkExternalHost допускает адреса Drive только на хостах amoCRM аккаунта:
+// drive_url и upload_url приходят от сервера и из token-store потребителя, а с
+// запросом уходит Bearer. При HostOverride проверка выключена (sandbox/e2e).
+func (c *Client) checkExternalHost(u *url.URL, acc Account) error {
+	if c.hostOverride != nil {
+		return nil
+	}
+	host := u.Hostname()
+	suffix := ".amocrm." + acc.TLD
+	if u.Scheme != "https" || !strings.HasSuffix(host, suffix) {
+		return fmt.Errorf("%w: host %q is not amoCRM", ErrInvalidAccount, u.Host)
+	}
+	return nil
 }
 
 // restReq — параметры одного REST v4-вызова.
@@ -165,10 +276,13 @@ type restReq struct {
 	query    url.Values
 	body     any    // маршалится в JSON, если не nil
 	endpoint string // метка метрики, напр. "leads.list"
+	// single — ответ описывает одну сущность: пустое тело значит «не найдена».
+	single bool
+	// allowRetry — повтор запроса безопасен вопреки методу (ephemeral-вызовы amoJo).
+	allowRetry bool
 }
 
-// doREST выполняет аутентифицированный REST v4-запрос и декодит JSON в out
-// (если out != nil). 204 / пустое тело → out не трогается, ошибки нет.
+// doREST выполняет аутентифицированный REST v4-запрос и декодит JSON в out.
 func (c *Client) doREST(ctx context.Context, r restReq, out any) error {
 	if err := r.acc.validate(); err != nil {
 		return fmt.Errorf("amocrmkit: %s: %w", r.endpoint, err)
@@ -181,19 +295,24 @@ func (c *Client) doREST(ctx context.Context, r restReq, out any) error {
 	if err != nil {
 		return fmt.Errorf("amocrmkit: %s: %w", r.endpoint, err)
 	}
+	if r.base != "" {
+		if err := c.checkExternalHost(u, r.acc); err != nil {
+			return fmt.Errorf("amocrmkit: %s: %w", r.endpoint, err)
+		}
+	}
 
 	var body io.Reader
 	if r.body != nil {
 		b, err := json.Marshal(r.body)
 		if err != nil {
-			return fmt.Errorf("amocrmkit: %s: marshal request: %w", r.endpoint, err)
+			return fmt.Errorf("amocrmkit: %s: %w: marshal request: %w", r.endpoint, ErrInvalidRequest, err)
 		}
 		body = bytes.NewReader(b)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, r.method, u, body)
+	req, err := http.NewRequestWithContext(ctx, r.method, u.String(), body)
 	if err != nil {
-		return fmt.Errorf("amocrmkit: %s: new request: %w", r.endpoint, err)
+		return fmt.Errorf("amocrmkit: %s: %w: new request: %w", r.endpoint, ErrInvalidRequest, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+r.acc.Token)
 	req.Header.Set("Accept", "application/json")
@@ -201,18 +320,38 @@ func (c *Client) doREST(ctx context.Context, r restReq, out any) error {
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	return c.execute(ctx, req, r.endpoint, r.acc.Subdomain, out)
+	return c.execute(ctx, req, call{
+		endpoint:   r.endpoint,
+		acc:        r.acc.ref(),
+		single:     r.single,
+		allowRetry: r.allowRetry,
+	}, out)
 }
 
-// execute — общий путь для REST/amoJo/Drive/OAuth: per-account throttle → hc.Do
-// (ретраи — тоже через лимитер, см. accountLimiter.beforeAttempt) → метрики →
-// классификация статуса → декод тела. req должен быть полностью собран
-// (URL, заголовки, тело) вызывающим.
-func (c *Client) execute(ctx context.Context, req *http.Request, endpoint, account string, out any) error {
-	ctx = withAccount(ctx, account)
+// call — контекст одного вызова для execute: общий для REST/amoJo/Drive/OAuth.
+type call struct {
+	endpoint   string
+	acc        accountRef
+	single     bool
+	allowRetry bool
+}
+
+// execute — общий путь всех контуров: throttle аккаунта → hc.Do (ретраи тоже
+// через лимитер) → метрики → классификация статуса → декод тела. req должен
+// быть полностью собран (URL, заголовки, тело) вызывающим.
+func (c *Client) execute(ctx context.Context, req *http.Request, cl call, out any) error {
+	ctx = withAccount(ctx, cl.acc)
+	if cl.allowRetry {
+		ctx = httpclient.AllowRetry(ctx)
+	} else if req.Method == http.MethodPost || req.Method == http.MethodPatch {
+		// Запрос без GetBody httpclient не повторит — request-level запрет повтора.
+		req.GetBody = nil
+	}
 	req = req.WithContext(ctx)
-	if err := c.rl.wait(ctx, account); err != nil {
-		return fmt.Errorf("amocrmkit: %s: rate limiter: %w", endpoint, err)
+
+	if err := c.rl.wait(ctx, cl.acc.key()); err != nil {
+		c.countRateLimited(ctx, cl, err)
+		return fmt.Errorf("amocrmkit: %s: %w", cl.endpoint, err)
 	}
 
 	start := c.clock.Now()
@@ -224,88 +363,121 @@ func (c *Client) execute(ctx context.Context, req *http.Request, endpoint, accou
 		statusLabel = strconv.Itoa(resp.StatusCode)
 	}
 	c.instr.apiCalls.Add(ctx, 1, metric.WithAttributes(
-		attribute.String("endpoint", endpoint),
+		attribute.String("endpoint", cl.endpoint),
 		attribute.String("status", statusLabel),
 	))
 	c.instr.apiDuration.Record(ctx, dur, metric.WithAttributes(
-		attribute.String("endpoint", endpoint),
+		attribute.String("endpoint", cl.endpoint),
 	))
 	if err != nil {
-		c.log.Warn(ctx, "amocrmkit: request failed", "endpoint", endpoint, "account", account, "error", err.Error())
-		return fmt.Errorf("amocrmkit: %s: %w", endpoint, err)
+		c.countRateLimited(ctx, cl, err)
+		c.log.Warn(ctx, "amocrmkit: request failed", "endpoint", cl.endpoint, "account", cl.acc.Subdomain, "error", err.Error())
+		return fmt.Errorf("amocrmkit: %s: %w", cl.endpoint, err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode >= 400 {
-		apiErr := parseAPIError(resp)
+		apiErr := c.parseAPIError(resp)
 		switch {
 		case resp.StatusCode == http.StatusTooManyRequests:
+			c.rl.penalize(cl.acc.key(), time.Duration(apiErr.RetryAfter)*time.Second)
 			c.instr.rateLimited.Add(ctx, 1, metric.WithAttributes(
-				attribute.String("account", account),
+				attribute.String("tld", cl.acc.TLD),
+				attribute.String("result", "remote"),
 			))
-			c.log.Warn(ctx, "amocrmkit: rate limited", "endpoint", endpoint, "account", account, "retry_after", apiErr.RetryAfter)
+			c.log.Warn(ctx, "amocrmkit: rate limited", "endpoint", cl.endpoint, "account", cl.acc.Subdomain, "retry_after", apiErr.RetryAfter)
 		case resp.StatusCode >= 500:
-			c.log.Warn(ctx, "amocrmkit: server error", "endpoint", endpoint, "account", account, "status", resp.StatusCode, "trace_id", apiErr.TraceID)
+			c.log.Warn(ctx, "amocrmkit: server error", "endpoint", cl.endpoint, "account", cl.acc.Subdomain, "status", resp.StatusCode, "trace_id", apiErr.TraceID)
 		}
 		return classify(resp.StatusCode, apiErr)
 	}
 
-	if resp.StatusCode == http.StatusNoContent || out == nil {
-		_, _ = io.Copy(io.Discard, resp.Body)
+	if out == nil {
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxResponseBody))
 		return nil
 	}
+	if resp.StatusCode == http.StatusNoContent {
+		return c.emptyResponse(cl)
+	}
 
-	raw, err := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBody+1))
 	if err != nil {
-		return fmt.Errorf("amocrmkit: %s: read body: %w", endpoint, err)
+		return fmt.Errorf("amocrmkit: %s: read body: %w", cl.endpoint, err)
+	}
+	if len(raw) > maxResponseBody {
+		return fmt.Errorf("amocrmkit: %s: %w: over %d bytes", cl.endpoint, ErrResponseTooLarge, maxResponseBody)
 	}
 	if len(raw) == 0 {
-		return nil // 200 без тела (часть update/pin) — не ошибка
+		return c.emptyResponse(cl)
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("amocrmkit: %s: decode: %w", endpoint, err)
+		return fmt.Errorf("amocrmkit: %s: decode: %w", cl.endpoint, err)
 	}
 	return nil
+}
+
+// emptyResponse: для списка и батча пустой ответ — «нет данных», для одиночной
+// сущности он неотличим от 404, поэтому ErrNotFound.
+func (c *Client) emptyResponse(cl call) error {
+	if cl.single {
+		return fmt.Errorf("amocrmkit: %s: %w", cl.endpoint, ErrNotFound)
+	}
+	return nil
+}
+
+// countRateLimited считает вызовы, отклонённые лимитером до сети (пауза после
+// 429 или переполненная очередь слотов).
+func (c *Client) countRateLimited(ctx context.Context, cl call, err error) {
+	if !errors.Is(err, ErrRateLimited) {
+		return
+	}
+	c.instr.rateLimited.Add(ctx, 1, metric.WithAttributes(
+		attribute.String("tld", cl.acc.TLD),
+		attribute.String("result", "local"),
+	))
 }
 
 // parseAPIError читает тело ошибочного ответа (application/problem+json). Никогда
 // не возвращает nil: даже при нечитаемом/пустом теле отдаёт *APIError со статусом
 // (sentinel выбирается отдельно по коду в classify).
-func parseAPIError(resp *http.Response) *APIError {
+func (c *Client) parseAPIError(resp *http.Response) *APIError {
 	e := &APIError{Status: resp.StatusCode}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
-	if err != nil || len(raw) == 0 {
-		// retry_after может прийти и заголовком — подстрахуемся.
-		e.RetryAfter = headerSeconds(resp, "Retry-After")
-		return e
-	}
-
-	var b apiErrorBody
-	if json.Unmarshal(raw, &b) == nil {
-		e.Title, e.Type, e.Detail = b.Title, b.Type, b.Detail
-		e.TraceID = b.TraceID
-		e.RetryAfter = b.RetryAfter
-		for _, ve := range b.ValidationErrors {
-			fe := ValidationError{RequestID: ve.RequestID}
-			for _, x := range ve.Errors {
-				fe.Errors = append(fe.Errors, FieldError{Code: x.Code, Path: x.Path, Detail: x.Detail})
+	if err == nil && len(raw) > 0 {
+		var b apiErrorBody
+		if json.Unmarshal(raw, &b) == nil {
+			e.Title, e.Type, e.Detail = b.Title, b.Type, b.Detail
+			e.TraceID = b.TraceID
+			e.RetryAfter = b.RetryAfter
+			for _, ve := range b.ValidationErrors {
+				fe := ValidationError{RequestID: ve.RequestID}
+				for _, x := range ve.Errors {
+					fe.Errors = append(fe.Errors, FieldError{Code: x.Code, Path: x.Path, Detail: x.Detail})
+				}
+				e.ValidationErrors = append(e.ValidationErrors, fe)
 			}
-			e.ValidationErrors = append(e.ValidationErrors, fe)
 		}
 	}
 	if e.RetryAfter == 0 {
-		e.RetryAfter = headerSeconds(resp, "Retry-After")
+		e.RetryAfter = retryAfterSeconds(resp.Header, c.clock.Now())
 	}
+	e.RetryAfter = min(e.RetryAfter, maxRetryAfterSeconds)
 	return e
 }
 
-func headerSeconds(resp *http.Response, key string) int {
-	if v := resp.Header.Get(key); v != "" {
-		if n, err := strconv.Atoi(v); err == nil {
-			return n
-		}
+// maxRetryAfterSeconds — потолок паузы из ответа: дольше суток amoCRM не просит,
+// а Duration от абсурдного значения переполняется в отрицательную.
+const maxRetryAfterSeconds = 24 * 60 * 60
+
+// retryAfterSeconds — пауза из заголовка Retry-After в секундах (вверх до целой),
+// 0 при отсутствующем, нечитаемом или уже прошедшем значении. Разбор обеих форм
+// RFC 9110 общий с httpclient.
+func retryAfterSeconds(h http.Header, now time.Time) int {
+	d, ok := httpclient.ParseRetryAfter(h.Get("Retry-After"), now)
+	if !ok || d <= 0 {
+		return 0
 	}
-	return 0
+	return min(int(math.Ceil(d.Seconds())), maxRetryAfterSeconds)
 }
 
 // apiErrorBody — wire-форма тела ошибки amoCRM (kebab-case validation-errors,
@@ -327,7 +499,7 @@ type apiErrorBody struct {
 	} `json:"validation-errors"`
 }
 
-// Page[T] — типизированная страница list-ответа REST v4.
+// Page — типизированная страница list-ответа REST v4.
 type Page[T any] struct {
 	Page       int
 	TotalItems int
@@ -359,10 +531,11 @@ func embeddedPage[T any](env listEnvelope, key string) (Page[T], error) {
 	return page, nil
 }
 
-// getOne GET'ит одиночный объект в T (для /{id} и /account). 204/пусто → нулевой T.
+// getOne GET'ит одиночный объект в T (для /{id} и /account); пустой ответ —
+// ErrNotFound.
 func getOne[T any](ctx context.Context, c *Client, acc Account, endpoint, path string, q url.Values) (T, error) {
 	var out T
-	err := c.doREST(ctx, restReq{acc: acc, method: http.MethodGet, path: path, query: q, endpoint: endpoint}, &out)
+	err := c.doREST(ctx, restReq{acc: acc, method: http.MethodGet, path: path, query: q, endpoint: endpoint, single: true}, &out)
 	return out, err
 }
 
@@ -447,4 +620,12 @@ func (p ListParams) values() url.Values {
 		v.Set("order["+k+"]", val)
 	}
 	return v
+}
+
+// withValues — query одиночного GET: with=a,b.
+func withValues(with []string) url.Values {
+	if len(with) == 0 {
+		return nil
+	}
+	return url.Values{"with": {strings.Join(with, ",")}}
 }

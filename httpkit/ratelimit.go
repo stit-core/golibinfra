@@ -10,6 +10,7 @@ import (
 	"golang.org/x/time/rate"
 )
 
+// RateLimitConfig — token-bucket на клиента; RPS = 0 выключает limiter.
 type RateLimitConfig struct {
 	// RPS = 0 выключает limiter.
 	RPS   int `envconfig:"HTTP_RATE_LIMIT_RPS" default:"100"`
@@ -74,15 +75,25 @@ func (l *rateLimiter) size() int {
 	return len(l.buckets)
 }
 
-func clientIP(r *http.Request, trustProxy bool) string {
+// ClientIP — IP клиента для лимитера, аудита и антибрутфорса. С trustProxy
+// берётся **правое** значение последнего заголовка X-Forwarded-For — его
+// дописал доверенный прокси ($proxy_add_x_forwarded_for), тогда как всё левее
+// прислал сам клиент; значение должно парситься как IP, иначе — X-Real-IP,
+// иначе — RemoteAddr.
+func ClientIP(r *http.Request, trustProxy bool) string {
 	if trustProxy {
-		if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-			if first := strings.TrimSpace(strings.SplitN(xff, ",", 2)[0]); first != "" {
-				return first
+		// Прокси, который добавляет свой X-Forwarded-For вместо замены, оставляет
+		// первым заголовок клиента: доверять можно только последнему.
+		if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
+			parts := strings.Split(xff[len(xff)-1], ",")
+			if ip := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(ip) != nil {
+				return ip
 			}
 		}
-		if rip := strings.TrimSpace(r.Header.Get("X-Real-IP")); rip != "" {
-			return rip
+		if rip := r.Header.Values("X-Real-IP"); len(rip) > 0 {
+			if ip := strings.TrimSpace(rip[len(rip)-1]); net.ParseIP(ip) != nil {
+				return ip
+			}
 		}
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
@@ -92,6 +103,7 @@ func clientIP(r *http.Request, trustProxy bool) string {
 	return host
 }
 
+// RateLimit отвечает 429 с Retry-After, когда клиент исчерпал свой bucket.
 func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 	if cfg.RPS <= 0 {
 		return func(next http.Handler) http.Handler { return next }
@@ -102,7 +114,7 @@ func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 func rateLimitWith(l *rateLimiter, instr *instruments) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !l.allow(clientIP(r, l.cfg.TrustProxy)) {
+			if !l.allow(ClientIP(r, l.cfg.TrustProxy)) {
 				instr.rateLimited.Add(r.Context(), 1)
 				w.Header().Set("Retry-After", "1")
 				writeAPIError(w, Error("RATE_LIMITED", http.StatusTooManyRequests, "rate limit exceeded"))

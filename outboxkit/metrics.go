@@ -13,12 +13,15 @@ import (
 // SubjectBacklog — снимок очереди неопубликованных событий по subject'у:
 // возраст самого старого (Oldest) и количество (Pending).
 type SubjectBacklog struct {
+	// Subject — subject событий снимка.
 	Subject string
-	Oldest  time.Duration
+	// Oldest — возраст самого старого неопубликованного события.
+	Oldest time.Duration
+	// Pending — число неопубликованных (не-dead) событий.
 	Pending int64
 }
 
-// BacklogReporter — optional интерфейс для Repository: реализующие его store'ы
+// BacklogReporter — опциональный интерфейс Repository: реализующие его store'ы
 // (см. outboxkit/pgstore) экспонируют backlog по subject'ам. Через
 // RegisterBacklogGauges это становится `outbox_lag_seconds` и
 // `outbox_pending_count` (ObservableGauge).
@@ -31,6 +34,7 @@ type outboxInstruments struct {
 	insertedTotal   metric.Int64Counter
 	processedTotal  metric.Int64Counter
 	deadTotal       metric.Int64Counter
+	revivedTotal    metric.Int64Counter
 	batchSize       metric.Int64Histogram
 	batchDuration   metric.Float64Histogram
 	publishDuration metric.Float64Histogram
@@ -49,16 +53,21 @@ func newOutboxInstruments(instance string) *outboxInstruments {
 		deadTotal: otelkit.Must(m.Int64Counter("outbox_events_dead_total",
 			metric.WithDescription("Events marked dead after exhausting MaxAttempts"),
 		)),
+		revivedTotal: otelkit.Must(m.Int64Counter("outbox_revived_total",
+			metric.WithDescription("Dead events returned to the queue by ReviveDead"),
+		)),
 		batchSize: otelkit.Must(m.Int64Histogram("outbox_batch_size",
 			metric.WithDescription("Batch size pulled per worker tick"),
 		)),
 		batchDuration: otelkit.Must(m.Float64Histogram("outbox_batch_duration_seconds",
 			metric.WithDescription("Worker tick duration"),
 			metric.WithUnit("s"),
+			otelkit.DurationBuckets(),
 		)),
 		publishDuration: otelkit.Must(m.Float64Histogram("outbox_publish_duration_seconds",
 			metric.WithDescription("Duration of the batch publish phase per worker tick"),
 			metric.WithUnit("s"),
+			otelkit.DurationBuckets(),
 		)),
 	}
 }
@@ -75,12 +84,18 @@ func RegisterBacklogGauges(instance string, reporter BacklogReporter) (metric.Re
 	pending := otelkit.Must(m.Int64ObservableGauge("outbox_pending_count",
 		metric.WithDescription("Number of unpublished events per subject"),
 	))
+	backlogErrors := otelkit.Must(m.Int64Counter("outbox_backlog_errors_total",
+		metric.WithDescription("Failed backlog snapshots behind outbox_lag_seconds/outbox_pending_count"),
+	))
 	inst := attribute.String("instance", instance)
 	return m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
 		backlog, err := reporter.Backlog(ctx)
 		if err != nil {
-			// Сбой снимка не должен валить экспорт метрик процесса.
-			return nil
+			// Сбой снимка не должен валить экспорт метрик процесса, но и
+			// пропадать молча: без счётчика алерт на lag не отличит «нет
+			// отставания» от «снимок не берётся».
+			backlogErrors.Add(ctx, 1, metric.WithAttributes(inst))
+			return nil //nolint:nilerr // сбой снимка учтён метрикой, экспорт процесса не валим
 		}
 		for _, b := range backlog {
 			attrs := metric.WithAttributes(inst, attribute.String("subject", b.Subject))

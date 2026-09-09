@@ -2,6 +2,8 @@ package pgkit_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -10,6 +12,8 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
+
+var errRollback = errors.New("rollback please")
 
 func startPool(t *testing.T, maxConns int32) (*pgkit.DB, *pgkit.PoolTransactor, func() int32) {
 	t.Helper()
@@ -31,9 +35,6 @@ func startPool(t *testing.T, maxConns int32) (*pgkit.DB, *pgkit.PoolTransactor, 
 }
 
 func TestWithTx_PanicRollsBackAndReleasesConn(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration")
-	}
 	db, tr, acquired := startPool(t, 1)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -72,9 +73,6 @@ func TestWithTx_PanicRollsBackAndReleasesConn(t *testing.T) {
 }
 
 func TestWithTxOptions_IsolationAndNesting(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration")
-	}
 	db, tr, _ := startPool(t, 2)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
@@ -107,5 +105,136 @@ func TestWithTxOptions_IsolationAndNesting(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("WithTxOptions: %v", err)
+	}
+}
+
+// Проглоченная в fn SQL-ошибка не даёт коммита: Postgres держит транзакцию
+// aborted, и Commit возвращает ErrTxCommitRollback.
+func TestWithTx_SwallowedSQLErrorFailsCommit(t *testing.T) {
+	db, tr, _ := startPool(t, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	err := tr.WithTx(ctx, func(ctx context.Context) error {
+		if _, err := db.Exec(ctx, `INSERT INTO t VALUES (1)`); err != nil {
+			return err
+		}
+		_, _ = db.Exec(ctx, `INSERT INTO no_such_table VALUES (1)`)
+		return nil
+	})
+	if !errors.Is(err, pgx.ErrTxCommitRollback) {
+		t.Fatalf("WithTx err = %v, want pgx.ErrTxCommitRollback", err)
+	}
+	var count int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM t`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0 (транзакция не закоммичена)", count)
+	}
+}
+
+func TestWithTx_FnErrorRollsBack(t *testing.T) {
+	db, tr, _ := startPool(t, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	sentinel := errors.New("domain failure")
+	err := tr.WithTx(ctx, func(ctx context.Context) error {
+		if _, err := db.Exec(ctx, `INSERT INTO t VALUES (1)`); err != nil {
+			return err
+		}
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("WithTx err = %v, want %v", err, sentinel)
+	}
+	if err.Error() != sentinel.Error() {
+		t.Fatalf("WithTx err = %q, want ошибку fn без обёртки", err)
+	}
+	var count int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM t`).Scan(&count); err != nil {
+		t.Fatalf("count: %v", err)
+	}
+	if count != 0 {
+		t.Fatalf("count = %d, want 0", count)
+	}
+}
+
+// Отмена ctx внутри fn: наружу уходит причина отмены, а не «сломался rollback».
+func TestWithTx_CtxCancelKeepsOriginalCause(t *testing.T) {
+	db, tr, acquired := startPool(t, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+	defer cancel()
+
+	err := tr.WithTx(ctx, func(ctx context.Context) error {
+		_, err := db.Exec(ctx, `SELECT pg_sleep(5)`)
+		return err
+	})
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("WithTx err = %v, want context.DeadlineExceeded", err)
+	}
+	if strings.Contains(err.Error(), "rollback") {
+		t.Fatalf("WithTx err = %q, ошибка отката маскирует причину", err)
+	}
+
+	// MaxConns=1: слот должен вернуться в пул, иначе следующий WithTx не пройдёт.
+	deadline := time.Now().Add(10 * time.Second)
+	for acquired() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := acquired(); n != 0 {
+		t.Fatalf("после отмены занято соединений: %d, want 0", n)
+	}
+	next, cancelNext := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancelNext()
+	if err := tr.WithTx(next, func(ctx context.Context) error {
+		_, err := db.Exec(ctx, `INSERT INTO t VALUES (7)`)
+		return err
+	}); err != nil {
+		t.Fatalf("WithTx после отмены: %v", err)
+	}
+}
+
+func TestInTx_TestMarker(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	if pgkit.InTx(ctx) {
+		t.Fatal("InTx(background) = true")
+	}
+	if !pgkit.InTx(pgkit.WithTestTx(ctx)) {
+		t.Fatal("InTx(WithTestTx) = false")
+	}
+}
+
+// Настоящая (не артефакт отмены) ошибка отката присоединяется к причине через
+// errors.Join и не подменяет её.
+func TestWithTx_JoinsRealRollbackError(t *testing.T) {
+	db, tr, acquired := startPool(t, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	sentinel := errors.New("domain failure")
+	err := tr.WithTx(ctx, func(ctx context.Context) error {
+		// Backend убивает сам себя: откат уходит в мёртвое соединение, а ctx жив.
+		_, _ = db.Exec(ctx, `SELECT pg_terminate_backend(pg_backend_pid())`)
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("WithTx err = %v, want errors.Is sentinel", err)
+	}
+	if !strings.Contains(err.Error(), "pgkit: rollback") {
+		t.Fatalf("WithTx err = %q, want ошибку отката рядом с причиной", err)
+	}
+	if ctx.Err() != nil {
+		t.Fatal("ctx отменился — тест проверял бы артефакт отмены")
+	}
+
+	deadline := time.Now().Add(10 * time.Second)
+	for acquired() != 0 && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := acquired(); n != 0 {
+		t.Fatalf("после сбоя отката занято соединений: %d, want 0", n)
 	}
 }

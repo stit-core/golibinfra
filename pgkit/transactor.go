@@ -10,27 +10,36 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
+// Transactor — граница атомарности: fn выполняется в одной транзакции,
+// проброшенной через ctx.
 type Transactor interface {
 	WithTx(ctx context.Context, fn func(ctx context.Context) error) error
 	WithTxOptions(ctx context.Context, opts pgx.TxOptions, fn func(ctx context.Context) error) error
 }
 
+// DBTX — исполнитель запроса: пул или транзакция.
 type DBTX interface {
 	Exec(ctx context.Context, sql string, args ...any) (pgconn.CommandTag, error)
 	Query(ctx context.Context, sql string, args ...any) (pgx.Rows, error)
 	QueryRow(ctx context.Context, sql string, args ...any) pgx.Row
 }
 
+// PoolTransactor — реализация Transactor поверх пула.
 type PoolTransactor struct {
 	pool *pgxpool.Pool
 }
 
+// NewPoolTransactor собирает Transactor поверх пула.
 func NewPoolTransactor(pool *pgxpool.Pool) *PoolTransactor {
 	return &PoolTransactor{pool: pool}
 }
 
 type txCtxKey struct{}
 
+// testTx — маркер транзакции без pgx.Tx (WithTestTx): InTx его видит, Conn — нет.
+type testTx struct{}
+
+// Conn выбирает исполнителя запроса: транзакцию из ctx или сам пул.
 func Conn(ctx context.Context, pool *pgxpool.Pool) DBTX {
 	if tx, ok := ctx.Value(txCtxKey{}).(pgx.Tx); ok {
 		return tx
@@ -38,12 +47,18 @@ func Conn(ctx context.Context, pool *pgxpool.Pool) DBTX {
 	return pool
 }
 
-// InTx сообщает, несёт ли ctx активную транзакцию (открытую Transactor.WithTx).
+// InTx сообщает, несёт ли ctx активную транзакцию (Transactor.WithTx или WithTestTx).
 func InTx(ctx context.Context) bool {
-	_, ok := ctx.Value(txCtxKey{}).(pgx.Tx)
-	return ok
+	return ctx.Value(txCtxKey{}) != nil
 }
 
+// WithTestTx помечает ctx как «внутри транзакции» для фейков Transactor: код,
+// гейтящийся на InTx, проходит без Postgres. Conn такой ctx игнорирует.
+func WithTestTx(ctx context.Context) context.Context {
+	return context.WithValue(ctx, txCtxKey{}, testTx{})
+}
+
+// WithTx открывает транзакцию с уровнем ReadCommitted.
 func (t *PoolTransactor) WithTx(ctx context.Context, fn func(ctx context.Context) error) error {
 	return t.WithTxOptions(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, fn)
 }
@@ -62,11 +77,11 @@ func (t *PoolTransactor) WithTxOptions(ctx context.Context, opts pgx.TxOptions, 
 	// Откат в defer спасает соединение при panic внутри fn; после Commit/Rollback это no-op.
 	defer func() { _ = tx.Rollback(context.WithoutCancel(ctx)) }()
 
-	ctx = context.WithValue(ctx, txCtxKey{}, tx)
+	txCtx := context.WithValue(ctx, txCtxKey{}, tx)
 
-	if err := fn(ctx); err != nil {
-		if rbErr := tx.Rollback(context.WithoutCancel(ctx)); rbErr != nil && !errors.Is(rbErr, pgx.ErrTxClosed) {
-			return fmt.Errorf("pgkit: rollback: %w (after: %w)", rbErr, err)
+	if err := fn(txCtx); err != nil {
+		if rbErr := rollbackErr(ctx, tx); rbErr != nil {
+			return errors.Join(err, rbErr)
 		}
 		return err
 	}
@@ -75,4 +90,14 @@ func (t *PoolTransactor) WithTxOptions(ctx context.Context, opts pgx.TxOptions, 
 		return fmt.Errorf("pgkit: commit: %w", err)
 	}
 	return nil
+}
+
+// rollbackErr: при отменённом ctx pgx уже уничтожил соединение, и ошибка отката
+// — артефакт отмены, уводящий от настоящей причины.
+func rollbackErr(ctx context.Context, tx pgx.Tx) error {
+	err := tx.Rollback(context.WithoutCancel(ctx))
+	if err == nil || errors.Is(err, pgx.ErrTxClosed) || ctx.Err() != nil {
+		return nil //nolint:nilerr // ошибка отката на отменённом ctx — артефакт отмены
+	}
+	return fmt.Errorf("pgkit: rollback: %w", err)
 }

@@ -1,0 +1,7 @@
+#!/usr/bin/env bash
+# Гейт перед push: тот же make check, что перед тегом.
+# Включается один раз — `make hooks` (git config core.hooksPath .githooks).
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+exec make check

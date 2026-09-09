@@ -1,19 +1,13 @@
-// Package projection — эталон схемы локальных read-проекций хаба.
-// Цель — идентичная схема companies/projects/employees/
-// entity_visibility (+ курсор-таблица hub_sync_cursors) во всех продуктах, чтобы
-// проекции не расходились.
-//
-// Это copy-paste-шаблон, а не рантайм: SQL встроен через embed для программного
-// доступа (генераторы/тесты), но канонический способ — скопировать файлы
-// templates/*.sql в каталог миграций продукта (адаптировав нумерацию под свою
-// последовательность) и sqlc-запросы queries/*.sql — в свой sqlc-пакет.
-//
-// Проекции — read-only срез хаба: продукт наполняет их только через hubkit/sync
-// (write-through идёт в hub API, не напрямую в проекцию). Надстройки продукта
-// (kanban, борды, события) живут в отдельных таблицах поверх этих id.
+// Package projection — эталон схемы локальных read-проекций хаба: миграции и
+// sqlc-запросы companies/projects/employees/visibility как шаблон и как
+// применимый источник pgkit.
 package projection
 
-import "embed"
+import (
+	"embed"
+
+	"git.stit.tech/stit-core/golibinfra/pgkit"
+)
 
 // MigrationsFS — SQL-шаблоны миграций проекций (templates/*.sql).
 //
@@ -24,3 +18,8 @@ var MigrationsFS embed.FS
 //
 //go:embed queries/*.sql
 var QueriesFS embed.FS
+
+// Migrations — шаблон как готовый источник pgkit (таблица версий
+// schema_migrations_hub_projection). Альтернатива копированию файлов: продукт,
+// применяющий шаблон напрямую, не расходится с ним со временем.
+var Migrations = pgkit.Source{Name: "hub_projection", FS: MigrationsFS, Dir: "templates"}

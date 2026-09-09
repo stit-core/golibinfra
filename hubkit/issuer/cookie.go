@@ -10,29 +10,22 @@ import (
 // (Lax, не Strict: переход по внешней ссылке на продукт должен нести сессию).
 func SessionCookie(value string, cfg CookieConfig) http.Cookie {
 	return http.Cookie{ //nolint:gosec // Secure controlled by HUB_SESSION_COOKIE_SECURE (false only in dev)
-		Name:     cfg.Name,
+		Name:     nameOr(cfg.Name, DefaultCookieName),
 		Value:    value,
 		Path:     "/",
 		Domain:   cfg.Domain,
 		HttpOnly: true,
 		Secure:   cfg.Secure,
 		SameSite: http.SameSiteLaxMode,
-		MaxAge:   int(cfg.TTL / time.Second),
+		MaxAge:   int(ttlOr(cfg.TTL) / time.Second),
 	}
 }
 
 // ExpiredSessionCookie — Set-Cookie на сброс сессии (logout).
 func ExpiredSessionCookie(cfg CookieConfig) http.Cookie {
-	return http.Cookie{ //nolint:gosec // Secure controlled by HUB_SESSION_COOKIE_SECURE (false only in dev)
-		Name:     cfg.Name,
-		Value:    "",
-		Path:     "/",
-		Domain:   cfg.Domain,
-		HttpOnly: true,
-		Secure:   cfg.Secure,
-		SameSite: http.SameSiteLaxMode,
-		MaxAge:   -1,
-	}
+	c := SessionCookie("", cfg) //nolint:gosec // атрибуты наследуются из SessionCookie
+	c.MaxAge = -1
+	return c
 }
 
 // RefreshCookie — cookie refresh-токена: host-only (Domain пуст) + Path из
@@ -41,9 +34,9 @@ func ExpiredSessionCookie(cfg CookieConfig) http.Cookie {
 // (RefreshConfig.TTL).
 func RefreshCookie(value string, cfg CookieConfig, ttl time.Duration) http.Cookie {
 	return http.Cookie{ //nolint:gosec // Secure controlled by HUB_SESSION_COOKIE_SECURE (false only in dev)
-		Name:     refreshNameOr(cfg),
+		Name:     nameOr(cfg.RefreshName, DefaultRefreshCookieName),
 		Value:    value,
-		Path:     refreshPathOr(cfg),
+		Path:     nameOr(cfg.RefreshPath, DefaultRefreshCookiePath),
 		HttpOnly: true,
 		Secure:   cfg.Secure,
 		SameSite: http.SameSiteLaxMode,
@@ -58,18 +51,18 @@ func ExpiredRefreshCookie(cfg CookieConfig) http.Cookie {
 	return c
 }
 
-// Дефолты дублируются здесь для конфигов, собранных литералом мимо envconfig:
+// Дефолты дублируются для конфигов, собранных литералом мимо envconfig:
 // безымянная cookie на logout молча не сбросила бы сессию.
-func refreshNameOr(cfg CookieConfig) string {
-	if cfg.RefreshName == "" {
-		return "stit_refresh"
+func nameOr(value, fallback string) string {
+	if value == "" {
+		return fallback
 	}
-	return cfg.RefreshName
+	return value
 }
 
-func refreshPathOr(cfg CookieConfig) string {
-	if cfg.RefreshPath == "" {
-		return "/auth"
+func ttlOr(ttl time.Duration) time.Duration {
+	if ttl <= 0 {
+		return DefaultSessionTTL
 	}
-	return cfg.RefreshPath
+	return ttl
 }

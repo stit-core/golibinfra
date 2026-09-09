@@ -11,7 +11,7 @@
 | `Module` (`fx.Options`) | provide'ит `*Client` из графа (`Config`, `httpclient.Config`, `clockkit.Clock`, `logkit.Logger`) | подключение через fx |
 | `New(cfg, hcCfg, clock, log, opts...) (*Client, error)` | прямая сборка клиента; кит собирает свой `httpclient` из `hcCfg` | вне fx / в тестах |
 | `Option`: `WithHTTPClient(*httpclient.Client)`, `WithTransport(http.RoundTripper)` | готовый httpclient (тесты) / базовый транспорт собираемого клиента | см. [configuration.md](configuration.md) |
-| `Config` | настройки уровня кита (см. [configuration.md](configuration.md)); `Validate()` | передаётся в `New` / читается `NewConfig` |
+| `Config` | настройки уровня кита (см. [configuration.md](configuration.md)); `(*Config).Validate()` | передаётся в `New` / читается `NewConfig` |
 | `NewConfig() (Config, error)` | читает `Config` из ENV + `Validate` | `fx.Provide(amocrmkit.NewConfig)` |
 | `Client` | единая точка вызовов всех контуров | один экземпляр на процесс, все аккаунты |
 
@@ -22,9 +22,14 @@
 | `Account` | REST v4 / Drive | `Subdomain` (`^[a-z0-9-]{1,63}$`), `TLD` (`"ru"`/`"com"`), `Token` (Bearer) |
 | `AmojoTarget` | amoJo Chat | `TLD` (`"ru"`/`"com"`), `AccountKey` (= `Account.Subdomain`, тот же формат), `Secret` (channel secret) |
 
-OAuth-методы координат-структуры не используют — subdomain/tld/секреты приходят
-отдельными параметрами и проходят ту же валидацию. Координаты вне формата →
-`ErrInvalidAccount` без сетевого вызова.
+OAuth-методы принимают тот же `Account` (поле `Token` не используется) и
+`OAuthConfig` с параметрами интеграции. Координаты вне формата →
+`ErrInvalidAccount` без сетевого вызова; динамические сегменты пути (`uid`,
+`uuid`, id групп, `scope_id`, `msgid`) экранируются, имена сущностей в пути
+проверяются по allowlist, а пустой сегмент и dot-сегменты (`.`, `..`) в собранном
+пути отвергаются (`ErrInvalidRequest`).
+
+Все идентификаторы сущностей — `int64` (поля моделей и параметры методов).
 
 ## Пагинация и общие параметры (REST v4)
 
@@ -50,28 +55,37 @@ OAuth-методы координат-структуры не использую
 
 | Домен (файл) | Методы |
 |---|---|
-| leads (`client_leads.go`) | `ListLeads`, `CreateLeads`, `UpdateLeads`, `CreateLeadsComplex`; unsorted: `CreateUnsortedSIP`, `CreateUnsortedForms`, `AcceptUnsorted`, `DeclineUnsorted`, `LinkUnsorted` |
-| contacts + companies (`client_contacts.go`) | `ListContacts`, `CreateContacts`, `UpdateContacts`, `ListContactChats`, `LinkContactChat`; `ListCompanies`, `CreateCompanies`, `UpdateCompanies` |
-| customers + transactions (`client_customers.go`) | `ListCustomers`, `CreateCustomers`, `UpdateCustomers`, `ListTransactions`, `CreateTransactions`, `DeleteTransaction`, `AdjustBonusPoints` (RU-only), `SetCustomersMode` |
+| leads (`client_leads.go`) | `GetLead`, `ListLeads`, `CreateLeads`, `UpdateLeads`, `CreateLeadsComplex`; unsorted: `CreateUnsortedSIP`, `CreateUnsortedForms`, `AcceptUnsorted`, `DeclineUnsorted`, `LinkUnsorted` |
+| contacts + companies (`client_contacts.go`) | `GetContact`, `ListContacts`, `CreateContacts`, `UpdateContacts`, `ListContactChats`, `LinkContactChat`; `GetCompany`, `ListCompanies`, `CreateCompanies`, `UpdateCompanies` |
+| customers + transactions (`client_customers.go`) | `GetCustomer`, `ListCustomers`, `CreateCustomers`, `UpdateCustomers`, `ListTransactions`, `CreateTransactions`, `DeleteTransaction`, `AdjustBonusPoints` (RU-only), `SetCustomersMode` |
 | catalogs + elements (`client_catalogs.go`) | `ListCatalogs`, `CreateCatalogs`, `UpdateCatalogs`, `ListCatalogElements`, `CreateCatalogElements`, `UpdateCatalogElements` |
-| entity links (`client_links.go`) | `LinkEntities`, `UnlinkEntities` (матрица допустимых связей проверяется до запроса) |
-| tasks (`client_tasks.go`) | `ListTasks`, `CreateTasks`, `UpdateTasks`, `CompleteTask` |
+| entity links (`client_links.go`) | `LinkEntities`, `UnlinkEntities` (матрица допустимых связей проверяется до запроса; связь асимметрична: `companies→leads` допустима, `contacts→leads` — нет) |
+| tasks (`client_tasks.go`) | `GetTask`, `ListTasks`, `CreateTasks`, `UpdateTasks`, `CompleteTask` |
 | notes + calls (`client_notes.go`) | `AddNotes`, `AddCalls` |
 | talks (`client_talks.go`) | `GetTalk`, `ListTalks`, `CloseTalk` |
 | chat templates (`client_chat.go`) | `ListChatTemplates`, `CreateChatTemplates`, `UpdateChatTemplate`, `DeleteChatTemplates`, `SubmitTemplateReview`, `UpdateTemplateReview` |
 | files + events (`client_files.go`) | `AttachFiles`, `DetachFiles`, `GetFileLinks`, `ListEvents` |
 | account-meta (`client_account.go`) | `GetAmojoID`, `GetDriveURL`, `GetAccountTaskTypes`, `GetEventTypes` |
-| account-config (`client_config.go`) | pipelines/statuses: `ListPipelines`, `CreatePipelines`, `UpdatePipeline`, `UpsertStatuses`; custom fields/groups: `ListCustomFields`, `CreateCustomFields`, `UpdateCustomFields`, `DeleteCustomField`, `ListCustomFieldGroups`, `CreateCustomFieldGroups`, `UpdateCustomFieldGroup`, `DeleteCustomFieldGroup`; tags: `ListTags`, `CreateTags`, `UpdateTags`; `ListLossReasons`; sources/buttons/online chat: `ListSources`, `CreateSources`, `UpdateSources`, `DeleteSources`, `ListWebsiteButtons`, `CreateWebsiteButton`, `UpdateWebsiteButton`, `ConnectOnlineChat`; users/roles: `ListUsers`, `CreateUsers`, `ActivateUser`, `DeactivateUser`, `ListRoles`, `CreateRoles`, `UpdateRole`, `DeleteRole`; customer statuses/segments: `ListCustomerStatuses`, `CreateCustomerStatuses`, `UpdateCustomerStatus`, `DeleteCustomerStatus`, `ListSegments`, `CreateSegments`, `UpdateSegment`, `DeleteSegment` |
+| account-config (`client_config.go`) | pipelines/statuses: `ListPipelines`, `CreatePipelines`, `UpdatePipeline`, `UpsertStatuses`; custom fields/groups: `ListCustomFields`, `CreateCustomFields`, `UpdateCustomFields`, `DeleteCustomField`, `ListCustomFieldGroups`, `CreateCustomFieldGroups`, `UpdateCustomFieldGroup`, `DeleteCustomFieldGroup`; tags: `ListTags`, `CreateTags`, `UpdateTags`; `ListLossReasons`; sources: `ListSources`, `CreateSources`, `UpdateSources`, `DeleteSources`; CRM Plugin (`/api/v4/website_buttons`): `ListWebsiteButtons`, `GetWebsiteButton`, `CreateWebsiteButton`, `UpdateWebsiteButton`, `ConnectOnlineChat`; users/roles: `ListUsers`, `CreateUsers`, `ActivateUsers`, `DeactivateUsers`, `ListRoles`, `CreateRoles`, `UpdateRole`, `DeleteRole`; customer statuses/segments: `ListCustomerStatuses`, `CreateCustomerStatuses`, `UpdateCustomerStatus`, `DeleteCustomerStatus`, `ListSegments`, `CreateSegments`, `UpdateSegment`, `DeleteSegment` |
 
-`GET /{id}`-геттеры есть только у `talks` (`GetTalk`): одиночное чтение прочих
-сущностей — из локального read-model потребителя, не read-through к amoCRM.
+`GET /{id}`-геттеры (`GetLead`, `GetContact`, `GetCompany`, `GetCustomer`,
+`GetTask`, `GetTalk`, `GetWebsiteButton`) принимают вариадик `with ...string`.
+Пустой ответ на такой запрос — `ErrNotFound` (для списков и батчей пустой ответ —
+просто «нет данных»).
 
 ## Drive — методы (`client_files.go`)
 
-`CreateUploadSession`, `UploadPart` (чанк + `Content-Range`), `PatchFile`,
-`TrashFiles`, `RestoreFiles`, `GetFileVersions`, `ListFiles`. Все принимают
-`driveURL` параметром (из `GetDriveURL`) и `Account` (валидируется). Типы:
-`File`, `UploadSession`, `UploadSessionInput`, `PatchFileInput`, `FileLink`,
+| Метод | Роль |
+|---|---|
+| `UploadFile(ctx, acc, driveURL, in, io.Reader) (File, error)` | файл целиком: сессия + части по `MaxPartSize` по цепочке `next_url`; в памяти живёт не больше одной части |
+| `CreateUploadSession` → `UploadSession` | POST `{drive_url}/v1.0/sessions` |
+| `UploadPart(ctx, acc, uploadURL, contentRange, chunk) (File, error)` | одна часть; промежуточный ответ несёт `File.NextURL`/`File.SessionID`, финальный — `UUID` |
+| `PatchFile`, `TrashFiles`, `RestoreFiles`, `GetFileVersions`, `ListFiles` | операции над файлами Drive |
+
+Все принимают `driveURL` (из `GetDriveURL`) и `Account`. Адрес Drive должен
+лежать на `https://*.amocrm.<TLD>` аккаунта, иначе `ErrInvalidAccount`: Bearer не
+уходит на чужой хост (проверка выключена при `HostOverride`). Типы: `File`,
+`UploadSession`, `UploadSessionInput`, `PatchFileInput`, `FileLink`,
 `AttachFileInput`.
 
 ## amoJo Chat — методы (`amojo.go`)
@@ -104,27 +118,40 @@ OAuth-методы координат-структуры не использую
 
 | Символ | Роль |
 |---|---|
-| `ExchangeCode(ctx, subdomain, tld, clientID, clientSecret, code, redirectURI) (Tokens, error)` | grant `authorization_code` |
-| `RefreshToken(ctx, subdomain, tld, clientID, clientSecret, refreshToken, redirectURI) (Tokens, error)` | grant `refresh_token` (`redirect_uri` обязателен) |
-| `Tokens` | `AccessToken`, `RefreshToken`, `ExpiresIn`, `ServerTime`; метод `ExpiresAt()` (= `ServerTime + ExpiresIn`, UTC) |
-| `TokenSource` | контракт поставщика access-токена (`Token(ctx, accountSubdomain) (string, error)`); кит определяет, но сам не вызывает |
+| `OAuthConfig` | `ClientID`, `ClientSecret`, `RedirectURI` (обязателен в теле обоих grant'ов) |
+| `ExchangeCode(ctx, acc, app, code) (TokenPair, error)` | grant `authorization_code` |
+| `RefreshToken(ctx, acc, app, refreshToken) (TokenPair, error)` | grant `refresh_token` |
+| `TokenPair` | `AccessToken`, `RefreshToken`, `ExpiresIn`, `ServerTime`; метод `ExpiresAt()` (= `ServerTime + ExpiresIn`, UTC). Если amoCRM не прислал `server_time`, кит подставляет свои часы |
+| `TokenStore` | контракт потребителя: `Load(ctx, acc) (TokenPair, error)`, `Save(ctx, acc, TokenPair) error` |
+| `NewRefreshCoordinator(client, store, app, opts...) *RefreshCoordinator` | сериализация refresh на аккаунт; опция `WithRefreshSkew(d)` (дефолт 5 минут) |
+| `RefreshCoordinator.Token(ctx, acc) (string, error)` | актуальный access-токен: отдаёт сохранённый либо обновляет пару |
+| `RefreshCoordinator.Refresh(ctx, acc) (TokenPair, error)` | принудительное обновление; параллельные вызовы одного аккаунта делят один обмен |
+
+Refresh-токен amoCRM **одноразовый**: после обмена старый недействителен, новая
+пара сохраняется до возврата вызывающему. Два параллельных обмена одной парой
+теряют интеграцию — используйте `RefreshCoordinator` (или собственный
+single-flight поверх `TokenStore`).
 
 ## Ошибки (`errors.go`)
 
 Sentinel'ы для `errors.Is` и маппинг HTTP-статусов:
 
-| Sentinel | Когда |
-|---|---|
-| `ErrConfig` | невалидный `Config` (`RateRPS <= 0`, `HostOverride` не `scheme://host`) |
-| `ErrInvalidAccount` | subdomain/tld вне формата (REST, Drive, OAuth, amoJo) — запрос не отправляется |
-| `ErrAuth` | 401 |
-| `ErrForbidden` | 403 (в т.ч. IP-бан) |
-| `ErrNotFound` | 404 |
-| `ErrValidation` | 400, 422, прочие 4xx (402/405/409/…) |
-| `ErrRateLimited` | 429 |
-| `ErrServer` | 5xx |
+| Sentinel | Когда | Класс |
+|---|---|---|
+| `ErrConfig` | невалидный `Config` кита или переданный `httpclient.Config` | старт |
+| `ErrInvalidAccount` | subdomain/tld вне формата; адрес Drive вне доменов amoCRM — запрос не отправляется | перманентный |
+| `ErrInvalidRequest` | отказ кита до сети: сегмент пути вне allowlist, пустой или dot-сегмент в пути, связь вне матрицы, невалидный URL, несериализуемое тело | перманентный |
+| `ErrAuth` | 401 | нужен refresh/переавторизация |
+| `ErrPaymentRequired` | 402 — подписка аккаунта закончилась или функционал не оплачен | пауза аккаунта |
+| `ErrForbidden` | 403 — нет прав либо аккаунт заблокирован за превышение rps | пауза аккаунта |
+| `ErrNotFound` | 404 либо пустой ответ на запрос одиночной сущности | перманентный |
+| `ErrValidation` | 400, 422, прочие 4xx (405/409/…) | перманентный |
+| `ErrRateLimited` | 429 от amoCRM **или** локальный отказ лимитера (пауза после 429 / очередь дольше `MaxWait`) | повтор позже |
+| `ErrServer` | 5xx | повтор позже |
+| `ErrResponseTooLarge` | тело успешного ответа больше 32 MiB | перманентный |
 
 `*APIError` (доступен через `errors.As`) несёт `Status`, `Title`, `Type`,
-`Detail`, `ValidationErrors []ValidationError`, `RetryAfter` (секунды, поле тела
-на 429), `TraceID` (на 500). `ValidationError` → `RequestID` + `[]FieldError`
-(`Code`, `Path`, `Detail`).
+`Detail`, `ValidationErrors []ValidationError`, `RetryAfter` (секунды: поле тела
+`retry_after` либо заголовок `Retry-After` на 429 в любой форме RFC 9110 —
+секунды или HTTP-дата; значение обрезается сутками), `TraceID` (на 500).
+`ValidationError` → `RequestID` + `[]FieldError` (`Code`, `Path`, `Detail`).

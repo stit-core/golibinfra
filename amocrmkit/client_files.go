@@ -4,16 +4,15 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"net/http"
+	"strconv"
 )
-
-// files (attach/links) + events (REST v4) + Drive (динамический drive_url,
-// резолвится через GetDriveURL).
 
 // FileLink — ссылка на привязанный файл (GET /files/{uuid}/links).
 type FileLink struct {
 	FileUUID   string `json:"file_uuid"`
-	EntityID   int    `json:"entity_id"`
+	EntityID   int64  `json:"entity_id"`
 	EntityType string `json:"entity_type"`
 }
 
@@ -23,34 +22,39 @@ type AttachFileInput struct {
 }
 
 // AttachFiles — PUT /api/v4/{entity_type}/{id}/files (202).
-func (c *Client) AttachFiles(ctx context.Context, acc Account, entityType string, entityID int, in []AttachFileInput) error {
-	path := fmt.Sprintf("/api/v4/%s/%d/files", entityType, entityID)
-	return c.sendNoContent(ctx, acc, http.MethodPut, "files.attach", path, in)
+func (c *Client) AttachFiles(ctx context.Context, acc Account, entityType string, entityID int64, in []AttachFileInput) error {
+	e, err := entitySegment(entityType)
+	if err != nil {
+		return err
+	}
+	return c.sendNoContent(ctx, acc, http.MethodPut, "files.attach", fmt.Sprintf("/api/v4/%s/%d/files", e, entityID), in)
 }
 
 // DetachFiles — DELETE /api/v4/{entity_type}/{id}/files (202).
-func (c *Client) DetachFiles(ctx context.Context, acc Account, entityType string, entityID int, in []AttachFileInput) error {
-	path := fmt.Sprintf("/api/v4/%s/%d/files", entityType, entityID)
-	return c.sendNoContent(ctx, acc, http.MethodDelete, "files.detach", path, in)
+func (c *Client) DetachFiles(ctx context.Context, acc Account, entityType string, entityID int64, in []AttachFileInput) error {
+	e, err := entitySegment(entityType)
+	if err != nil {
+		return err
+	}
+	return c.sendNoContent(ctx, acc, http.MethodDelete, "files.detach", fmt.Sprintf("/api/v4/%s/%d/files", e, entityID), in)
 }
 
 // GetFileLinks — GET /api/v4/files/{uuid}/links.
 func (c *Client) GetFileLinks(ctx context.Context, acc Account, fileUUID string) (Page[FileLink], error) {
-	path := fmt.Sprintf("/api/v4/files/%s/links", fileUUID)
-	return listEntities[FileLink](ctx, c, acc, "files.links", path, "links", nil)
+	return listEntities[FileLink](ctx, c, acc, "files.links", "/api/v4/files/"+seg(fileUUID)+"/links", "links", nil)
 }
 
 // Event — событие ленты (GET /events).
 type Event struct {
 	ID          string `json:"id"`
 	Type        string `json:"type"`
-	EntityID    int    `json:"entity_id"`
+	EntityID    int64  `json:"entity_id"`
 	EntityType  string `json:"entity_type"`
-	CreatedBy   int    `json:"created_by"`
+	CreatedBy   int64  `json:"created_by"`
 	CreatedAt   int64  `json:"created_at"`
 	ValueBefore []any  `json:"value_before"`
 	ValueAfter  []any  `json:"value_after"`
-	AccountID   int    `json:"account_id"`
+	AccountID   int64  `json:"account_id"`
 }
 
 // ListEvents — GET /api/v4/events.
@@ -58,7 +62,8 @@ func (c *Client) ListEvents(ctx context.Context, acc Account, p ListParams) (Pag
 	return listEntities[Event](ctx, c, acc, "events.list", "/api/v4/events", "events", p.values())
 }
 
-// File — объект Drive.
+// File — объект Drive. Промежуточный ответ на часть несёт только NextURL и
+// SessionID: файл собран, когда пришёл объект с UUID.
 type File struct {
 	UUID                string         `json:"uuid"`
 	Type                string         `json:"type"`
@@ -71,6 +76,8 @@ type File struct {
 	UpdatedAt           int64          `json:"updated_at"`
 	Metadata            map[string]any `json:"metadata"`
 	Previews            []any          `json:"previews"`
+	NextURL             string         `json:"next_url,omitempty"`
+	SessionID           string         `json:"session_id,omitempty"`
 }
 
 // UploadSession — ответ POST /v1.0/sessions (адрес и шаг для чанковой загрузки).
@@ -94,8 +101,9 @@ func (c *Client) CreateUploadSession(ctx context.Context, acc Account, driveURL 
 	return out, err
 }
 
-// UploadPart — POST {upload_url} с чанком и заголовком Content-Range. Возвращает
-// промежуточный ответ (next upload_url) либо финальный File (после последней части).
+// UploadPart — POST {upload_url} с частью файла и заголовком Content-Range.
+// Возвращает промежуточный ответ (File.NextURL — адрес следующей части) либо
+// финальный File. Для файла целиком есть UploadFile.
 func (c *Client) UploadPart(ctx context.Context, acc Account, uploadURL, contentRange string, chunk []byte) (File, error) {
 	if err := acc.validate(); err != nil {
 		return File{}, fmt.Errorf("amocrmkit: drive.upload: %w", err)
@@ -104,9 +112,12 @@ func (c *Client) UploadPart(ctx context.Context, acc Account, uploadURL, content
 	if err != nil {
 		return File{}, fmt.Errorf("amocrmkit: drive.upload: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u, bytes.NewReader(chunk))
+	if err := c.checkExternalHost(u, acc); err != nil {
+		return File{}, fmt.Errorf("amocrmkit: drive.upload: %w", err)
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, u.String(), bytes.NewReader(chunk))
 	if err != nil {
-		return File{}, fmt.Errorf("amocrmkit: drive.upload: new request: %w", err)
+		return File{}, fmt.Errorf("amocrmkit: drive.upload: %w: new request: %w", ErrInvalidRequest, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+acc.Token)
 	req.Header.Set("Content-Type", "application/octet-stream")
@@ -114,8 +125,44 @@ func (c *Client) UploadPart(ctx context.Context, acc Account, uploadURL, content
 		req.Header.Set("Content-Range", contentRange)
 	}
 	var out File
-	err = c.execute(ctx, req, "drive.upload", acc.Subdomain, &out)
+	err = c.execute(ctx, req, call{endpoint: "drive.upload", acc: acc.ref()}, &out)
 	return out, err
+}
+
+// UploadFile загружает файл целиком: сессия → части по MaxPartSize из r,
+// каждая следующая идёт на next_url предыдущего ответа. В памяти живёт не
+// больше одной части; in.FileSize должен совпадать с длиной r.
+func (c *Client) UploadFile(ctx context.Context, acc Account, driveURL string, in UploadSessionInput, r io.Reader) (File, error) {
+	sess, err := c.CreateUploadSession(ctx, acc, driveURL, in)
+	if err != nil {
+		return File{}, err
+	}
+	if sess.MaxPartSize <= 0 {
+		return File{}, fmt.Errorf("amocrmkit: drive.upload: %w: session without max_part_size", ErrServer)
+	}
+
+	buf := make([]byte, sess.MaxPartSize)
+	next, offset := sess.UploadURL, int64(0)
+	for next != "" {
+		n, readErr := io.ReadFull(r, buf)
+		if readErr != nil && readErr != io.ErrUnexpectedEOF && readErr != io.EOF {
+			return File{}, fmt.Errorf("amocrmkit: drive.upload: read part: %w", readErr)
+		}
+		if n == 0 {
+			return File{}, fmt.Errorf("amocrmkit: drive.upload: %w: reader shorter than file_size %d", ErrInvalidRequest, in.FileSize)
+		}
+		rng := "bytes " + strconv.FormatInt(offset, 10) + "-" + strconv.FormatInt(offset+int64(n)-1, 10) + "/" + strconv.FormatInt(in.FileSize, 10)
+		out, err := c.UploadPart(ctx, acc, next, rng, buf[:n])
+		if err != nil {
+			return File{}, err
+		}
+		offset += int64(n)
+		if out.NextURL == "" {
+			return out, nil
+		}
+		next = out.NextURL
+	}
+	return File{}, fmt.Errorf("amocrmkit: drive.upload: %w: session without upload_url", ErrServer)
 }
 
 // PatchFileInput — тело PATCH {drive_url}/v1.0/files/{uuid}.
@@ -126,7 +173,7 @@ type PatchFileInput struct {
 // PatchFile — PATCH {drive_url}/v1.0/files/{uuid}.
 func (c *Client) PatchFile(ctx context.Context, acc Account, driveURL, fileUUID string, in PatchFileInput) (File, error) {
 	var out File
-	path := fmt.Sprintf("/v1.0/files/%s", fileUUID)
+	path := "/v1.0/files/" + seg(fileUUID)
 	err := c.doREST(ctx, restReq{acc: acc, base: driveURL, method: http.MethodPatch, path: path, body: in, endpoint: "drive.patch"}, &out)
 	return out, err
 }
@@ -152,7 +199,7 @@ func (c *Client) RestoreFiles(ctx context.Context, acc Account, driveURL string,
 // GetFileVersions — GET {drive_url}/v1.0/files/{uuid}/versions.
 func (c *Client) GetFileVersions(ctx context.Context, acc Account, driveURL, fileUUID string) (Page[File], error) {
 	var env listEnvelope
-	path := fmt.Sprintf("/v1.0/files/%s/versions", fileUUID)
+	path := "/v1.0/files/" + seg(fileUUID) + "/versions"
 	if err := c.doREST(ctx, restReq{acc: acc, base: driveURL, method: http.MethodGet, path: path, endpoint: "drive.versions"}, &env); err != nil {
 		return Page[File]{}, err
 	}

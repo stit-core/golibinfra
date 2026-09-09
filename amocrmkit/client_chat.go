@@ -6,12 +6,10 @@ import (
 	"net/http"
 )
 
-// chat templates (REST v4; amoJo-контур — в amojo.go).
-
 // ChatTemplate — шаблон сообщения чата.
 type ChatTemplate struct {
-	ID           int            `json:"id"`
-	AccountID    int            `json:"account_id"`
+	ID           int64          `json:"id"`
+	AccountID    int64          `json:"account_id"`
 	Name         string         `json:"name"`
 	Content      string         `json:"content"`
 	CreatedAt    int64          `json:"created_at"`
@@ -29,7 +27,7 @@ type ChatTemplate struct {
 
 // ChatTemplateInput — тело POST/PATCH /chats/templates.
 type ChatTemplateInput struct {
-	ID           int            `json:"id,omitempty"`
+	ID           int64          `json:"id,omitempty"`
 	Name         string         `json:"name,omitempty"`
 	Content      string         `json:"content,omitempty"`
 	Buttons      []any          `json:"buttons,omitempty"`
@@ -51,34 +49,30 @@ func (c *Client) CreateChatTemplates(ctx context.Context, acc Account, in []Chat
 }
 
 // UpdateChatTemplate — PATCH /api/v4/chats/templates/{id}.
-func (c *Client) UpdateChatTemplate(ctx context.Context, acc Account, id int, in ChatTemplateInput) (ChatTemplate, error) {
+func (c *Client) UpdateChatTemplate(ctx context.Context, acc Account, id int64, in ChatTemplateInput) (ChatTemplate, error) {
 	return sendOne[ChatTemplate](ctx, c, acc, http.MethodPatch, "chat_templates.update", fmt.Sprintf("/api/v4/chats/templates/%d", id), in)
 }
 
 // DeleteChatTemplates — DELETE /api/v4/chats/templates (batch по id в теле).
-func (c *Client) DeleteChatTemplates(ctx context.Context, acc Account, ids []int) error {
-	body := make([]idRef, len(ids))
-	for i, id := range ids {
-		body[i] = idRef{ID: id}
-	}
-	return c.sendNoContent(ctx, acc, http.MethodDelete, "chat_templates.delete", "/api/v4/chats/templates", body)
+func (c *Client) DeleteChatTemplates(ctx context.Context, acc Account, ids []int64) error {
+	return c.sendNoContent(ctx, acc, http.MethodDelete, "chat_templates.delete", "/api/v4/chats/templates", idRefs(ids))
 }
 
 // TemplateReview — статус ревью шаблона (WABA-модерация).
 type TemplateReview struct {
-	ID         int    `json:"id"`
-	TemplateID int    `json:"template_id"`
+	ID         int64  `json:"id"`
+	TemplateID int64  `json:"template_id"`
 	Status     string `json:"status"`
 }
 
 // SubmitTemplateReview — POST /api/v4/chats/templates/{id}/review.
-func (c *Client) SubmitTemplateReview(ctx context.Context, acc Account, templateID int, in map[string]any) (TemplateReview, error) {
+func (c *Client) SubmitTemplateReview(ctx context.Context, acc Account, templateID int64, in map[string]any) (TemplateReview, error) {
 	path := fmt.Sprintf("/api/v4/chats/templates/%d/review", templateID)
 	return sendOne[TemplateReview](ctx, c, acc, http.MethodPost, "chat_templates.review.submit", path, in)
 }
 
 // UpdateTemplateReview — POST /api/v4/chats/templates/{id}/review/{review_id}.
-func (c *Client) UpdateTemplateReview(ctx context.Context, acc Account, templateID, reviewID int, in map[string]any) (TemplateReview, error) {
+func (c *Client) UpdateTemplateReview(ctx context.Context, acc Account, templateID, reviewID int64, in map[string]any) (TemplateReview, error) {
 	path := fmt.Sprintf("/api/v4/chats/templates/%d/review/%d", templateID, reviewID)
 	return sendOne[TemplateReview](ctx, c, acc, http.MethodPost, "chat_templates.review.update", path, in)
 }

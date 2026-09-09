@@ -1,0 +1,273 @@
+package pgkit_test
+
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+	"testing/fstest"
+	"time"
+
+	"go.uber.org/fx"
+	"go.uber.org/fx/fxtest"
+
+	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
+	"git.stit.tech/stit-core/golibinfra/testkit"
+)
+
+func TestModule_WiresGraphAndClosesPoolOnStop(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+
+	var (
+		db     *pgkit.DB
+		tr     pgkit.Transactor
+		rw     *pgkit.ReadWriteDB
+		probes []healthkit.Probe
+	)
+	app := fxtest.New(t,
+		fx.NopLogger,
+		fx.Supply(pg.PoolConfig()),
+		pgkit.Module,
+		healthkit.Provide(pgkit.Probe),
+		healthkit.Provide(pgkit.ReplicaProbe),
+		fx.Invoke(fx.Annotate(
+			func(d *pgkit.DB, x pgkit.Transactor, r *pgkit.ReadWriteDB, p []healthkit.Probe) {
+				db, tr, rw, probes = d, x, r, p
+			},
+			fx.ParamTags(``, ``, ``, `group:"healthkit.probes"`),
+		)),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	app.RequireStart()
+
+	if db == nil || tr == nil || rw == nil {
+		t.Fatalf("граф неполон: db=%v tr=%v rw=%v", db, tr, rw)
+	}
+	// Без PG_REPLICA_DSN обе стороны — мастер.
+	if rw.HasReplica() || rw.Read() != rw.Write() {
+		t.Fatal("ReadWriteDB без реплики должен указывать обеими сторонами на мастер")
+	}
+	if len(probes) != 2 {
+		t.Fatalf("проб в группе health: %d, want 2", len(probes))
+	}
+	for _, p := range probes {
+		if err := p.Run(ctx); err != nil {
+			t.Fatalf("проба %s: %v", p.Name, err)
+		}
+	}
+	if err := tr.WithTx(ctx, func(ctx context.Context) error {
+		_, err := db.Exec(ctx, `CREATE TABLE module_wiring (id INT PRIMARY KEY)`)
+		return err
+	}); err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+
+	app.RequireStop()
+
+	if _, err := db.Exec(ctx, `SELECT 1`); err == nil || !strings.Contains(err.Error(), "closed pool") {
+		t.Fatalf("после Stop Exec err = %v, want closed pool", err)
+	}
+}
+
+// ReplicaConfig не обязателен: Module поднимается и без него.
+func TestModule_WithoutReplicaConfig(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(pg.PoolConfig()),
+		pgkit.Module,
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("Start без ReplicaConfig: %v", err)
+	}
+	if err := app.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+}
+
+func TestModule_ReplicaPoolAndProbe(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+
+	var rw *pgkit.ReadWriteDB
+	app := fxtest.New(t,
+		fx.NopLogger,
+		fx.Supply(
+			pg.PoolConfig(),
+			pgkit.ReplicaConfig{ReplicaDSN: pg.DSN, MaxConns: 2},
+		),
+		pgkit.Module,
+		fx.Invoke(func(r *pgkit.ReadWriteDB) { rw = r }),
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	app.RequireStart()
+
+	if !rw.HasReplica() || rw.Read() == rw.Write() {
+		t.Fatal("PG_REPLICA_DSN задан, но отдельного пула реплики нет")
+	}
+	var one int
+	if err := rw.Read().QueryRow(ctx, `SELECT 1`).Scan(&one); err != nil {
+		t.Fatalf("запрос к реплике: %v", err)
+	}
+	if err := pgkit.ReplicaProbe(rw).Run(ctx); err != nil {
+		t.Fatalf("ReplicaProbe: %v", err)
+	}
+
+	app.RequireStop()
+
+	if _, err := rw.Read().Exec(ctx, `SELECT 1`); err == nil {
+		t.Fatal("пул реплики не закрыт на OnStop")
+	}
+}
+
+func TestModule_InvalidReplicaConfigFailsStart(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(pg.PoolConfig(), pgkit.ReplicaConfig{ReplicaDSN: pg.DSN, MaxConns: -1}),
+		pgkit.Module,
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := app.Start(ctx)
+	if !errors.Is(err, pgkit.ErrConfig) {
+		t.Fatalf("Start err = %v, want ErrConfig", err)
+	}
+	_ = app.Stop(ctx)
+}
+
+// Зависимость от pgkit.Migrated ставит хук потребителя после миграций даже
+// тогда, когда его модуль перечислен раньше MigrateModule.
+func TestMigrateModule_MigratedOrdersConsumerHooks(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	db := pg.DB(t)
+
+	kit := fstest.MapFS{
+		"migrations/0001_d.up.sql": {Data: []byte(`CREATE TABLE d_log (v INT PRIMARY KEY);`)},
+	}
+
+	type consumer struct {
+		fx.In
+		LC       fx.Lifecycle
+		Migrated pgkit.Migrated `optional:"true"`
+	}
+	var insertErr error
+	consumerModule := fx.Module("schema-consumer", fx.Invoke(func(p consumer) {
+		p.LC.Append(fx.Hook{OnStart: func(ctx context.Context) error {
+			_, insertErr = db.Exec(ctx, `INSERT INTO d_log VALUES (1)`)
+			return insertErr
+		}})
+	}))
+
+	app := fx.New(
+		fx.NopLogger,
+		// Потребитель схемы стоит первым — порядок обеспечивает Migrated, не позиция.
+		consumerModule,
+		fx.Supply(
+			pgkit.PoolConfig{DSN: pg.DSN},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+		),
+		pgkit.ProvideMigrations(pgkit.Source{Name: "d", FS: kit, Dir: "migrations"}),
+		pgkit.MigrateModule,
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("Start: %v (insert: %v)", err, insertErr)
+	}
+	if err := app.Stop(ctx); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if insertErr != nil {
+		t.Fatalf("хук потребителя выполнился до миграций: %v", insertErr)
+	}
+}
+
+func TestMigrateModule_RejectsInvalidRunnerConfig(t *testing.T) {
+	t.Parallel()
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(
+			pgkit.PoolConfig{DSN: "postgres://u@127.0.0.1:1/d"},
+			pgkit.MigrateRunnerConfig{Path: "/migrations"},
+		),
+		pgkit.MigrateModule,
+	)
+	if err := app.Err(); !errors.Is(err, pgkit.ErrConfig) {
+		t.Fatalf("fx.New err = %v, want ErrConfig", err)
+	}
+}
+
+// Кросс-инвариант реплики называет переменную, которую менял оператор.
+func TestModule_ReplicaMaxConnsBelowMinConnsNamesReplicaEnv(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	poolCfg := pg.PoolConfig()
+	poolCfg.MinConns = 2
+
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(poolCfg, pgkit.ReplicaConfig{ReplicaDSN: pg.DSN, MaxConns: 1}),
+		pgkit.Module,
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	err := app.Start(ctx)
+	if !errors.Is(err, pgkit.ErrConfig) {
+		t.Fatalf("Start err = %v, want ErrConfig", err)
+	}
+	if !strings.Contains(err.Error(), "PG_REPLICA_MAX_CONNS (1) must be >= PG_MIN_CONNS (2)") {
+		t.Fatalf("Start err = %q, want упоминание PG_REPLICA_MAX_CONNS", err)
+	}
+	_ = app.Stop(ctx)
+}
+
+// Падение миграций в OnStart валит старт приложения.
+func TestMigrateModule_FailedMigrationFailsStart(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	broken := fstest.MapFS{
+		"migrations/0001_i.up.sql": {Data: []byte(`CREATE TABLE i_log (v INT); SELECT no_such_function();`)},
+	}
+
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(
+			pgkit.PoolConfig{DSN: pg.DSN},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+		),
+		pgkit.ProvideMigrations(pgkit.Source{Name: "i", FS: broken, Dir: "migrations"}),
+		pgkit.MigrateModule,
+	)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	err := app.Start(ctx)
+	if err == nil {
+		t.Fatal("Start прошёл на сломанной миграции")
+	}
+	if !strings.Contains(err.Error(), "pgkit: migrate on start") {
+		t.Fatalf("Start err = %q, want pgkit: migrate on start", err)
+	}
+	_ = app.Stop(ctx)
+}
+
+// Быстрый старт из README кита собирается: caller провайдит только конфиги.
+func TestQuickStartGraphValidates(t *testing.T) {
+	t.Parallel()
+	err := fx.ValidateApp(
+		fx.NopLogger,
+		fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig),
+		pgkit.Module,
+		pgkit.MigrateModule,
+		healthkit.Provide(pgkit.Probe),
+		healthkit.Provide(pgkit.ReplicaProbe),
+		fx.Invoke(func(*pgkit.DB, pgkit.Transactor) {}),
+	)
+	if err != nil {
+		t.Fatalf("быстрый старт README не собирается: %v", err)
+	}
+}

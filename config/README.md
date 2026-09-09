@@ -1,21 +1,21 @@
 # config
 
-Единый загрузчик конфигурации для китов golibinfra: значения из переменных
-окружения через композицию источников. Источник правды по поведению — код
-пакета; сводная строка в общей карте — [`../README.md` § Пакеты](../README.md#пакеты).
+Загрузчик **App-конфига приложения**: структура, которая собирает конфиги китов
+в поля, заполняется композицией источников (`Source`) — штатно из переменных
+окружения. Источник правды по поведению — код пакета; сводная строка в общей
+карте — [`../README.md` § Пакеты](../README.md#пакеты).
 
 ## Назначение
 
-Каждый кит держит свою `Config`-структуру с `envconfig`-тегами. `config` не знает
-про эти структуры — он даёт композицию **источников** (`Source`), которые умеют
-заполнять *любую* переданную структуру:
+Кит golibinfra читает своё окружение сам: `<kit>.NewConfig()` вызывает
+`envconfig.Process` напрямую и **проходит мимо** `config.Source`. `config` нужен
+там, где приложение хочет одну точку загрузки: App-структуру с конфигами китов
+в полях, единый порядок приоритета источников и возможность добавить свой
+`Source` (например, секрет-стор) без правки китов.
 
-- `Env(prefix…)` — читает значения из переменных окружения по `envconfig`-тегам.
-
-`Load(ctx, dst, sources…)` прогоняет `dst` через каждый источник по порядку.
-Поздние источники перезатирают поля более ранних — это и есть контракт
-приоритета. Модель источников оставляет место для дополнительных реализаций
-`Source` без изменения кода китов.
+Отсюда граница: кастомный `Source` влияет только на структуры, переданные в
+`config.Load`. Если кит подключён через `fx.Provide(<kit>.NewConfig)`, его
+значения придут из ENV мимо источников.
 
 ## Импорт
 
@@ -28,58 +28,71 @@ import "git.stit.tech/stit-core/golibinfra/config"
 
 ## Быстрый старт
 
-### Через fx
-
-`config.Module` провайдит в граф `[]config.Source`. Кит зависит от
-`[]config.Source` и грузит свою структуру через `config.Load`:
+App-структура держит конфиги китов полями, `Load` заполняет её, fx-провайдеры
+раздают поля китам:
 
 ```go
-package authnkit
+package appconfig
 
 import (
 	"context"
 
-	"git.stit.tech/stit-core/golibinfra/config"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/config"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
-type Config struct {
-	Issuer    string `envconfig:"JWT_ISSUER" default:"stit"`
-	JWTSecret string `envconfig:"JWT_SECRET"`
+type App struct {
+	Postgres pgkit.PoolConfig
+	HTTP     httpkit.Config
 }
 
-func newConfig(srcs []config.Source) (Config, error) {
-	var c Config
-	if err := config.Load(context.Background(), &c, srcs...); err != nil {
-		return c, err
+func Load(ctx context.Context, srcs []config.Source) (*App, error) {
+	var cfg App
+	if err := config.Load(ctx, &cfg, srcs...); err != nil {
+		return nil, err
 	}
-	return c, nil
+	return &cfg, nil
 }
 
-var Module = fx.Module("authnkit",
-	fx.Provide(newConfig),
-	// …
+var Module = fx.Module("appconfig",
+	fx.Provide(
+		Load,
+
+		func(a *App) pgkit.PoolConfig { return a.Postgres },
+		func(a *App) httpkit.Config { return a.HTTP },
+	),
 )
 ```
 
-Приложение собирает граф из обоих модулей:
+Приложение подключает источники и свой App-модуль:
 
 ```go
 fx.New(
-	config.Module,   // env → []config.Source
-	authnkit.Module, // потребляет []config.Source
+	fx.Provide(context.Background),
+	config.Module, // env → []config.Source
+	appconfig.Module,
+	pgkit.Module,
+	httpkit.Module,
 )
+```
+
+Набор источников можно задать и без `config.Module` — например, добавив свой
+`Source` после env:
+
+```go
+fx.Provide(func(v *vault.Client) []config.Source {
+	return []config.Source{config.Env(), vaultSource{v}}
+})
 ```
 
 ### Без fx
 
-Источники можно собрать руками — `Module` ничего магического не делает:
-
 ```go
-srcs := []config.Source{config.Env()}
-
-var cfg MyConfig
-if err := config.Load(ctx, &cfg, srcs...); err != nil {
+var cfg App
+if err := config.Load(ctx, &cfg, config.Env()); err != nil {
 	return err
 }
 ```
@@ -88,10 +101,34 @@ if err := config.Load(ctx, &cfg, srcs...); err != nil {
 
 ## Конфигурация
 
-`config` собственных ENV-переменных не читает — он лишь прогоняет структуры китов
-через `envconfig`. Имена и типы переменных задаёт каждый кит своими
-`envconfig`-тегами (их стабильность — [`../README.md` § Стабильность
+`config` собственных ENV-переменных не читает: он прогоняет через `envconfig`
+структуры, которые ему передали. Имена и типы переменных задаёт каждый кит
+своими `envconfig`-тегами (их стабильность — [`../README.md` § Стабильность
 API](../README.md#стабильность-api)).
+
+### Имена переменных
+
+Для поля с `envconfig`-тегом имя переменной — сам тег; для поля без тега — имя
+поля в верхнем регистре. Вложенная структура (без своего декодера) добавляет
+приставку — **имя поля**, в верхнем регистре, через `_`. Для App-структуры из
+примера выше:
+
+```
+Postgres pgkit.PoolConfig → DSN `envconfig:"PG_DSN"` → POSTGRES_PG_DSN, затем PG_DSN
+HTTP     httpkit.Config   → Addr `envconfig:"HTTP_ADDR"` → HTTP_HTTP_ADDR, затем HTTP_ADDR
+```
+
+То есть у поля с тегом префиксованное имя имеет приоритет, а тег работает как
+запасное имя. Случайно заданная переменная с приставкой имени поля молча
+перекроет привычную: POSTGRES_PG_DSN победит PG_DSN.
+
+`EnvPrefixed(prefix)` добавляет свою приставку тем же правилом — поверх приставок
+вложенных структур.
+
+## Observability
+
+Кит **ничего не эмитит**: ни метрик, ни спанов, ни логов — это разбор
+переменных окружения в структуру, без I/O и фонового состояния.
 
 ## API
 
@@ -103,9 +140,9 @@ type Source interface {
 }
 ```
 
-Источник, который заполняет переданную структуру `dst` (всегда указатель на
-struct). Штатная реализация — `Env`. Кит работает не с конкретной реализацией, а
-со срезом `[]Source` — это и есть точка композиции.
+Источник, заполняющий переданную структуру `dst` (указатель на struct). Штатная
+реализация — `Env`/`EnvPrefixed`. Своя реализация (секрет-стор, файл, remote)
+подставляется в `[]Source` наравне с ними; порядок в срезе — порядок приоритета.
 
 ### `Load`
 
@@ -113,20 +150,23 @@ struct). Штатная реализация — `Env`. Кит работает 
 func Load(ctx context.Context, dst any, sources ...Source) error
 ```
 
-Прогоняет `dst` через каждый `Source` по порядку. Поздний источник перезатирает
-поля раннего. Ошибка любого источника оборачивается с его индексом
-(`config: source[i]: …`) и прерывает загрузку. Это основной вызов внутри
-конструктора `Config` каждого кита.
+Прогоняет `dst` через каждый `Source` по порядку; поздний источник перезатирает
+поля раннего. Применяются **все** источники, их ошибки собираются в одну через
+`errors.Join`; каждая обёрнута индексом своего источника (`config: source[i]: …`)
+и достижима через `errors.Is`/`errors.As` (в том числе
+`*envconfig.ParseError`). Без источников — no-op, `dst` не меняется.
 
-### `Env`
+### `Env`, `EnvPrefixed`
 
 ```go
-func Env(prefix ...string) Source
+func Env() Source
+func EnvPrefixed(prefix string) Source
 ```
 
-Источник из переменных окружения через `envconfig`. Необязательный `prefix`
-добавляет приставку к именам переменных (передаётся в `envconfig.Process`); без
-аргумента — без префикса. В большинстве китов используется как `config.Env()`.
+Источники из переменных окружения через `envconfig`. `EnvPrefixed` приводит
+`prefix` к верхнему регистру и склеивает с именем через `_`; при отсутствии
+PREFIX_NAME значение берётся из непрефиксованного NAME — но только для полей
+с `envconfig`-тегом (у поля без тега запасного имени нет).
 
 ### `Module`
 
@@ -134,13 +174,15 @@ func Env(prefix ...string) Source
 var Module = fx.Module("config", …)
 ```
 
-Провайдит в fx-граф `[]Source{Env()}`. Кит подключает `config.Module` и зависит
-от `[]config.Source`.
+Провайдит в fx-граф `[]Source{Env()}`. Нужен другой набор источников — не
+подключайте `Module`, а провайдите `[]config.Source` сами.
 
 ## Тестирование
 
 - **ENV-источник** тестируется выставлением переменных окружения (`t.Setenv`) и
   вызовом `config.Load(ctx, &cfg, config.Env())` с проверкой заполненных полей.
+- **Свой `Source`** — функциональный тип в две строки:
+  `type sourceFunc func(ctx context.Context, dst any) error` с методом `Apply`.
 
 Запуск:
 
@@ -152,5 +194,11 @@ go test -short -race ./config/...
 
 - **Приоритет = порядок в `Load`.** Источники применяются слева направо, поздний
   перезатирает раннего.
-- **ENV мапится по `envconfig`-тегам.** Поле без `envconfig`-тега из ENV не
-  возьмётся.
+- **Ошибки не останавливают загрузку.** Отработают все источники, вернётся
+  объединённая ошибка; при ошибке `dst` считается негодным целиком.
+- **ENV мапится по `envconfig`-тегам.** Поле без `envconfig`-тега читается по
+  имени поля в верхнем регистре и не имеет запасного (непрефиксованного) имени.
+- **Имя поля вложенной структуры — приставка.** Переменная с приставкой имеет
+  приоритет над именем из тега (см. [§ Имена переменных](#имена-переменных)).
+- **Киты не зависят от `Source`.** `<kit>.NewConfig` читает ENV напрямую;
+  кастомный источник действует только на структуры, переданные в `Load`.

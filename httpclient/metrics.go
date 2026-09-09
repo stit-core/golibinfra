@@ -24,6 +24,6 @@ func newInstruments() *instruments {
 			metric.WithDescription("Retry attempts initiated by httpclient"))),
 		requestDuration: otelkit.Must(m.Float64Histogram("http_client_request_duration_seconds",
 			metric.WithDescription("Outbound HTTP request duration including retries"),
-			metric.WithUnit("s"))),
+			metric.WithUnit("s"), otelkit.DurationBuckets())),
 	}
 }

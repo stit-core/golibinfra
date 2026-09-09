@@ -2,6 +2,7 @@ package logkit
 
 import (
 	"context"
+	"log/slog"
 	"testing"
 
 	"go.opentelemetry.io/otel/log"
@@ -13,7 +14,7 @@ func TestModule_WithoutProviderStillBuilds(t *testing.T) {
 	var got Logger
 	app := fx.New(
 		fx.NopLogger,
-		fx.Supply(Config{Level: "info", Stdout: false}),
+		fx.Supply(Config{Level: "info", Silent: true}),
 		Module,
 		fx.Populate(&got),
 	)
@@ -34,7 +35,7 @@ func TestModule_PicksOptionalProviderAndRedact(t *testing.T) {
 	var got Logger
 	app := fx.New(
 		fx.NopLogger,
-		fx.Supply(Config{Level: "info", Stdout: false}, RedactConfig{Enabled: true}),
+		fx.Supply(Config{Level: "info", Silent: true}, RedactConfig{Enabled: true}),
 		fx.Provide(func() log.LoggerProvider { return lp }),
 		Module,
 		fx.Populate(&got),
@@ -44,12 +45,42 @@ func TestModule_PicksOptionalProviderAndRedact(t *testing.T) {
 	}
 	got.Info(context.Background(), "hello", "email", "x@y.io")
 
-	recs := exp.records()
-	if len(recs) != 1 {
-		t.Fatalf("otel records = %d, want 1", len(recs))
-	}
-	if a := attrsOf(recs[0]); a["email"].AsString() != "[REDACTED]" {
+	if a := attrsOf(exp.only(t)); a["email"].AsString() != "[REDACTED]" {
 		t.Errorf("redact not applied via module: %v", a)
+	}
+}
+
+func TestModule_ProvidesSlogAndLoggerFromOneChain(t *testing.T) {
+	var (
+		got Logger
+		sl  *slog.Logger
+	)
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(Config{Level: "info", Silent: true}),
+		Module,
+		fx.Populate(&got, &sl),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("fx: %v", err)
+	}
+	if got == nil || sl == nil {
+		t.Fatal("both Logger and *slog.Logger must be provided")
+	}
+	if !got.Enabled(context.Background(), slog.LevelInfo) || got.Enabled(context.Background(), slog.LevelDebug) {
+		t.Error("Logger.Enabled must follow LOG_LEVEL of the graph config")
+	}
+}
+
+func TestModule_InvalidRedactConfigFailsGraph(t *testing.T) {
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(Config{Level: "info", Silent: true}, RedactConfig{Enabled: true, Patterns: Patterns{`(`}}),
+		Module,
+		fx.Invoke(func(Logger) {}),
+	)
+	if app.Err() == nil {
+		t.Fatal("fx.New must fail on an invalid redact pattern")
 	}
 }
 

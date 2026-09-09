@@ -9,41 +9,57 @@ import (
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 )
 
-type instruments struct {
-	jwtVerifications  metric.Int64Counter
-	hashDuration      metric.Float64Histogram
-	verifyDuration    metric.Float64Histogram
-	totpVerifications metric.Int64Counter
+type hashInstruments struct {
+	hashDuration   metric.Float64Histogram
+	verifyDuration metric.Float64Histogram
 }
 
-func newInstruments() *instruments {
+func newHashInstruments() *hashInstruments {
 	m := otelkit.Meter("authnkit")
-	return &instruments{
-		jwtVerifications: otelkit.Must(m.Int64Counter("jwt_verifications_total",
-			metric.WithDescription("JWT verification outcomes"),
-		)),
-		hashDuration: otelkit.Must(m.Float64Histogram("password_hash_duration_seconds",
+	return &hashInstruments{
+		hashDuration: otelkit.Must(m.Float64Histogram("authn_password_hash_duration_seconds",
 			metric.WithDescription("Time to hash a password (argon2id)"),
 			metric.WithUnit("s"),
+			otelkit.DurationBuckets(),
 		)),
-		verifyDuration: otelkit.Must(m.Float64Histogram("password_verify_duration_seconds",
+		verifyDuration: otelkit.Must(m.Float64Histogram("authn_password_verify_duration_seconds",
 			metric.WithDescription("Time to verify a password against an argon2id hash"),
 			metric.WithUnit("s"),
+			otelkit.DurationBuckets(),
 		)),
-		totpVerifications: otelkit.Must(m.Int64Counter("totp_verifications_total",
+	}
+}
+
+type jwtInstruments struct {
+	verifications metric.Int64Counter
+}
+
+func newJWTInstruments() *jwtInstruments {
+	m := otelkit.Meter("authnkit")
+	return &jwtInstruments{
+		verifications: otelkit.Must(m.Int64Counter("authn_jwt_verifications_total",
+			metric.WithDescription("JWT verification outcomes"),
+		)),
+	}
+}
+
+func (i *jwtInstruments) recordJWT(ctx context.Context, result string) {
+	i.verifications.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
+}
+
+type totpInstruments struct {
+	verifications metric.Int64Counter
+}
+
+func newTOTPInstruments() *totpInstruments {
+	m := otelkit.Meter("authnkit")
+	return &totpInstruments{
+		verifications: otelkit.Must(m.Int64Counter("authn_totp_verifications_total",
 			metric.WithDescription("TOTP verification outcomes"),
 		)),
 	}
 }
 
-func (i *instruments) recordJWT(result string) {
-	i.jwtVerifications.Add(context.Background(), 1,
-		metric.WithAttributes(attribute.String("result", result)),
-	)
-}
-
-func (i *instruments) recordTOTP(result string) {
-	i.totpVerifications.Add(context.Background(), 1,
-		metric.WithAttributes(attribute.String("result", result)),
-	)
+func (i *totpInstruments) recordTOTP(ctx context.Context, result string) {
+	i.verifications.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
 }

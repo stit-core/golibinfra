@@ -2,6 +2,7 @@ package cachekit
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
@@ -14,22 +15,34 @@ var Module = fx.Module(
 	fx.Provide(newCacheWithLifecycle),
 )
 
+// NewConfig читает REDIS_* из окружения и валидирует их.
 func NewConfig() (Config, error) {
 	var c Config
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return c, fmt.Errorf("cachekit: read config: %w", err)
+	}
+	return c, c.Validate()
 }
 
 func newCacheWithLifecycle(lc fx.Lifecycle, cfg Config) (Cache, error) {
-	c, err := NewRedisCache(cfg)
+	c, err := newRedisCache(cfg)
 	if err != nil {
 		return nil, err
 	}
 	lc.Append(fx.Hook{
+		// Обе проверки требуют живого сервера, поэтому REDIS_PING_ON_START=false
+		// снимает и версионную: старт без соединения — осознанный выбор caller'а.
 		OnStart: func(ctx context.Context) error {
 			if !cfg.PingOnStart {
 				return nil
 			}
-			return c.Ping(ctx)
+			if err := c.Ping(ctx); err != nil {
+				return err
+			}
+			if cfg.SkipVersionCheck {
+				return nil
+			}
+			return c.checkServerVersion(ctx)
 		},
 		OnStop: func(context.Context) error { return c.Close() },
 	})

@@ -8,6 +8,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// MaxBodyConfig — потолок тела запроса; MaxBytes = 0 выключает лимит.
 type MaxBodyConfig struct {
 	// MaxBytes = 0 выключает лимит.
 	MaxBytes int64 `envconfig:"HTTP_MAX_BODY_BYTES" default:"1048576"`

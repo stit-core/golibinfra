@@ -6,26 +6,24 @@ import (
 	"net/http"
 )
 
-// tasks.
-
 // Task — объект задачи (GET-ответ).
 type Task struct {
-	ID                int         `json:"id"`
-	CreatedBy         int         `json:"created_by"`
-	UpdatedBy         int         `json:"updated_by"`
+	ID                int64       `json:"id"`
+	CreatedBy         int64       `json:"created_by"`
+	UpdatedBy         int64       `json:"updated_by"`
 	CreatedAt         int64       `json:"created_at"`
 	UpdatedAt         int64       `json:"updated_at"`
-	ResponsibleUserID int         `json:"responsible_user_id"`
-	GroupID           int         `json:"group_id"`
-	EntityID          int         `json:"entity_id"`
+	ResponsibleUserID int64       `json:"responsible_user_id"`
+	GroupID           int64       `json:"group_id"`
+	EntityID          int64       `json:"entity_id"`
 	EntityType        string      `json:"entity_type"`
 	IsCompleted       bool        `json:"is_completed"`
-	TaskTypeID        int         `json:"task_type_id"`
+	TaskTypeID        int64       `json:"task_type_id"`
 	Text              string      `json:"text"`
 	Duration          int         `json:"duration"`
 	CompleteTill      int64       `json:"complete_till"`
 	Result            *TaskResult `json:"result"`
-	AccountID         int         `json:"account_id"`
+	AccountID         int64       `json:"account_id"`
 }
 
 // TaskResult — результат выполнения задачи.
@@ -35,11 +33,11 @@ type TaskResult struct {
 
 // TaskInput — тело POST/PATCH /tasks.
 type TaskInput struct {
-	ID                int    `json:"id,omitempty"`
-	ResponsibleUserID int    `json:"responsible_user_id,omitempty"`
-	EntityID          int    `json:"entity_id,omitempty"`
+	ID                int64  `json:"id,omitempty"`
+	ResponsibleUserID int64  `json:"responsible_user_id,omitempty"`
+	EntityID          int64  `json:"entity_id,omitempty"`
 	EntityType        string `json:"entity_type,omitempty"`
-	TaskTypeID        int    `json:"task_type_id,omitempty"`
+	TaskTypeID        int64  `json:"task_type_id,omitempty"`
 	Text              string `json:"text,omitempty"`
 	CompleteTill      int64  `json:"complete_till,omitempty"`
 	RequestID         string `json:"request_id,omitempty"`
@@ -49,6 +47,11 @@ type TaskInput struct {
 type CompleteTaskInput struct {
 	IsCompleted bool        `json:"is_completed"`
 	Result      *TaskResult `json:"result,omitempty"`
+}
+
+// GetTask — GET /api/v4/tasks/{id}. Пустой ответ — ErrNotFound.
+func (c *Client) GetTask(ctx context.Context, acc Account, id int64, with ...string) (Task, error) {
+	return getOne[Task](ctx, c, acc, "tasks.get", fmt.Sprintf("/api/v4/tasks/%d", id), withValues(with))
 }
 
 // ListTasks — GET /api/v4/tasks.
@@ -67,7 +70,7 @@ func (c *Client) UpdateTasks(ctx context.Context, acc Account, in []TaskInput) (
 }
 
 // CompleteTask — PATCH /api/v4/tasks/{id} (is_completed + result).
-func (c *Client) CompleteTask(ctx context.Context, acc Account, id int, result string) (Task, error) {
+func (c *Client) CompleteTask(ctx context.Context, acc Account, id int64, result string) (Task, error) {
 	in := CompleteTaskInput{IsCompleted: true}
 	if result != "" {
 		in.Result = &TaskResult{Text: result}

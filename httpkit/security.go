@@ -2,6 +2,8 @@ package httpkit
 
 import "net/http"
 
+// SecurityHeadersConfig — значения security-заголовков; пустое поле — заголовок
+// не ставится.
 type SecurityHeadersConfig struct {
 	HSTS               string `envconfig:"HTTP_HSTS" default:"max-age=31536000; includeSubDomains"`
 	ContentTypeOptions string `envconfig:"HTTP_CONTENT_TYPE_OPTIONS" default:"nosniff"`
@@ -10,6 +12,7 @@ type SecurityHeadersConfig struct {
 	CSP                string `envconfig:"HTTP_CSP"`
 }
 
+// SecurityHeaders проставляет заголовки безопасности на каждый ответ.
 func SecurityHeaders(cfg SecurityHeadersConfig) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

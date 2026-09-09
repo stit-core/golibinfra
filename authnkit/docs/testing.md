@@ -18,9 +18,11 @@ type DeterministicHasher struct{}
 
 const HashPrefix = "hash:"
 
-func (DeterministicHasher) Hash(plain string) (string, error)            // → "hash:" + plain
-func (DeterministicHasher) Verify(plain, encoded string) (bool, error)   // encoded == "hash:"+plain
-func StripHashPrefix(encoded string) string                              // убирает префикс "hash:"
+func (DeterministicHasher) Hash(ctx context.Context, plain string) (string, error)          // → "hash:" + plain
+func (DeterministicHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) // encoded == "hash:"+plain
+func (DeterministicHasher) NeedsRehash(encoded string) bool                                 // всегда false
+func (DeterministicHasher) VerifyDummy(ctx context.Context)                                 // no-op
+func StripHashPrefix(encoded string) string                                                 // убирает префикс "hash:"
 ```
 
 `Hash` возвращает `"hash:" + plain` (детерминированно, без соли), `Verify`
@@ -31,29 +33,33 @@ func StripHashPrefix(encoded string) string                              // уб
 var _ authnkit.Hasher = authntest.DeterministicHasher{} // удовлетворяет интерфейсу
 
 h := authntest.DeterministicHasher{}
-enc, _ := h.Hash("secret")             // "hash:secret"
-ok, _ := h.Verify("secret", enc)       // true
+enc, _ := h.Hash(ctx, "secret")         // "hash:secret"
+ok, _ := h.Verify(ctx, "secret", enc)   // true
 plain := authntest.StripHashPrefix(enc) // "secret"
 ```
 
-Хэш предсказуем и не секретен — только для тестов, никогда не в production-коде.
+Хэш предсказуем и не секретен — только для тестов. Предохранитель на случай
+ошибки проводки fx: вне `go test` (`testing.Testing() == false`) `Hash` и
+`Verify` паникуют, а не кладут пароли в базу открытым текстом.
 
 ## JWT и TOTP: управляемые часы
 
-`NewHS256JWT` и `NewTOTP` принимают `authnkit.WithClock(clockkit.Clock)`:
-с `clockkit.NewFixed` / `clockkit.NewTickable` проверка `exp`, leeway и
-TOTP-окон становится детерминированной без `time.Sleep`.
+`NewHS256JWT`, `NewTOTP` и `NewMemoryUsedCodeStore` принимают
+`authnkit.WithClock(clockkit.Clock)`: с `clockkit.NewFixed` /
+`clockkit.NewTickable` проверка `exp`, leeway, TOTP-окон и истечения записей
+об использованных кодах становится детерминированной без `time.Sleep`.
 
 ```go
 clock := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
 jwt, _ := authnkit.NewHS256JWT(cfg, authnkit.WithClock(clock))
-tok, _ := jwt.Sign(claims, time.Minute)
-clock.Advance(2 * time.Minute)
-_, err := jwt.Parse(tok) // ErrTokenExpired
+tok, _ := jwt.SignAccess(ctx, claims)
+clock.Advance(30 * time.Minute)
+_, err := jwt.ParseAccess(ctx, tok) // ErrTokenExpired
 ```
 
 Секрет в тестовых `JWTConfig` — не короче 32 байт, иначе конструктор вернёт
-`ErrConfig`. Для TOTP валидный код генерируй через
+`ErrConfig`; то же с `TOTPConfig.Issuer` (непустой, без `:` и `/`) и
+`Argon2idParams` (окно). Для TOTP валидный код генерируй через
 `totp.GenerateCode(secret, clock.Now())` (`github.com/pquerna/otp/totp`).
 
 ## RBAC

@@ -51,10 +51,14 @@ func TestCookies_NamesFromConfig(t *testing.T) {
 }
 
 // Конфиг, собранный литералом (без envconfig-дефолтов), не должен выпускать
-// безымянную cookie.
-func TestRefreshCookie_Defaults(t *testing.T) {
-	c := issuer.RefreshCookie("rtok", issuer.CookieConfig{Secure: true}, time.Hour)
-	if c.Name != "stit_refresh" || c.Path != "/auth" {
-		t.Fatalf("дефолты refresh-cookie не подставились: %+v", c)
+// безымянную cookie: http.SetCookie молча её не пишет.
+func TestCookies_Defaults(t *testing.T) {
+	r := issuer.RefreshCookie("rtok", issuer.CookieConfig{Secure: true}, time.Hour)
+	if r.Name != issuer.DefaultRefreshCookieName || r.Path != issuer.DefaultRefreshCookiePath {
+		t.Fatalf("дефолты refresh-cookie не подставились: %+v", r)
+	}
+	s := issuer.SessionCookie("tok", issuer.CookieConfig{Secure: true})
+	if s.Name != issuer.DefaultCookieName || s.MaxAge != int(issuer.DefaultSessionTTL.Seconds()) {
+		t.Fatalf("дефолты session-cookie не подставились: %+v", s)
 	}
 }

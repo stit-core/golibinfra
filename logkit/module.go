@@ -14,7 +14,7 @@ var Module = fx.Module(
 	"logkit",
 	fx.Provide(
 		newSlogLogger,
-		func(l *slog.Logger) Logger { return &slogLogger{l: l} },
+		FromSlog,
 	),
 )
 

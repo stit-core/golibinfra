@@ -1,12 +1,5 @@
-// Package client — типизированный клиент hub API поверх httpclient (retry
-// идемпотентных запросов, circuit breaker, OTel, X-Request-ID).
-//
-// Ресурсы: companies/projects/visibility + entity-tags (company-backend,
-// api.hub.stit.tech), employees/departments (employee-backend, id.stit.tech)
-// и tags (tag-backend, tags.hub.stit.tech). m2m-аутентификация статик-Bearer'ом
-// (HUB_SERVICE_TOKEN). Ошибки типизированы (ErrNotFound / ErrConflict /
-// ErrUnavailable) — продукту нужно отличать «хаб недоступен» (деградация
-// чтения) от бизнес-ошибки.
+// Package client — типизированный клиент hub API поверх httpclient: три
+// backend'а хаба, sentinel-ошибки и sync-фид проекций.
 package client
 
 import (
@@ -22,9 +15,12 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/httpclient"
+	"git.stit.tech/stit-core/golibinfra/internal/httpdoer"
 )
 
 var (
+	// ErrConfig — невалидный конфиг клиента (Config.Validate).
+	ErrConfig = errors.New("hubkit/client: invalid config")
 	// ErrNotFound — 404: ресурс отсутствует.
 	ErrNotFound = errors.New("hubkit/client: not found")
 	// ErrConflict — 409: конфликт (дубль slug/inn, оптимистичная блокировка).
@@ -46,9 +42,7 @@ const (
 
 // Doer — HTTP-транспорт. Ему удовлетворяет *httpclient.Client (прод) и
 // *http.Client (тесты).
-type Doer interface {
-	Do(*http.Request) (*http.Response, error)
-}
+type Doer = httpdoer.Doer
 
 // Client — типизированный доступ к hub API.
 type Client struct {
@@ -62,10 +56,17 @@ type Client struct {
 
 // New строит Client из Config поверх переданного Doer (обычно
 // *httpclient.Client); nil → httpclient с дефолтами (таймаут 10s, retry
-// идемпотентных, breaker).
-func New(cfg Config, doer Doer) *Client {
+// идемпотентных, breaker). Конфиг валидируется: клиент без адреса хаба не
+// собирается.
+func New(cfg Config, doer Doer) (*Client, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if doer == nil {
-		doer = defaultDoer()
+		var err error
+		if doer, err = defaultDoer(); err != nil {
+			return nil, err
+		}
 	}
 	return &Client{
 		companyBase:  strings.TrimRight(cfg.BaseURL, "/"),
@@ -74,10 +75,10 @@ func New(cfg Config, doer Doer) *Client {
 		token:        cfg.ServiceToken,
 		service:      cfg.ServiceName,
 		http:         doer,
-	}
+	}, nil
 }
 
-func defaultDoer() Doer {
+func defaultDoer() (Doer, error) {
 	c, err := httpclient.New(httpclient.Config{
 		Timeout:      defaultTimeout,
 		MaxRetries:   3,
@@ -86,9 +87,9 @@ func defaultDoer() Doer {
 		Breaker:      httpclient.BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
 	})
 	if err != nil {
-		return &http.Client{Timeout: defaultTimeout}
+		return nil, fmt.Errorf("hubkit/client: default http client: %w", err)
 	}
-	return c
+	return c, nil
 }
 
 // APIError — необёрнутая ошибка со статусом (для кодов вне NotFound/Conflict/…).
@@ -97,6 +98,7 @@ type APIError struct {
 	Body   string
 }
 
+// Error — текст ошибки со статусом и усечённым телом ответа хаба.
 func (e *APIError) Error() string {
 	return fmt.Sprintf("hubkit/client: unexpected status %d: %s", e.Status, e.Body)
 }
@@ -134,10 +136,15 @@ func (c *Client) do(ctx context.Context, method, base, path string, body, out an
 
 	resp, err := c.http.Do(req)
 	if err != nil {
-		// Транспорт/breaker — хаб недоступен.
-		return fmt.Errorf("%w: %s", ErrUnavailable, err.Error())
+		// Транспорт/breaker — хаб недоступен; цепочку сохраняем целиком, чтобы
+		// вызывающий мог отличить дедлайн от разомкнутого breaker'а.
+		return fmt.Errorf("%w: %w", ErrUnavailable, err)
 	}
-	defer func() { _ = resp.Body.Close() }()
+	defer func() {
+		// Недочитанное тело закрывает keep-alive соединение: дренируем остаток.
+		_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, maxErrorBody))
+		_ = resp.Body.Close()
+	}()
 
 	if err := statusErr(resp); err != nil {
 		return err

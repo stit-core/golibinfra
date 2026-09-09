@@ -13,7 +13,7 @@
 ```go
 fx.New(
     pgkit.Module,
-    fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig),
+    fx.Provide(pgkit.NewPoolConfig),
 
     fx.Invoke(func(db *pgkit.DB) {
         // db готов к Exec/Query/QueryRow
@@ -21,7 +21,10 @@ fx.New(
 )
 ```
 
-`db_pool_*` идут в глобальный `otel.Meter`; без `MeterProvider` (потребитель не
+`ReplicaConfig` — опциональная зависимость: добавляй
+`fx.Provide(pgkit.NewReplicaConfig)` только там, где есть реплика (`PG_REPLICA_DSN`).
+
+`pg_pool_*` идут в глобальный `otel.Meter`; без `MeterProvider` (потребитель не
 подключил проводку OTel SDK) инструменты — no-op, `Module` при этом поднимается.
 
 ## Базовые запросы
@@ -76,7 +79,11 @@ func (s *Service) Transfer(ctx context.Context, from, to int, amount int64) erro
 - Вложенный вызов (когда `ctx` уже несёт транзакцию) участвует во внешней
   транзакции, не открывая новую и не создавая savepoint.
 - `InTx(ctx) bool` — проверить, выполняется ли код внутри транзакции (нужно
-  коду, обязанному быть атомарным с бизнес-записью, например outbox-insert).
+  коду, обязанному быть атомарным с бизнес-записью, например outbox-insert). В
+  тестах тот же гейт открывает `pgkit.WithTestTx(ctx)` — маркер без Postgres,
+  который кладут фейки `testkit/pgtest`.
+- Отмена `ctx` внутри `fn`: наружу уходит причина отмены; ошибка отката
+  «мёртвого» соединения её не подменяет.
 
 Изоляция `WithTx` — `ReadCommitted`. Другой уровень или read-only транзакция —
 через `WithTxOptions`:
@@ -152,7 +159,7 @@ fx-группы `pgkit.migrations` (их регистрируют `Module` ки�
 fx.New(
     pgkit.Module,
     pgkit.MigrateModule,
-    fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig, pgkit.NewMigrateRunnerConfig),
+    fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig),
     auditpg.Module, // регистрирует auditkit-миграции в группе pgkit.migrations
     // ...
 )
@@ -161,8 +168,23 @@ fx.New(
 У каждого источника своя таблица версий: `schema_migrations_app` для
 приложения, `schema_migrations_<kit>` для китов. Advisory-lock гарантирует, что
 при одновременном старте нескольких инстансов миграции применяет ровно один —
-остальные ждут, а не падают на гонке. `MigrateModule` в списке `fx.New` стоит
-раньше модулей, которым схема нужна в их `OnStart`.
+остальные ждут его в очереди до `PG_MIGRATE_TIMEOUT` (default 2m) и находят
+схему уже применённой; не дождавшийся инстанс падает на старте и уходит в
+рестарт. `fx.StartTimeout` должен покрывать `PG_MIGRATE_TIMEOUT` плюс остальной
+старт — иначе прогон обрывает fx, а прерванная миграция остаётся `dirty`
+(см. [configuration.md](configuration.md)).
+
+Хуку `OnStart`, которому нужна применённая схема, объяви зависимость от
+`pgkit.Migrated` — тогда порядок не зависит от позиции модуля в `fx.New`:
+
+```go
+type params struct {
+    fx.In
+
+    LC       fx.Lifecycle
+    Migrated pgkit.Migrated `optional:"true"`
+}
+```
 
 Свой источник в группу (например, миграции внутреннего пакета приложения):
 
@@ -185,6 +207,11 @@ err = pgkit.MigrateUpAll(ctx, dsn, auditpg.Migrations, outboxpg.Migrations, src)
 миграцию — нужна ручная починка (функция вернёт ошибку вместе с версией).
 Ручная работа через CLI golang-migrate — с параметром
 `x-migrations-table=schema_migrations_<name>` в DSN.
+
+**Дедлайн — ответственность вызывающего.** Прямые `MigrateUp*` уважают только
+`ctx`, который им передали: он ограничивает коннект и ожидание advisory-lock'а.
+`MigrateUpAll(context.Background(), …)` из CLI будет ждать lock бесконечно —
+оборачивай в `context.WithTimeout`.
 
 ## Read-replica
 
@@ -213,15 +240,20 @@ func (r *Repo) Create(ctx context.Context, it Item) error {
 читай через `Read()` то, что только что записал через `Write()` (read-after-write
 не гарантируется из-за лага репликации) — такие чтения веди через `Write()`.
 
-## Health-probe
+## Health-пробы
 
 ```go
-func DBProbe(db *DB) healthkit.Probe // SELECT 1
+func Probe(db *DB) healthkit.Probe            // Name "pgkit": SELECT 1 на primary
+func ReplicaProbe(rw *ReadWriteDB) healthkit.Probe // Name "pgkit/replica": SELECT 1 на реплике
 ```
 
 ```go
 fx.New(
-    pgkit.Module, httpkit.Module,
-    healthkit.Provide(pgkit.DBProbe), // /ready → 503, если SELECT 1 не проходит
+    pgkit.Module,
+    httpkit.Module,
+    fx.Provide(pgkit.NewPoolConfig, httpkit.NewConfig),
+
+    healthkit.Provide(pgkit.Probe),      // /ready → 503, если SELECT 1 не проходит
+    healthkit.Provide(pgkit.ReplicaProbe), // без PG_REPLICA_DSN проходит без запроса
 )
 ```

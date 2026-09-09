@@ -5,9 +5,8 @@ import (
 	"fmt"
 )
 
-// UnmarshalJSONB разворачивает значение jsonb-колонки в dst. Пустой/NULL вход
-// (len(b) == 0) — не ошибка: dst остаётся как есть. Ошибка json обёрнута с
-// префиксом kit'а для errors.Is/As на стороне потребителя.
+// UnmarshalJSONB разворачивает jsonb-колонку в dst; пустой/NULL вход — не
+// ошибка, dst остаётся как есть.
 func UnmarshalJSONB(b []byte, dst any) error {
 	if len(b) == 0 {
 		return nil

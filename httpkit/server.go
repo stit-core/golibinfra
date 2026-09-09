@@ -1,6 +1,6 @@
 // Package httpkit — HTTP-сервер на huma/v2 + chi с готовой middleware-цепочкой
-// (RequestID, OTel, Recovery, SecurityHeaders, CORS, RateLimit, MaxBody,
-// AccessLog, Metrics, опц. Idempotency), health/readiness и error-моделью
+// (RequestID, OTel, AccessLog, Metrics, Recovery, SecurityHeaders, CORS,
+// RateLimit, MaxBody, опц. Idempotency), health/readiness и error-моделью
 // APIError. Эмитит http_requests_total, http_request_duration_seconds,
 // http_panics_total, http_max_body_rejections_total, http_idempotency_total,
 // http_rate_limited_total.
@@ -10,16 +10,23 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
+	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
+
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
+// Config — настройки сервера и вложенные конфиги middleware; читается
+// NewConfig из ENV, валидируется Validate.
 type Config struct {
 	Addr              string        `envconfig:"HTTP_ADDR" default:":8080"`
 	ReadTimeout       time.Duration `envconfig:"HTTP_READ_TIMEOUT" default:"15s"`
@@ -29,15 +36,24 @@ type Config struct {
 	ShutdownTimeout   time.Duration `envconfig:"HTTP_SHUTDOWN_TIMEOUT" default:"15s"`
 	APITitle          string        `envconfig:"HTTP_API_TITLE" default:"API"`
 	APIVersion        string        `envconfig:"HTTP_API_VERSION" default:"0.1.0"`
-	CORS              CORSConfig
-	RateLimit         RateLimitConfig
-	MaxBody           MaxBodyConfig
-	Security          SecurityHeadersConfig
-	Idempotency       IdempotencyConfig
+	// DocsEnabled=false убирает /docs, /openapi.* и /schemas с сервера.
+	DocsEnabled bool `envconfig:"HTTP_DOCS_ENABLED" default:"true"`
+	// ReadyProbeTimeout — потолок одной пробы /ready.
+	ReadyProbeTimeout time.Duration `envconfig:"HTTP_READY_PROBE_TIMEOUT" default:"5s"`
+	// QuietPaths — пути без Info-строки access-log и без server-спана.
+	QuietPaths  []string `envconfig:"HTTP_QUIET_PATHS" default:"/health,/ready"`
+	CORS        CORSConfig
+	RateLimit   RateLimitConfig
+	MaxBody     MaxBodyConfig
+	Security    SecurityHeadersConfig
+	Idempotency IdempotencyConfig
 }
 
+// ErrConfig — невалидный конфиг httpkit; оборачивается в ошибку старта.
 var ErrConfig = errors.New("httpkit: invalid config")
 
+// Validate проверяет конфиг целиком: сервер стартует только на пригодных
+// значениях, а не падает на первом запросе.
 func (c Config) Validate() error {
 	switch {
 	case c.Addr == "":
@@ -46,47 +62,90 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: timeouts must be >= 0", ErrConfig)
 	case c.ShutdownTimeout <= 0:
 		return fmt.Errorf("%w: ShutdownTimeout must be > 0", ErrConfig)
+	case c.ReadyProbeTimeout <= 0:
+		return fmt.Errorf("%w: ReadyProbeTimeout must be > 0", ErrConfig)
+	case c.APITitle == "" || c.APIVersion == "":
+		return fmt.Errorf("%w: APITitle and APIVersion are required", ErrConfig)
 	case c.RateLimit.RPS < 0 || c.RateLimit.Burst < 0:
 		return fmt.Errorf("%w: RateLimit.RPS and Burst must be >= 0", ErrConfig)
 	case c.MaxBody.MaxBytes < 0:
 		return fmt.Errorf("%w: MaxBody.MaxBytes must be >= 0", ErrConfig)
 	case c.Idempotency.Header == "" || c.Idempotency.TTL <= 0 || c.Idempotency.ReserveTTL <= 0 || c.Idempotency.MaxBodyBytes <= 0:
 		return fmt.Errorf("%w: Idempotency.Header, TTL, ReserveTTL and MaxBodyBytes are required", ErrConfig)
-	case c.CORS.AllowCredentials && containsStar(c.CORS.Origins):
+	case c.Idempotency.StoreTimeout <= 0:
+		return fmt.Errorf("%w: Idempotency.StoreTimeout must be > 0", ErrConfig)
+	case c.CORS.AllowCredentials && slices.Contains(c.CORS.Origins, "*"):
 		return fmt.Errorf("%w: CORS.AllowCredentials is incompatible with origin \"*\"", ErrConfig)
+	case c.CORS.MaxAge < 0:
+		return fmt.Errorf("%w: CORS.MaxAge must be >= 0", ErrConfig)
 	}
 	return nil
 }
 
-func containsStar(origins []string) bool {
-	for _, o := range origins {
-		if o == "*" {
-			return true
-		}
-	}
-	return false
-}
-
 // SecuritySchemeEntry — одна запись в openapi `components.securitySchemes`.
 // Регистрируется caller'ом через fx-группу `httpkit.security_scheme` или
-// аргументом `NewServer`. httpkit не выставляет дефолтных схем.
+// опцией WithSecuritySchemes. httpkit не выставляет дефолтных схем.
 type SecuritySchemeEntry struct {
 	Name   string
 	Scheme *huma.SecurityScheme
 }
 
+// ServerOption — опция NewServer: логгер, схемы безопасности, chi-middleware,
+// правка huma.Config.
+type ServerOption func(*serverOptions)
+
+type serverOptions struct {
+	log        logkit.Logger
+	schemes    []SecuritySchemeEntry
+	middleware []func(http.Handler) http.Handler
+	humaConfig []func(*huma.Config)
+}
+
+// WithLogger отдаёт серверу логгер: ошибки net/http (`http.Server.ErrorLog`) и
+// текст незамапленных ошибок хендлеров уходят в него. Без опции логгер —
+// logkit.Nop(): 5xx клиенту нейтрализуются всё равно, но причина теряется.
+func WithLogger(log logkit.Logger) ServerOption {
+	return func(o *serverOptions) { o.log = log }
+}
+
+// WithSecuritySchemes добавляет схемы в `components.securitySchemes` OpenAPI.
+func WithSecuritySchemes(schemes ...SecuritySchemeEntry) ServerOption {
+	return func(o *serverOptions) { o.schemes = append(o.schemes, schemes...) }
+}
+
+// WithMiddleware добавляет net/http-middleware в chi-цепочку в порядке
+// перечисления; вызывается до BindAPI, поэтому chi принимает их все.
+func WithMiddleware(mw ...func(http.Handler) http.Handler) ServerOption {
+	return func(o *serverOptions) { o.middleware = append(o.middleware, mw...) }
+}
+
+// WithHumaConfig правит huma.Config перед созданием API: DocsRenderer,
+// Servers, Transformers, дополнительные OnAddOperation.
+func WithHumaConfig(fn func(*huma.Config)) ServerOption {
+	return func(o *serverOptions) { o.humaConfig = append(o.humaConfig, fn) }
+}
+
+// Server — chi-роутер (транспорт) и huma.API (операции + OpenAPI) поверх
+// одного *http.Server.
 type Server struct {
-	cfg     Config
-	router  *chi.Mux
-	api     huma.API
-	srv     *http.Server
-	schemes []SecuritySchemeEntry
+	cfg  Config
+	opts serverOptions
+
+	router *chi.Mux
+	api    huma.API
+	srv    *http.Server
 
 	mu sync.Mutex
 	ln net.Listener
 }
 
-func NewServer(cfg Config, schemes ...SecuritySchemeEntry) *Server {
+// NewServer собирает сервер из конфига и опций; middleware из WithMiddleware
+// регистрируются сразу, huma.API — лениво в BindAPI.
+func NewServer(cfg Config, opts ...ServerOption) *Server {
+	var o serverOptions
+	for _, opt := range opts {
+		opt(&o)
+	}
 	r := chi.NewRouter()
 	srv := &http.Server{
 		Addr:              cfg.Addr,
@@ -96,9 +155,19 @@ func NewServer(cfg Config, schemes ...SecuritySchemeEntry) *Server {
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 	}
+	// Нейтрализация 5xx — свойство сервера, а не опции: без хука незамапленная
+	// ошибка хендлера уходит клиенту текстом (DSN, пароли).
+	installErrorHook(o.log)
+	if o.log == nil {
+		o.log = logkit.Nop()
+	}
+	srv.ErrorLog = slog.NewLogLogger(logkitHandler{log: o.log}, slog.LevelWarn)
+	if len(o.middleware) > 0 {
+		r.Use(o.middleware...)
+	}
 	// huma.API создаётся лениво в BindAPI(): humachi.New регистрирует
 	// /openapi.json и /docs, после чего chi запрещает router.Use(...).
-	return &Server{cfg: cfg, router: r, srv: srv, schemes: schemes}
+	return &Server{cfg: cfg, opts: o, router: r, srv: srv}
 }
 
 // BindAPI инициализирует huma.API поверх chi. Идемпотентен; вызывать после
@@ -108,18 +177,30 @@ func (s *Server) BindAPI() huma.API {
 		return s.api
 	}
 	humaConfig := huma.DefaultConfig(s.cfg.APITitle, s.cfg.APIVersion)
-	if len(s.schemes) > 0 {
-		humaConfig.Components.SecuritySchemes = make(map[string]*huma.SecurityScheme, len(s.schemes))
-		for _, e := range s.schemes {
+	if !s.cfg.DocsEnabled {
+		humaConfig.DocsPath, humaConfig.OpenAPIPath, humaConfig.SchemasPath = "", "", ""
+	}
+	if len(s.opts.schemes) > 0 {
+		humaConfig.Components.SecuritySchemes = make(map[string]*huma.SecurityScheme, len(s.opts.schemes))
+		for _, e := range s.opts.schemes {
 			humaConfig.Components.SecuritySchemes[e.Name] = e.Scheme
 		}
+	}
+	maxBody := s.cfg.MaxBody.MaxBytes
+	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation,
+		func(_ *huma.OpenAPI, op *huma.Operation) { op.MaxBodyBytes = maxBody })
+	for _, fn := range s.opts.humaConfig {
+		fn(&humaConfig)
 	}
 	s.api = humachi.New(s.router, humaConfig)
 	return s.api
 }
 
+// Router — chi-роутер сервера; middleware регистрируются только до BindAPI.
 func (s *Server) Router() *chi.Mux { return s.router }
-func (s *Server) API() huma.API    { return s.BindAPI() }
+
+// API — huma.API сервера (алиас BindAPI).
+func (s *Server) API() huma.API { return s.BindAPI() }
 
 // Listen занимает порт синхронно: занятый адрес — ошибка старта, а не строка в логе.
 func (s *Server) Listen() error {
@@ -128,7 +209,8 @@ func (s *Server) Listen() error {
 	if s.ln != nil {
 		return nil
 	}
-	ln, err := net.Listen("tcp", s.cfg.Addr)
+	var lc net.ListenConfig
+	ln, err := lc.Listen(context.Background(), "tcp", s.cfg.Addr)
 	if err != nil {
 		return fmt.Errorf("httpkit: listen %s: %w", s.cfg.Addr, err)
 	}
@@ -160,9 +242,55 @@ func (s *Server) Serve() error {
 	return nil
 }
 
-// Start = Serve; для ручной проводки без fx.
-func (s *Server) Start() error { return s.Serve() }
-
+// Stop останавливает приём соединений и ждёт завершения текущих до ctx.
 func (s *Server) Stop(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
+
+var (
+	errorHookOnce sync.Once
+	errorHookLog  atomic.Pointer[logkit.Logger]
+)
+
+// installErrorHook подменяет huma.NewErrorWithContext — process-global
+// переменная huma: 5xx уходит клиенту нейтральным, а текст ошибки — в лог.
+// Логгер берётся из последнего Server, которому его дали: сервер без
+// WithLogger нейтрализацию включает, но чужой sink не затирает.
+func installErrorHook(log logkit.Logger) {
+	if log != nil {
+		errorHookLog.Store(&log)
+	}
+	errorHookOnce.Do(func() {
+		prev := huma.NewErrorWithContext
+		huma.NewErrorWithContext = func(hc huma.Context, status int, msg string, errs ...error) huma.StatusError {
+			if status < http.StatusInternalServerError {
+				return prev(hc, status, msg, errs...)
+			}
+			ctx := context.Background()
+			if hc != nil {
+				ctx = hc.Context()
+			}
+			if l := errorHookLog.Load(); l != nil {
+				(*l).Error(ctx, "handler error", "status", status, "msg", msg, "err", errors.Join(errs...))
+			}
+			return Error(codeForStatus(status), status, "internal error")
+		}
+	})
+}
+
+// logkitHandler — мост stdlib log → logkit: net/http пишет ошибки соединений
+// через *log.Logger, а в сервисах допустим единственный sink logkit.
+type logkitHandler struct{ log logkit.Logger }
+
+func (h logkitHandler) Enabled(ctx context.Context, l slog.Level) bool {
+	return h.log.Enabled(ctx, l)
+}
+
+func (h logkitHandler) Handle(ctx context.Context, r slog.Record) error {
+	h.log.Warn(ctx, "http server error", "err", r.Message)
+	return nil
+}
+
+func (h logkitHandler) WithAttrs([]slog.Attr) slog.Handler { return h }
+
+func (h logkitHandler) WithGroup(string) slog.Handler { return h }

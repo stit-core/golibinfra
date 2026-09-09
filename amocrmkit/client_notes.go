@@ -2,31 +2,28 @@ package amocrmkit
 
 import (
 	"context"
-	"fmt"
 	"net/http"
 )
 
-// notes + calls (communications).
-
 // Note — объект примечания (GET-ответ).
 type Note struct {
-	ID                int            `json:"id"`
-	EntityID          int            `json:"entity_id"`
-	CreatedBy         int            `json:"created_by"`
-	UpdatedBy         int            `json:"updated_by"`
+	ID                int64          `json:"id"`
+	EntityID          int64          `json:"entity_id"`
+	CreatedBy         int64          `json:"created_by"`
+	UpdatedBy         int64          `json:"updated_by"`
 	CreatedAt         int64          `json:"created_at"`
 	UpdatedAt         int64          `json:"updated_at"`
-	ResponsibleUserID int            `json:"responsible_user_id"`
-	GroupID           int            `json:"group_id"`
+	ResponsibleUserID int64          `json:"responsible_user_id"`
+	GroupID           int64          `json:"group_id"`
 	NoteType          string         `json:"note_type"`
 	Params            map[string]any `json:"params"`
-	AccountID         int            `json:"account_id"`
+	AccountID         int64          `json:"account_id"`
 	IsPinned          *bool          `json:"is_pinned"`
 }
 
 // NoteInput — тело POST /{entity_type}/notes.
 type NoteInput struct {
-	EntityID  int            `json:"entity_id,omitempty"`
+	EntityID  int64          `json:"entity_id,omitempty"`
 	NoteType  string         `json:"note_type"`
 	Params    map[string]any `json:"params"`
 	RequestID string         `json:"request_id,omitempty"`
@@ -43,15 +40,18 @@ type CallInput struct {
 	CallStatus      int    `json:"call_status,omitempty"`
 	CallResult      string `json:"call_result,omitempty"`
 	CallResponsible any    `json:"call_responsible,omitempty"`
-	ResponsibleUser int    `json:"responsible_user_id,omitempty"`
-	CreatedBy       int    `json:"created_by,omitempty"`
+	ResponsibleUser int64  `json:"responsible_user_id,omitempty"`
+	CreatedBy       int64  `json:"created_by,omitempty"`
 	RequestID       string `json:"request_id,omitempty"`
 }
 
-// AddNotes — POST /api/v4/{entity_type}/notes (entityType: leads|contacts|companies|customers; batch до 250).
+// AddNotes — POST /api/v4/{entity_type}/notes (entityType ∈ leads|contacts|companies|customers; batch до 250).
 func (c *Client) AddNotes(ctx context.Context, acc Account, entityType string, in []NoteInput) ([]CreatedEntity, error) {
-	path := fmt.Sprintf("/api/v4/%s/notes", entityType)
-	return sendBatch[NoteInput, CreatedEntity](ctx, c, acc, http.MethodPost, "notes.add", path, "notes", in)
+	e, err := entitySegment(entityType)
+	if err != nil {
+		return nil, err
+	}
+	return sendBatch[NoteInput, CreatedEntity](ctx, c, acc, http.MethodPost, "notes.add", "/api/v4/"+e+"/notes", "notes", in)
 }
 
 // AddCalls — POST /api/v4/calls (batch до 250).

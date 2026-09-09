@@ -27,11 +27,9 @@ type Company struct {
 }
 
 // UnmarshalJSON читает обе формы реквизитов хаба: плоскую (sync-фид) и вложенную
-// в объект requisites (admin API компаний, GET/PATCH /api/companies/{id}).
-// Присутствие объекта — сигнал admin-формы, и он источник истины целиком: иначе
-// очистка реквизита не отличалась бы от «поля нет». Без этого разбора потребитель,
-// читающий компанию после write-through, получал пустые реквизиты и затирал ими
-// собственную проекцию, а следующей записью — и сам хаб.
+// в объект requisites (admin API компаний). Присутствие объекта — сигнал
+// admin-формы, и он источник истины целиком: иначе очистка реквизита не
+// отличалась бы от «поля нет».
 func (c *Company) UnmarshalJSON(data []byte) error {
 	type company Company // без методов — иначе рекурсия на этом же UnmarshalJSON
 	var raw struct {
@@ -112,11 +110,9 @@ type Employee struct {
 	CreatedAt  time.Time `json:"created_at"`
 	UpdatedAt  time.Time `json:"updated_at"`
 	UpdatedSeq int64     `json:"updated_seq"`
-	// DepartmentIDs — snapshot набора департаментов сотрудника (M2M хаба). Владелец —
-	// employee-backend; строкового поля department в модели нет — принадлежность
-	// только через этот массив.
-	// Всегда массив в фиде (пустой набор — []); старый сервер без поля →
-	// nil (обратная совместимость: продукты со старым фидом не ломаются).
+	// DepartmentIDs — snapshot набора департаментов сотрудника (M2M хаба):
+	// принадлежность выражается только этим массивом, строкового поля
+	// department в модели нет. Отсутствие ключа в ответе читается как nil.
 	DepartmentIDs []string `json:"department_ids,omitempty"`
 }
 
@@ -131,11 +127,14 @@ type Visibility struct {
 
 // Tag — каноническая запись глобального словаря тегов (tag-backend,
 // tags.hub.stit.tech). Дедуп по norm_name; name — написание первого автора
-// экосистемы.
+// экосистемы. CreatedAt/UpdatedSeq приходят в элементах sync-фида tags; ответ
+// POST /api/tags их не несёт и оставляет нулевыми.
 type Tag struct {
-	ID       string `json:"id"`
-	Name     string `json:"name"`
-	NormName string `json:"norm_name"`
+	ID         string    `json:"id"`
+	Name       string    `json:"name"`
+	NormName   string    `json:"norm_name"`
+	CreatedAt  time.Time `json:"created_at,omitzero"`
+	UpdatedSeq int64     `json:"updated_seq,omitempty"`
 }
 
 // TagInput — тело write-through upsert тега (POST /api/tags).
@@ -143,13 +142,9 @@ type TagInput struct {
 	Name string `json:"name"`
 }
 
-// EntityTagsSnapshot — snapshot принадлежности тегам одной hub-сущности из
-// sync-фида entity-tags (company-backend, владелец глобальной принадлежности
-// company/project). Полный набор TagIDs на курсоре
-// UpdatedSeq; потребитель применяет как replace. Ключ — (EntityKind, EntityID),
-// не id. Пустой набор (все теги сняты) приезжает как TagIDs=[] обычной записью
-// (курсор бампается только при фактическом diff'е набора). Продукт
-// unmarshal'ит в этот тип элементы SyncFeed(ResourceEntityTags).
+// EntityTagsSnapshot — элемент sync-фида entity-tags: полный набор тегов одной
+// hub-сущности на курсоре UpdatedSeq, применяется как replace. Ключ —
+// (EntityKind, EntityID), не id; снятие всех тегов приезжает как TagIDs=[].
 type EntityTagsSnapshot struct {
 	EntityKind string   `json:"entity_kind"`
 	EntityID   string   `json:"entity_id"`

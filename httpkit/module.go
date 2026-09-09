@@ -8,8 +8,18 @@ import (
 	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
+
+// SecuritySchemeGroup — fx-группа схем безопасности OpenAPI (SecuritySchemeEntry).
+const SecuritySchemeGroup = "httpkit.security_scheme"
+
+// MiddlewareGroup — fx-группа middleware потребителя; они идут внутри цепочки кита.
+const MiddlewareGroup = "httpkit.middleware"
+
+// HumaConfigGroup — fx-группа правок huma.Config перед созданием API.
+const HumaConfigGroup = "httpkit.huma_config"
 
 // Module не provide'ит Config: caller регистрирует его сам
 // (`fx.Provide(httpkit.NewConfig)` или из App-структуры).
@@ -19,9 +29,13 @@ var Module = fx.Module(
 		newServerWithLifecycle,
 		func(s *Server) huma.API { return s.API() },
 	),
-	fx.Invoke(registerHealth),
+	fx.Invoke(fx.Annotate(
+		registerHealth,
+		fx.ParamTags(``, ``, ``, `group:"`+healthkit.Group+`"`),
+	)),
 )
 
+// NewConfig читает HTTP_* из ENV и валидирует конфиг: невалидный — ошибка старта.
 func NewConfig() (Config, error) {
 	var c Config
 	if err := envconfig.Process("", &c); err != nil {
@@ -30,66 +44,76 @@ func NewConfig() (Config, error) {
 	return c, c.Validate()
 }
 
-type idempotencyIn struct {
+type serverIn struct {
 	fx.In
-	Store IdempotencyStore `optional:"true"`
+
+	Config     Config
+	Log        logkit.Logger
+	Shutdowner fx.Shutdowner
+
+	Extract    AuthExtractor                     `optional:"true"`
+	Store      IdempotencyStore                  `optional:"true"`
+	Schemes    []SecuritySchemeEntry             `group:"httpkit.security_scheme"`
+	Middleware []func(http.Handler) http.Handler `group:"httpkit.middleware"`
+	HumaConfig []func(*huma.Config)              `group:"httpkit.huma_config"`
 }
 
-type AuthExtractorIn struct {
-	fx.In
-	Extract AuthExtractor `optional:"true"`
+func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe) {
+	RegisterHealth(api, log, cfg.ReadyProbeTimeout, probes...)
 }
 
-type healthIn struct {
-	fx.In
-	API    huma.API
-	Log    logkit.Logger
-	Probes []Probe `group:"health"`
-}
-
-type securitySchemesIn struct {
-	fx.In
-	Schemes []SecuritySchemeEntry `group:"httpkit.security_scheme"`
-}
-
-func registerHealth(in healthIn) {
-	RegisterHealth(in.API, in.Log, in.Probes...)
-}
-
-// Порядок цепочки: RequestID и OTel первыми, чтобы request_id и trace_id были
-// в ctx у всех остальных (включая access-log и panic-log).
-func newServerWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger, ai AuthExtractorIn, ii idempotencyIn, ss securitySchemesIn) (*Server, error) {
+// Порядок цепочки: RequestID и OTel первыми (request_id и trace_id в ctx у
+// всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight
+// попадали в RED-метрики и access-log; middleware потребителя — внутри всей
+// цепочки кита.
+func newServerWithLifecycle(lc fx.Lifecycle, in serverIn) (*Server, error) {
+	cfg := in.Config
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	s := NewServer(cfg, ss.Schemes...)
 
 	mws := []func(http.Handler) http.Handler{
 		RequestID(),
-		OTel(),
-		Recovery(log),
+		OTel(cfg.QuietPaths...),
+		AccessLog(in.Log, cfg.QuietPaths...),
+		Metrics(),
+		Recovery(in.Log),
 		SecurityHeaders(cfg.Security),
 		CORS(cfg.CORS),
 		RateLimit(cfg.RateLimit),
 		MaxBody(cfg.MaxBody),
-		AccessLog(log),
-		Metrics(),
 	}
-	if ii.Store != nil {
-		mws = append(mws, Idempotency(cfg.Idempotency, ii.Store))
+	if in.Store != nil {
+		var opts []IdempotencyOption
+		if in.Extract != nil {
+			opts = append(opts, WithAuth(in.Extract))
+		}
+		mws = append(mws, Idempotency(cfg.Idempotency, in.Store, opts...))
 	}
-	s.router.Use(mws...)
-	api := s.BindAPI()
-	api.UseMiddleware(HumaAuth(api, ai.Extract))
+	mws = append(mws, in.Middleware...)
+
+	opts := []ServerOption{
+		WithLogger(in.Log),
+		WithSecuritySchemes(in.Schemes...),
+		WithMiddleware(mws...),
+	}
+	for _, fn := range in.HumaConfig {
+		opts = append(opts, WithHumaConfig(fn))
+	}
+	s := NewServer(cfg, opts...)
+	s.BindAPI().UseMiddleware(HumaAuth(in.Log, in.Extract))
 
 	lc.Append(fx.Hook{
-		OnStart: func(context.Context) error {
+		OnStart: func(ctx context.Context) error {
 			if err := s.Listen(); err != nil {
 				return err
 			}
+			in.Log.Info(ctx, "http server listening", "addr", s.Addr().String())
 			go func() { //nolint:gosec // горутина сервера живёт дольше ctx OnStart; фоновый ctx только для терминального лога
 				if err := s.Serve(); err != nil {
-					log.Error(context.Background(), "http server stopped", "err", err)
+					in.Log.Error(context.Background(), "http server stopped", "err", err)
+					// Упавший listener — не «работающий» сервис: fx должен погасить приложение.
+					_ = in.Shutdowner.Shutdown(fx.ExitCode(1))
 				}
 			}()
 			return nil

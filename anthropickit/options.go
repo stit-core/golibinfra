@@ -25,7 +25,12 @@ func WithPriceTable(prices map[string]Price) Option {
 	return func(o *options) { o.prices = prices }
 }
 
-// WithBaseURL переопределяет base URL поверх Config (тесты против stub-сервера).
+// WithBaseURL переопределяет base URL поверх Config (тесты против stub-сервера);
+// значение валидируется так же. Пустая строка оставляет значение Config.
 func WithBaseURL(url string) Option {
-	return func(o *options) { o.baseURL = url }
+	return func(o *options) {
+		if url != "" {
+			o.baseURL = url
+		}
+	}
 }

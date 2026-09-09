@@ -9,6 +9,12 @@ App-структуру (см. [architecture.md § fx-композиция](archi
 fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig, pgkit.NewMigrateRunnerConfig)
 ```
 
+Каждый `New*Config` валидирует прочитанное и падает на старте: нарушение
+инварианта — ошибка, обёрнутая `pgkit.ErrConfig` (`errors.Is(err,
+pgkit.ErrConfig)`). Те же проверки делают `PoolConfig.Validate()`,
+`ReplicaConfig.Validate()`, `MigrateRunnerConfig.Validate()` и `NewPool` — путь
+через `fx.Supply` со структурой конфига тоже проверяется.
+
 ## `PoolConfig` (`pool.go`)
 
 Минимум для старта — `PG_DSN`. Остальное имеет рабочие default'ы.
@@ -16,18 +22,24 @@ fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig, pgkit.NewMigrateRunnerCo
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `PG_DSN` | `DSN` | `string` | — (`required`) | строка подключения к primary Postgres (URL или keyword/value) |
-| `PG_MAX_CONNS` | `MaxConns` | `int32` | `10` | максимум соединений в пуле |
-| `PG_MIN_CONNS` | `MinConns` | `int32` | `2` | минимум поддерживаемых тёплых соединений |
-| `PG_MAX_CONN_LIFETIME` | `MaxConnLifetime` | `time.Duration` | `30m` | время жизни соединения до плановой замены |
-| `PG_MAX_CONN_IDLE_TIME` | `MaxConnIdleTime` | `time.Duration` | `5m` | простой, после которого idle-соединение закрывается |
-| `PG_HEALTH_CHECK` | `HealthCheck` | `time.Duration` | `30s` | период фоновой проверки соединений пула (`HealthCheckPeriod`) |
-| `PG_CONNECT_TIMEOUT` | `ConnectTimeout` | `time.Duration` | `10s` | таймаут установки каждого физического соединения и стартового `Ping`; `<= 0` — без лимита |
-| `PG_OTEL_TRACE` | `OTelTrace` | `bool` | `true` | вешать ли `otelpgx`-tracer на соединения (per-query спаны) |
-| `PG_STATEMENT_TIMEOUT` | `StatementTimeout` | `time.Duration` | `30s` | `SET statement_timeout` на каждое соединение |
-| `PG_IDLE_IN_TX_SESSION_TIMEOUT` | `IdleInTxSessionTimeout` | `time.Duration` | `60s` | `SET idle_in_transaction_session_timeout` |
-| `PG_LOCK_TIMEOUT` | `LockTimeout` | `time.Duration` | `5s` | `SET lock_timeout` |
+| `PG_MAX_CONNS` | `MaxConns` | `int32` | `10` | максимум соединений в пуле; `0` — дефолт pgxpool |
+| `PG_MIN_CONNS` | `MinConns` | `int32` | `2` | минимум поддерживаемых тёплых соединений; `0` — пул не греется |
+| `PG_MAX_CONN_LIFETIME` | `MaxConnLifetime` | `time.Duration` | `30m` | время жизни соединения до плановой замены; `0` — дефолт pgxpool |
+| `PG_MAX_CONN_IDLE_TIME` | `MaxConnIdleTime` | `time.Duration` | `5m` | простой, после которого idle-соединение закрывается; `0` — дефолт pgxpool |
+| `PG_HEALTH_CHECK` | `HealthCheck` | `time.Duration` | `30s` | период фоновой проверки соединений пула (`HealthCheckPeriod`); `0` — дефолт pgxpool |
+| `PG_CONNECT_TIMEOUT` | `ConnectTimeout` | `time.Duration` | `10s` | таймаут установки каждого физического соединения и стартового `Ping`; `<= 0` — не переопределять (действует `connect_timeout` из DSN, а без него — лимита нет) |
+| `PG_OTEL_TRACE` | `OTelTrace` | `bool` | `true` | вешать ли `otelpgx`-tracer на соединения (спаны запросов, connect и acquire) |
+| `PG_STATEMENT_TIMEOUT` | `StatementTimeout` | `time.Duration` | `30s` | `statement_timeout` сессии |
+| `PG_IDLE_IN_TX_SESSION_TIMEOUT` | `IdleInTxSessionTimeout` | `time.Duration` | `60s` | `idle_in_transaction_session_timeout` сессии |
+| `PG_LOCK_TIMEOUT` | `LockTimeout` | `time.Duration` | `5s` | `lock_timeout` сессии |
 
-Сессионные таймауты переводятся в миллисекунды и применяются в `AfterConnect`;
+`Validate` (и значит `NewPoolConfig`/`NewPool`) требует: непустой `PG_DSN`,
+неотрицательные размеры и duration'ы, `PG_MIN_CONNS <= PG_MAX_CONNS` при
+`PG_MAX_CONNS > 0`.
+
+Ноль в размерах и таймаутах пула означает **дефолт pgxpool**, а не «выключено»:
+`PoolConfig{DSN: dsn}` даёт рабочий пул. Сессионные таймауты переводятся в
+миллисекунды и уезжают в StartupMessage через `ConnConfig.RuntimeParams`;
 значение `<= 0` нормализуется в `0` (без лимита). Детали — в
 [architecture.md § Пул соединений](architecture.md).
 
@@ -39,11 +51,19 @@ fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig, pgkit.NewMigrateRunnerCo
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `PG_REPLICA_DSN` | `ReplicaDSN` | `string` | `""` | строка подключения к read-replica; пусто → реплики нет |
-| `PG_REPLICA_MAX_CONNS` | `MaxConns` | `int32` | `10` | максимум соединений в пуле реплики |
+| `PG_REPLICA_MAX_CONNS` | `MaxConns` | `int32` | `10` | максимум соединений в пуле реплики; `0` — дефолт pgxpool |
+
+`ReplicaConfig` **не обязателен** для `Module`: без него (и при пустом
+`PG_REPLICA_DSN`) реплики нет и `Read()` идёт на мастер. Zero value валиден;
+`Validate` требует лишь неотрицательный `PG_REPLICA_MAX_CONNS`.
 
 Пул реплики наследует от `PoolConfig` все остальные параметры (`MinConns`,
 lifetime/idle, `HealthCheck`, `ConnectTimeout`, `OTelTrace`, сессионные
 таймауты); собственными у реплики являются только DSN и лимит соединений.
+Из наследования следует кросс-инвариант: при `PG_REPLICA_MAX_CONNS > 0` он
+должен быть `>= PG_MIN_CONNS` — иначе унаследованный прогрев не помещается в
+пул реплики. Нарушение валит старт с `ErrConfig`:
+`PG_REPLICA_MAX_CONNS (1) must be >= PG_MIN_CONNS (2)`.
 
 ## `MigrateRunnerConfig` (`migrate_module.go`)
 
@@ -52,17 +72,28 @@ lifetime/idle, `HealthCheck`, `ConnectTimeout`, `OTelTrace`, сессионны�
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `PG_MIGRATIONS_PATH` | `Path` | `string` | `/migrations` | каталог с `*.up.sql`/`*.down.sql` приложения (источник `app`); пустая строка — у приложения нет своих миграций, применяются только источники китов |
+| `PG_MIGRATE_TIMEOUT` | `Timeout` | `time.Duration` | `2m` | лимит на ожидание advisory-lock'а **и** прогон всех миграций в `OnStart` |
 
 DSN для миграций `MigrateModule` берёт из `PoolConfig.DSN` (тот же `PG_DSN`).
-Таймаут коннекта мигратора — дедлайн `OnStart` (`fx.StartTimeout`).
-Несуществующий или пустой каталог — ошибка старта.
+Он же становится таймаутом коннекта мигратора. `Validate` требует
+`PG_MIGRATE_TIMEOUT > 0` и `PG_MIGRATIONS_PATH` без окружающих пробелов;
+несуществующий или пустой каталог — ошибка старта.
+
+**`PG_MIGRATE_TIMEOUT` и `fx.StartTimeout`.** Хук `OnStart` работает под
+меньшим из двух дедлайнов, поэтому `fx.StartTimeout` (по умолчанию 15 с) должен
+покрывать `PG_MIGRATE_TIMEOUT` плюс остальной старт — иначе миграции обрывает
+fx, а не kit. golang-migrate не принимает `ctx`: по истечении дедлайна fx
+вернёт ошибку, но текущий SQL-оператор продолжит выполняться, и прерванная
+миграция остаётся `dirty=true` (следующий старт падает и требует ручной
+починки). Ставь `fx.StartTimeout` заведомо больше самой долгой миграции.
 
 ## Public API
 
 Структуры `pgkit.PoolConfig`, `pgkit.ReplicaConfig` и
 `pgkit.MigrateRunnerConfig` — **part of public API**. Переименование полей,
-смена envconfig-тегов или типов = breaking change и идёт мажорным апгрейдом.
-См. корневой [README § Стабильность API](../../README.md).
+смена envconfig-тегов или типов = breaking change: выпускается minor-релизом,
+помечается `!` в Conventional Commit и строкой миграции в аннотации тега
+(см. корневой [README § Версионирование](../../README.md)).
 
 ## Тюнинг пула
 
@@ -88,5 +119,9 @@ DSN для миграций `MigrateModule` берёт из `PoolConfig.DSN` (т
 - **`LockTimeout`.** Ограничивает ожидание блокировки; небольшое значение
   превращает дедлок-подобные ожидания в быструю ошибку `55P03`
   (`IsLockNotAvailable`), которую можно повторить.
+- **PgBouncer.** Сессионные таймауты уезжают в StartupMessage соединения. В
+  `transaction`-режиме PgBouncer мультиплексирует серверные соединения, и эти
+  параметры на них не гарантируются — задавай их на стороне пулера или на
+  сервере.
 - **`OTelTrace`.** Оставляй `true` в проде — это источник per-query спанов. В
   бенчмарках/нагрузочных прогонах можно выключить, чтобы убрать оверхед трейсинга.

@@ -4,15 +4,33 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/storagekit"
+	"git.stit.tech/stit-core/golibinfra/testkit/storagetest"
+)
+
+var (
+	_ storagekit.Storage   = (*storagekit.MemoryStorage)(nil)
+	_ storagekit.Presigner = (*storagekit.MemoryStorage)(nil)
 )
 
 func newMem() *storagekit.MemoryStorage {
-	return storagekit.NewMemoryStorage(storagekit.NewURLBuilder("https://cdn.example.com", "media"))
+	return storagekit.NewMemoryStorage(storagekit.NewURLBuilder("https://cdn.example.com", "media", storagekit.URLStylePath))
+}
+
+func TestMemoryStorage_Contract(t *testing.T) {
+	storagetest.RunContract(t, func(t *testing.T) storagetest.Subject {
+		m := newMem()
+		return storagetest.Subject{
+			Storage:   m,
+			Presigner: m,
+			Keys:      func(*testing.T) []string { return m.Keys() },
+		}
+	})
 }
 
 func TestMemoryStorage_PutReturnsStableRef(t *testing.T) {
@@ -23,12 +41,6 @@ func TestMemoryStorage_PutReturnsStableRef(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if ref.ContentType != "image/png" {
-		t.Errorf("ContentType = %q, want image/png", ref.ContentType)
-	}
-	if ref.Size != int64(len(body)) {
-		t.Errorf("Size = %d, want %d", ref.Size, len(body))
-	}
 	if want := "https://cdn.example.com/media/" + ref.Key; ref.URL != want {
 		t.Errorf("URL = %q, want %q", ref.URL, want)
 	}
@@ -36,68 +48,180 @@ func TestMemoryStorage_PutReturnsStableRef(t *testing.T) {
 		t.Errorf("Key = %q, want .png suffix", ref.Key)
 	}
 
-	got, ok := m.Get(ref.Key)
+	got, ok := m.Bytes(ref.Key)
 	if !ok || !bytes.Equal(got, body) {
-		t.Errorf("Get(%q) = %q,%v want %q,true", ref.Key, got, ok, body)
+		t.Fatalf("Bytes(%q) = %q,%v want %q,true", ref.Key, got, ok, body)
 	}
+}
+
+// Регрессия: тест-двойник отдавал внутренний слайс — мутация в тесте меняла
+// «хранилище», чего боевой адаптер не делает.
+func TestMemoryStorage_GetReturnsCopy(t *testing.T) {
+	m := newMem()
+	body := []byte("original")
+	ref, err := m.Put(context.Background(), bytes.NewReader(body), "text/plain", int64(len(body)))
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+
+	rc, _, err := m.Get(context.Background(), ref.Key)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	got, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatalf("ReadAll: %v", err)
+	}
+	if cerr := rc.Close(); cerr != nil {
+		t.Fatalf("Close: %v", cerr)
+	}
+	copy(got, "mutated!")
+
+	stored, _ := m.Bytes(ref.Key)
+	if !bytes.Equal(stored, body) {
+		t.Fatalf("Get returned internal slice: stored %q", stored)
+	}
+	copy(stored, "mutated!")
+	if again, _ := m.Bytes(ref.Key); !bytes.Equal(again, body) {
+		t.Fatalf("Bytes returned internal slice: stored %q", again)
+	}
+}
+
+// Регрессия: zero value паниковал на nil-map, а NewMemoryStorage(nil) — на nil URLBuilder.
+func TestMemoryStorage_ZeroValueUsable(t *testing.T) {
+	for name, m := range map[string]*storagekit.MemoryStorage{
+		"zero value":  {},
+		"nil builder": storagekit.NewMemoryStorage(nil),
+	} {
+		t.Run(name, func(t *testing.T) {
+			ref, err := m.Put(context.Background(), strings.NewReader("body"), "text/plain", 4)
+			if err != nil {
+				t.Fatalf("Put: %v", err)
+			}
+			if ref.URL != ref.Key {
+				t.Errorf("URL = %q, want key %q", ref.URL, ref.Key)
+			}
+			if _, err := m.Stat(context.Background(), ref.Key); err != nil {
+				t.Fatalf("Stat: %v", err)
+			}
+		})
+	}
+}
+
+func TestMemoryStorage_PresignIsDeterministic(t *testing.T) {
+	m := newMem()
+	ctx := context.Background()
+
+	link, err := m.PresignGet(ctx, "obj.ogg", 30*time.Second)
+	if err != nil {
+		t.Fatalf("PresignGet: %v", err)
+	}
+	want := "https://cdn.example.com/media/obj.ogg?x-presigned-method=GET&x-presigned-ttl=30"
+	if link != want {
+		t.Errorf("link = %q, want %q", link, want)
+	}
+	again, err := m.PresignGet(ctx, "obj.ogg", 30*time.Second)
+	if err != nil || again != link {
+		t.Errorf("presign is not deterministic: %q vs %q (err %v)", again, link, err)
+	}
+}
+
+func TestMemoryStorage_KeysListsStoredObjects(t *testing.T) {
+	m := newMem()
+	ctx := context.Background()
+
+	if got := m.Keys(); len(got) != 0 {
+		t.Fatalf("Keys on empty storage = %v", got)
+	}
+	ref, err := m.Put(ctx, strings.NewReader("a"), "text/plain", 1)
+	if err != nil {
+		t.Fatalf("Put: %v", err)
+	}
+	if got := m.Keys(); len(got) != 1 || got[0] != ref.Key {
+		t.Fatalf("Keys = %v, want [%s]", got, ref.Key)
+	}
+	if _, ok := m.Bytes("missing"); ok {
+		t.Error("Bytes(missing) reported a stored object")
+	}
+	if err := m.Delete(ctx, ref.Key); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if got := m.Keys(); len(got) != 0 {
+		t.Fatalf("Keys after Delete = %v", got)
+	}
+}
+
+// Ошибка источника — ошибка Put, а не пустой объект в сторе.
+func TestMemoryStorage_PutPropagatesReadError(t *testing.T) {
+	m := newMem()
+	want := errors.New("source is gone")
+
+	_, err := m.Put(context.Background(), errReader{err: want}, "text/plain", -1)
+	if !errors.Is(err, storagekit.ErrUploadFailed) || !errors.Is(err, want) {
+		t.Fatalf("Put = %v, want ErrUploadFailed wrapping the source error", err)
+	}
+	if got := m.Keys(); len(got) != 0 {
+		t.Fatalf("failed Put left objects behind: %v", got)
+	}
+}
+
+// Отмена во время чтения тела прекращает Put: успех означал бы объект,
+// сохранённый уже после отказа вызывающего.
+func TestMemoryStorage_PutHonoursCancelDuringRead(t *testing.T) {
+	m := newMem()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	body := &cancelOnRead{r: strings.NewReader("payload"), cancel: cancel}
+	_, err := m.Put(ctx, body, "text/plain", -1)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Put = %v, want context.Canceled", err)
+	}
+	if got := m.Keys(); len(got) != 0 {
+		t.Fatalf("cancelled Put left objects behind: %v", got)
+	}
+}
+
+// Presign у in-memory реализации уважает ctx так же, как остальные операции.
+func TestMemoryStorage_PresignHonoursCancelledContext(t *testing.T) {
+	m := newMem()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	if _, err := m.PresignGet(ctx, "obj.ogg", time.Minute); !errors.Is(err, storagekit.ErrPresignFailed) {
+		t.Fatalf("PresignGet with a cancelled ctx = %v, want ErrPresignFailed", err)
+	}
+	if _, err := m.PresignPut(ctx, "obj.ogg", time.Minute); !errors.Is(err, storagekit.ErrPresignFailed) {
+		t.Fatalf("PresignPut with a cancelled ctx = %v, want ErrPresignFailed", err)
+	}
+}
+
+type errReader struct{ err error }
+
+func (e errReader) Read([]byte) (int, error) { return 0, e.err }
+
+// cancelOnRead отменяет ctx ровно тогда, когда тело уже читается.
+type cancelOnRead struct {
+	r      io.Reader
+	cancel context.CancelFunc
+}
+
+func (c *cancelOnRead) Read(p []byte) (int, error) {
+	c.cancel()
+	return c.r.Read(p)
 }
 
 func TestMemoryStorage_PutRejectsSizeMismatch(t *testing.T) {
 	m := newMem()
 	body := []byte("0123456789")
 
-	if _, err := m.Put(context.Background(), bytes.NewReader(body), "application/pdf", 4); !errors.Is(err, storagekit.ErrUploadFailed) {
-		t.Fatalf("Put oversize: err = %v, want ErrUploadFailed", err)
+	for _, declared := range []int64{4, 40} {
+		_, err := m.Put(context.Background(), bytes.NewReader(body), "application/pdf", declared)
+		if !errors.Is(err, storagekit.ErrSizeMismatch) {
+			t.Fatalf("Put(size=%d): err = %v, want ErrSizeMismatch", declared, err)
+		}
 	}
-	if _, err := m.Put(context.Background(), bytes.NewReader(body), "application/pdf", 40); !errors.Is(err, storagekit.ErrUploadFailed) {
-		t.Fatalf("Put short body: err = %v, want ErrUploadFailed", err)
-	}
-	if got, _ := m.Get(""); got != nil {
-		t.Fatal("nothing must be stored on mismatch")
-	}
-}
-
-func TestMemoryStorage_PutUnknownSizeStreamsToEOF(t *testing.T) {
-	m := newMem()
-	body := []byte("streamed")
-
-	ref, err := m.Put(context.Background(), bytes.NewReader(body), "image/webp", -1)
-	if err != nil {
-		t.Fatalf("Put(-1): %v", err)
-	}
-	if ref.Size != int64(len(body)) {
-		t.Errorf("Size = %d, want actual %d", ref.Size, len(body))
-	}
-}
-
-func TestMemoryStorage_PresignedGet(t *testing.T) {
-	m := newMem()
-	url, err := m.PresignedGet(context.Background(), "ignored-bucket", "obj.ogg", 30*time.Second)
-	if err != nil {
-		t.Fatalf("PresignedGet: %v", err)
-	}
-	if want := "https://cdn.example.com/media/obj.ogg?x-presigned-ttl=30"; url != want {
-		t.Errorf("url = %q, want %q", url, want)
-	}
-	if _, err := m.PresignedGet(context.Background(), "b", "", time.Second); !errors.Is(err, storagekit.ErrPresignFailed) {
-		t.Fatalf("empty key: err = %v, want ErrPresignFailed", err)
-	}
-}
-
-func TestMemoryStorage_DeleteIsIdempotent(t *testing.T) {
-	m := newMem()
-	ref, err := m.Put(context.Background(), bytes.NewReader([]byte("x")), "application/pdf", 1)
-	if err != nil {
-		t.Fatalf("Put: %v", err)
-	}
-
-	if err := m.Delete(context.Background(), ref.Key); err != nil {
-		t.Fatalf("Delete: %v", err)
-	}
-	if _, ok := m.Get(ref.Key); ok {
-		t.Error("object still present after Delete")
-	}
-	if err := m.Delete(context.Background(), ref.Key); err != nil {
-		t.Fatalf("Delete missing: err = %v, want nil (idempotent)", err)
+	if got := m.Keys(); len(got) != 0 {
+		t.Fatalf("nothing must be stored on mismatch, got %v", got)
 	}
 }

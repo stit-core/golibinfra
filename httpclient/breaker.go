@@ -12,18 +12,22 @@ import (
 	"go.opentelemetry.io/otel/metric"
 )
 
+// BreakerConfig — политика circuit breaker'а на upstream-хост.
 type BreakerConfig struct {
 	// FailureThreshold = 0 выключает breaker.
 	FailureThreshold int           `envconfig:"HTTPCLIENT_BREAKER_FAILURE_THRESHOLD" default:"5"`
 	RecoveryTimeout  time.Duration `envconfig:"HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT" default:"30s"`
 }
 
-func (c BreakerConfig) validate() error {
+func (c *BreakerConfig) validate() error {
 	if c.FailureThreshold < 0 {
 		return fmt.Errorf("%w: Breaker.FailureThreshold < 0", ErrConfig)
 	}
-	if c.FailureThreshold > 0 && c.RecoveryTimeout <= 0 {
-		return fmt.Errorf("%w: Breaker.RecoveryTimeout must be > 0", ErrConfig)
+	if c.RecoveryTimeout < 0 {
+		return fmt.Errorf("%w: Breaker.RecoveryTimeout < 0", ErrConfig)
+	}
+	if c.RecoveryTimeout == 0 {
+		c.RecoveryTimeout = defaultRecoveryTimeout
 	}
 	return nil
 }
@@ -55,6 +59,7 @@ func (s *breakerSet) get(host string) *gobreaker.CircuitBreaker[*http.Response] 
 	if cb, ok := s.m[host]; ok {
 		return cb
 	}
+	//nolint:bodyclose // тип-параметр *http.Response, ответ здесь не создаётся
 	cb := gobreaker.NewCircuitBreaker[*http.Response](gobreaker.Settings{
 		Name:    host,
 		Timeout: s.cfg.RecoveryTimeout,
@@ -62,6 +67,9 @@ func (s *breakerSet) get(host string) *gobreaker.CircuitBreaker[*http.Response] 
 			return int(counts.ConsecutiveFailures) >= s.cfg.FailureThreshold
 		},
 		IsSuccessful: func(err error) bool { return err == nil },
+		// Отмена ctx вызывающего и отказ hook'а BeforeAttempt — не сигнал о
+		// здоровье upstream'а: всплеск barge-in не должен отключать хост.
+		IsExcluded: isClientSide,
 		OnStateChange: func(name string, from, to gobreaker.State) {
 			ctx := context.Background()
 			s.instr.breakerTransitions.Add(ctx, 1, metric.WithAttributes(

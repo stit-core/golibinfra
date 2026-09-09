@@ -48,9 +48,13 @@ logins.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
 onboarding := bizmetric.Histogram(meter, "onboarding", "duration")
 onboarding.Record(ctx, 1.5)
 
-// Gauge → biz_checkout_active_carts
+// Gauge → biz_checkout_active_carts (текущее значение)
 carts := bizmetric.Gauge(meter, "checkout", "active_carts")
-carts.Add(ctx, 1)
+carts.Record(ctx, 42)
+
+// UpDownCounter → biz_checkout_carts_open (дельты)
+open := bizmetric.UpDownCounter(meter, "checkout", "carts_open")
+open.Add(ctx, 1)
 ```
 
 ## Конфигурация
@@ -65,16 +69,35 @@ carts.Add(ctx, 1)
 Имя метрики собирается строго как `biz_<domain>_<name>_<suffix>`, где суффикс
 определяется типом инструмента:
 
-| Helper | OTel-инструмент | Суффикс | Пример имени |
-|---|---|---|---|
-| `Counter` | `Int64Counter` | `_total` | `biz_auth_login_attempts_total` |
-| `Histogram` | `Float64Histogram` | `_seconds` | `biz_onboarding_duration_seconds` |
-| `Gauge` | `Int64UpDownCounter` | *(нет)* | `biz_checkout_active_carts` |
+| Helper | OTel-инструмент | Суффикс | Unit | Пример имени |
+|---|---|---|---|---|
+| `Counter` | `Int64Counter` | `_total` | `{event}` | `biz_auth_login_attempts_total` |
+| `Histogram` | `Float64Histogram` | `_seconds` | `s` | `biz_onboarding_duration_seconds` |
+| `Gauge` | `Int64Gauge` | *(нет)* | `{item}` | `biz_checkout_active_carts` |
+| `UpDownCounter` | `Int64UpDownCounter` | *(нет)* | `{item}` | `biz_checkout_carts_open` |
 
 `domain` и `name` должны соответствовать `^[a-z][a-z0-9_]*$` — snake_case ASCII:
-строчные буквы, цифры и `_`, первый символ — буква. Префикс `biz_` и суффиксы
-`_total`/`_seconds` подставляет helper: `domain`/`name` с префиксом `biz_` или
-суффиксом `_total`/`_seconds` отклоняются panic'ом.
+строчные буквы, цифры и `_`, первый символ — буква. Префикс `biz_` подставляет
+helper, суффикс — тип инструмента: `domain`/`name` с префиксом `biz_` или с
+зарезервированным суффиксом (`_total`, `_seconds`, `_count`, `_sum`, `_bucket`,
+`_created`) отклоняются panic'ом. Первые два подставляет helper, остальные —
+Prometheus-трансляция гистограмм и счётчиков; своё имя с таким суффиксом
+столкнулось бы с чужой серией.
+
+### Unit
+
+Unit ставится по умолчанию и переопределяется своим `metric.WithUnit(...)` в
+`opts` — пользовательские опции идут после дефолтных. Значения в фигурных скобках
+(`{event}`, `{item}`) — аннотации по OTel-спецификации: OTLP-native бэкенды
+показывают их как есть, Prometheus-трансляция отбрасывает и имя метрики не
+меняет. Константы — `bizmetric.UnitEvent`, `UnitItem`, `UnitSeconds`.
+
+### Бакеты гистограмм
+
+`Histogram` получает общие для репо границы (секунды):
+`0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30` — те же, что у
+`httpkit` и остальных `_seconds`-метрик, чтобы квантили считались по одной сетке.
+Своя сетка — `metric.WithExplicitBucketBoundaries(...)` в `opts`.
 
 ### Labels
 
@@ -102,8 +125,13 @@ OTel-resource, который настраивает потребитель в �
 ```go
 func Counter(meter metric.Meter, domain, name string, opts ...metric.Int64CounterOption) metric.Int64Counter
 func Histogram(meter metric.Meter, domain, name string, opts ...metric.Float64HistogramOption) metric.Float64Histogram
-func Gauge(meter metric.Meter, domain, name string, opts ...metric.Int64UpDownCounterOption) metric.Int64UpDownCounter
+func Gauge(meter metric.Meter, domain, name string, opts ...metric.Int64GaugeOption) metric.Int64Gauge
+func UpDownCounter(meter metric.Meter, domain, name string, opts ...metric.Int64UpDownCounterOption) metric.Int64UpDownCounter
 func MustName(domain, name string) string
+
+const UnitEvent = "{event}"
+const UnitItem = "{item}"
+const UnitSeconds = "s"
 ```
 
 ### Counter
@@ -118,11 +146,17 @@ func MustName(domain, name string) string
 
 ### Gauge
 
-Создаёт `Int64UpDownCounter` с именем `biz_<domain>_<name>` (без суффикса). Это
-способ выразить gauge для значений, которые приложение пишет само (Add с
-положительной/отрицательной дельтой). Для observable-источников (значение читается
-коллбэком) используйте `meter.Int64ObservableGauge` напрямую, а имя соберите через
-`MustName`.
+Создаёт `Int64Gauge` с именем `biz_<domain>_<name>` (без суффикса): `Record`
+пишет текущее значение величины («сейчас 42 корзины»). Для observable-источников
+(значение читается коллбэком) используйте `meter.Int64ObservableGauge` напрямую,
+а имя соберите через `MustName`.
+
+### UpDownCounter
+
+Создаёт `Int64UpDownCounter` с именем `biz_<domain>_<name>` (без суффикса):
+`Add` пишет дельту (`+1` на открытие корзины, `-1` на закрытие). Берите его, когда
+у кода есть события изменения, но нет доступа к текущему значению; когда значение
+известно целиком — `Gauge`.
 
 ### MustName
 
@@ -134,21 +168,23 @@ func MustName(domain, name string) string
 
 - **Panic при нарушении конвенции.** `domain` или `name` вне `^[a-z][a-z0-9_]*$`
   (заглавные буквы, дефис, пустая строка, первый символ — цифра), с префиксом
-  `biz_` или суффиксом `_total`/`_seconds` — `panic`. Это
+  `biz_` или зарезервированным суффиксом (`_total`, `_seconds`, `_count`, `_sum`,
+  `_bucket`, `_created`) — `panic`. Это
   fail-fast: метрика с кривым именем не должна доехать до прода. Так как имена
   обычно регистрируются при старте сервиса, нарушение всплывёт сразу.
 
 - **Panic при ошибке создания инструмента.** Если meter вернул ошибку на
-  `Int64Counter`/`Float64Histogram`/`Int64UpDownCounter`, helper тоже паникует с
-  именем метрики в сообщении — невалидная регистрация не маскируется.
+  `Int64Counter`/`Float64Histogram`/`Int64Gauge`/`Int64UpDownCounter`, helper тоже
+  паникует с именем метрики в сообщении — невалидная регистрация не маскируется.
 
 - **Не собирать имя в обход helper'а.** Регистрация OTel-инструмента напрямую с
   произвольной строкой ломает конвенцию `biz_*`. Любую biz-метрику заводите через
-  `Counter`/`Histogram`/`Gauge`, а ручные случаи — через `MustName`.
+  `Counter`/`Histogram`/`Gauge`/`UpDownCounter`, а ручные случаи — через `MustName`.
 
-- **Префикс/суффикс не дублировать.** `biz_` в начале и `_total`/`_seconds` в
-  конце `domain`/`name` отклоняются — их подставляет helper. `_` внутри `name`
-  допустим (`login_attempts`, `total_orders`), это часть snake_case.
+- **Префикс/суффикс не дублировать.** `biz_` в начале и зарезервированные
+  суффиксы в конце `domain`/`name` отклоняются. `_` внутри `name` допустим
+  (`login_attempts`, `total_orders`, `count_of_items`) — суффиксом считается
+  только окончание строки.
 
 - **`domain` vs `name`.** `domain` — бизнес-область (`auth`, `checkout`,
   `onboarding`); `name` — конкретное событие/величина (`login_attempts`,
@@ -157,3 +193,5 @@ func MustName(domain, name string) string
 - **Конфликт типа на одном имени.** Имя метрики в OTel уникально в пределах
   meter'а: зарегистрировать одно и то же `biz_<domain>_<name>` и как Counter, и
   как другой инструмент нельзя — meter вернёт ошибку, helper её превратит в panic.
+  `Gauge` и `UpDownCounter` дают имя без суффикса, поэтому на одной паре
+  `domain`/`name` они конфликтуют между собой.

@@ -2,6 +2,7 @@ package oidckit
 
 import (
 	"context"
+	"log/slog"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
@@ -11,23 +12,27 @@ import (
 // семантика значений — на стороне сервиса, kit ролей не трактует.
 type Identity struct {
 	Subject  string
-	Username string // preferred_username — логин (напр. n.sycheva)
-	Name     string // name — ФИО (напр. Наталья Сычева)
+	Username string // preferred_username — логин (напр. j.doe)
+	Name     string // name — отображаемое имя (напр. Jane Doe)
 	Email    string
 	Role     string
 }
 
 type identityCtxKey struct{}
 
+// WithIdentity кладёт Identity в контекст запроса.
 func WithIdentity(ctx context.Context, id Identity) context.Context {
 	return context.WithValue(ctx, identityCtxKey{}, id)
 }
 
+// IdentityFrom достаёт Identity из контекста; ok=false — запрос не прошёл Extractor.
 func IdentityFrom(ctx context.Context) (Identity, bool) {
 	id, ok := ctx.Value(identityCtxKey{}).(Identity)
 	return id, ok
 }
 
+// MustIdentityFrom — Identity защищённой операции; паника, если её нет
+// (операция без Security или без AuthExtractor — ошибка проводки).
 func MustIdentityFrom(ctx context.Context) Identity {
 	id, ok := IdentityFrom(ctx)
 	if !ok {
@@ -36,15 +41,14 @@ func MustIdentityFrom(ctx context.Context) Identity {
 	return id
 }
 
-// RegisterIdentityLogAttr пробрасывает subject сессии в каждый log-record
-// как user_id (logkit user-registered attr). Дергается один раз на старте
-// (Module делает это сам).
+// RegisterIdentityLogAttr пробрасывает subject сессии в каждый log-record как
+// user_id; повторный вызов заменяет регистрацию, а не дублирует поле.
 func RegisterIdentityLogAttr() {
-	logkit.RegisterAttr(func(ctx context.Context) (string, any, bool) {
+	logkit.RegisterAttr("user_id", func(ctx context.Context) (slog.Value, bool) {
 		id, ok := IdentityFrom(ctx)
 		if !ok {
-			return "", nil, false
+			return slog.Value{}, false
 		}
-		return "user_id", id.Subject, true
+		return slog.StringValue(id.Subject), true
 	})
 }

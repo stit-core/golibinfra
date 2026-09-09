@@ -1,6 +1,13 @@
 package anthropickit
 
-import "testing"
+import (
+	"math"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"testing"
+)
 
 func TestCostKnownModel(t *testing.T) {
 	// 1M input @ $5/MTok = $5; 1M output @ $25/MTok = $25; итого $30 = 30_000_000 micros.
@@ -71,7 +78,7 @@ func TestDefaultPricesFollowCacheMultipliers(t *testing.T) {
 			t.Errorf("%s: web-search = %d, want $10/1000", model, p.WebSearchPerKReq)
 		}
 	}
-	for _, model := range []string{"claude-fable-5-1", "claude-fable-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"} {
+	for _, model := range []string{"claude-fable-5-1", "claude-fable-5", "claude-mythos-5", "claude-opus-5", "claude-opus-4-8", "claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-5", "claude-sonnet-4-6", "claude-haiku-4-5"} {
 		if _, ok := defaultPrices[model]; !ok {
 			t.Errorf("%s missing from defaultPrices", model)
 		}
@@ -93,5 +100,52 @@ func TestCostUnknownModel(t *testing.T) {
 	cost, known := Cost("nonexistent-model", Usage{InputTokens: 100})
 	if known || cost != 0 {
 		t.Fatalf("expected unknown model with zero cost, got %d known=%v", cost, known)
+	}
+}
+
+// TestDefaultPricesMatchDocs keeps the table in docs/configuration.md and the
+// table in the code from drifting apart silently.
+func TestDefaultPricesMatchDocs(t *testing.T) {
+	raw, err := os.ReadFile(filepath.Join("docs", "configuration.md"))
+	if err != nil {
+		t.Fatalf("read docs: %v", err)
+	}
+
+	rate := func(t *testing.T, s string) USDMicros {
+		t.Helper()
+		v, err := strconv.ParseFloat(strings.TrimSpace(s), 64)
+		if err != nil {
+			t.Fatalf("rate %q: %v", s, err)
+		}
+		return USDMicros(math.Round(v * float64(usd)))
+	}
+
+	documented := map[string]bool{}
+	for line := range strings.SplitSeq(string(raw), "\n") {
+		if !strings.HasPrefix(line, "| `claude-") {
+			continue
+		}
+		cells := strings.Split(strings.Trim(line, "|"), "|")
+		if len(cells) != 4 {
+			t.Fatalf("price row must have 4 cells: %q", line)
+		}
+		model := strings.Trim(strings.TrimSpace(cells[0]), "`")
+		documented[model] = true
+
+		p, ok := defaultPrices[model]
+		if !ok {
+			t.Errorf("docs list %q, defaultPrices does not", model)
+			continue
+		}
+		want := tier(rate(t, cells[1]), rate(t, cells[2]), rate(t, cells[3]))
+		if p != want {
+			t.Errorf("%s: code = %+v, docs = %+v", model, p, want)
+		}
+	}
+
+	for model := range defaultPrices {
+		if !documented[model] {
+			t.Errorf("defaultPrices has %q, docs/configuration.md does not", model)
+		}
 	}
 }

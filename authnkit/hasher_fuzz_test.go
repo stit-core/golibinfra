@@ -1,22 +1,29 @@
 package authnkit
 
 import (
+	"context"
 	"errors"
 	"testing"
 )
 
-func fuzzHasher() *Argon2idHasher {
-	return NewArgon2idHasher(Argon2idParams{
+func fuzzHasher(f *testing.F) *Argon2idHasher {
+	f.Helper()
+	h, err := NewArgon2idHasher(Argon2idParams{
 		Time:    1,
 		Memory:  8 * 1024,
 		Threads: 1,
 		KeyLen:  16,
 		SaltLen: 8,
 	})
+	if err != nil {
+		f.Fatal(err)
+	}
+	return h
 }
 
 func FuzzArgon2idVerify(f *testing.F) {
-	h := fuzzHasher()
+	h := fuzzHasher(f)
+	ctx := context.Background()
 	f.Add("")
 	f.Add("$argon2id$v=19$m=65536,t=3,p=4$invalid$invalid")
 	f.Add("not-a-hash")
@@ -29,7 +36,7 @@ func FuzzArgon2idVerify(f *testing.F) {
 	f.Add(phcString("m=8192,t=1,p=1", 16, 16))
 
 	f.Fuzz(func(t *testing.T, encoded string) {
-		ok, err := h.Verify("any", encoded)
+		ok, err := h.Verify(ctx, "any", encoded)
 		if err != nil && !errors.Is(err, ErrInvalidHash) {
 			t.Fatalf("unexpected error type: %v", err)
 		}

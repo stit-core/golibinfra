@@ -21,18 +21,18 @@ func SubjectFromContext(ctx context.Context) string {
 }
 
 // HeadersFromContext возвращает заголовки входящего сообщения внутри handler'а
-// (event-type, schema-version, tenant и т.п.). nil вне обработчика. Содержит и
-// W3C trace-context — это нормально, читай нужные ключи.
+// (event-type, schema-version, tenant и т.п. — см. WithHeader). nil вне
+// обработчика. Содержит и W3C trace-context — это нормально, читай нужные ключи.
 func HeadersFromContext(ctx context.Context) nats.Header {
 	h, _ := ctx.Value(headerCtxKey{}).(nats.Header)
 	return h
 }
 
-func withSubject(ctx context.Context, subject string) context.Context {
-	return context.WithValue(ctx, subjectCtxKey{}, subject)
-}
-
-func withHeaders(ctx context.Context, h nats.Header) context.Context {
+// ContextWithMessage кладёт в ctx subject и заголовки сообщения — ровно то, что
+// внутри обработчика отдают SubjectFromContext и HeadersFromContext. Нужен
+// фейкам шины (testkit/natstest): обработчик в тесте видит то же, что в проде.
+func ContextWithMessage(ctx context.Context, subject string, h nats.Header) context.Context {
+	ctx = context.WithValue(ctx, subjectCtxKey{}, subject)
 	if h == nil {
 		return ctx
 	}

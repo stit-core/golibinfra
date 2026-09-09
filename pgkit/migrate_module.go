@@ -5,20 +5,38 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 )
 
+// MigrateRunnerConfig — параметры прогона миграций в OnStart (MigrateModule).
 type MigrateRunnerConfig struct {
 	// Path — каталог миграций приложения; пустая строка — приложение своих
 	// миграций не имеет, применяются только источники китов.
-	Path string `envconfig:"PG_MIGRATIONS_PATH" default:"/migrations"`
+	Path    string        `envconfig:"PG_MIGRATIONS_PATH" default:"/migrations"`
+	Timeout time.Duration `envconfig:"PG_MIGRATE_TIMEOUT" default:"2m"`
 }
 
+// Validate проверяет инварианты конфига; нарушение — ErrConfig.
+func (c MigrateRunnerConfig) Validate() error {
+	if c.Path != strings.TrimSpace(c.Path) {
+		return fmt.Errorf("%w: PG_MIGRATIONS_PATH has surrounding whitespace: %q", ErrConfig, c.Path)
+	}
+	if c.Timeout <= 0 {
+		return fmt.Errorf("%w: PG_MIGRATE_TIMEOUT must be > 0, got %s", ErrConfig, c.Timeout)
+	}
+	return nil
+}
+
+// NewMigrateRunnerConfig читает MigrateRunnerConfig из ENV и валидирует его.
 func NewMigrateRunnerConfig() (MigrateRunnerConfig, error) {
 	var c MigrateRunnerConfig
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return c, fmt.Errorf("pgkit: migrate config: %w", err)
+	}
+	return c, c.Validate()
 }
 
 // MigrationsGroup — fx-группа источников китов, которые MigrateModule применяет
@@ -29,6 +47,10 @@ const MigrationsGroup = "pgkit.migrations"
 // schema_migrations_app).
 const AppSourceName = "app"
 
+// Migrated — маркер «миграции применены»: OnStart-хук, которому нужна схема,
+// объявляет его зависимостью и попадает в очередь после хука миграций.
+type Migrated struct{}
+
 // ProvideMigrations кладёт источник кита в группу MigrationsGroup.
 func ProvideMigrations(src Source) fx.Option {
 	return fx.Supply(fx.Annotated{Group: MigrationsGroup, Target: src})
@@ -36,8 +58,9 @@ func ProvideMigrations(src Source) fx.Option {
 
 // MigrateModule прогоняет миграции в OnStart: источники китов по имени, затем
 // каталог приложения. Нужны PoolConfig и MigrateRunnerConfig от caller'а.
-var MigrateModule = fx.Module("pgkit-migrate",
-	fx.Invoke(runMigrationsOnStart),
+var MigrateModule = fx.Module("pgkit/migrate",
+	fx.Provide(provideMigrated),
+	fx.Invoke(func(Migrated) {}),
 )
 
 type migrateParams struct {
@@ -48,9 +71,15 @@ type migrateParams struct {
 	Sources []Source `group:"pgkit.migrations"`
 }
 
-func runMigrationsOnStart(p migrateParams) {
+func provideMigrated(p migrateParams) (Migrated, error) {
+	if err := p.Runner.Validate(); err != nil {
+		return Migrated{}, err
+	}
 	p.LC.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			ctx, cancel := context.WithTimeout(ctx, p.Runner.Timeout)
+			defer cancel()
+
 			sources := startupSources(p.Sources, p.Runner.Path)
 			if err := MigrateUpAll(ctx, p.Pool.DSN, sources...); err != nil {
 				return fmt.Errorf("pgkit: migrate on start: %w", err)
@@ -58,6 +87,7 @@ func runMigrationsOnStart(p migrateParams) {
 			return nil
 		},
 	})
+	return Migrated{}, nil
 }
 
 // startupSources: киты по имени (порядок fx-группы не определён), приложение

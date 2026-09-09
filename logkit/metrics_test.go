@@ -42,7 +42,16 @@ func logCounts(t *testing.T) map[string]int64 {
 	return out
 }
 
-func TestLogMessagesTotal(t *testing.T) {
+func assertDelta(t *testing.T, before, after, want map[string]int64) {
+	t.Helper()
+	for lvl, w := range want {
+		if got := after[lvl] - before[lvl]; got != w {
+			t.Errorf("log_messages_total{level=%s} delta = %d, want %d", lvl, got, w)
+		}
+	}
+}
+
+func TestLogMessagesTotal_CountsEmittedRecords(t *testing.T) {
 	l := mustLogger(t, Config{Level: "debug"}, io.Discard)
 	before := logCounts(t)
 	ctx := context.Background()
@@ -51,11 +60,36 @@ func TestLogMessagesTotal(t *testing.T) {
 	l.Info(ctx, "i")
 	l.Warn(ctx, "w")
 	l.Error(ctx, "e")
-	after := logCounts(t)
 
-	for lvl, want := range map[string]int64{"debug": 1, "info": 2, "warn": 1, "error": 1} {
-		if got := after[lvl] - before[lvl]; got != want {
-			t.Errorf("log_messages_total{level=%s} delta = %d, want %d", lvl, got, want)
-		}
+	assertDelta(t, before, logCounts(t), map[string]int64{"debug": 1, "info": 2, "warn": 1, "error": 1})
+}
+
+func TestLogMessagesTotal_SkipsFilteredRecords(t *testing.T) {
+	l := mustLogger(t, Config{Level: "warn"}, io.Discard)
+	before := logCounts(t)
+	ctx := context.Background()
+	l.Debug(ctx, "d")
+	l.Info(ctx, "i")
+	l.Warn(ctx, "w")
+
+	assertDelta(t, before, logCounts(t), map[string]int64{"debug": 0, "info": 0, "warn": 1})
+}
+
+func TestLogMessagesTotal_CountsSlogPath(t *testing.T) {
+	sl := mustSlog(t, Config{Level: "debug"}, io.Discard)
+	before := logCounts(t)
+	sl.Info("via slog")
+	sl.With("k", "v").WithGroup("g").Error("via slog group")
+
+	assertDelta(t, before, logCounts(t), map[string]int64{"info": 1, "error": 1})
+}
+
+// Отфильтрованная запись не должна стоить ни одной аллокации: Debug в горячем
+// цикле — обычная практика.
+func TestLogMessagesTotal_FilteredRecordDoesNotAllocate(t *testing.T) {
+	l := mustLogger(t, Config{Level: "info"}, io.Discard)
+	ctx := context.Background()
+	if got := testing.AllocsPerRun(100, func() { l.Debug(ctx, "hot loop") }); got != 0 {
+		t.Errorf("filtered Debug allocates %v times per call, want 0", got)
 	}
 }

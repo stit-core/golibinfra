@@ -1,19 +1,20 @@
 package issuer_test
 
 import (
-	"context"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
-	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/hubkit/issuer"
 	"git.stit.tech/stit-core/golibinfra/hubkit/sso"
 )
@@ -41,6 +42,15 @@ func privPEM(t *testing.T, priv *ecdsa.PrivateKey) string {
 	return string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}))
 }
 
+func sec1PEM(t *testing.T, priv *ecdsa.PrivateKey) string {
+	t.Helper()
+	der, err := x509.MarshalECPrivateKey(priv)
+	if err != nil {
+		t.Fatalf("marshal sec1: %v", err)
+	}
+	return string(pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der}))
+}
+
 func pubPEM(t *testing.T, priv *ecdsa.PrivateKey) string {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(&priv.PublicKey)
@@ -56,16 +66,40 @@ func genPEM(t *testing.T) string {
 }
 
 func keyConfig(activePEM string) issuer.KeyConfig {
-	return issuer.KeyConfig{ActivePEM: activePEM, Issuer: testIssuer, Audience: testAudience}
+	return issuer.KeyConfig{
+		ActivePEM:  activePEM,
+		Issuer:     testIssuer,
+		Audience:   testAudience,
+		JWKSMaxAge: issuer.DefaultJWKSMaxAge,
+	}
+}
+
+func newSigner(t *testing.T, cfg issuer.KeyConfig, opts ...issuer.Option) *issuer.Signer {
+	t.Helper()
+	s, err := issuer.NewSigner(cfg, opts...)
+	if err != nil {
+		t.Fatalf("NewSigner: %v", err)
+	}
+	return s
 }
 
 // verifierFor поднимает JWKS-эндпоинт поверх signer.JWKS() и возвращает
 // sso.Verifier, нацеленный на него (полная проверка контракта issuer→sso).
-func verifierFor(t *testing.T, s *issuer.Signer) *sso.Verifier {
+func verifierFor(t *testing.T, s *issuer.Signer, opts ...sso.Option) *sso.Verifier {
 	t.Helper()
 	srv := httptest.NewServer(issuer.JWKSHandler(s))
 	t.Cleanup(srv.Close)
-	v, err := sso.NewVerifier(sso.Config{JWKSURL: srv.URL, Issuer: testIssuer, Audience: testAudience}, nil)
+	cfg := sso.Config{
+		JWKSURL:            srv.URL,
+		Cookie:             sso.DefaultCookie,
+		Issuer:             testIssuer,
+		Audience:           testAudience,
+		LoginURL:           testIssuer + "/auth/login",
+		Leeway:             sso.DefaultLeeway,
+		KeyGrace:           sso.DefaultKeyGrace,
+		SecuritySchemeName: sso.DefaultSecuritySchemeName,
+	}
+	v, err := sso.NewVerifier(cfg, srv.Client(), opts...)
 	if err != nil {
 		t.Fatalf("NewVerifier: %v", err)
 	}
@@ -73,199 +107,260 @@ func verifierFor(t *testing.T, s *issuer.Signer) *sso.Verifier {
 }
 
 func sessionClaims() map[string]any {
-	return map[string]any{
-		"sub":         "authentik-sub-1",
-		"employee_id": "01980000-0000-7000-8000-000000000001",
-		"username":    "n.sycheva",
-		"name":        "Наталья Сычева",
-		"email":       "n@stit.tech",
-		"role":        "employee",
-		"sid":         "sess-1",
-	}
+	return issuer.Session{
+		SID:        "sess-1",
+		Subject:    "authentik-sub-1",
+		EmployeeID: "01980000-0000-7000-8000-000000000001",
+		Username:   "n.sycheva",
+		Name:       "Наталья Сычева",
+		Email:      "n@stit.tech",
+		Role:       "employee",
+	}.Claims()
 }
 
 func TestSign_Verify_RoundTrip(t *testing.T) {
-	s, err := issuer.NewSigner(keyConfig(genPEM(t)))
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
-	}
-	v := verifierFor(t, s)
-
-	tok, err := s.Sign(sessionClaims(), 15*time.Minute)
+	s := newSigner(t, keyConfig(genPEM(t)))
+	raw, err := s.Sign(sessionClaims(), 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	id, err := v.Verify(context.Background(), tok)
+	id, err := verifierFor(t, s).Verify(t.Context(), raw)
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if id.EmployeeID != "01980000-0000-7000-8000-000000000001" || id.Subject != "authentik-sub-1" ||
-		id.Username != "n.sycheva" || id.Role != "employee" || id.SID != "sess-1" || id.Kind != sso.KindEmployee {
-		t.Fatalf("identity mismatch: %+v", id)
+	if id.Subject != "authentik-sub-1" || id.Username != "n.sycheva" || id.SID != "sess-1" {
+		t.Fatalf("identity: %+v", id)
 	}
 }
 
-func TestSign_Expired(t *testing.T) {
-	s, err := issuer.NewSigner(keyConfig(genPEM(t)))
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
+func TestSign_CustomerSessionRoundTrip(t *testing.T) {
+	s := newSigner(t, keyConfig(genPEM(t)))
+	sess := issuer.Session{
+		SID:         "sess-c1",
+		Subject:     "customer-account-1",
+		Kind:        sso.KindCustomer,
+		CompanyID:   "01980000-0000-7000-8000-0000000000a1",
+		AccountRole: "admin",
+		Products:    []string{"deal"},
 	}
-	v := verifierFor(t, s)
-
-	tok, err := s.Sign(sessionClaims(), -time.Minute)
+	raw, err := s.Sign(sess.Claims(), 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	if _, err := v.Verify(context.Background(), tok); err == nil {
-		t.Fatal("протухший токен прошёл проверку")
+	srv := httptest.NewServer(issuer.JWKSHandler(s))
+	t.Cleanup(srv.Close)
+	cfg := sso.Config{
+		JWKSURL: "https://unused.test/jwks", Cookie: sso.DefaultCookie,
+		Issuer: testIssuer, Audience: testAudience, LoginURL: testIssuer,
+		Leeway: sso.DefaultLeeway, KeyGrace: sso.DefaultKeyGrace,
+		SecuritySchemeName: sso.DefaultSecuritySchemeName,
+		CustomerJWKSURL:    srv.URL, CustomerIssuer: testIssuer, CustomerAudience: testAudience,
+		CustomerCookie: sso.DefaultCustomerCookie, CustomerLoginURL: testIssuer,
+		CustomerSecuritySchemeName: sso.DefaultCustomerSecuritySchemeName,
+	}
+	v, err := sso.NewCustomerVerifier(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewCustomerVerifier: %v", err)
+	}
+	id, err := v.Verify(t.Context(), raw)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !id.IsCustomer() || id.CompanyID != sess.CompanyID || id.AccountRole != "admin" {
+		t.Fatalf("identity: %+v", id)
+	}
+}
+
+func TestSign_RejectsReservedClaims(t *testing.T) {
+	s := newSigner(t, keyConfig(genPEM(t)))
+	for _, name := range []string{"iss", "aud", "exp", "nbf", "iat", "typ"} {
+		claims := sessionClaims()
+		claims[name] = "evil"
+		if _, err := s.Sign(claims, time.Minute); !errors.Is(err, issuer.ErrReservedClaim) {
+			t.Fatalf("claim %q: err = %v, want ErrReservedClaim", name, err)
+		}
+	}
+}
+
+func TestSign_RequiresStringSubject(t *testing.T) {
+	s := newSigner(t, keyConfig(genPEM(t)))
+	for name, claims := range map[string]map[string]any{
+		"missing":    {"sid": "s1"},
+		"not string": {"sub": 123},
+		"empty":      {"sub": ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := s.Sign(claims, time.Minute); !errors.Is(err, issuer.ErrNoSubject) {
+				t.Fatalf("err = %v, want ErrNoSubject", err)
+			}
+		})
+	}
+}
+
+func TestSign_RequiresPositiveTTL(t *testing.T) {
+	s := newSigner(t, keyConfig(genPEM(t)))
+	if _, err := s.Sign(sessionClaims(), 0); err == nil {
+		t.Fatal("zero ttl accepted")
+	}
+}
+
+func TestSign_ClockInjected(t *testing.T) {
+	at := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	s := newSigner(t, keyConfig(genPEM(t)), issuer.WithClock(clockkit.NewFixed(at)))
+	raw, err := s.Sign(sessionClaims(), time.Hour)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+
+	inside := verifierFor(t, s, sso.WithClock(clockkit.NewFixed(at.Add(30*time.Minute))))
+	id, err := inside.Verify(t.Context(), raw)
+	if err != nil {
+		t.Fatalf("token within ttl of the injected clock rejected: %v", err)
+	}
+	if id.Subject != "authentik-sub-1" {
+		t.Fatalf("identity: %+v", id)
+	}
+
+	past := verifierFor(t, s, sso.WithClock(clockkit.NewFixed(at.Add(2*time.Hour))))
+	if _, err := past.Verify(t.Context(), raw); !errors.Is(err, sso.ErrInvalidClaims) {
+		t.Fatalf("err = %v, want ErrInvalidClaims (exp считается от часов issuer'а)", err)
+	}
+}
+
+func TestSign_CustomerRequiresCompanyID(t *testing.T) {
+	s := newSigner(t, keyConfig(genPEM(t)))
+	sess := issuer.Session{
+		SID:         "sess-c2",
+		Subject:     "customer-account-2",
+		Kind:        sso.KindCustomer,
+		AccountRole: "member",
+	}
+	if _, err := s.Sign(sess.Claims(), time.Minute); !errors.Is(err, issuer.ErrNoCompany) {
+		t.Fatalf("err = %v, want ErrNoCompany", err)
+	}
+	sess.CompanyID = "01980000-0000-7000-8000-0000000000a2"
+	if _, err := s.Sign(sess.Claims(), time.Minute); err != nil {
+		t.Fatalf("Sign with company_id: %v", err)
 	}
 }
 
 func TestSign_ForeignKeyRejected(t *testing.T) {
-	real, err := issuer.NewSigner(keyConfig(genPEM(t)))
-	if err != nil {
-		t.Fatalf("NewSigner real: %v", err)
-	}
-	v := verifierFor(t, real)
-
-	foreign, err := issuer.NewSigner(keyConfig(genPEM(t)))
-	if err != nil {
-		t.Fatalf("NewSigner foreign: %v", err)
-	}
-	tok, err := foreign.Sign(sessionClaims(), 15*time.Minute)
+	s := newSigner(t, keyConfig(genPEM(t)))
+	other := newSigner(t, keyConfig(genPEM(t)))
+	raw, err := other.Sign(sessionClaims(), time.Minute)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	if _, err := v.Verify(context.Background(), tok); err == nil {
-		t.Fatal("токен под чужим ключом прошёл проверку")
+	if _, err := verifierFor(t, s).Verify(t.Context(), raw); err == nil {
+		t.Fatal("token of a foreign key accepted")
 	}
 }
 
-// aud обязателен с обеих сторон: issuer без HUB_SESSION_AUDIENCE не стартует,
-// а выпущенный токен несёт aud, который sso-verifier сверяет.
-func TestSign_Audience(t *testing.T) {
-	if _, err := issuer.NewSigner(issuer.KeyConfig{ActivePEM: genPEM(t), Issuer: testIssuer}); !errors.Is(err, issuer.ErrNoAudience) {
-		t.Fatalf("ожидали ErrNoAudience, получили %v", err)
-	}
-
-	s, err := issuer.NewSigner(issuer.KeyConfig{ActivePEM: genPEM(t), Issuer: testIssuer, Audience: "other"})
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
-	}
-	tok, err := s.Sign(sessionClaims(), 15*time.Minute)
+func TestRotation_PreviousKeyKeepsLiveTokensValid(t *testing.T) {
+	oldKey := genKey(t, elliptic.P256())
+	before := newSigner(t, keyConfig(privPEM(t, oldKey)))
+	live, err := before.Sign(sessionClaims(), 15*time.Minute)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	if _, err := verifierFor(t, s).Verify(context.Background(), tok); err == nil {
-		t.Fatal("токен с чужим aud прошёл проверку")
+
+	// Шаг ротации: active = новый ключ, прежний переезжает в previous-слот
+	// (публичный PEM достаточно).
+	after := newSigner(t, issuer.KeyConfig{
+		ActivePEM:   genPEM(t),
+		PreviousPEM: pubPEM(t, oldKey),
+		Issuer:      testIssuer,
+		Audience:    testAudience,
+		JWKSMaxAge:  issuer.DefaultJWKSMaxAge,
+	})
+	if len(after.JWKS().Keys) != 2 {
+		t.Fatalf("JWKS keys = %d, want 2 (active + previous)", len(after.JWKS().Keys))
+	}
+	if _, err := verifierFor(t, after).Verify(t.Context(), live); err != nil {
+		t.Fatalf("token signed by the previous key rejected: %v", err)
 	}
 }
 
-func TestRotation_BothKeysPublished(t *testing.T) {
-	activePEM := genPEM(t)
-	nextPEM := genPEM(t)
-
-	s, err := issuer.NewSigner(issuer.KeyConfig{ActivePEM: activePEM, NextPEM: nextPEM, Issuer: testIssuer, Audience: testAudience})
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
-	}
-	set := s.JWKS()
-	if len(set.Keys) != 2 {
-		t.Fatalf("JWKS должен содержать 2 ключа на период ротации, получили %d", len(set.Keys))
-	}
-	if set.Keys[0].KeyID == set.Keys[1].KeyID {
-		t.Fatal("kid активного и next совпали")
-	}
-	v := verifierFor(t, s)
-
-	tok, err := s.Sign(sessionClaims(), 15*time.Minute)
-	if err != nil {
-		t.Fatalf("Sign active: %v", err)
-	}
-	if _, err := v.Verify(context.Background(), tok); err != nil {
-		t.Fatalf("активный токен отвергнут: %v", err)
-	}
-
-	// После ротации next становится активным: его токены проходят против прежнего
-	// JWKS (next уже был в наборе) — сессии не рвутся.
-	rotated, err := issuer.NewSigner(keyConfig(nextPEM))
-	if err != nil {
-		t.Fatalf("NewSigner rotated: %v", err)
-	}
-	tok2, err := rotated.Sign(sessionClaims(), 15*time.Minute)
-	if err != nil {
-		t.Fatalf("Sign next: %v", err)
-	}
-	if _, err := v.Verify(context.Background(), tok2); err != nil {
-		t.Fatalf("токен ротационного ключа отвергнут прежним JWKS: %v", err)
-	}
-}
-
-// Next-ключ публикуется по публичному PEM: приватный ключ следующего kid не
-// обязан лежать на текущем инстансе.
-func TestRotation_NextPublicKeyOnly(t *testing.T) {
+func TestRotation_NextPublishedBeforeSwitch(t *testing.T) {
 	next := genKey(t, elliptic.P256())
-	s, err := issuer.NewSigner(issuer.KeyConfig{ActivePEM: genPEM(t), NextPEM: pubPEM(t, next), Issuer: testIssuer, Audience: testAudience})
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
+	s := newSigner(t, issuer.KeyConfig{
+		ActivePEM:  genPEM(t),
+		NextPEM:    pubPEM(t, next),
+		Issuer:     testIssuer,
+		Audience:   testAudience,
+		JWKSMaxAge: issuer.DefaultJWKSMaxAge,
+	})
+	keys := s.JWKS().Keys
+	if len(keys) != 2 {
+		t.Fatalf("JWKS keys = %d, want 2", len(keys))
 	}
-	v := verifierFor(t, s)
-
-	rotated, err := issuer.NewSigner(keyConfig(privPEM(t, next)))
-	if err != nil {
-		t.Fatalf("NewSigner rotated: %v", err)
+	if keys[0].KeyID != s.ActiveKID() {
+		t.Fatalf("first key = %q, want active kid", keys[0].KeyID)
 	}
-	if s.JWKS().Keys[1].KeyID != rotated.ActiveKID() {
-		t.Fatal("kid публичного next не совпал с kid приватного ключа")
-	}
-	tok, err := rotated.Sign(sessionClaims(), 15*time.Minute)
+	// Токен, выпущенный после переключения, проходит на неизменённом наборе.
+	after := newSigner(t, keyConfig(privPEM(t, next)))
+	raw, err := after.Sign(sessionClaims(), time.Minute)
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	if _, err := v.Verify(context.Background(), tok); err != nil {
-		t.Fatalf("токен next-ключа отвергнут: %v", err)
+	if _, err := verifierFor(t, s).Verify(t.Context(), raw); err != nil {
+		t.Fatalf("token of the next key rejected: %v", err)
 	}
 }
 
-func TestNewSigner_NoKey(t *testing.T) {
-	if _, err := issuer.NewSigner(issuer.KeyConfig{Audience: testAudience}); !errors.Is(err, issuer.ErrNoActiveKey) {
-		t.Fatalf("ожидали ErrNoActiveKey, получили %v", err)
-	}
+func TestNewSigner_KeyFormats(t *testing.T) {
+	key := genKey(t, elliptic.P256())
+	t.Run("sec1", func(t *testing.T) {
+		s := newSigner(t, keyConfig(sec1PEM(t, key)))
+		if s.ActiveKID() == "" {
+			t.Fatal("no kid")
+		}
+	})
+	t.Run("file", func(t *testing.T) {
+		path := filepath.Join(t.TempDir(), "key.pem")
+		if err := os.WriteFile(path, []byte(privPEM(t, key)), 0o600); err != nil {
+			t.Fatalf("write key: %v", err)
+		}
+		s := newSigner(t, issuer.KeyConfig{
+			ActiveFile: path,
+			ActivePEM:  "ignored",
+			Issuer:     testIssuer,
+			Audience:   testAudience,
+			JWKSMaxAge: issuer.DefaultJWKSMaxAge,
+		})
+		fromInline := newSigner(t, keyConfig(privPEM(t, key)))
+		if s.ActiveKID() != fromInline.ActiveKID() {
+			t.Fatal("file key must take priority over inline")
+		}
+	})
+	t.Run("missing file", func(t *testing.T) {
+		cfg := keyConfig("")
+		cfg.ActiveFile = filepath.Join(t.TempDir(), "absent.pem")
+		if _, err := issuer.NewSigner(cfg); err == nil || !strings.Contains(err.Error(), "read key file") {
+			t.Fatalf("err = %v", err)
+		}
+	})
 }
 
-func TestNewSigner_BadPEM(t *testing.T) {
-	if _, err := issuer.NewSigner(keyConfig("not a pem")); !errors.Is(err, issuer.ErrBadPEM) {
-		t.Fatalf("ожидали ErrBadPEM, получили %v", err)
+func TestNewSigner_ConfigErrors(t *testing.T) {
+	tests := map[string]struct {
+		cfg  issuer.KeyConfig
+		want error
+	}{
+		"no key":       {cfg: keyConfig(""), want: issuer.ErrNoActiveKey},
+		"bad pem":      {cfg: keyConfig("not a pem"), want: issuer.ErrBadPEM},
+		"not p256":     {cfg: keyConfig(privPEM(t, genKey(t, elliptic.P384()))), want: issuer.ErrNotEC},
+		"no audience":  {cfg: issuer.KeyConfig{ActivePEM: genPEM(t), Issuer: testIssuer}, want: issuer.ErrConfig},
+		"no issuer":    {cfg: issuer.KeyConfig{ActivePEM: genPEM(t), Audience: testAudience}, want: issuer.ErrConfig},
+		"issuer path":  {cfg: issuer.KeyConfig{ActivePEM: genPEM(t), Issuer: "id.stit.tech", Audience: testAudience}, want: issuer.ErrConfig},
+		"bad next":     {cfg: issuer.KeyConfig{ActivePEM: genPEM(t), NextPEM: "nope", Issuer: testIssuer, Audience: testAudience}, want: issuer.ErrBadPEM},
+		"bad previous": {cfg: issuer.KeyConfig{ActivePEM: genPEM(t), PreviousPEM: "nope", Issuer: testIssuer, Audience: testAudience}, want: issuer.ErrBadPEM},
 	}
-}
-
-// ES256 = P-256: ключ другой кривой отвергается на старте, а не при первой подписи.
-func TestNewSigner_RejectsNonP256(t *testing.T) {
-	p384 := genKey(t, elliptic.P384())
-	if _, err := issuer.NewSigner(keyConfig(privPEM(t, p384))); !errors.Is(err, issuer.ErrNotEC) {
-		t.Fatalf("активный P-384: ожидали ErrNotEC, получили %v", err)
-	}
-	cfg := keyConfig(genPEM(t))
-	cfg.NextPEM = pubPEM(t, p384)
-	if _, err := issuer.NewSigner(cfg); !errors.Is(err, issuer.ErrNotEC) {
-		t.Fatalf("next P-384: ожидали ErrNotEC, получили %v", err)
-	}
-}
-
-func TestJWKSHandler_CacheControl(t *testing.T) {
-	s, err := issuer.NewSigner(keyConfig(genPEM(t)))
-	if err != nil {
-		t.Fatalf("NewSigner: %v", err)
-	}
-	rec := httptest.NewRecorder()
-	issuer.JWKSHandler(s)(rec, httptest.NewRequest(http.MethodGet, issuer.JWKSPath, nil))
-	if got := rec.Header().Get("Cache-Control"); got != "public, max-age=300" {
-		t.Fatalf("Cache-Control=%q", got)
-	}
-	var set struct {
-		Keys []json.RawMessage `json:"keys"`
-	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &set); err != nil || len(set.Keys) != 1 {
-		t.Fatalf("body: %s (%v)", rec.Body.String(), err)
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if _, err := issuer.NewSigner(tc.cfg); !errors.Is(err, tc.want) {
+				t.Fatalf("err = %v, want %v", err, tc.want)
+			}
+		})
 	}
 }

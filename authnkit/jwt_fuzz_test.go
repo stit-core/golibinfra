@@ -1,6 +1,7 @@
 package authnkit
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
@@ -11,7 +12,8 @@ func FuzzJWTParse(f *testing.F) {
 	if err != nil {
 		f.Fatalf("NewHS256JWT: %v", err)
 	}
-	valid, err := h.Sign(map[string]any{"sub": "x"}, time.Hour)
+	ctx := context.Background()
+	valid, err := h.Sign(ctx, map[string]any{"sub": "x"}, time.Hour)
 	if err != nil {
 		f.Fatalf("Sign: %v", err)
 	}
@@ -23,8 +25,8 @@ func FuzzJWTParse(f *testing.F) {
 	f.Add(valid)
 
 	f.Fuzz(func(t *testing.T, in string) {
-		_, err := h.Parse(in)
-		if err != nil && !errors.Is(err, ErrTokenExpired) && !errors.Is(err, ErrTokenMalformed) && !errors.Is(err, ErrTokenSignature) {
+		_, err := h.Parse(ctx, in)
+		if err != nil && !errors.Is(err, ErrTokenExpired) && !errors.Is(err, ErrTokenMalformed) && !errors.Is(err, ErrTokenSignature) && !errors.Is(err, ErrWrongTokenType) && !errors.Is(err, ErrTokenAudience) {
 			t.Fatalf("non-sentinel error: %v", err)
 		}
 	})

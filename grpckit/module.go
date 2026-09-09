@@ -5,27 +5,30 @@ import (
 	"fmt"
 	"net"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module не provide'ит Config (asymmetry note в pgkit/module.go). Дешёвый mode:
-// fx.Provide(grpckit.NewConfig). Сервисы — во fx value-group "grpc.services":
+// ServicesGroup — имя fx value-group, из которой Module собирает регистраторы
+// доменных сервисов:
 //
-//	fx.Provide(fx.Annotate(newMyServiceRegistrar, fx.ResultTags(`group:"grpc.services"`)))
+//	fx.Provide(fx.Annotate(newMyServiceRegistrar, fx.ResultTags(`group:"grpckit.services"`)))
+const ServicesGroup = "grpckit.services"
+
+// Module отдаёт *Server и держит его lifecycle. fx.Invoke обязателен: без него
+// конструктор сервера ленив, и приложение стартует с незанятым портом, если в
+// графе никто не зависит от *Server.
 //
-// Authenticator опционален: задан — навешивается auth-интерсептор.
+// Config Module не provide'ит (asymmetry note в pgkit/module.go): дешёвый путь —
+// fx.Provide(grpckit.NewConfig). Authenticator опционален: задан в графе —
+// навешивается auth-интерсептор.
 var Module = fx.Module(
 	"grpckit",
 	fx.Provide(newServer),
+	fx.Invoke(func(*Server) {}),
 )
-
-func NewConfig() (Config, error) {
-	var c Config
-	return c, envconfig.Process("", &c)
-}
 
 type serverParams struct {
 	fx.In
@@ -34,16 +37,20 @@ type serverParams struct {
 	Cfg           Config
 	Log           logkit.Logger
 	Authenticator Authenticator      `optional:"true"`
-	Services      []ServiceRegistrar `group:"grpc.services"`
+	Services      []ServiceRegistrar `group:"grpckit.services"`
+	Probes        []healthkit.Probe  `group:"healthkit.probes"`
 }
 
 func newServer(p serverParams) (*Server, error) {
-	opts := make([]ServerOption, 0, len(p.Services)+1)
+	opts := make([]ServerOption, 0, len(p.Services)+2)
 	if p.Authenticator != nil {
 		opts = append(opts, WithAuthenticator(p.Authenticator))
 	}
 	for _, reg := range p.Services {
 		opts = append(opts, WithService(reg))
+	}
+	if len(p.Probes) > 0 {
+		opts = append(opts, WithHealthProbes(p.Probes...))
 	}
 
 	srv, err := New(p.Cfg, p.Log, opts...)
@@ -53,12 +60,13 @@ func newServer(p serverParams) (*Server, error) {
 
 	p.LC.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
-			ln, err := net.Listen("tcp", p.Cfg.Addr)
+			var lc net.ListenConfig
+			ln, err := lc.Listen(ctx, "tcp", srv.cfg.Addr)
 			if err != nil {
-				return fmt.Errorf("grpckit: listen %s: %w", p.Cfg.Addr, err)
+				return fmt.Errorf("grpckit: listen %s: %w", srv.cfg.Addr, err)
 			}
 			go func() {
-				p.Log.Info(ctx, "grpckit: serving", "addr", p.Cfg.Addr)
+				p.Log.Info(ctx, "grpckit: serving", "addr", ln.Addr().String())
 				if err := srv.Serve(ln); err != nil {
 					p.Log.Error(ctx, "grpckit: serve stopped", "error", err.Error())
 				}

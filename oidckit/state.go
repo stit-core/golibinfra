@@ -16,7 +16,7 @@ type StateStore interface {
 }
 
 // NewCacheStateStore — StateStore поверх cachekit.Cache: Redis в проде,
-// cachekit.NewMemoryCache() для тестов и single-replica без Redis.
+// cachekit.NewMemoryCache() для тестов и single-replica (state — в процессе).
 func NewCacheStateStore(c cachekit.Cache) StateStore {
 	return &cacheStateStore{c: c}
 }

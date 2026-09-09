@@ -24,10 +24,16 @@
 - **Минимум зависимостей.** Перед новым import проверь stdlib + уже подключённые
   deps. Каждая новая зависимость в `go.mod` обсуждается отдельно.
 - **fx-first.** Каждый kit отдаёт `Module` (`fx.Options`); консьюмер собирает `App`
-  из них. `Config` провайдит caller (`fx.Provide(<kit>.NewConfig)`), `NewConfig`
-  валидирует и падает на старте.
+  из них. `Config` провайдит caller (`fx.Provide(<kit>.NewConfig)`); у конфига есть
+  `Validate() error` с sentinel'ом `<kit>.ErrConfig`, который зовут и `NewConfig`,
+  и конструкторы — невалидный конфиг валит старт, а не первый запрос.
+- **Doc-comment на каждом экспорте** — одна строка, начинается с имени.
+  `revive.exported` в гейте закрывает типы, функции, var и const; методы на
+  экспортируемом приёмнике линтер не проверяет — их смотрят на ревью. Package-doc
+  — 1–3 строки. Тексты ошибок и логов — английские, с префиксом кита.
 - **envconfig-теги — часть public API.** Имена полей/тегов публичных конфиг-структур
-  менять = breaking change, он идёт мажорным релизом.
+  менять = breaking change; он допустим в minor-релизе, но обязан быть помечен `!`
+  в коммите и описан в аннотации тега (см. `README.md § Версионирование`).
 - **Forward-only документация.** Текст описывает текущее состояние, без «было/стало» —
   история живёт в `git log`.
 
@@ -43,27 +49,34 @@
 ## Перед PR
 
 ```bash
-make tools        # один раз: golangci-lint + govulncheck
+make tools        # один раз: golangci-lint + govulncheck пиненных версий
+make hooks        # один раз: core.hooksPath=.githooks, pre-push гоняет make check
 make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check
 make test-full    # + testcontainers (нужен Docker) — для китов с БД/шиной/кэшем
 ```
 
 Зелёный `make check` — gate пройден. Что именно он запускает — в `Makefile`
-(цели можно вызывать по отдельности: `make lint`, `make test`, …).
+(цели можно вызывать по отдельности: `make lint`, `make test`, …); есть ещё
+`make coverage`, `make bench` и `make fuzz`.
 
-- Новый kit → собственный `README.md` кита (+ `docs/` у сложного) и строка-индекс
-  в `README.md § Пакеты` обязательны.
+- Новый kit → собственный `README.md` кита (+ `docs/` у сложного), строка-индекс
+  в `README.md § Пакеты` и, если нужны test-хелперы, `testkit/<name>test`.
 - Тронул конфиг / эмитимые метрики / labels / span-attrs → обнови `README.md`
-  (+ `docs/`) соответствующего кита; `make docs-check` сверит env-переменные.
-- Багфикс → регрессионный тест в том же PR.
+  (+ `docs/`) соответствующего кита, а endpoint-переменную — ещё и в
+  `README.md § Per-concern endpoints`; `make envdoc-check` сверит обе стороны.
+- Багфикс → регрессионный тест в том же PR; новый `Module` → fx-тест
+  (`fx.ValidateApp`).
 - **Conventional Commits** — `<type>(<scope>)?: <subject>`, subject ≤72. Типы:
   `feat`, `fix`, `refactor`, `docs`, `test`, `chore`; breaking — `!` и футер
-  `BREAKING CHANGE:`. Пример: `feat(httpkit)!: MapSentinel → MapIs/MapAs`.
+  `BREAKING CHANGE:`. Пример: `feat(httpkit)!: NewServer принимает ServerOption`.
 
 ## Стиль
 
-Спокойно и по делу, без хайпа. Комментарии в коде — только когда WHY неочевидно,
-не пересказ кода. Названия и формулировки — как у соседних пакетов.
+Спокойно и по делу, без хайпа. Doc-comment на экспортируемых идентификаторах —
+обязателен (Go-конвенция: начинается с имени). Комментарии **внутри** функций —
+только когда WHY неочевидно, не пересказ кода. Названия и формулировки — как у
+соседних пакетов: fx-группа — `<kit>.<thing>` с экспортируемой константой,
+проба — `Probe(...)`, test-хелперы — `testkit/<name>test`.
 
 ## Лицензия
 

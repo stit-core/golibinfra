@@ -1,366 +1,192 @@
 package sso_test
 
 import (
-	"context"
+	"bytes"
+	"encoding/json"
 	"errors"
-	"net/http"
-	"net/http/httptest"
-	"reflect"
+	"strings"
 	"testing"
-	"time"
-
-	"github.com/go-jose/go-jose/v4/jwt"
-	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/hubkit/sso"
+	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/hubtest"
 )
 
-const (
-	testCustomerIssuer   = "https://api.hub.stit.tech"
-	testCustomerAudience = "stit-customer"
-)
-
-func customerStdClaims() jwt.Claims {
-	c := stdClaims()
-	c.Issuer = testCustomerIssuer
-	c.Audience = jwt.Audience{testCustomerAudience}
-	c.Subject = "01990000-0000-7000-8000-0000000000c1"
-	return c
-}
-
-func customerClaims() map[string]any {
-	return map[string]any{
-		"kind":         "customer",
-		"company_id":   "01980000-0000-7000-8000-00000000c0c0",
-		"account_role": "admin",
-		"name":         "Иван Заказчиков",
-		"email":        "ivan@acme.ru",
-		"sid":          "csess-1",
-		"products":     []string{"deal", "telemost"},
-	}
-}
-
-// customerCfg — конфиг с включённым customer-контуром (employee-часть — как в
-// проде: свой JWKS, свой iss и свой aud).
-func customerCfg(employeeJWKS, customerJWKS string) sso.Config {
-	cfg := employeeCfg(employeeJWKS)
-	cfg.CustomerJWKSURL = customerJWKS
-	cfg.CustomerCookie = "stit_customer"
-	cfg.CustomerIssuer = testCustomerIssuer
-	cfg.CustomerAudience = testCustomerAudience
-	return cfg
-}
-
-func customerVerifier(t *testing.T, jwksURL string) *sso.CustomerVerifier {
+func customerVerifier(t *testing.T, employee, customer *hubtest.Issuer) *sso.CustomerVerifier {
 	t.Helper()
-	cv, err := sso.NewCustomerVerifier(sso.Config{
-		CustomerJWKSURL: jwksURL, CustomerIssuer: testCustomerIssuer, CustomerAudience: testCustomerAudience,
-	}, nil)
+	v, err := sso.NewCustomerVerifier(hubtest.SSOConfig(employee, customer), nil)
 	if err != nil {
 		t.Fatalf("NewCustomerVerifier: %v", err)
 	}
-	if cv == nil {
-		t.Fatal("NewCustomerVerifier вернул nil при заданном JWKS-URL")
-	}
-	return cv
+	return v
 }
 
 func TestCustomerVerify_Valid(t *testing.T) {
-	ci := newSigningIdentity(t)
-	cv := customerVerifier(t, ci.jwksServer(t).URL)
-
-	id, err := cv.Verify(context.Background(), ci.sign(t, customerStdClaims(), customerClaims()))
+	emp := hubtest.NewIssuer(t)
+	cust := hubtest.NewCustomerIssuer(t)
+	id, err := customerVerifier(t, emp, cust).Verify(t.Context(), cust.CustomerToken(t))
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	want := sso.Identity{
-		Subject:     "01990000-0000-7000-8000-0000000000c1",
-		Name:        "Иван Заказчиков",
-		Email:       "ivan@acme.ru",
-		SID:         "csess-1",
-		Kind:        sso.KindCustomer,
-		CompanyID:   "01980000-0000-7000-8000-00000000c0c0",
-		AccountRole: "admin",
-		Products:    []string{"deal", "telemost"},
-	}
-	if !reflect.DeepEqual(id, want) {
-		t.Fatalf("identity=%+v, ожидали %+v", id, want)
-	}
-	if !id.IsCustomer() || id.IsEmployee() {
-		t.Fatalf("контур определён неверно: %+v", id)
+	if !id.IsCustomer() || id.CompanyID != hubtest.DefaultCompanyID {
+		t.Fatalf("identity: %+v", id)
 	}
 }
 
-// Токен сотрудника, попавший в customer-слот, не принимается никогда: у него
-// чужой iss/aud и нет kind=customer.
-func TestCustomerVerify_RejectsEmployeeToken(t *testing.T) {
-	ci := newSigningIdentity(t)
-	cv := customerVerifier(t, ci.jwksServer(t).URL)
-
-	// Тот же ключ (худший случай: подпись сойдётся), но employee-claims.
-	if _, err := cv.Verify(context.Background(), ci.sign(t, stdClaims(), hubClaims())); err == nil {
-		t.Fatal("employee-токен принят customer-верификатором")
-	}
-	// Даже с правильными iss/aud customer-контура — kind обязателен.
-	if _, err := cv.Verify(context.Background(), ci.sign(t, customerStdClaims(), hubClaims())); !errors.Is(err, sso.ErrWrongKind) {
-		t.Fatalf("ожидали ErrWrongKind, получили %v", err)
+func TestCustomerVerify_NoCompanyID(t *testing.T) {
+	emp := hubtest.NewIssuer(t)
+	cust := hubtest.NewCustomerIssuer(t)
+	token := cust.CustomerToken(t, hubtest.WithoutClaim(sso.ClaimCompanyID))
+	_, err := customerVerifier(t, emp, cust).Verify(t.Context(), token)
+	if !errors.Is(err, sso.ErrNoCompany) || !errors.Is(err, sso.ErrInvalidClaims) {
+		t.Fatalf("err = %v, want ErrNoCompany (ErrInvalidClaims)", err)
 	}
 }
 
-// Обратное направление: customer-токен в employee-слоте — тоже отказ, даже если
-// iss/aud совпали.
-func TestVerify_RejectsCustomerToken(t *testing.T) {
-	si := newSigningIdentity(t)
-	v := verifier(t, si.jwksServer(t).URL)
+func TestVerify_ContourSwap(t *testing.T) {
+	emp := hubtest.NewIssuer(t)
+	cust := hubtest.NewCustomerIssuer(t)
 
-	if _, err := v.Verify(context.Background(), si.sign(t, stdClaims(), customerClaims())); !errors.Is(err, sso.ErrWrongKind) {
-		t.Fatalf("ожидали ErrWrongKind, получили %v", err)
+	// Employee-токен в customer-слот и наоборот: подпись/issuer могли бы сойтись,
+	// решает claim kind.
+	_, err := customerVerifier(t, emp, cust).Verify(t.Context(), cust.EmployeeToken(t))
+	if !errors.Is(err, sso.ErrWrongKind) {
+		t.Fatalf("employee token in customer slot: %v", err)
+	}
+	_, err = emp.Verifier(t).Verify(t.Context(), emp.CustomerToken(t))
+	if !errors.Is(err, sso.ErrWrongKind) {
+		t.Fatalf("customer token in employee slot: %v", err)
 	}
 }
 
-// Пустой claim kind = employee: токены без kind живут, а Identity.Kind всегда заполнен.
 func TestVerify_EmptyKindIsEmployee(t *testing.T) {
-	si := newSigningIdentity(t)
-	v := verifier(t, si.jwksServer(t).URL)
-
-	id, err := v.Verify(context.Background(), si.sign(t, stdClaims(), hubClaims()))
+	iss := hubtest.NewIssuer(t)
+	id, err := iss.Verifier(t).Verify(t.Context(), iss.EmployeeToken(t, hubtest.WithClaim(sso.ClaimKind, "")))
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	if id.Kind != sso.KindEmployee || !id.IsEmployee() || id.IsCustomer() {
-		t.Fatalf("employee-токен без claim kind прочитан как %+v", id)
+	if id.Kind != sso.KindEmployee {
+		t.Fatalf("kind = %q", id.Kind)
 	}
 }
 
 func TestNewCustomerVerifier_Disabled(t *testing.T) {
-	cv, err := sso.NewCustomerVerifier(employeeCfg("https://id.stit.tech/jwks"), nil)
-	if err != nil {
-		t.Fatalf("выключенный контур не должен быть ошибкой: %v", err)
-	}
-	if cv != nil {
-		t.Fatal("без HUB_SSO_CUSTOMER_JWKS_URL верификатор быть не должен")
-	}
-}
-
-func TestNewCustomerVerifier_IssuerAndAudienceRequired(t *testing.T) {
-	cfg := sso.Config{CustomerJWKSURL: "https://api.hub.stit.tech/jwks", CustomerAudience: testCustomerAudience}
-	if _, err := sso.NewCustomerVerifier(cfg, nil); !errors.Is(err, sso.ErrCustomerIssuer) {
-		t.Fatalf("ожидали ErrCustomerIssuer, получили %v", err)
-	}
-	cfg = sso.Config{CustomerJWKSURL: "https://api.hub.stit.tech/jwks", CustomerIssuer: testCustomerIssuer}
-	if _, err := sso.NewCustomerVerifier(cfg, nil); !errors.Is(err, sso.ErrCustomerAudience) {
-		t.Fatalf("ожидали ErrCustomerAudience, получили %v", err)
-	}
-}
-
-func dualExtractor(t *testing.T, emp, cust *signingIdentity) *sso.Extractor {
-	t.Helper()
-	cfg := customerCfg(emp.jwksServer(t).URL, cust.jwksServer(t).URL)
-	return sso.NewDualExtractor(verifier(t, cfg.JWKSURL), customerVerifier(t, cfg.CustomerJWKSURL), cfg)
-}
-
-// Обе cookie заполнены → выигрывает employee (внутренний контур главнее).
-func TestExtractor_BothCookies_EmployeeWins(t *testing.T) {
-	emp, cust := newSigningIdentity(t), newSigningIdentity(t)
-	e := dualExtractor(t, emp, cust)
-
-	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: "stit_session", Value: emp.sign(t, stdClaims(), hubClaims())})
-	r.AddCookie(&http.Cookie{Name: "stit_customer", Value: cust.sign(t, customerStdClaims(), customerClaims())})
-
-	ctx, err := e.Extract(r)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	id := sso.MustIdentityFrom(ctx)
-	if !id.IsEmployee() || id.Username != "n.sycheva" {
-		t.Fatalf("ожидали employee-сессию, получили %+v", id)
-	}
-}
-
-// Протухшая рабочая сессия не должна ломать вход клиенту.
-func TestExtractor_ExpiredEmployee_CustomerWins(t *testing.T) {
-	emp, cust := newSigningIdentity(t), newSigningIdentity(t)
-	e := dualExtractor(t, emp, cust)
-
-	expired := stdClaims()
-	expired.Expiry = jwt.NewNumericDate(time.Now().Add(-time.Minute))
-	expired.IssuedAt = jwt.NewNumericDate(time.Now().Add(-time.Hour))
-
-	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: "stit_session", Value: emp.sign(t, expired, hubClaims())})
-	r.AddCookie(&http.Cookie{Name: "stit_customer", Value: cust.sign(t, customerStdClaims(), customerClaims())})
-
-	ctx, err := e.Extract(r)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	id := sso.MustIdentityFrom(ctx)
-	if !id.IsCustomer() || id.CompanyID != "01980000-0000-7000-8000-00000000c0c0" {
-		t.Fatalf("ожидали customer-сессию, получили %+v", id)
-	}
-}
-
-func TestExtractor_CustomerOnly(t *testing.T) {
-	emp, cust := newSigningIdentity(t), newSigningIdentity(t)
-	e := dualExtractor(t, emp, cust)
-
-	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: "stit_customer", Value: cust.sign(t, customerStdClaims(), customerClaims())})
-
-	ctx, err := e.Extract(r)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if id := sso.MustIdentityFrom(ctx); !id.IsCustomer() {
-		t.Fatalf("ожидали customer-сессию, получили %+v", id)
-	}
-}
-
-// Employee-токен, положенный в customer-слот, не пускает: слот проверяется своим
-// верификатором, а не «любым подходящим».
-func TestExtractor_EmployeeTokenInCustomerSlot(t *testing.T) {
-	emp, cust := newSigningIdentity(t), newSigningIdentity(t)
-	e := dualExtractor(t, emp, cust)
-
-	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: "stit_customer", Value: emp.sign(t, stdClaims(), hubClaims())})
-
-	if _, err := e.Extract(r); err == nil {
-		t.Fatal("employee-токен в customer-слоте прошёл")
-	}
-}
-
-// Выключенный customer-контур — поведение ровно как без второго контура.
-func TestExtractor_CustomerDisabled(t *testing.T) {
-	emp, cust := newSigningIdentity(t), newSigningIdentity(t)
-	cfg := employeeCfg(emp.jwksServer(t).URL)
-	cv, err := sso.NewCustomerVerifier(cfg, nil)
+	emp := hubtest.NewIssuer(t)
+	v, err := sso.NewCustomerVerifier(hubtest.SSOConfig(emp, nil), nil)
 	if err != nil {
 		t.Fatalf("NewCustomerVerifier: %v", err)
 	}
-	e := sso.NewDualExtractor(verifier(t, cfg.JWKSURL), cv, cfg)
-
-	// Только customer-cookie — её никто не читает: как будто сессии нет вовсе.
-	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: "stit_customer", Value: cust.sign(t, customerStdClaims(), customerClaims())})
-	if _, err := e.Extract(r); !errors.Is(err, sso.ErrNoSessionCookie) {
-		t.Fatalf("ожидали ErrNoSessionCookie, получили %v", err)
-	}
-
-	// Employee-cookie работает как раньше.
-	r = httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: "stit_session", Value: emp.sign(t, stdClaims(), hubClaims())})
-	ctx, err := e.Extract(r)
-	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if id := sso.MustIdentityFrom(ctx); !id.IsEmployee() || id.EmployeeID == "" {
-		t.Fatalf("employee-сессия сломана: %+v", id)
+	if v != nil {
+		t.Fatal("customer verifier built with the contour disabled")
 	}
 }
 
-func TestIdentity_CanUseProduct(t *testing.T) {
-	emp := sso.Identity{EmployeeID: "e1", Role: "admin"}
-	for _, p := range []string{"deal", "telemost", "task", "calendar"} {
-		if !emp.CanUseProduct(p) {
-			t.Fatalf("сотруднику закрыт продукт %s", p)
-		}
+func TestIdentity_Gates(t *testing.T) {
+	tests := map[string]struct {
+		id       sso.Identity
+		employee bool
+		customer bool
+		deal     bool
+	}{
+		"zero value": {id: sso.Identity{}},
+		"employee":   {id: hubtest.EmployeeIdentity(), employee: true, deal: true},
+		"employee without kind claim": {
+			id:       hubtest.EmployeeIdentity(func(i *sso.Identity) { i.Kind = "" }),
+			employee: true, deal: true,
+		},
+		"employee id without subject": {
+			id: sso.Identity{EmployeeID: "e1"},
+		},
+		"customer with product": {id: hubtest.CustomerIdentity(), customer: true, deal: true},
+		"customer without product": {
+			id:       hubtest.CustomerIdentity(func(i *sso.Identity) { i.Products = nil }),
+			customer: true,
+		},
 	}
-	// Явный kind=employee — то же самое.
-	if !(sso.Identity{Kind: sso.KindEmployee}).CanUseProduct("deal") {
-		t.Fatal("employee с явным kind не пущен в продукт")
-	}
-
-	cust := sso.Identity{Kind: sso.KindCustomer, CompanyID: "c1", Products: []string{"deal", "telemost"}}
-	if !cust.CanUseProduct("deal") || !cust.CanUseProduct("telemost") {
-		t.Fatal("заказчик не пущен в выданный продукт")
-	}
-	if cust.CanUseProduct("task") || cust.CanUseProduct("") {
-		t.Fatal("заказчик пущен в невыданный продукт")
-	}
-	// Пустой набор — закрыто по умолчанию.
-	if (sso.Identity{Kind: sso.KindCustomer}).CanUseProduct("deal") {
-		t.Fatal("заказчик без products пущен в продукт")
+	for name, tc := range tests {
+		t.Run(name, func(t *testing.T) {
+			if got := tc.id.IsEmployee(); got != tc.employee {
+				t.Errorf("IsEmployee() = %v, want %v", got, tc.employee)
+			}
+			if got := tc.id.IsCustomer(); got != tc.customer {
+				t.Errorf("IsCustomer() = %v, want %v", got, tc.customer)
+			}
+			if got := tc.id.CanUseProduct("deal"); got != tc.deal {
+				t.Errorf("CanUseProduct(deal) = %v, want %v", got, tc.deal)
+			}
+		})
 	}
 }
 
 func TestRequireKindGates(t *testing.T) {
-	if _, err := sso.RequireEmployee(t.Context()); !errors.Is(err, sso.ErrNoIdentity) {
-		t.Fatalf("пустой ctx: ожидали ErrNoIdentity, получили %v", err)
+	ctx := t.Context()
+	if _, err := sso.RequireEmployee(ctx); !errors.Is(err, sso.ErrNoIdentity) {
+		t.Fatalf("no identity: %v", err)
 	}
-	if _, err := sso.RequireCustomer(t.Context()); !errors.Is(err, sso.ErrNoIdentity) {
-		t.Fatalf("пустой ctx: ожидали ErrNoIdentity, получили %v", err)
+	// Нулевая Identity в ctx не должна проходить за сотрудника.
+	if _, err := sso.RequireEmployee(sso.WithIdentity(ctx, sso.Identity{})); !errors.Is(err, sso.ErrNoIdentity) {
+		t.Fatalf("zero identity: %v", err)
 	}
-
-	empCtx := sso.WithIdentity(t.Context(), sso.Identity{EmployeeID: "e1"})
-	if id, err := sso.RequireEmployee(empCtx); err != nil || id.EmployeeID != "e1" {
-		t.Fatalf("RequireEmployee: id=%+v err=%v", id, err)
+	if _, err := sso.RequireEmployee(hubtest.WithEmployee(ctx)); err != nil {
+		t.Fatalf("employee: %v", err)
 	}
-	if _, err := sso.RequireCustomer(empCtx); !errors.Is(err, sso.ErrWrongKind) {
-		t.Fatalf("RequireCustomer на сотруднике: ожидали ErrWrongKind, получили %v", err)
+	if _, err := sso.RequireEmployee(hubtest.WithCustomer(ctx)); !errors.Is(err, sso.ErrWrongKind) {
+		t.Fatalf("customer in employee gate: %v", err)
 	}
-
-	custCtx := sso.WithIdentity(t.Context(), sso.Identity{Kind: sso.KindCustomer, CompanyID: "c1"})
-	if id, err := sso.RequireCustomer(custCtx); err != nil || id.CompanyID != "c1" {
-		t.Fatalf("RequireCustomer: id=%+v err=%v", id, err)
+	if _, err := sso.RequireCustomer(hubtest.WithCustomer(ctx)); err != nil {
+		t.Fatalf("customer: %v", err)
 	}
-	if _, err := sso.RequireEmployee(custCtx); !errors.Is(err, sso.ErrWrongKind) {
-		t.Fatalf("RequireEmployee на заказчике: ожидали ErrWrongKind, получили %v", err)
+	if _, err := sso.RequireCustomer(hubtest.WithEmployee(ctx)); !errors.Is(err, sso.ErrWrongKind) {
+		t.Fatalf("employee in customer gate: %v", err)
 	}
 }
 
-// Module — путь, которым контур подключают продукты: оба верификатора и dual-
-// extractor должны собираться из одного Config, а выключенный контур (nil в
-// графе) не должен ронять сборку.
-func TestModule_Graph(t *testing.T) {
-	emp, cust := newSigningIdentity(t), newSigningIdentity(t)
-	cfg := customerCfg(emp.jwksServer(t).URL, cust.jwksServer(t).URL)
-
-	var e *sso.Extractor
-	app := fx.New(fx.NopLogger, fx.Supply(cfg), sso.Module, fx.Populate(&e))
-	if err := app.Err(); err != nil {
-		t.Fatalf("граф с включённым контуром: %v", err)
+func TestIdentity_SubjectKey(t *testing.T) {
+	if got := hubtest.EmployeeIdentity().SubjectKey(); got != "employee:"+hubtest.DefaultSubject {
+		t.Fatalf("SubjectKey() = %q", got)
 	}
-	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: "stit_customer", Value: cust.sign(t, customerStdClaims(), customerClaims())})
-	ctx, err := e.Extract(r)
+	if got := (sso.Identity{}).SubjectKey(); got != "" {
+		t.Fatalf("zero SubjectKey() = %q, want empty", got)
+	}
+}
+
+func TestMustIdentityFrom(t *testing.T) {
+	if got := sso.MustIdentityFrom(hubtest.WithEmployee(t.Context())); got.Subject != hubtest.DefaultSubject {
+		t.Fatalf("identity = %+v", got)
+	}
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustIdentityFrom без identity обязан паниковать")
+		}
+	}()
+	sso.MustIdentityFrom(t.Context())
+}
+
+func TestRegisterIdentityLogAttr(t *testing.T) {
+	sso.RegisterIdentityLogAttr()
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info", Format: "json"}, logkit.WithWriter(&buf))
 	if err != nil {
-		t.Fatalf("Extract: %v", err)
-	}
-	if id := sso.MustIdentityFrom(ctx); !id.IsCustomer() {
-		t.Fatalf("ожидали customer-сессию, получили %+v", id)
+		t.Fatalf("logkit.New: %v", err)
 	}
 
-	off := employeeCfg(cfg.JWKSURL)
-	var eOff *sso.Extractor
-	appOff := fx.New(fx.NopLogger, fx.Supply(off), sso.Module, fx.Populate(&eOff))
-	if err := appOff.Err(); err != nil {
-		t.Fatalf("граф с выключенным контуром: %v", err)
-	}
-	if _, err := eOff.Extract(r); !errors.Is(err, sso.ErrNoSessionCookie) {
-		t.Fatalf("выключенный контур: ожидали ErrNoSessionCookie, получили %v", err)
-	}
-}
+	log.Info(hubtest.WithEmployee(t.Context()), "with employee")
+	log.Info(hubtest.WithCustomer(t.Context()), "with customer")
+	log.Info(t.Context(), "no identity")
 
-func TestConfig_Customer(t *testing.T) {
-	off := sso.Config{JWKSURL: "https://id.stit.tech/jwks"}
-	if off.CustomerEnabled() {
-		t.Fatal("контур включён без HUB_SSO_CUSTOMER_JWKS_URL")
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 3 {
+		t.Fatalf("log lines = %d", len(lines))
 	}
-	cfg := sso.Config{
-		CustomerJWKSURL:  "https://api.hub.stit.tech/.well-known/jwks.json",
-		CustomerLoginURL: "https://hub.stit.tech/customer/login",
-	}
-	if !cfg.CustomerEnabled() {
-		t.Fatal("контур выключен при заданном JWKS-URL")
-	}
-	got := cfg.CustomerLoginURLFor("https://deal.stit.tech/my-company")
-	want := "https://hub.stit.tech/customer/login?rd=https%3A%2F%2Fdeal.stit.tech%2Fmy-company"
-	if got != want {
-		t.Fatalf("CustomerLoginURLFor=%s, ожидали %s", got, want)
-	}
-	if got := cfg.CustomerLoginURLFor(""); got != "https://hub.stit.tech/customer/login" {
-		t.Fatalf("пустой returnTo: %s", got)
+	want := []string{hubtest.DefaultEmployeeID, hubtest.DefaultCustomerSubject, ""}
+	for i, line := range lines {
+		var rec map[string]any
+		if err := json.Unmarshal([]byte(line), &rec); err != nil {
+			t.Fatalf("unmarshal line %d: %v", i, err)
+		}
+		got, _ := rec["user_id"].(string)
+		if got != want[i] {
+			t.Fatalf("line %d user_id = %q, want %q", i, got, want[i])
+		}
 	}
 }

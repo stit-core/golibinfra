@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
 // ErrPendingRows — retention пропустил партиции с неопубликованными событиями;
@@ -13,18 +15,19 @@ import (
 var ErrPendingRows = errors.New("outboxkit: partition holds unpublished events")
 
 // SchemaSQL возвращает DDL партиционированной таблицы outbox + индекс для
-// заданного имени — для bootstrap кастомных таблиц multi-instance (caller
-// заводит свою миграцию). DefaultTable создаётся embedded-миграцией 0001.
+// заданного имени. Обычно не нужен напрямую: миграции кастомной таблицы даёт
+// TableMigrations(table), таблицу DefaultTable заводит Migrations.
 func SchemaSQL(table string) string {
 	return fmt.Sprintf(`CREATE TABLE IF NOT EXISTS %[1]s (
-    id           BIGSERIAL    NOT NULL,
-    subject      TEXT         NOT NULL,
-    payload      JSONB        NOT NULL,
-    created_at   TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
-    published_at TIMESTAMPTZ,
-    attempts     INT          NOT NULL DEFAULT 0,
-    last_error   TEXT,
-    dead_at      TIMESTAMPTZ,
+    id              BIGSERIAL    NOT NULL,
+    subject         TEXT         NOT NULL,
+    payload         JSONB        NOT NULL,
+    created_at      TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    published_at    TIMESTAMPTZ,
+    attempts        INT          NOT NULL DEFAULT 0,
+    last_error      TEXT,
+    next_attempt_at TIMESTAMPTZ,
+    dead_at         TIMESTAMPTZ,
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 
@@ -32,8 +35,10 @@ CREATE INDEX IF NOT EXISTS %[1]s_unpublished_idx
     ON %[1]s (created_at, id) WHERE published_at IS NULL AND dead_at IS NULL;`, table)
 }
 
+// PartitionSQL возвращает имя месячной партиции таблицы и DDL её создания;
+// month усекается до начала месяца.
 func PartitionSQL(table string, month time.Time) (name, sql string) {
-	start := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
+	start := monthStart(month)
 	end := start.AddDate(0, 1, 0)
 	name = fmt.Sprintf("%s_%04d_%02d", table, start.Year(), int(start.Month()))
 	sql = fmt.Sprintf(
@@ -45,14 +50,21 @@ func PartitionSQL(table string, month time.Time) (name, sql string) {
 	return name, sql
 }
 
+// monthStart — первый день месяца в UTC: AddDate нормализует 31-е число
+// («31 января + 1 месяц» = 3 марта), поэтому арифметика идёт от начала месяца.
+func monthStart(t time.Time) time.Time {
+	u := t.UTC()
+	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
+}
+
 // EnsurePartitions создаёт партиции текущего и monthsAhead следующих месяцев; идемпотентна.
 func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 	if monthsAhead < 0 {
 		monthsAhead = 0
 	}
-	now := time.Now().UTC()
+	base := monthStart(s.clock.Now())
 	for i := 0; i <= monthsAhead; i++ {
-		m := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, i, 0)
+		m := base.AddDate(0, i, 0)
 		_, sql := PartitionSQL(s.table, m)
 		if _, err := s.db.Exec(ctx, sql); err != nil {
 			return fmt.Errorf("outboxkit: ensure partition %s: %w", m.Format("2006-01"), err)
@@ -61,57 +73,108 @@ func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 	return nil
 }
 
-const listPartitionsSQL = `SELECT c.relname FROM pg_inherits i
+// listPartitionsSQL берёт и партиции родителя, и сирот — таблицы с именем
+// партиции, которые уже ни к чему не подключены: успевший DETACH с сорвавшимся
+// DROP иначе навсегда выпадает из retention.
+const listPartitionsSQL = `WITH parent AS (SELECT to_regclass($1) AS oid)
+SELECT c.relname, true AS attached, i.inhdetachpending
+FROM pg_inherits i
 JOIN pg_class c ON c.oid = i.inhrelid
-JOIN pg_class p ON p.oid = i.inhparent
-WHERE p.relname = $1`
+WHERE i.inhparent = (SELECT oid FROM parent)
+UNION ALL
+SELECT c.relname, false AS attached, false AS inhdetachpending
+FROM pg_class c, parent p
+WHERE p.oid IS NOT NULL
+  AND c.oid <> p.oid
+  AND c.relkind IN ('r', 'p')
+  AND c.relnamespace = (SELECT relnamespace FROM pg_class WHERE oid = p.oid)
+  AND c.relname ~ ('^' || $1 || '_[0-9]{4}_[0-9]{2}$')
+  AND NOT EXISTS (SELECT 1 FROM pg_inherits x WHERE x.inhrelid = c.oid)`
+
+type partitionRef struct {
+	name          string
+	attached      bool
+	detachPending bool
+}
 
 // DropOldPartitions дропает партиции старше keepMonths месяцев (<= 0 — no-op);
-// партиции с неопубликованными событиями остаются и перечисляются в ErrPendingRows.
+// партиции с неопубликованными событиями остаются и перечисляются в
+// ErrPendingRows. Вызывается вне транзакции: DETACH CONCURRENTLY недопустим в
+// transaction block.
 func (s *Store) DropOldPartitions(ctx context.Context, keepMonths int) error {
 	if keepMonths <= 0 {
 		return nil
 	}
-	now := time.Now().UTC()
-	cutoff := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -keepMonths, 0)
+	if pgkit.InTx(ctx) {
+		return errors.New("outboxkit: DropOldPartitions must run outside a transaction")
+	}
+	cutoff := monthStart(s.clock.Now()).AddDate(0, -keepMonths, 0)
 
-	rows, err := s.db.Query(ctx, listPartitionsSQL, s.table)
+	drop, err := s.oldPartitions(ctx, cutoff)
 	if err != nil {
-		return fmt.Errorf("outboxkit: list partitions: %w", err)
-	}
-	var drop []string
-	for rows.Next() {
-		var name string
-		if err := rows.Scan(&name); err != nil {
-			rows.Close()
-			return fmt.Errorf("outboxkit: scan partition: %w", err)
-		}
-		if m, ok := partitionMonth(s.table, name); ok && m.Before(cutoff) {
-			drop = append(drop, name)
-		}
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return fmt.Errorf("outboxkit: list partitions: %w", err)
+		return err
 	}
 
 	var pending []string
-	for _, name := range drop {
+	for _, p := range drop {
 		// name прошёл partitionMonth — это валидный `<table>_YYYY_MM`, безопасно инлайнить.
 		var hasPending bool
-		if err := s.db.QueryRow(ctx, fmt.Sprintf(s.pendingSQLFmt, name)).Scan(&hasPending); err != nil {
-			return fmt.Errorf("outboxkit: check partition %s: %w", name, err)
+		if err := s.db.QueryRow(ctx, fmt.Sprintf(s.pendingSQLFmt, p.name)).Scan(&hasPending); err != nil {
+			return fmt.Errorf("outboxkit: check partition %s: %w", p.name, err)
 		}
 		if hasPending {
-			pending = append(pending, name)
+			pending = append(pending, p.name)
 			continue
 		}
-		if _, err := s.db.Exec(ctx, "DROP TABLE IF EXISTS "+name); err != nil {
-			return fmt.Errorf("outboxkit: drop partition %s: %w", name, err)
+		if p.attached {
+			if err := s.detachPartition(ctx, p); err != nil {
+				return err
+			}
+		}
+		if _, err := s.db.Exec(ctx, "DROP TABLE IF EXISTS "+p.name); err != nil {
+			return fmt.Errorf("outboxkit: drop partition %s: %w", p.name, err)
 		}
 	}
 	if len(pending) > 0 {
 		return fmt.Errorf("%w: %s", ErrPendingRows, strings.Join(pending, ", "))
+	}
+	return nil
+}
+
+func (s *Store) oldPartitions(ctx context.Context, cutoff time.Time) ([]partitionRef, error) {
+	rows, err := s.db.Query(ctx, listPartitionsSQL, s.table)
+	if err != nil {
+		return nil, fmt.Errorf("outboxkit: list partitions: %w", err)
+	}
+	defer rows.Close()
+	var out []partitionRef
+	for rows.Next() {
+		var p partitionRef
+		if err := rows.Scan(&p.name, &p.attached, &p.detachPending); err != nil {
+			return nil, fmt.Errorf("outboxkit: scan partition: %w", err)
+		}
+		if m, ok := partitionMonth(s.table, p.name); !ok || !m.Before(cutoff) {
+			continue
+		}
+		out = append(out, p)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("outboxkit: list partitions: %w", err)
+	}
+	return out, nil
+}
+
+// detachPartition отцепляет партицию без ACCESS EXCLUSIVE на родителе: обычный
+// DROP выстроил бы за собой очередь из вставок доменных транзакций и тиков.
+func (s *Store) detachPartition(ctx context.Context, p partitionRef) error {
+	stmt := fmt.Sprintf("ALTER TABLE %s DETACH PARTITION %s CONCURRENTLY", s.table, p.name)
+	if p.detachPending {
+		// Прерванный detach оставляет партицию в detach-pending: CONCURRENTLY на
+		// ней отказывает, завершает такую партицию только FINALIZE.
+		stmt = fmt.Sprintf("ALTER TABLE %s DETACH PARTITION %s FINALIZE", s.table, p.name)
+	}
+	if _, err := s.db.Exec(ctx, stmt); err != nil {
+		return fmt.Errorf("outboxkit: detach partition %s: %w", p.name, err)
 	}
 	return nil
 }

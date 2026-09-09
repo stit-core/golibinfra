@@ -1,15 +1,18 @@
 GO      ?= go
 PKGS    ?= ./...
 GOLANGCI_LINT_VERSION ?= v2.12.2
+GOVULNCHECK_VERSION   ?= v1.8.0
+COVERPROFILE          ?= coverage.out
+FUZZTIME              ?= 10s
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check fmt fmt-check vet lint test test-full build tidy-check vuln docs-check gate-clean tools
+.PHONY: help check fmt fmt-check vet lint test test-full build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
 
 help: ## Список целей
-	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-12s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-check: fmt-check vet lint test build tidy-check vuln docs-check ## Канонический gate: fmt-check+vet+lint+test+build+tidy+vuln+docs (перед тегом)
+check: fmt-check vet lint test build tidy-check vuln envdoc-check ## Канонический gate: fmt+vet+lint+test+build+tidy+vuln+envdoc (перед тегом)
 
 fmt: ## Форматирование (gofumpt через golangci-lint)
 	golangci-lint fmt $(PKGS)
@@ -38,12 +41,32 @@ tidy-check: ## go.mod/go.sum синхронны с кодом
 vuln: ## govulncheck по всем пакетам
 	govulncheck $(PKGS)
 
-docs-check: ## envconfig-теги в коде описаны в README кита
+envdoc-check: ## envconfig-теги ↔ доки китов и корневая env-таблица
 	scripts/envdoc-check.sh
+
+coverage: ## Покрытие -short + сводка по пакетам
+	$(GO) test -short -count=1 -coverprofile=$(COVERPROFILE) $(PKGS)
+	$(GO) tool cover -func=$(COVERPROFILE) | tail -1
+	@echo "детали: go tool cover -html=$(COVERPROFILE)"
+
+bench: ## Бенчмарки без тестов
+	$(GO) test -run '^$$' -bench . -benchmem $(PKGS)
+
+fuzz: ## Короткий прогон каждого Fuzz-таргета (FUZZTIME=10s)
+	@set -e; \
+	for pkg in $$(grep -rl '^func Fuzz' --include='*_test.go' . | xargs -n1 dirname | sort -u); do \
+		for fn in $$(grep -hoE '^func (Fuzz[A-Za-z0-9_]*)' $$pkg/*_test.go | awk '{print $$2}'); do \
+			echo "== $$pkg $$fn ($(FUZZTIME))"; \
+			$(GO) test -run '^$$' -fuzz "^$$fn$$" -fuzztime $(FUZZTIME) ./$$pkg; \
+		done; \
+	done
 
 gate-clean: ## `make check` в чистом worktree HEAD (ловит gitignored-файлы)
 	scripts/gate-clean.sh
 
-tools: ## Установить golangci-lint и govulncheck
+hooks: ## Включить .githooks (pre-push = make check)
+	git config core.hooksPath .githooks
+
+tools: ## Установить golangci-lint и govulncheck пиненных версий
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
-	$(GO) install golang.org/x/vuln/cmd/govulncheck@latest
+	$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)

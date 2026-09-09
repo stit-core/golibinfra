@@ -1,54 +1,98 @@
-// Package flagkit — простейшие feature flags из ENV:
-// `FEATURE_FLAGS=foo=true,bar=baz` парсится в Store, который отдаёт
-// Bool/String. Без remote-источников и динамического refresh — для
-// тех случаев, когда достаточно kill-switch'а на рестарт.
+// Package flagkit — feature flags из одной переменной окружения:
+// `FEATURE_FLAGS=foo=true,bar=baz` разбирается в Store, который отдаёт
+// Bool/String. Снимок на старте, без remote-источников и refresh.
 package flagkit
 
 import (
+	"errors"
+	"fmt"
+	"maps"
+	"slices"
+	"strconv"
 	"strings"
 )
 
+// ErrConfig — невалидное значение FEATURE_FLAGS; детали записи оборачивают его.
+var ErrConfig = errors.New("flagkit: invalid config")
+
+// Config — конфиг кита; заполняется из окружения через NewConfig.
 type Config struct {
 	Definitions string `envconfig:"FEATURE_FLAGS"`
 }
 
-type Store interface {
-	Bool(name string) bool
-	String(name string) string
+// Validate отвергает записи без `=` и с пустым именем флага; ошибки всех
+// невалидных записей объединяются errors.Join.
+func (c Config) Validate() error {
+	_, err := parse(c.Definitions)
+	return err
 }
 
+// Store — доступ к снятым на старте флагам по имени.
+type Store interface {
+	// Bool — флаг как переключатель; отсутствие флага даёт false.
+	Bool(name string) bool
+	// String — сырое значение флага; отсутствие флага даёт "".
+	String(name string) string
+	// Names — имена заданных флагов в лексикографическом порядке.
+	Names() []string
+}
+
+// EnvStore — реализация Store поверх разобранного Config.Definitions.
+// После конструирования не меняется, поэтому безопасен для конкурентного чтения.
 type EnvStore struct {
 	flags map[string]string
 }
 
-func NewEnvStore(cfg Config) *EnvStore {
-	flags := make(map[string]string)
-	if cfg.Definitions == "" {
-		return &EnvStore{flags: flags}
+// NewEnvStore разбирает Config.Definitions; невалидная запись — ошибка
+// (errors.Is(err, ErrConfig)), а не молча пропущенный флаг.
+func NewEnvStore(cfg Config) (*EnvStore, error) {
+	flags, err := parse(cfg.Definitions)
+	if err != nil {
+		return nil, err
 	}
-	for _, pair := range strings.Split(cfg.Definitions, ",") {
-		pair = strings.TrimSpace(pair)
-		idx := strings.IndexByte(pair, '=')
-		if idx < 0 {
+	return &EnvStore{flags: flags}, nil
+}
+
+func parse(definitions string) (map[string]string, error) {
+	flags := make(map[string]string)
+	var errs []error
+	for entry := range strings.SplitSeq(definitions, ",") {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
 			continue
 		}
-		key := strings.TrimSpace(pair[:idx])
-		val := strings.TrimSpace(pair[idx+1:])
-		if key != "" {
-			flags[key] = val
+		name, value, found := strings.Cut(entry, "=")
+		if !found {
+			errs = append(errs, fmt.Errorf("%w: FEATURE_FLAGS entry %q: want name=value", ErrConfig, entry))
+			continue
 		}
+		name = strings.TrimSpace(name)
+		if name == "" {
+			errs = append(errs, fmt.Errorf("%w: FEATURE_FLAGS entry %q: empty flag name", ErrConfig, entry))
+			continue
+		}
+		flags[name] = strings.TrimSpace(value)
 	}
-	return &EnvStore{flags: flags}
+	if len(errs) > 0 {
+		return nil, errors.Join(errs...)
+	}
+	return flags, nil
 }
 
+// Bool возвращает true, если флаг задан значением из списка strconv.ParseBool
+// (1, t, T, TRUE, true, True); отсутствие флага и любое другое значение — false.
 func (s *EnvStore) Bool(name string) bool {
-	v, ok := s.flags[name]
-	if !ok {
-		return false
-	}
-	return strings.EqualFold(v, "true") || v == "1"
+	v, err := strconv.ParseBool(s.flags[name])
+	return err == nil && v
 }
 
+// String возвращает сырое значение флага либо "" при его отсутствии.
 func (s *EnvStore) String(name string) string {
 	return s.flags[name]
+}
+
+// Names возвращает имена заданных флагов в лексикографическом порядке —
+// для лога активной конфигурации на старте.
+func (s *EnvStore) Names() []string {
+	return slices.Sorted(maps.Keys(s.flags))
 }

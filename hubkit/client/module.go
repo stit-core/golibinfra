@@ -11,7 +11,7 @@ import (
 // (asymmetry-нота как в pgkit — caller добавляет `fx.Provide(client.NewConfig)`).
 // *httpclient.Client в графе опционален: без него клиент собирает свой с дефолтами.
 var Module = fx.Module(
-	"hubkit-client",
+	"hubkit/client",
 	fx.Provide(newClient),
 )
 
@@ -22,7 +22,7 @@ type clientParams struct {
 	Doer   *httpclient.Client `optional:"true"`
 }
 
-func newClient(p clientParams) *Client {
+func newClient(p clientParams) (*Client, error) {
 	var doer Doer
 	if p.Doer != nil {
 		doer = p.Doer
@@ -30,7 +30,12 @@ func newClient(p clientParams) *Client {
 	return New(p.Config, doer)
 }
 
+// NewConfig читает HUB_* клиента из ENV и валидирует их (ErrConfig на старте,
+// а не ErrUnavailable на каждом запросе).
 func NewConfig() (Config, error) {
 	var c Config
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return Config{}, err
+	}
+	return c, c.Validate()
 }

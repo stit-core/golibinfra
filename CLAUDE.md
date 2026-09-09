@@ -24,7 +24,9 @@ auth, БД, messaging, кэш, аудит и т.д. Не сервис и не st
 make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check
 make test-full    # + testcontainers (Postgres/NATS/Redis/MinIO), нужен Docker
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
-make tools        # golangci-lint + govulncheck
+make tools        # golangci-lint + govulncheck пиненных версий
+make hooks        # core.hooksPath=.githooks: pre-push гоняет make check
+make coverage     # покрытие -short + сводка; ещё есть bench и fuzz
 ```
 
 Зелёный `make check` = можно claim «готово». Перед тегом — `make gate-clean`:
@@ -36,24 +38,34 @@ make tools        # golangci-lint + govulncheck
 каждого кита — в его `README.md` рядом с кодом (у сложных китов ещё `docs/`);
 это единый источник правды по киту. Кратко:
 
-- **Фундамент:** `logkit` (slog + PII-redact + trace-id, JSON в stdout + OTel
-  log-bridge), `telemetry` (opt-in OTel bootstrap: провайдеры + OTLP-экспортёры),
-  `config` (композиция ENV-источников для App-конфига), `clockkit`, `timerkit`
-  (periodic jobs), `flagkit`, `tzkit` (Zone/Day/WallTime), `idkit` (UUIDv7),
-  `ptrkit`, `mapkit`, `bizmetric` (конвенция `biz_*`), `healthkit` (тип пробы
-  для `/ready`).
+- **Фундамент:** `logkit` (slog + PII-redact + trace-id, JSON/text в stdout + OTel
+  log-bridge), `telemetry` (opt-in OTel bootstrap: провайдеры + OTLP-экспортёры;
+  требует в графе `logkit.Config`), `config` (композиция ENV-источников для
+  App-конфига), `clockkit` (`Now`/`Since`/`After`/`NewTimer` + фейки), `timerkit`
+  (periodic jobs; регистрация — `timerkit.Provide`, группа `timerkit.Group`),
+  `flagkit`, `tzkit` (Zone/Day/WallTime), `idkit` (UUIDv7 + `Validate`),
+  `ptrkit`, `mapkit`, `bizmetric` (конвенция `biz_*`), `healthkit`
+  (`Probe{Name, Check}` + `WithTimeout` для `/ready`).
 - **Транспорт:** `httpkit` (huma/chi server + middleware), `httpclient` (retry +
-  breaker на хост + SSE), `grpckit` (gRPC-сервер) + `grpcclient` (gRPC-клиент).
+  breaker на хост + redirect-политика + SSE), `grpckit` (gRPC-сервер) +
+  `grpcclient` (gRPC-клиент).
 - **Данные и messaging:** `pgkit` (pgx pool + миграции + Transactor), `natskit`
   (NATS/JetStream), `outboxkit` (transactional outbox), `cachekit` (Redis +
   idempotency store), `storagekit` (S3/MinIO), `auditkit`, `bruteforcekit`.
 - **Auth и интеграции:** `authnkit` (Argon2id/JWT/TOTP/RBAC), `oidckit` (OIDC BFF),
-  `hubkit` (SDK хаба stit: sso/issuer/client/sync/projection), `anthropickit`
+  `hubkit` (SDK хаба stit: sso/issuer/client/sync/projection/hubclaims), `anthropickit`
   (клиент Anthropic с `Usage`+`Cost`), `amocrmkit` (транспорт к amoCRM).
-- **Тесты:** `testkit` (testcontainers + per-kit хелперы).
-- **Служебное:** `internal/otelkit` (scope + `Must` для OTel-инструментов),
-  `internal/requestid` (ctx-ключ request-id), `internal/jwks` (кэш JWKS с
-  троттлингом). Общие helper'ы живут в `internal/`, наружу не экспортируются.
+- **Тесты:** `testkit` (testcontainers) + сабпакеты `testkit/<name>test`
+  (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`,
+  `handlertest`, `hubtest`, `logtest`, `natstest`, `oidctest`, `outboxtest`,
+  `pgtest`, `storagetest`) — внутри китов test-хелперов нет.
+- **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
+  две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
+  `internal/requestid` (ctx-ключ request-id),
+  `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`),
+  `internal/grpcstatus` (классификация gRPC-кодов), `internal/grpclogkit`
+  (мост grpclog → logkit). Общие helper'ы живут в `internal/`, наружу не
+  экспортируются.
 
 ## Observability-инварианты
 
@@ -67,8 +79,17 @@ make tools        # golangci-lint + govulncheck
   конечные множества (route-pattern, а не путь; хост, а не URL).
 - **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
   business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
-- Health-проба кита — `healthkit.Probe`; в `/ready` попадает через
-  `healthkit.Provide(...)` (fx-группа `health`).
+- Гистограммы длительности — в секундах, `WithUnit("s")` + общие границы
+  `otelkit.DurationBuckets()`; для операций, штатно идущих минутами, —
+  `otelkit.LongDurationBuckets()` (сейчас только `anthropickit`). Своих
+  bucket-границ киты не заводят.
+- Health-проба кита — именованная `healthkit.Probe{Name, Check}`; в `/ready` и в
+  health-loop `grpckit` попадает через `healthkit.Provide(...)` (fx-группа
+  `healthkit.Group` = `healthkit.probes`).
+- Имя fx-группы кита — `<kit>.<thing>` и всегда экспортируемая константа
+  (`healthkit.Group`, `timerkit.Group`, `grpckit.ServicesGroup`,
+  `pgkit.MigrationsGroup`, `httpkit.MiddlewareGroup`, …); имя `fx.Module` —
+  `<kit>` или `<kit>/<sub>` (у параметризованных модулей — `<kit>:<instance>`).
 
 ## Стиль (инварианты)
 
@@ -76,23 +97,37 @@ make tools        # golangci-lint + govulncheck
 - **fx-first.** Каждый kit отдаёт `Module`/`<Kit>Module` (`fx.Options`); консьюмер
   собирает `App` из них. Прямой `New*()` без fx допустим, но менее идиоматичен.
 - **Config провайдит caller.** `Module` не читает ENV сам: `fx.Provide(<kit>.NewConfig)`
-  или App-структура. `NewConfig` валидирует (`ErrConfig`) и падает на старте, а
-  не на первом запросе.
+  или App-структура. Каждый конфиг имеет `Validate() error` с sentinel'ом
+  `<kit>.ErrConfig`; `NewConfig` и конструкторы (`New*`) его зовут, поэтому
+  невалидный конфиг падает на старте, а не на первом запросе. Zero-value `Config`
+  либо безопасен и полезен, либо отвергается `Validate` — «молча ломается» нельзя.
 - **envconfig-теги — часть public API.** Имена полей/тегов конфигов (`README.md §
-  Стабильность API`) менять = breaking → major (`/vN` в module path).
+  Стабильность API`) менять = breaking: `!` в коммите + строка миграции в
+  аннотации тега. Порядок тегов — `envconfig` первым, затем `default`.
+- **Doc-comment на каждом экспорте** (Go-конвенция: одна строка, начинается с
+  имени). `revive.exported` ловит типы, функции, var и const; **методы на
+  экспортируемом приёмнике он пропускает** — там правило держит ревью. Package-doc
+  — 1–3 строки: что это и какие сигналы эмитит, детали — в README кита.
+- **Язык кода — английский:** тексты ошибок и логов, sentinel'ы
+  `errors.New("<kit>: …")`, обёртки `fmt.Errorf("<kit>: …: %w", err)`.
 - **Observability by default.** Новый kit эмитит метрики/спаны через `internal/otelkit`;
   resource attrs и экспорт настраивает потребитель.
 - **Минимум зависимостей.** Перед новым import — проверь stdlib + существующие deps;
   каждый новый import обсуждается с пользователем. Одна библиотека на задачу
   (JWT — go-jose, Postgres — pgx).
-- **Комментарии — только WHY** (rule `.claude/rules/comments.md`).
+- **Комментарии внутри функций — только WHY** (rule `.claude/rules/comments.md`);
+  doc-comment на экспорте — обязателен и правилом не ограничен.
 
 ## Git workflow
 
 - **Conventional Commits**: `feat|fix|refactor|docs|test|chore` + `<type>(<scope>)?: <subject>`;
   breaking — `!` и футер `BREAKING CHANGE:`.
-- Линейная история; версия — тег `vX.Y.Z` (breaking — major, добавления — minor,
-  фиксы — patch). Аннотация тега — release notes: что изменилось и как мигрировать.
+- Линейная история; версия — тег `vX.Y.Z`. Совместимость между minor-версиями
+  `v1` не гарантируется: breaking идёт **minor**'ом с `!` в коммите и строкой
+  миграции в аннотации тега; patch — только фиксы без смены сигнатур, дефолтов,
+  имён метрик и envconfig-тегов; major — смена module path (`/vN`).
+  Аннотация тега — release notes: `Breaking` по китам (что изменилось → как
+  мигрировать), `Поведение`, `Изменения`, `Гейт`.
 - Коммит/пуш — гейт человека (без явной просьбы не коммитить).
 
 ## Границы
@@ -102,9 +137,11 @@ make tools        # golangci-lint + govulncheck
 - Новый kit — через `/add-kit`; собственный `README.md` кита (+ `docs/` у сложного)
   и строка-индекс в `README.md § Пакеты` обязательны.
 - Тронул конфиг / эмитимые метрики / labels / span-attrs — обнови `README.md`
-  (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability); `envdoc-check`
-  сверяет env-переменные с доками.
-- Каждый багфикс — с регрессионным тестом.
+  (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability) и, если
+  переменная — endpoint, строку в `README.md § Per-concern endpoints`;
+  `make envdoc-check` сверяет обе стороны.
+- Каждый багфикс — с регрессионным тестом; у `Module` кита — fx-тест
+  (`fx.ValidateApp` с минимальным набором провайдеров).
 
 ### Сначала спросить
 - Менять конвенцию имён метрик (`bizmetric`, `biz_*`) — затрагивает все сервисы.

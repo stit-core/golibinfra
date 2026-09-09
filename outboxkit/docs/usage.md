@@ -5,19 +5,25 @@
 ## Single-instance: fx Module
 
 Одна таблица `outbox`, проводка через fx. `pgstore.Module` даёт `Store` как
-`outboxkit.Repository`, регистрирует миграцию кита в `pgkit.MigrateModule`,
-создаёт партиции в `OnStart` и держит partition/retention jobs;
-`outboxkit.Module` — `Bus`/`Publisher`/`Worker`/drain-`Job`. Конфиги
-(`outboxkit.NewConfig`, `pgstore.NewConfig`) caller провайдит явно.
+`outboxkit.Repository`, регистрирует миграции кита в `pgkit.MigrateModule`,
+создаёт партиции в `OnStart` и держит partition/retention job'ы;
+`outboxkit.Module` — `Bus`/`Publisher`/`Worker`/drain-`Job`/backlog-gauge'и.
+Конфиги caller провайдит явно.
 
 ```go
 fx.New(
+    fx.Provide(
+        logkit.NewConfig,
+        pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig,
+        natskit.NewConfig,
+        pgstore.NewConfig, outboxkit.NewConfig,
+    ),
+    logkit.Module,
     pgkit.Module,        // *pgkit.DB, pgkit.Transactor
-    pgkit.MigrateModule, // применяет pgstore.Migrations до OnStart партиций
+    pgkit.MigrateModule, // применяет pgstore.Migrations, провайдит pgkit.Migrated
     natskit.Module(""),  // natskit.StreamBus (NATS_JETSTREAM_ENABLED=true + стрим)
-    timerkit.Module,     // гоняет Worker.Run и keeper-jobs по тикерам
+    timerkit.Module,     // гоняет Worker.Run и keeper-job'ы по тикерам
 
-    fx.Provide(pgstore.NewConfig, outboxkit.NewConfig),
     pgstore.Module,   // Store→Repository, миграции, партиции, retention
     outboxkit.Module, // Bus, Publisher, Worker, drain-Job
 
@@ -27,9 +33,11 @@ fx.New(
 )
 ```
 
-`pgkit.MigrateModule` в списке стоит раньше `pgstore.Module`: `OnStart`-хуки
-выполняются в порядке регистрации, а партиции создаются поверх таблицы из
-миграции. tx-strict guard включается `OUTBOX_REQUIRE_TX=true`.
+Порядок модулей в `fx.New` не важен: и `OnStart`-хук партиций, и keeper-job'ы
+(`RunOnStart` у partition-keeper'а) зависят от `pgkit.Migrated`, поэтому встают в
+очередь после прогона миграций. Зависимость `optional` — сборка без
+`pgkit.MigrateModule` (схему накатывает CI) остаётся рабочей, но тогда порядок
+обеспечивает уже сам CI.
 
 ## Публикация в транзакции
 
@@ -45,13 +53,59 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 })
 ```
 
-`payload` — любое значение, сериализуемое `json.Marshal`.
+`payload` — любое значение, сериализуемое `json.Marshal`; сериализует его `Bus`.
+Вне транзакции (при `OUTBOX_REQUIRE_TX=true`, default) `Publish` возвращает
+`outboxkit.ErrNoTx`.
 
-## Multi-instance: New + NewStoreFor + NewStreamTransportFor
+## Multi-instance: outboxkit.Instance
 
 Несколько независимых outbox'ов (таблица на домен) в одном приложении.
-Собирается вручную, потому что каждый инстанс — своя таблица и свой namespace для
-`Nats-Msg-Id`.
+`pgstore.FactoryModule` провайдит фабрику store'ов, `outboxkit.Instance` собирает
+инстанс целиком: store на свою таблицу, транспорт с namespace'ным `Nats-Msg-Id`,
+drain-job, партиции и retention, backlog-gauge'и.
+
+```go
+// сигнатуры
+func pgstore.TableMigrations(table string) pgkit.Source
+func outboxkit.Instance(name, table string, opts ...outboxkit.InstanceOption) fx.Option
+func outboxkit.WithInstanceConfig(cfg outboxkit.Config) outboxkit.InstanceOption
+```
+
+```go
+fx.New(
+    fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, natskit.NewConfig,
+        pgstore.NewConfig, outboxkit.NewConfig),
+    logkit.Module, pgkit.Module, pgkit.MigrateModule, natskit.Module(""), timerkit.Module,
+
+    // миграции таблиц инстансов
+    pgkit.ProvideMigrations(pgstore.TableMigrations("outbox_orders")),
+    pgkit.ProvideMigrations(pgstore.TableMigrations("outbox_leads")),
+
+    pgstore.FactoryModule, // outboxkit.RepositoryFactory
+    outboxkit.Instance("orders", "outbox_orders"),
+    outboxkit.Instance("leads", "outbox_leads",
+        outboxkit.WithInstanceConfig(orderedCfg)), // свой режим у одного домена
+
+    fx.Invoke(fx.Annotate(
+        func(orders outboxkit.Publisher) { /* в доменный сервис */ },
+        fx.ParamTags(`name:"orders"`),
+    )),
+)
+```
+
+`pgstore.Module` и `pgstore.FactoryModule` вместе не подключаются: оба провайдят
+Store в один граф. Приложению с таблицей `outbox` и доменными таблицами нужен
+`pgstore.Module` плюс `outboxkit.Instance` поверх собственных `NewStoreFor`
+(ручная сборка ниже).
+
+`*Outbox` и `Publisher` инстанса провайдятся под fx-тегом `name:"<name>"`; имя
+инстанса становится label'ом `instance` в метриках и namespace'ом `Nats-Msg-Id`
+(`"orders:42"`), что исключает cross-table коллизии дедупа, когда таблицы делят
+один JetStream-стрим.
+
+## Multi-instance вручную
+
+Когда сборка не через fx:
 
 ```go
 // сигнатуры
@@ -61,30 +115,41 @@ func outboxkit.New(name string, repo outboxkit.Repository, tr outboxkit.Transpor
 ```
 
 ```go
-// на каждый домен — своя таблица + namespace'ный транспорт
-ordersStore, err := pgstore.NewStoreFor(db, "outbox_orders", pgstore.WithRequireTx())
+store, err := pgstore.NewStoreFor(db, "outbox_orders",
+    pgstore.WithRequireTx(), pgstore.WithRetention(3))
 if err != nil {
     return err
 }
-ordersTr := outboxkit.NewStreamTransportFor(sb, "orders") // Msg-Id = "orders:<id>"
-orders := outboxkit.New("orders", ordersStore, ordersTr, transactor, cfg)
+orders := outboxkit.New("orders", store, outboxkit.NewStreamTransportFor(sb, "orders"), transactor, cfg)
 
-leadsStore, _ := pgstore.NewStoreFor(db, "outbox_leads")
-leadsTr := outboxkit.NewStreamTransportFor(sb, "leads")    // Msg-Id = "leads:<id>"
-leads := outboxkit.New("leads", leadsStore, leadsTr, transactor, cfg)
+publisher := orders.Publisher() // туда, где нужна доменная публикация
+jobs := orders.Jobs()           // drain + партиции + retention → timerkit.Group
+reg, err := orders.RegisterBacklogGauges() // Unregister на shutdown
 ```
 
-namespace обязателен, если таблицы делят один JetStream-стрим: per-domain
-`BIGSERIAL` независимы, и голый id столкнулся бы (см.
-[architecture.md](architecture.md) § Namespaced Nats-Msg-Id). `name` инстанса
-становится label'ом `instance` в метриках.
+Схему кастомной таблицы накатывает caller — `pgstore.TableMigrations(table)` в
+`pgkit.MigrateUpAll`/`MigrateModule` либо `pgstore.SchemaSQL(table)` в
+собственной миграции приложения.
 
-Проводка инстансов: `Outbox.Publisher()` — туда, где нужна доменная публикация;
-`Outbox.Job()` (`timerkit.Job` с интервалом из конфига) — в `timer.job`-группу.
-Схему и партиции кастомных таблиц заводит caller — `pgstore.SchemaSQL(table)` в
-своей миграции, `Store.EnsurePartitions(ctx, 1)` в `OnStart` и по расписанию
-(`pgstore.PartitionKeeperJob(store)`); retention — `Store.DropOldPartitions(ctx,
-keepMonths)` (`pgstore.RetentionKeeperJob(store, keepMonths)`).
+## Оживление dead-строк
+
+Строки, исчерпавшие `OUTBOX_MAX_ATTEMPTS`, остаются в таблице с `dead_at`,
+`attempts` и `last_error`. Вернуть их в очередь (после починки причины):
+
+```go
+func (o *outboxkit.Outbox) ReviveDead(ctx context.Context, f outboxkit.ReviveFilter) (int64, error)
+
+n, err := outbox.ReviveDead(ctx, outboxkit.ReviveFilter{
+    Subject: "order.created",              // пусто — любой subject
+    Since:   time.Now().AddDate(0, 0, -7), // нулевое время — без границы
+})
+```
+
+Фильтр отбирает dead-строки по `IDs`, `Subject` и `Since` (нижняя граница
+`created_at`); поля соединяются по И, пустой фильтр берёт все dead-строки
+таблицы. Сбрасываются `dead_at`, `attempts`, `last_error` и пауза backoff;
+результат — число оживлённых строк, оно же уходит в `outbox_revived_total`.
+Хранилище без поддержки замены отвечает `outboxkit.ErrNotSupported`.
 
 ## MarkPublished и drain вручную
 
@@ -94,34 +159,42 @@ drain:
 
 ```go
 func (s *pgstore.Store) ListUnpublished(ctx context.Context, limit int, mode outboxkit.PublishMode) ([]outboxkit.Message, error)
-func (s *pgstore.Store) MarkPublished(ctx context.Context, ids []int64) error
+func (s *pgstore.Store) MarkPublished(ctx context.Context, refs []outboxkit.MessageRef) error
 func (s *pgstore.Store) RecordFailures(ctx context.Context, failures []outboxkit.Failure) error
 ```
 
-`ListUnpublished` берёт только строки с `published_at IS NULL AND dead_at IS NULL`,
-сортирует по `created_at, id` и запирает их `FOR UPDATE` до конца транзакции
-вызывающего — поэтому вызывается внутри `pgkit.Transactor.WithTx`. В `batch`
-занятые другими строки пропускаются (`SKIP LOCKED`), в `ordered` занятая голова
-очереди — `outboxkit.ErrBusy` (`NOWAIT`). `MarkPublished` — один batch-`UPDATE`
-по `id = ANY($1)` с `published_at = NOW()`. `RecordFailures` одним `UPDATE` через
-`unnest` инкрементит `attempts`, пишет `last_error` и проставляет `dead_at` тем, у
-кого `Failure.Dead = true`.
+`ListUnpublished` берёт строки с `published_at IS NULL AND dead_at IS NULL`,
+пропуская те, чей `next_attempt_at` ещё не наступил (в `ordered` — останавливаясь
+на такой строке), сортирует по `created_at, id` и запирает их `FOR UPDATE` до
+конца транзакции вызывающего — поэтому вызывается внутри `pgkit.Transactor.WithTx`.
+В `batch` занятые другими строки пропускаются (`SKIP LOCKED`), в `ordered`
+занятая голова очереди — `outboxkit.ErrBusy` (`NOWAIT`).
+
+`MarkPublished` и `RecordFailures` принимают `outboxkit.MessageRef{ID, CreatedAt}`
+— его отдаёт `Message.Ref()`. `CreatedAt` — ключ партиционирования: с ним UPDATE
+идёт по партициям батча, а не по всем партициям таблицы.
 
 ## BacklogReporter (lag / pending)
 
-`pgstore.Store` реализует `outboxkit.BacklogReporter`. Single-instance `Module`
-подключает gauge'и автоматически. Вручную:
+`pgstore.Store` реализует `outboxkit.BacklogReporter`. `outboxkit.Module` и
+`outboxkit.Instance` подключают gauge'и автоматически. Вручную:
 
 ```go
+func (o *outboxkit.Outbox) RegisterBacklogGauges() (metric.Registration, error)
 func outboxkit.RegisterBacklogGauges(instance string, reporter outboxkit.BacklogReporter) (metric.Registration, error)
 
-reg, err := outboxkit.RegisterBacklogGauges("orders", ordersStore)
+reg, err := outbox.RegisterBacklogGauges()
 if err != nil {
     return err
 }
 // на shutdown:
 defer reg.Unregister()
 ```
+
+Метод `(*Outbox).RegisterBacklogGauges` всегда отдаёт непустую `Registration`:
+на хранилище без `BacklogReporter` это no-op, и `defer reg.Unregister()` не
+требует проверки на `nil`. Пакетная `outboxkit.RegisterBacklogGauges(instance,
+reporter)` берёт `BacklogReporter` явным аргументом.
 
 Это включает `outbox_lag_seconds{instance,subject}` и
 `outbox_pending_count{instance,subject}` (см.

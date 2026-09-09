@@ -51,7 +51,7 @@ func TestSignRequest_AssemblyAndDate(t *testing.T) {
 func TestSignRequest_GETEmptyBody(t *testing.T) {
 	sh := signRequest(time.Unix(0, 0).UTC(), "GET", "/v2/origin/custom/x", nil, "s")
 	if sh.ContentMD5 != "d41d8cd98f00b204e9800998ecf8427e" {
-		t.Errorf("GET Content-MD5 = %s, want MD5 пустой строки", sh.ContentMD5)
+		t.Errorf("GET Content-MD5 = %s, want the MD5 of an empty body", sh.ContentMD5)
 	}
 }
 
@@ -73,6 +73,6 @@ func TestVerifyWebhookSignature(t *testing.T) {
 		t.Error("tampered body accepted")
 	}
 	if VerifyWebhookSignature(body, "sha1="+sig, secret) {
-		t.Error("signature with sha1= prefix must NOT match (amoJo шлёт голый hex)")
+		t.Error("signature with sha1= prefix must NOT match (amoJo sends bare hex)")
 	}
 }

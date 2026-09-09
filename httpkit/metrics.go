@@ -2,18 +2,19 @@ package httpkit
 
 import (
 	"net/http"
+	"slices"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 )
-
-var durationBuckets = []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
 
 type instruments struct {
 	reqTotal          metric.Int64Counter
@@ -24,9 +25,11 @@ type instruments struct {
 	rateLimited       metric.Int64Counter
 }
 
-func newInstruments() *instruments {
+// newInstruments — один набор инструментов на процесс: каждый middleware
+// иначе регистрирует свою копию всех шести.
+var newInstruments = sync.OnceValue(func() *instruments {
 	return newInstrumentsWithMeter(otelkit.Meter("httpkit"))
-}
+})
 
 func newInstrumentsWithMeter(m metric.Meter) *instruments {
 	return &instruments{
@@ -35,7 +38,7 @@ func newInstrumentsWithMeter(m metric.Meter) *instruments {
 		reqDuration: otelkit.Must(m.Float64Histogram("http_request_duration_seconds",
 			metric.WithDescription("HTTP request duration"),
 			metric.WithUnit("s"),
-			metric.WithExplicitBucketBoundaries(durationBuckets...))),
+			otelkit.DurationBuckets())),
 		panicsTotal: otelkit.Must(m.Int64Counter("http_panics_total",
 			metric.WithDescription("Panics recovered in the HTTP handler chain"))),
 		maxBodyRejections: otelkit.Must(m.Int64Counter("http_max_body_rejections_total",
@@ -58,8 +61,22 @@ func routeLabel(r *http.Request) string {
 	return "unmatched"
 }
 
+var knownMethods = []string{
+	http.MethodGet, http.MethodHead, http.MethodPost, http.MethodPut,
+	http.MethodPatch, http.MethodDelete, http.MethodOptions, http.MethodConnect, http.MethodTrace,
+}
+
+// methodLabel — метод из конечного множества: клиент отправляет произвольный
+// токен, а label метрики и имя спана должны оставаться перечислимыми.
+func methodLabel(m string) string {
+	if slices.Contains(knownMethods, m) {
+		return m
+	}
+	return "other"
+}
+
 // Metrics эмитит http_requests_total и http_request_duration_seconds через
-// глобальный otel.Meter и даёт server-спану имя «METHOD /route/{param}».
+// глобальный otel.Meter и дополняет server-спан route и request_id.
 func Metrics() func(http.Handler) http.Handler {
 	return metricsWith(newInstruments())
 }
@@ -69,19 +86,25 @@ func metricsWith(instr *instruments) func(http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			ww := wrap(w)
+			// defer: panic ниже по цепочке тоже должна дать сэмпл.
+			defer func() {
+				route := routeLabel(r)
+				if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+					attrs := []attribute.KeyValue{semconv.HTTPRoute(route)}
+					if id := RequestIDFrom(r.Context()); id != "" {
+						attrs = append(attrs, attribute.String("request_id", id))
+					}
+					span.SetAttributes(attrs...)
+				}
+				attrs := metric.WithAttributes(
+					attribute.String("method", methodLabel(r.Method)),
+					attribute.String("path", route),
+					attribute.String("status", strconv.Itoa(ww.status)),
+				)
+				instr.reqTotal.Add(r.Context(), 1, attrs)
+				instr.reqDuration.Record(r.Context(), time.Since(start).Seconds(), attrs)
+			}()
 			next.ServeHTTP(ww, r)
-
-			route := routeLabel(r)
-			if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
-				span.SetName(r.Method + " " + route)
-			}
-			attrs := metric.WithAttributes(
-				attribute.String("method", r.Method),
-				attribute.String("path", route),
-				attribute.String("status", strconv.Itoa(ww.status)),
-			)
-			instr.reqTotal.Add(r.Context(), 1, attrs)
-			instr.reqDuration.Record(r.Context(), time.Since(start).Seconds(), attrs)
 		})
 	}
 }

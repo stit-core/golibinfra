@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/url"
 	"testing"
+	"time"
 
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -15,8 +16,8 @@ func TestNewAppliesConfigHostOverride(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	got, err := c.resolveURL(Account{Subdomain: "demo", TLD: "ru"}.restBase(), "/api/v4/leads", url.Values{"limit": {"5"}})
-	if err != nil || got != "http://fake-amo:8080/api/v4/leads?limit=5" {
-		t.Fatalf("resolveURL = %q, %v; want override host with path and query", got, err)
+	if err != nil || got.String() != "http://fake-amo:8080/api/v4/leads?limit=5" {
+		t.Fatalf("resolveURL = %v, %v; want override host with path and query", got, err)
 	}
 }
 
@@ -26,20 +27,20 @@ func TestNewNoOverrideUsesAccountHost(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	got, err := c.resolveURL(Account{Subdomain: "demo", TLD: "ru"}.restBase(), "/api/v4/leads", nil)
-	if err != nil || got != "https://demo.amocrm.ru/api/v4/leads" {
-		t.Fatalf("resolveURL = %q, %v; want subdomain host", got, err)
+	if err != nil || got.String() != "https://demo.amocrm.ru/api/v4/leads" {
+		t.Fatalf("resolveURL = %v, %v; want subdomain host", got, err)
 	}
 }
 
 func TestHostOverrideKeepsUploadURLPath(t *testing.T) {
 	c := newTestClient(t, "http://fake-amo:8080")
 	got, err := c.resolveURL("https://drive-b.amocrm.ru/v1.0/sessions/abc/upload?part=2", "", nil)
-	if err != nil || got != "http://fake-amo:8080/v1.0/sessions/abc/upload?part=2" {
-		t.Fatalf("upload_url under override = %q, %v; path and query must survive", got, err)
+	if err != nil || got.String() != "http://fake-amo:8080/v1.0/sessions/abc/upload?part=2" {
+		t.Fatalf("upload_url under override = %v, %v; path and query must survive", got, err)
 	}
 	got, err = c.resolveURL("https://drive-b.amocrm.ru/", "/v1.0/files", nil)
-	if err != nil || got != "http://fake-amo:8080/v1.0/files" {
-		t.Fatalf("drive base with trailing slash = %q, %v", got, err)
+	if err != nil || got.String() != "http://fake-amo:8080/v1.0/files" {
+		t.Fatalf("drive base with trailing slash = %v, %v", got, err)
 	}
 }
 
@@ -52,18 +53,29 @@ func TestResolveURLRejectsRelative(t *testing.T) {
 
 func TestConfigValidate(t *testing.T) {
 	cases := map[string]Config{
-		"zero rps":       {RateRPS: 0},
-		"negative rps":   {RateRPS: -1},
-		"override host":  {RateRPS: 7, HostOverride: "fake-amo:8080"},
-		"override ftp":   {RateRPS: 7, HostOverride: "ftp://fake-amo"},
-		"override empty": {RateRPS: 7, HostOverride: "http://"},
+		"zero rps":         {RateRPS: 0},
+		"negative rps":     {RateRPS: -1},
+		"negative maxwait": {RateRPS: 7, MaxWait: -time.Second},
+		"override host":    {RateRPS: 7, HostOverride: "fake-amo:8080"},
+		"override ftp":     {RateRPS: 7, HostOverride: "ftp://fake-amo"},
+		"override empty":   {RateRPS: 7, HostOverride: "http://"},
+		"override path":    {RateRPS: 7, HostOverride: "http://fake-amo:8080/some/path"},
+		"override query":   {RateRPS: 7, HostOverride: "http://fake-amo:8080?x=1"},
+		"override user":    {RateRPS: 7, HostOverride: "http://u:p@fake-amo:8080"},
 	}
 	for name, cfg := range cases {
 		if err := cfg.Validate(); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: err = %v, want ErrConfig", name, err)
 		}
 	}
-	if err := (Config{RateRPS: 7, HostOverride: "https://sandbox.example:8443"}).Validate(); err != nil {
-		t.Errorf("valid config rejected: %v", err)
+	for _, ok := range []Config{
+		{RateRPS: 7},
+		{RateRPS: 7, HostOverride: "https://sandbox.example:8443"},
+		{RateRPS: 7, HostOverride: "http://fake-amo:8080/"},
+		{RateRPS: 7, MaxWait: 0},
+	} {
+		if err := ok.Validate(); err != nil {
+			t.Errorf("valid config %+v rejected: %v", ok, err)
+		}
 	}
 }

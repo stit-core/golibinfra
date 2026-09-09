@@ -9,12 +9,6 @@ import (
 	"net/http"
 )
 
-// amoJo Chat API — подписанные (HMAC-SHA1) запросы на https://amojo.amocrm.{tld}.
-//
-// Тело маршалится ОДИН раз: Content-MD5 и реальное тело считаются с тех же байтов
-// (иначе MD5 разойдётся). Маппинг типов медиа (audio→voice и пр.) — у потребителя,
-// кит принимает amoJo-тип как есть.
-
 // AmojoTarget — координаты amoJo-вызова. AccountKey должен совпадать с
 // Account.Subdomain того же аккаунта: rate-budget общий с REST.
 type AmojoTarget struct {
@@ -27,7 +21,13 @@ func (t AmojoTarget) validate() error {
 	return validateAccount(t.AccountKey, t.TLD)
 }
 
-func (c *Client) amojoCall(ctx context.Context, t AmojoTarget, method, endpoint, path string, body, out any) error {
+func (t AmojoTarget) ref() accountRef {
+	return accountRef{Subdomain: t.AccountKey, TLD: t.TLD}
+}
+
+// amojoCall — подписанный (HMAC-SHA1) вызов amoJo. Тело маршалится один раз:
+// Content-MD5 и подпись считаются с тех же байтов, что уходят на провод.
+func (c *Client) amojoCall(ctx context.Context, t AmojoTarget, method, endpoint, path string, body, out any, allowRetry bool) error {
 	if err := t.validate(); err != nil {
 		return fmt.Errorf("amocrmkit: %s: %w", endpoint, err)
 	}
@@ -36,29 +36,30 @@ func (c *Client) amojoCall(ctx context.Context, t AmojoTarget, method, endpoint,
 		var err error
 		raw, err = json.Marshal(body)
 		if err != nil {
-			return fmt.Errorf("amocrmkit: %s: marshal: %w", endpoint, err)
+			return fmt.Errorf("amocrmkit: %s: %w: marshal: %w", endpoint, ErrInvalidRequest, err)
 		}
 	}
 	u, err := c.resolveURL("https://amojo.amocrm."+t.TLD, path, nil)
 	if err != nil {
 		return fmt.Errorf("amocrmkit: %s: %w", endpoint, err)
 	}
-	sh := signRequest(c.clock.Now(), method, path, raw, t.Secret)
+	// Подписываем путь в том виде, в каком он уйдёт на провод.
+	sh := signRequest(c.clock.Now(), method, u.EscapedPath(), raw, t.Secret)
 
 	var reader io.Reader
 	if raw != nil {
 		reader = bytes.NewReader(raw)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, u, reader)
+	req, err := http.NewRequestWithContext(ctx, method, u.String(), reader)
 	if err != nil {
-		return fmt.Errorf("amocrmkit: %s: new request: %w", endpoint, err)
+		return fmt.Errorf("amocrmkit: %s: %w: new request: %w", endpoint, ErrInvalidRequest, err)
 	}
 	req.Header.Set("Date", sh.Date)
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Content-MD5", sh.ContentMD5)
 	req.Header.Set("X-Signature", sh.Signature)
 
-	return c.execute(ctx, req, endpoint, t.AccountKey, out)
+	return c.execute(ctx, req, call{endpoint: endpoint, acc: t.ref(), allowRetry: allowRetry}, out)
 }
 
 // amojoEnvelope — конверт событий сообщений (new_message / edit_message).
@@ -103,14 +104,14 @@ func (c *Client) AmojoConnect(ctx context.Context, t AmojoTarget, channelID stri
 		in.HookAPIVersion = "v2"
 	}
 	var out ConnectResult
-	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.connect", "/v2/origin/custom/"+channelID+"/connect", in, &out)
+	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.connect", "/v2/origin/custom/"+seg(channelID)+"/connect", in, &out, false)
 	return out, err
 }
 
 // AmojoDisconnect — DELETE /v2/origin/custom/{channel_id}/disconnect.
 func (c *Client) AmojoDisconnect(ctx context.Context, t AmojoTarget, channelID, amojoAccountID string) error {
 	body := map[string]string{"account_id": amojoAccountID}
-	return c.amojoCall(ctx, t, http.MethodDelete, "amojo.disconnect", "/v2/origin/custom/"+channelID+"/disconnect", body, nil)
+	return c.amojoCall(ctx, t, http.MethodDelete, "amojo.disconnect", "/v2/origin/custom/"+seg(channelID)+"/disconnect", body, nil, false)
 }
 
 // CreateChatInput — тело POST /v2/origin/custom/{scope_id}/chats.
@@ -136,7 +137,7 @@ type CreateChatResult struct {
 // AmojoCreateChat — POST /v2/origin/custom/{scope_id}/chats.
 func (c *Client) AmojoCreateChat(ctx context.Context, t AmojoTarget, scopeID string, in CreateChatInput) (CreateChatResult, error) {
 	var out CreateChatResult
-	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.create_chat", "/v2/origin/custom/"+scopeID+"/chats", in, &out)
+	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.create_chat", "/v2/origin/custom/"+seg(scopeID)+"/chats", in, &out, false)
 	return out, err
 }
 
@@ -174,32 +175,32 @@ type NewMessageResult struct {
 func (c *Client) AmojoNewMessage(ctx context.Context, t AmojoTarget, scopeID string, payload NewMessagePayload) (NewMessageResult, error) {
 	var out NewMessageResult
 	body := amojoEnvelope{EventType: "new_message", Payload: payload}
-	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.new_message", "/v2/origin/custom/"+scopeID, body, &out)
+	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.new_message", "/v2/origin/custom/"+seg(scopeID), body, &out, false)
 	return out, err
 }
 
-// AmojoEditMessage — POST /v2/origin/custom/{scope_id} (event_type=edit_message;
-// редактирование поверх send/import — отдельного суффикса /update амо не подтверждает).
+// AmojoEditMessage — POST /v2/origin/custom/{scope_id} (event_type=edit_message).
 func (c *Client) AmojoEditMessage(ctx context.Context, t AmojoTarget, scopeID string, payload NewMessagePayload) (NewMessageResult, error) {
 	var out NewMessageResult
 	body := amojoEnvelope{EventType: "edit_message", Payload: payload}
-	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.edit_message", "/v2/origin/custom/"+scopeID, body, &out)
+	err := c.amojoCall(ctx, t, http.MethodPost, "amojo.edit_message", "/v2/origin/custom/"+seg(scopeID), body, &out, false)
 	return out, err
 }
 
 // AmojoReact — POST /v2/origin/custom/{scope_id}/react. Тело строит потребитель
 // (id/msgid цели, user, type, emoji) — кит передаёт как есть.
 func (c *Client) AmojoReact(ctx context.Context, t AmojoTarget, scopeID string, body map[string]any) error {
-	return c.amojoCall(ctx, t, http.MethodPost, "amojo.react", "/v2/origin/custom/"+scopeID+"/react", body, nil)
+	return c.amojoCall(ctx, t, http.MethodPost, "amojo.react", "/v2/origin/custom/"+seg(scopeID)+"/react", body, nil, false)
 }
 
-// AmojoTyping — POST /v2/origin/custom/{scope_id}/typing (ephemeral).
+// AmojoTyping — POST /v2/origin/custom/{scope_id}/typing (ephemeral, повтор безопасен).
 func (c *Client) AmojoTyping(ctx context.Context, t AmojoTarget, scopeID string, body map[string]any) error {
-	return c.amojoCall(ctx, t, http.MethodPost, "amojo.typing", "/v2/origin/custom/"+scopeID+"/typing", body, nil)
+	return c.amojoCall(ctx, t, http.MethodPost, "amojo.typing", "/v2/origin/custom/"+seg(scopeID)+"/typing", body, nil, true)
 }
 
-// AmojoDeliveryStatus — POST /v2/origin/custom/{scope_id}/{msgid}/delivery_status.
+// AmojoDeliveryStatus — POST /v2/origin/custom/{scope_id}/{msgid}/delivery_status
+// (статус сообщения, повтор безопасен).
 func (c *Client) AmojoDeliveryStatus(ctx context.Context, t AmojoTarget, scopeID, msgID string, body map[string]any) error {
-	path := "/v2/origin/custom/" + scopeID + "/" + msgID + "/delivery_status"
-	return c.amojoCall(ctx, t, http.MethodPost, "amojo.delivery_status", path, body, nil)
+	path := "/v2/origin/custom/" + seg(scopeID) + "/" + seg(msgID) + "/delivery_status"
+	return c.amojoCall(ctx, t, http.MethodPost, "amojo.delivery_status", path, body, nil, true)
 }

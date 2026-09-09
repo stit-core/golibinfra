@@ -1,52 +1,107 @@
-// Package outboxkit — transactional-outbox: Bus вставляет событие в
-// outbox-таблицу в той же транзакции, что и бизнес-state; Worker тиком
-// (одна транзакция: list → publish → mark) вычитывает unpublished и публикует
-// в JetStream через natskit.StreamBus, помечая published только подтверждённые
-// PubAck'ом. OUTBOX_PUBLISH_MODE выбирает компромисс: batch (async, best-effort
-// порядок, реплики дренируют параллельно) или ordered (строгий порядок, стоп на
-// первой ошибке, голову очереди держит один воркер). Гарантия — at-least-once;
-// id строки уходит как Nats-Msg-Id, поэтому переотправка на ретрае
-// дедуплицируется стримом. OUTBOX_MAX_ATTEMPTS>0 помечает строку dead после N
-// неудач; retention партиций — OUTBOX_RETENTION_MONTHS (pgstore). Core-абстракция
-// (Repository) отделена от pgstore-реализации, чтобы доменный код не зависел от
-// Postgres. Эмитит outbox_events_{inserted,processed,dead}_total,
-// outbox_batch_{size,duration_seconds}, outbox_publish_duration_seconds (label
-// instance); outbox_lag_seconds и outbox_pending_count — через BacklogReporter.
+// Package outboxkit — transactional outbox: Bus пишет событие в таблицу в
+// транзакции домена, Worker тиком-транзакцией публикует его в JetStream.
+// Эмитит `outbox_*{instance}`; подробности — README.md и docs/ пакета.
 package outboxkit
 
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"time"
+
+	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
-// DefaultInstance — имя single-instance outbox'а (Module): label instance в
-// метриках; совпадает с таблицей pgstore.DefaultTable.
+// DefaultInstance — имя single-instance outbox'а (Module): значение label
+// `instance` в метриках; совпадает с таблицей pgstore.DefaultTable.
 const DefaultInstance = "outbox"
 
 // ErrBusy — ordered-режим: голову очереди держит другой воркер, тик пропускается.
 var ErrBusy = errors.New("outboxkit: queue head is held by another worker")
 
+// ErrNoTx — Insert вызван вне транзакции при включённом tx-strict guard
+// (`OUTBOX_REQUIRE_TX`, `pgstore.WithRequireTx`).
+var ErrNoTx = errors.New("outboxkit: insert outside transaction")
+
+// ErrConfig — невалидное значение конфига кита; возвращается из Validate.
+var ErrConfig = errors.New("outboxkit: invalid config")
+
+// ErrNotSupported — операция не поддержана реализацией Repository (например
+// ReviveDead у хранилища без dead-строк).
+var ErrNotSupported = errors.New("outboxkit: operation not supported by repository")
+
+// Message — строка outbox'а, вычитанная воркером на публикацию.
 type Message struct {
-	ID       int64
-	Subject  string
-	Payload  json.RawMessage
+	// ID — идентификатор строки; уходит в Nats-Msg-Id.
+	ID int64
+	// CreatedAt — момент вставки: ключ партиционирования, входит в MessageRef.
+	CreatedAt time.Time
+	// Subject — subject публикации.
+	Subject string
+	// Payload — тело события как оно лежит в хранилище.
+	Payload json.RawMessage
+	// Attempts — число уже случившихся неудачных попыток публикации.
 	Attempts int
 }
 
-// Failure — результат неудачной публикации события: Dead=true помечает строку
-// мёртвой (исчерпан MaxAttempts) — она больше не вычитывается на ретрай.
+// Ref возвращает адрес строки для MarkPublished/RecordFailures.
+func (m Message) Ref() MessageRef { return MessageRef{ID: m.ID, CreatedAt: m.CreatedAt} }
+
+// MessageRef — адрес строки outbox'а: идентификатор и ключ партиционирования,
+// чтобы UPDATE шёл по нужной партиции, а не по всем.
+type MessageRef struct {
+	// ID — идентификатор строки.
+	ID int64
+	// CreatedAt — момент вставки (значение из Message, прочитанное хранилищем).
+	CreatedAt time.Time
+}
+
+// Failure — результат неудачной публикации события.
 type Failure struct {
-	ID   int64
-	Err  string
+	// Ref — адрес строки.
+	Ref MessageRef
+	// Err — текст ошибки публикации для last_error.
+	Err string
+	// RetryAfter — пауза до следующей попытки; 0 — без паузы (следующий тик).
+	RetryAfter time.Duration
+	// Dead — строка исчерпала MaxAttempts и больше не вычитывается на ретрай.
 	Dead bool
+}
+
+// ReviveFilter — отбор dead-строк для ReviveDead. Пустой фильтр берёт все
+// dead-строки; заданные поля соединяются по И.
+type ReviveFilter struct {
+	// IDs — идентификаторы строк; пусто — без ограничения по id.
+	IDs []int64
+	// Subject — subject строки; пусто — без ограничения по subject.
+	Subject string
+	// Since — нижняя граница created_at строки; нулевое время — без границы.
+	Since time.Time
 }
 
 // Repository — порт хранилища; ListUnpublished идёт внутри транзакции тика и
 // держит выбранные строки до её конца (ordered: занятая голова очереди → ErrBusy).
 type Repository interface {
-	Insert(ctx context.Context, subject string, payload any) error
+	Insert(ctx context.Context, subject string, payload json.RawMessage) error
 	ListUnpublished(ctx context.Context, limit int, mode PublishMode) ([]Message, error)
-	MarkPublished(ctx context.Context, ids []int64) error
+	MarkPublished(ctx context.Context, refs []MessageRef) error
 	RecordFailures(ctx context.Context, failures []Failure) error
 }
+
+// DeadReviver — опциональный интерфейс Repository: возврат dead-строк в очередь
+// (реализует pgstore.Store). Через Outbox.ReviveDead становится
+// `outbox_revived_total`.
+type DeadReviver interface {
+	ReviveDead(ctx context.Context, filter ReviveFilter) (int64, error)
+}
+
+// Maintainer — опциональный интерфейс Repository: периодические job'ы
+// обслуживания хранилища (партиции, retention). Instance кладёт их в
+// fx-группу timerkit.Group рядом с job'ом воркера.
+type Maintainer interface {
+	MaintenanceJobs() []timerkit.Job
+}
+
+// RepositoryFactory строит Repository для именованной таблицы: провайдит
+// store-кит (`pgstore.FactoryModule`), потребляет Instance.
+type RepositoryFactory func(table string) (Repository, error)

@@ -6,11 +6,9 @@ import (
 	"net/http"
 )
 
-// catalogs + elements (списки/товары).
-
 // Catalog — объект каталога (списки/товары).
 type Catalog struct {
-	ID              int    `json:"id"`
+	ID              int64  `json:"id"`
 	Name            string `json:"name"`
 	Type            string `json:"type"`
 	Sort            int    `json:"sort"`
@@ -19,16 +17,16 @@ type Catalog struct {
 	CanLinkMultiple bool   `json:"can_link_multiple"`
 	CanBeDeleted    bool   `json:"can_be_deleted"`
 	SDKWidgetCode   string `json:"sdk_widget_code"`
-	AccountID       int    `json:"account_id"`
-	CreatedBy       int    `json:"created_by"`
-	UpdatedBy       int    `json:"updated_by"`
+	AccountID       int64  `json:"account_id"`
+	CreatedBy       int64  `json:"created_by"`
+	UpdatedBy       int64  `json:"updated_by"`
 	CreatedAt       int64  `json:"created_at"`
 	UpdatedAt       int64  `json:"updated_at"`
 }
 
 // CatalogInput — тело POST/PATCH /catalogs.
 type CatalogInput struct {
-	ID             int    `json:"id,omitempty"`
+	ID             int64  `json:"id,omitempty"`
 	Name           string `json:"name,omitempty"`
 	Type           string `json:"type,omitempty"`
 	CanAddElements *bool  `json:"can_add_elements,omitempty"`
@@ -39,14 +37,14 @@ type CatalogInput struct {
 
 // CatalogElement — элемент каталога (товар/счёт).
 type CatalogElement struct {
-	ID                 int                `json:"id"`
-	CatalogID          int                `json:"catalog_id"`
+	ID                 int64              `json:"id"`
+	CatalogID          int64              `json:"catalog_id"`
 	Name               string             `json:"name"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values"`
 	IsDeleted          bool               `json:"is_deleted"`
-	AccountID          int                `json:"account_id"`
-	CreatedBy          int                `json:"created_by"`
-	UpdatedBy          int                `json:"updated_by"`
+	AccountID          int64              `json:"account_id"`
+	CreatedBy          int64              `json:"created_by"`
+	UpdatedBy          int64              `json:"updated_by"`
 	CreatedAt          int64              `json:"created_at"`
 	UpdatedAt          int64              `json:"updated_at"`
 	InvoiceLink        string             `json:"invoice_link"`
@@ -54,7 +52,7 @@ type CatalogElement struct {
 
 // CatalogElementInput — тело POST/PATCH /catalogs/{id}/elements.
 type CatalogElementInput struct {
-	ID                 int                `json:"id,omitempty"`
+	ID                 int64              `json:"id,omitempty"`
 	Name               string             `json:"name,omitempty"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values,omitempty"`
 	RequestID          string             `json:"request_id,omitempty"`
@@ -76,19 +74,19 @@ func (c *Client) UpdateCatalogs(ctx context.Context, acc Account, in []CatalogIn
 }
 
 // ListCatalogElements — GET /api/v4/catalogs/{catalog_id}/elements.
-func (c *Client) ListCatalogElements(ctx context.Context, acc Account, catalogID int, p ListParams) (Page[CatalogElement], error) {
+func (c *Client) ListCatalogElements(ctx context.Context, acc Account, catalogID int64, p ListParams) (Page[CatalogElement], error) {
 	path := fmt.Sprintf("/api/v4/catalogs/%d/elements", catalogID)
 	return listEntities[CatalogElement](ctx, c, acc, "catalog_elements.list", path, "elements", p.values())
 }
 
 // CreateCatalogElements — POST /api/v4/catalogs/{catalog_id}/elements (batch до 250).
-func (c *Client) CreateCatalogElements(ctx context.Context, acc Account, catalogID int, in []CatalogElementInput) ([]CreatedEntity, error) {
+func (c *Client) CreateCatalogElements(ctx context.Context, acc Account, catalogID int64, in []CatalogElementInput) ([]CreatedEntity, error) {
 	path := fmt.Sprintf("/api/v4/catalogs/%d/elements", catalogID)
 	return sendBatch[CatalogElementInput, CreatedEntity](ctx, c, acc, http.MethodPost, "catalog_elements.create", path, "elements", in)
 }
 
 // UpdateCatalogElements — PATCH /api/v4/catalogs/{catalog_id}/elements (batch до 250).
-func (c *Client) UpdateCatalogElements(ctx context.Context, acc Account, catalogID int, in []CatalogElementInput) ([]CreatedEntity, error) {
+func (c *Client) UpdateCatalogElements(ctx context.Context, acc Account, catalogID int64, in []CatalogElementInput) ([]CreatedEntity, error) {
 	path := fmt.Sprintf("/api/v4/catalogs/%d/elements", catalogID)
 	return sendBatch[CatalogElementInput, CreatedEntity](ctx, c, acc, http.MethodPatch, "catalog_elements.update", path, "elements", in)
 }

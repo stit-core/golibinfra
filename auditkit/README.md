@@ -9,8 +9,9 @@ compliance- и forensics-запросы не приходилось склеив
 
 Место в стеке: бизнес-сервис вызывает `auditkit.Logger.Log` в тех точках, где
 произошло значимое изменение состояния (создание/удаление сущности, смена прав,
-вход в систему). Запись — синхронная, в той же сессии БД, что и доменная
-операция.
+вход в систему). Запись — синхронная: `Log` пишет в транзакции из `ctx`
+(`pgkit.Transactor.WithTx`), если она там есть, иначе автономно, отдельным
+соединением пула в autocommit.
 
 ## Импорт
 
@@ -32,32 +33,64 @@ import "git.stit.tech/stit-core/golibinfra/auditkit/pgstore"
 
 ```go
 import (
+    "context"
+
     "go.uber.org/fx"
 
     "git.stit.tech/stit-core/golibinfra/auditkit"
     "git.stit.tech/stit-core/golibinfra/auditkit/pgstore"
+    "git.stit.tech/stit-core/golibinfra/logkit"
     "git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
-fx.New(
-    pgkit.Module,
-    pgkit.MigrateModule, // применяет pgstore.Migrations (+ миграции приложения)
-    pgstore.Module,      // provides auditkit.Logger (== *pgstore.Store)
+type UserService struct {
+    db    *pgkit.DB
+    tr    pgkit.Transactor
+    audit auditkit.Logger
+}
 
-    fx.Invoke(func(audit auditkit.Logger) {
-        // в обработчике доменной операции
-        _ = audit.Log(ctx, auditkit.Entry{
-            ActorID:    "u-42",
+func NewUserService(db *pgkit.DB, tr pgkit.Transactor, audit auditkit.Logger) *UserService {
+    return &UserService{db: db, tr: tr, audit: audit}
+}
+
+// Запись аудита — в той же транзакции, что и доменное изменение.
+func (s *UserService) Create(ctx context.Context, actorID, userID string) error {
+    return s.tr.WithTx(ctx, func(ctx context.Context) error {
+        if _, err := s.db.Exec(ctx, `INSERT INTO users (id) VALUES ($1)`, userID); err != nil {
+            return err
+        }
+        return s.audit.Log(ctx, auditkit.Entry{
+            ActorID:    actorID,
             Action:     "user.create",
             Resource:   "user",
-            ResourceID: "u-99",
+            ResourceID: userID,
             Metadata:   map[string]any{"source": "admin-ui"},
             IP:         "203.0.113.7",
             RequestID:  "req-abc",
         })
-    }),
-)
+    })
+}
+
+func app() *fx.App {
+    return fx.New(
+        fx.Provide(
+            logkit.NewConfig,
+            logkit.New,
+            pgkit.NewPoolConfig,          // PG_*
+            pgkit.NewMigrateRunnerConfig, // PG_MIGRATIONS_PATH, PG_MIGRATE_TIMEOUT
+        ),
+        pgkit.Module,
+        pgkit.MigrateModule, // применяет pgstore.Migrations (+ миграции приложения)
+        pgstore.Module,      // provides auditkit.Logger (== *pgstore.Store)
+
+        fx.Provide(NewUserService),
+        fx.Invoke(func(*UserService) {}),
+    )
+}
 ```
+
+`pgkit.NewReplicaConfig` нужен, только если сервису нужна read-replica —
+`pgkit.Module` берёт `ReplicaConfig` опционально.
 
 ### Прямой `New*` (без fx)
 
@@ -88,9 +121,22 @@ err := pgkit.MigrateUpAll(ctx, dsn, pgstore.Migrations, pgkit.DirSource(pgkit.Ap
 
 ## Observability
 
-Кит **не эмитит** собственных метрик и спанов. Инструментирование приходит из
-нижнего слоя: `Store.Log` выполняет `INSERT` через `*pgkit.DB`, поэтому каждая
-запись попадает в per-query span `otelpgx` и в `db_pool_*`-метрики `pgkit`.
+`pgstore.Store` эмитит через глобальные OTel-провайдеры (`otel.Meter`,
+scope `git.stit.tech/stit-core/golibinfra/auditkit`); без зарегистрированного
+`MeterProvider` инструменты — no-op.
+
+| Метрика | Тип | Labels | Смысл |
+|---|---|---|---|
+| `audit_log_writes_total` | counter | `result=ok\|error\|invalid` | Исход `Log`: `ok` — строка записана, `error` — `INSERT` не прошёл, `invalid` — запись отвергнута до похода в базу (`Entry.Validate` или несериализуемая `Metadata`) |
+| `audit_log_write_duration_seconds` | histogram (`s`) | `result=ok\|error` | Длительность `INSERT`; бакеты — общие `otelkit.DurationBuckets` |
+
+Потребители обычно логируют ошибку `Log` и продолжают доменную операцию, поэтому
+`rate(audit_log_writes_total{result!="ok"})` — единственный алертируемый сигнал
+потери записи аудита.
+
+Собственных спанов кит не заводит: `Store.Log` выполняет `INSERT` через
+`*pgkit.DB`, поэтому каждая запись попадает в per-query span `otelpgx` и в
+`pg_pool_*`-метрики `pgkit`.
 
 ## API
 
@@ -98,16 +144,32 @@ err := pgkit.MigrateUpAll(ctx, dsn, pgstore.Migrations, pgkit.DirSource(pgkit.Ap
 
 Одна запись аудита. Поля:
 
-| Поле | Тип | Назначение |
-|---|---|---|
-| `ActorID` | `string` | кто совершил действие (id пользователя/сервиса); пусто → `NULL` |
-| `Action` | `string` | что сделано, напр. `user.create`; пишется как есть (`NOT NULL`) |
-| `Resource` | `string` | над каким типом ресурса, напр. `user` (`NOT NULL`) |
-| `ResourceID` | `string` | id конкретного ресурса; пусто → `NULL` |
-| `Metadata` | `map[string]any` | произвольный контекст; сериализуется в `JSONB`; пусто → `NULL` |
-| `At` | `time.Time` | момент события; нулевое значение → `NOW()` базы данных |
-| `IP` | `string` | IP инициатора; пусто → `NULL` |
-| `RequestID` | `string` | корреляция с HTTP/RPC-запросом; пусто → `NULL` |
+| Поле | Тип | Ограничение | Назначение |
+|---|---|---|---|
+| `ActorID` | `string` | ≤ `MaxActorIDLen` (255) | кто совершил действие (id пользователя/сервиса); пусто → `NULL` |
+| `Action` | `string` | обязательно, ≤ `MaxActionLen` (255) | что сделано, напр. `user.create` (`NOT NULL`) |
+| `Resource` | `string` | обязательно, ≤ `MaxResourceLen` (255) | над каким типом ресурса, напр. `user` (`NOT NULL`) |
+| `ResourceID` | `string` | ≤ `MaxResourceIDLen` (255) | id конкретного ресурса; пусто → `NULL` |
+| `Metadata` | `map[string]any` | длина не ограничена китом | произвольный контекст; сериализуется в `JSONB`; пусто → `NULL` |
+| `At` | `time.Time` | — | момент события; нулевое значение → `NOW()` базы данных |
+| `IP` | `string` | длина не ограничена китом | IP инициатора; пусто → `NULL` |
+| `RequestID` | `string` | длина не ограничена китом | корреляция с HTTP/RPC-запросом; пусто → `NULL` |
+
+Предельные длины — ровно у полей, попадающих в btree-индексы `audit_log`:
+значение длиннее не помещается в индексную запись Postgres, и `INSERT` падает
+уже в базе. Ограничения проверяет `Entry.Validate`.
+
+### `auditkit.Entry.Validate` и `auditkit.ErrInvalidEntry`
+
+```go
+func (e Entry) Validate() error
+var ErrInvalidEntry = errors.New("auditkit: invalid entry")
+```
+
+`Validate` требует непустых `Action` и `Resource` и соблюдения предельных длин;
+нарушение — ошибка, обёрнутая `ErrInvalidEntry` (`errors.Is`). `Log` вызывает её
+до похода в базу: пустая запись в audit-log хуже ошибки — её никто не заметит.
+Так же ведёт себя фейк `audittest.Recorder`.
 
 ### `auditkit.Logger`
 
@@ -125,10 +187,10 @@ type Logger interface {
 Реализация `Logger` поверх Postgres.
 
 - `NewStore(db *pgkit.DB) *Store` — конструктор.
-- `(*Store).Log(ctx, Entry) error` — один `INSERT` в `audit_log`. Пустые
-  строковые поля и пустая `Metadata` пишутся как `NULL`; нулевой `At`
-  подставляется как `NOW()` на стороне базы (`COALESCE`). Ошибки — с префиксом
-  `auditkit:`.
+- `(*Store).Log(ctx, Entry) error` — один `INSERT` в `audit_log`. Невалидная
+  `Entry` отвергается до запроса (`ErrInvalidEntry`). Пустые строковые поля и
+  пустая `Metadata` пишутся как `NULL`; нулевой `At` подставляется как `NOW()`
+  на стороне базы (`COALESCE`). Ошибки — с префиксом `auditkit:`.
 
 ### `pgstore.Module`
 
@@ -158,12 +220,33 @@ CREATE TABLE audit_log (
 );
 CREATE INDEX audit_log_actor_idx    ON audit_log (actor_id, at DESC);
 CREATE INDEX audit_log_resource_idx ON audit_log (resource, resource_id, at DESC);
-CREATE INDEX audit_log_at_idx       ON audit_log (at DESC);
+-- отдельная миграция 0002
+CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_at_idx ON audit_log (at DESC);
 ```
 
 Индексы рассчитаны на типовые запросы: «история действий актора», «история по
 конкретному ресурсу» и «всё за период» (retention, выгрузки), все — в обратном
 хронологическом порядке.
+
+`audit_log_at_idx` приезжает миграцией `0002_audit_log_at_idx` и строится
+`CONCURRENTLY`: на уже наполненной `audit_log` обычный `CREATE INDEX` держал бы
+`SHARE`-блокировку и останавливал запись в таблицу на всё время построения.
+Условия, при которых это работает и о которых нужно знать:
+
+- **Файл миграции — ровно один оператор.** Драйвер (`golang-migrate` поверх
+  `pgx`) выполняет тело миграции одним `Exec` без явного `BEGIN`, а
+  `CONCURRENTLY` внутри транзакционного блока Postgres запрещает; второй
+  оператор в том же файле сделал бы блок неявной транзакцией и уронил миграцию.
+- **Старт всё равно ждёт построения.** `pgkit.MigrateModule` применяет миграции
+  в `OnStart`, а ограничить время нечем: `PG_MIGRATE_TIMEOUT` доходит только до
+  таймаута коннекта, `PG_STATEMENT_TIMEOUT` — параметр пула и на соединение
+  миграций не распространяется. На большой таблице стройте индекс заранее
+  вручную (`CREATE INDEX CONCURRENTLY IF NOT EXISTS audit_log_at_idx …`) —
+  миграция увидит его и станет no-op.
+- **Провал `CONCURRENTLY` оставляет невалидный индекс.** Его видно как
+  `indisvalid = false` в `pg_index`; повторный прогон миграции из-за
+  `IF NOT EXISTS` его не чинит — снимите (`DROP INDEX CONCURRENTLY
+  audit_log_at_idx`) и накатите миграцию заново.
 
 ## Тестирование
 
@@ -171,15 +254,23 @@ CREATE INDEX audit_log_at_idx       ON audit_log (at DESC);
 [`testkit.StartPostgres`](../testkit/) (testcontainers) с миграцией кита:
 
 ```go
-fx := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
-db := fx.DB(t)
-s := pgstore.NewStore(db)
+pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+s := pgstore.NewStore(pg.DB(t))
 err := s.Log(ctx, auditkit.Entry{Action: "user.create", Resource: "user"})
 ```
 
-Тесты помечены `testing.Short()` и пропускаются под `go test -short`. Для
-unit-тестов бизнес-кода подменяйте `auditkit.Logger` — готовый in-memory
-recorder есть в [`testkit/audittest`](../testkit/audittest/).
+Покрытие: полная запись и `NULL`-поля, `At` из часов базы, участие в транзакции
+(`pg.Transactor(t).WithTx` — откат оставляет 0 строк, коммит 1, вне транзакции
+строка пишется сразу), ошибка `INSERT` с префиксом `auditkit:`, отказ на
+невалидной `Entry`, сборка `Module` (`fx.ValidateApp` + регистрация миграций),
+метрики.
+
+Тесты, которым нужен Postgres, идут через `testkit.StartPostgres`: гейт
+`testkit.RequireDocker` внутри helper'а пропускает их под `go test -short` и без
+Docker. Для unit-тестов бизнес-кода подменяйте `auditkit.Logger` —
+готовый in-memory recorder есть в
+[`testkit/audittest`](../testkit/audittest/); он валидирует `Entry` так же, как
+`pgstore`, и хранит копию `Metadata`.
 
 ## Инварианты и подводные камни
 
@@ -191,10 +282,16 @@ recorder есть в [`testkit/audittest`](../testkit/audittest/).
   это сознательное свойство audit-log. Ротация/архивация старых записей — забота
   потребителя (партиционирование, retention-джоба по `audit_log_at_idx`), в
   kit'е её нет.
-- **Синхронная запись.** `Log` делает `INSERT` в текущем `ctx`/соединении и
-  возвращает ошибку наружу. Решайте на стороне приложения, фатальна ли ошибка
-  аудита для доменной операции (писать в одной транзакции или допускать
-  расхождение).
+- **Транзакция берётся из `ctx`.** `Log` пишет в транзакцию, если `ctx` пришёл
+  из `pgkit.Transactor.WithTx`: тогда запись атомарна с доменной операцией, и
+  возвращённая из `fn` ошибка `Log` откатывает обе (fail-closed). Вне `WithTx`
+  `Log` берёт отдельное соединение пула и коммитит сам (autocommit): доменная
+  операция уже зафиксирована, и потеря записи аудита остаётся на усмотрение
+  приложения (fail-open, сигнал — `audit_log_writes_total{result!="ok"}`).
+  Атомарности «сама по себе» синхронность записи не даёт — её даёт только вызов
+  внутри `WithTx` с возвратом ошибки наружу.
+- **Обязательные поля.** `Action` и `Resource` непусты и укладываются в
+  предельные длины, иначе `Log` возвращает `ErrInvalidEntry` и в базу не идёт.
 - **Что класть в audit-log.** Значимые изменения состояния и действия,
   релевантные для compliance/forensics, — не трассировку и не debug-логи. Для
   них есть `logkit` / спаны. `Metadata` — для структурированного контекста

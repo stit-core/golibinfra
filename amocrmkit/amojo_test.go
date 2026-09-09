@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 )
 
@@ -110,3 +111,113 @@ func TestAmojoTyping_NoBodyDecode(t *testing.T) {
 		t.Fatalf("AmojoTyping: %v", err)
 	}
 }
+
+// Каждый amoJo-вызов подписан и уходит по своему адресу.
+func TestAmojoWireContracts(t *testing.T) {
+	const secret = "sekret"
+	tgt := AmojoTarget{TLD: "ru", AccountKey: "demo", Secret: secret}
+	ctx := context.Background()
+
+	cases := []struct {
+		name string
+		want string
+		resp string
+		do   func(c *Client) error
+	}{
+		{
+			name: "disconnect", want: "DELETE /v2/origin/custom/chan-1/disconnect",
+			do: func(c *Client) error { return c.AmojoDisconnect(ctx, tgt, "chan-1", "amojo-id") },
+		},
+		{
+			name: "create chat", want: "POST /v2/origin/custom/scope-1/chats", resp: `{"id":"conv-ref"}`,
+			do: func(c *Client) error {
+				out, err := c.AmojoCreateChat(ctx, tgt, "scope-1", CreateChatInput{
+					ConversationID: "c-1", User: AmojoParticipant{ID: "u1", Name: "К"},
+				})
+				if err == nil && out.ID != "conv-ref" {
+					t.Errorf("chat = %+v", out)
+				}
+				return err
+			},
+		},
+		{
+			name: "edit message", want: "POST /v2/origin/custom/scope-1", resp: `{"new_message":{"msgid":"m"}}`,
+			do: func(c *Client) error {
+				_, err := c.AmojoEditMessage(ctx, tgt, "scope-1", NewMessagePayload{MsgID: "m"})
+				return err
+			},
+		},
+		{
+			name: "react", want: "POST /v2/origin/custom/scope-1/react",
+			do: func(c *Client) error {
+				return c.AmojoReact(ctx, tgt, "scope-1", map[string]any{"type": "react", "emoji": "👍"})
+			},
+		},
+		{
+			name: "delivery status", want: "POST /v2/origin/custom/scope-1/msg-1/delivery_status",
+			do: func(c *Client) error {
+				return c.AmojoDeliveryStatus(ctx, tgt, "scope-1", "msg-1", map[string]any{"delivery_status": 1})
+			},
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var got string
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				got = r.Method + " " + r.URL.Path
+				raw, _ := io.ReadAll(r.Body)
+				assertAmojoSignature(t, r, raw, secret)
+				_, _ = w.Write([]byte(tc.resp))
+			}))
+			defer srv.Close()
+
+			if err := tc.do(newTestClient(t, srv.URL)); err != nil {
+				t.Fatalf("call: %v", err)
+			}
+			if got != tc.want {
+				t.Errorf("wire = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestListParamsValues(t *testing.T) {
+	p := ListParams{
+		Page: 2, Limit: 50, With: []string{"contacts", "companies"}, Query: "иванов",
+		Filter: map[string]string{"id": "7"}, Order: map[string]string{"updated_at": "desc"},
+	}
+	got := p.values().Encode()
+	want := "filter%5Bid%5D=7&limit=50&order%5Bupdated_at%5D=desc&page=2&query=%D0%B8%D0%B2%D0%B0%D0%BD%D0%BE%D0%B2&with=contacts%2Ccompanies"
+	if got != want {
+		t.Errorf("values = %q, want %q", got, want)
+	}
+	if len(ListParams{}.values()) != 0 {
+		t.Error("empty params must not produce a query")
+	}
+}
+
+// WithTransport подставляет базовый транспорт собираемого китом httpclient.
+func TestWithTransport(t *testing.T) {
+	var hits int
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		hits++
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Body:       io.NopCloser(strings.NewReader(`{"_embedded":{"leads":[]}}`)),
+			Header:     http.Header{},
+			Request:    r,
+		}, nil
+	})
+	c := newTestClientCfg(t, Config{RateRPS: 1000}, testHTTPConfig(), WithTransport(rt))
+	if _, err := c.ListLeads(context.Background(), testAccount(), ListParams{}); err != nil {
+		t.Fatalf("ListLeads: %v", err)
+	}
+	if hits != 1 {
+		t.Fatalf("hits = %d, want 1", hits)
+	}
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }

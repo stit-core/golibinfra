@@ -6,19 +6,17 @@ import (
 	"net/http"
 )
 
-// customers + transactions.
-
 // Customer — объект покупателя (GET-ответ).
 type Customer struct {
-	ID                 int                `json:"id"`
+	ID                 int64              `json:"id"`
 	Name               string             `json:"name"`
 	NextPrice          int                `json:"next_price"`
 	NextDate           int64              `json:"next_date"`
-	ResponsibleUserID  int                `json:"responsible_user_id"`
-	StatusID           int                `json:"status_id"`
+	ResponsibleUserID  int64              `json:"responsible_user_id"`
+	StatusID           int64              `json:"status_id"`
 	Periodicity        int                `json:"periodicity"`
-	CreatedBy          int                `json:"created_by"`
-	UpdatedBy          int                `json:"updated_by"`
+	CreatedBy          int64              `json:"created_by"`
+	UpdatedBy          int64              `json:"updated_by"`
 	CreatedAt          int64              `json:"created_at"`
 	UpdatedAt          int64              `json:"updated_at"`
 	ClosestTaskAt      *int64             `json:"closest_task_at"`
@@ -26,7 +24,7 @@ type Customer struct {
 	LTV                int                `json:"ltv"`
 	PurchasesCount     int                `json:"purchases_count"`
 	AverageCheck       int                `json:"average_check"`
-	AccountID          int                `json:"account_id"`
+	AccountID          int64              `json:"account_id"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values"`
 	Embedded           *CustomerEmbedded  `json:"_embedded,omitempty"`
 }
@@ -42,26 +40,26 @@ type CustomerEmbedded struct {
 
 // SegmentRef — элемент _embedded.segments покупателя.
 type SegmentRef struct {
-	ID int `json:"id"`
+	ID int64 `json:"id"`
 }
 
 // CatalogElementRef — элемент _embedded.catalog_elements: id товара + metadata{catalog_id, quantity}.
 type CatalogElementRef struct {
-	ID       int `json:"id"`
+	ID       int64 `json:"id"`
 	Metadata struct {
-		CatalogID int `json:"catalog_id"`
-		Quantity  int `json:"quantity"`
+		CatalogID int64 `json:"catalog_id"`
+		Quantity  int   `json:"quantity"`
 	} `json:"metadata"`
 }
 
 // CustomerInput — тело POST/PATCH /customers.
 type CustomerInput struct {
-	ID                 int                `json:"id,omitempty"`
+	ID                 int64              `json:"id,omitempty"`
 	Name               string             `json:"name,omitempty"`
 	NextPrice          *int               `json:"next_price,omitempty"`
 	NextDate           int64              `json:"next_date,omitempty"`
-	ResponsibleUserID  int                `json:"responsible_user_id,omitempty"`
-	StatusID           int                `json:"status_id,omitempty"`
+	ResponsibleUserID  int64              `json:"responsible_user_id,omitempty"`
+	StatusID           int64              `json:"status_id,omitempty"`
 	Periodicity        int                `json:"periodicity,omitempty"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values,omitempty"`
 	TagsToAdd          []TagRef           `json:"tags_to_add,omitempty"`
@@ -71,17 +69,17 @@ type CustomerInput struct {
 
 // Transaction — объект покупки.
 type Transaction struct {
-	ID          int                  `json:"id"`
+	ID          int64                `json:"id"`
 	Price       int                  `json:"price"`
 	Comment     string               `json:"comment"`
 	CompletedAt int64                `json:"completed_at"`
-	CustomerID  int                  `json:"customer_id"`
-	CreatedBy   int                  `json:"created_by"`
-	UpdatedBy   int                  `json:"updated_by"`
+	CustomerID  int64                `json:"customer_id"`
+	CreatedBy   int64                `json:"created_by"`
+	UpdatedBy   int64                `json:"updated_by"`
 	CreatedAt   int64                `json:"created_at"`
 	UpdatedAt   int64                `json:"updated_at"`
 	IsDeleted   bool                 `json:"is_deleted"`
-	AccountID   int                  `json:"account_id"`
+	AccountID   int64                `json:"account_id"`
 	Embedded    *TransactionEmbedded `json:"_embedded,omitempty"`
 }
 
@@ -117,6 +115,11 @@ type CustomersMode struct {
 	IsEnabled bool   `json:"is_enabled"`
 }
 
+// GetCustomer — GET /api/v4/customers/{id}. Пустой ответ — ErrNotFound.
+func (c *Client) GetCustomer(ctx context.Context, acc Account, id int64, with ...string) (Customer, error) {
+	return getOne[Customer](ctx, c, acc, "customers.get", fmt.Sprintf("/api/v4/customers/%d", id), withValues(with))
+}
+
 // ListCustomers — GET /api/v4/customers.
 func (c *Client) ListCustomers(ctx context.Context, acc Account, p ListParams) (Page[Customer], error) {
 	return listEntities[Customer](ctx, c, acc, "customers.list", "/api/v4/customers", "customers", p.values())
@@ -138,18 +141,18 @@ func (c *Client) ListTransactions(ctx context.Context, acc Account, p ListParams
 }
 
 // CreateTransactions — POST /api/v4/customers/{customer_id}/transactions (batch до 250).
-func (c *Client) CreateTransactions(ctx context.Context, acc Account, customerID int, in []TransactionInput) ([]CreatedEntity, error) {
+func (c *Client) CreateTransactions(ctx context.Context, acc Account, customerID int64, in []TransactionInput) ([]CreatedEntity, error) {
 	path := fmt.Sprintf("/api/v4/customers/%d/transactions", customerID)
 	return sendBatch[TransactionInput, CreatedEntity](ctx, c, acc, http.MethodPost, "transactions.create", path, "transactions", in)
 }
 
 // DeleteTransaction — DELETE /api/v4/customers/transactions/{id}.
-func (c *Client) DeleteTransaction(ctx context.Context, acc Account, id int) error {
+func (c *Client) DeleteTransaction(ctx context.Context, acc Account, id int64) error {
 	return c.sendNoContent(ctx, acc, http.MethodDelete, "transactions.delete", fmt.Sprintf("/api/v4/customers/transactions/%d", id), nil)
 }
 
 // AdjustBonusPoints — POST /api/v4/customers/{id}/bonus_points (RU-only). Возвращает новый баланс баллов.
-func (c *Client) AdjustBonusPoints(ctx context.Context, acc Account, customerID int, in BonusPointsInput) (BonusPointsResult, error) {
+func (c *Client) AdjustBonusPoints(ctx context.Context, acc Account, customerID int64, in BonusPointsInput) (BonusPointsResult, error) {
 	path := fmt.Sprintf("/api/v4/customers/%d/bonus_points", customerID)
 	return sendOne[BonusPointsResult](ctx, c, acc, http.MethodPost, "customers.bonus_points", path, in)
 }

@@ -3,7 +3,15 @@ package anthropickit
 import (
 	"errors"
 	"testing"
+	"time"
 )
+
+func testConfig() Config {
+	return Config{
+		APIKey: "sk-test", BaseURL: "https://api.anthropic.com",
+		DefaultModel: "claude-opus-5", MaxRetries: 2, Timeout: time.Minute,
+	}
+}
 
 func TestNewRequiresAPIKey(t *testing.T) {
 	if _, err := New(Config{}, nil); !errors.Is(err, ErrConfig) {
@@ -12,7 +20,9 @@ func TestNewRequiresAPIKey(t *testing.T) {
 }
 
 func TestNewWithKey(t *testing.T) {
-	c, err := New(Config{APIKey: "sk-test", DefaultModel: "claude-opus-4-8"}, nil)
+	cfg := testConfig()
+	cfg.DefaultModel = "claude-opus-4-8"
+	c, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -49,7 +59,9 @@ func TestBlockToParamUnknown(t *testing.T) {
 }
 
 func TestStructuredOutputFormat(t *testing.T) {
-	c, err := New(Config{APIKey: "sk-test", DefaultModel: "claude-opus-4-8"}, nil)
+	cfg := testConfig()
+	cfg.DefaultModel = "claude-opus-4-8"
+	c, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -65,12 +77,14 @@ func TestStructuredOutputFormat(t *testing.T) {
 		t.Fatalf("toParams: %v", err)
 	}
 	if params.OutputConfig.Format.Schema == nil {
-		t.Fatal("JSONSchema не пробросился в OutputConfig.Format")
+		t.Fatal("JSONSchema did not reach OutputConfig.Format")
 	}
 }
 
 func TestNoOutputConfigWhenUnset(t *testing.T) {
-	c, err := New(Config{APIKey: "sk-test", DefaultModel: "claude-opus-4-8"}, nil)
+	cfg := testConfig()
+	cfg.DefaultModel = "claude-opus-4-8"
+	c, err := New(cfg, nil)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -81,6 +95,6 @@ func TestNoOutputConfigWhenUnset(t *testing.T) {
 		t.Fatalf("toParams: %v", err)
 	}
 	if params.OutputConfig.Format.Schema != nil {
-		t.Fatal("OutputConfig.Format не должен быть установлен без JSONSchema")
+		t.Fatal("OutputConfig.Format must stay unset without a JSONSchema")
 	}
 }

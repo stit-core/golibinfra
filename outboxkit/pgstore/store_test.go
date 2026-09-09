@@ -2,11 +2,10 @@ package pgstore_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"testing"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgxpool"
 
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
@@ -19,27 +18,44 @@ type sample struct {
 	N   int    `json:"n"`
 }
 
-// startStore поднимает Postgres с миграцией кита и отдаёт DB + Transactor на одном пуле.
-func startStore(t *testing.T) (*pgkit.DB, *pgkit.PoolTransactor, context.Context) {
+func payload(t *testing.T, v any) json.RawMessage {
 	t.Helper()
-	fix := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	data, err := json.Marshal(v)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	return data
+}
+
+// startFixture поднимает Postgres с миграциями кита.
+func startFixture(t *testing.T, opts ...testkit.Option) (*testkit.PostgresFixture, context.Context) {
+	t.Helper()
+	opts = append([]testkit.Option{testkit.WithMigrations(pgstore.Migrations)}, opts...)
+	fix := testkit.StartPostgres(t, opts...)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
 	t.Cleanup(cancel)
-	pool, err := pgxpool.New(ctx, fix.DSN)
-	if err != nil {
-		t.Fatalf("pgxpool: %v", err)
-	}
-	t.Cleanup(pool.Close)
-	return pgkit.NewDB(pool), pgkit.NewPoolTransactor(pool), ctx
+	return fix, ctx
+}
+
+// startStore отдаёт DB + Transactor на одном пуле фикстуры.
+func startStore(t *testing.T, opts ...testkit.Option) (*pgkit.DB, pgkit.Transactor, context.Context) {
+	t.Helper()
+	fix, ctx := startFixture(t, opts...)
+	return fix.DB(t), fix.Transactor(t), ctx
 }
 
 // list читает батч в собственной транзакции (как это делает Worker).
 func list(t *testing.T, tr pgkit.Transactor, s *pgstore.Store, ctx context.Context, limit int) []outboxkit.Message {
 	t.Helper()
+	return listMode(t, tr, s, ctx, limit, outboxkit.PublishBatch)
+}
+
+func listMode(t *testing.T, tr pgkit.Transactor, s *pgstore.Store, ctx context.Context, limit int, mode outboxkit.PublishMode) []outboxkit.Message {
+	t.Helper()
 	var msgs []outboxkit.Message
 	err := tr.WithTx(ctx, func(ctx context.Context) error {
 		var err error
-		msgs, err = s.ListUnpublished(ctx, limit, outboxkit.PublishBatch)
+		msgs, err = s.ListUnpublished(ctx, limit, mode)
 		return err
 	})
 	if err != nil {
@@ -48,28 +64,39 @@ func list(t *testing.T, tr pgkit.Transactor, s *pgstore.Store, ctx context.Conte
 	return msgs
 }
 
-func TestStore_RequireTx_NoTxErrors(t *testing.T) {
+func refs(msgs ...outboxkit.Message) []outboxkit.MessageRef {
+	out := make([]outboxkit.MessageRef, len(msgs))
+	for i, m := range msgs {
+		out[i] = m.Ref()
+	}
+	return out
+}
+
+func TestStore_RequireTx_NoTxIsErrNoTx(t *testing.T) {
 	s := pgstore.NewStore(nil, pgstore.WithRequireTx())
-	if err := s.Insert(context.Background(), "evt", sample{N: 1}); err == nil {
-		t.Fatal("expected error: Insert вне транзакции при WithRequireTx")
+	err := s.Insert(context.Background(), "evt", payload(t, sample{N: 1}))
+	if !errors.Is(err, outboxkit.ErrNoTx) {
+		t.Fatalf("err = %v, want ErrNoTx", err)
+	}
+}
+
+func TestStore_Insert_EmptyPayload(t *testing.T) {
+	s := pgstore.NewStore(nil)
+	if err := s.Insert(context.Background(), "evt", nil); err == nil {
+		t.Fatal("expected error on empty payload")
 	}
 }
 
 func TestStore_RequireTx_WithinTx(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db, pgstore.WithRequireTx())
 
-	// вне транзакции — отказ.
-	if err := s.Insert(ctx, "evt", sample{N: 1}); err == nil {
-		t.Fatal("expected error outside tx")
+	if err := s.Insert(ctx, "evt", payload(t, sample{N: 1})); !errors.Is(err, outboxkit.ErrNoTx) {
+		t.Fatalf("err = %v, want ErrNoTx outside tx", err)
 	}
 
-	// внутри WithTx — успех, строка коммитится атомарно.
 	if err := tr.WithTx(ctx, func(ctx context.Context) error {
-		return s.Insert(ctx, "evt", sample{N: 2})
+		return s.Insert(ctx, "evt", payload(t, sample{N: 2}))
 	}); err != nil {
 		t.Fatalf("insert within tx: %v", err)
 	}
@@ -77,19 +104,21 @@ func TestStore_RequireTx_WithinTx(t *testing.T) {
 	if msgs := list(t, tr, s, ctx, 10); len(msgs) != 1 {
 		t.Fatalf("list len=%d (ожидалась только запись из tx)", len(msgs))
 	}
+
+	// Маркер pgkit.WithTestTx снимает гейт — юнит-тесты потребителя обходятся
+	// фейковым транзактором.
+	if err := s.Insert(pgkit.WithTestTx(ctx), "evt", payload(t, sample{N: 3})); err != nil {
+		t.Fatalf("WithTestTx must satisfy the tx-strict guard: %v", err)
+	}
 }
 
 func TestStore_PoisonAndBacklog(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
-	if err := s.Insert(ctx, "evt", sample{N: 1}); err != nil {
-		t.Fatalf("insert: %v", err)
-	}
-	if err := s.Insert(ctx, "evt", sample{N: 2}); err != nil {
-		t.Fatalf("insert: %v", err)
+	for i := 1; i <= 2; i++ {
+		if err := s.Insert(ctx, "evt", payload(t, sample{N: i})); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
 	}
 
 	msgs := list(t, tr, s, ctx, 10)
@@ -97,10 +126,10 @@ func TestStore_PoisonAndBacklog(t *testing.T) {
 		t.Fatalf("list len=%d", len(msgs))
 	}
 
-	// одно — dead, другое — транзиентный фейл.
+	// одно — dead, другое — транзиентный фейл без backoff.
 	if err := s.RecordFailures(ctx, []outboxkit.Failure{
-		{ID: msgs[0].ID, Err: "boom", Dead: true},
-		{ID: msgs[1].ID, Err: "transient", Dead: false},
+		{Ref: msgs[0].Ref(), Err: "boom", Dead: true},
+		{Ref: msgs[1].Ref(), Err: "transient"},
 	}); err != nil {
 		t.Fatalf("record failures: %v", err)
 	}
@@ -125,32 +154,137 @@ func TestStore_PoisonAndBacklog(t *testing.T) {
 	}
 }
 
-func TestStore_CustomTable(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
+// Строка с непрошедшим next_attempt_at не вычитывается: без паузы неудачная
+// публикация ретраилась бы каждый тик.
+func TestStore_BackoffHidesRowUntilDue(t *testing.T) {
 	db, tr, ctx := startStore(t)
-
-	const table = "outbox_orders"
-	if _, err := db.Exec(ctx, pgstore.SchemaSQL(table)); err != nil {
-		t.Fatalf("schema: %v", err)
+	s := pgstore.NewStore(db)
+	if err := s.Insert(ctx, "evt", payload(t, sample{N: 1})); err != nil {
+		t.Fatalf("insert: %v", err)
 	}
-	s, err := pgstore.NewStoreFor(db, table)
+	msgs := list(t, tr, s, ctx, 10)
+
+	if err := s.RecordFailures(ctx, []outboxkit.Failure{
+		{Ref: msgs[0].Ref(), Err: "nak", RetryAfter: time.Hour},
+	}); err != nil {
+		t.Fatalf("record failures: %v", err)
+	}
+	if left := list(t, tr, s, ctx, 10); len(left) != 0 {
+		t.Fatalf("row is not due yet, got %d msgs", len(left))
+	}
+
+	// Наступление срока возвращает строку в выборку.
+	if _, err := db.Exec(ctx, `UPDATE outbox SET next_attempt_at = NOW() - INTERVAL '1 second'`); err != nil {
+		t.Fatalf("advance next_attempt_at: %v", err)
+	}
+	if left := list(t, tr, s, ctx, 10); len(left) != 1 {
+		t.Fatalf("due row not returned, got %d msgs", len(left))
+	}
+}
+
+// Ordered не перескакивает через голову очереди, ждущую backoff: иначе более
+// позднее событие ушло бы в стрим раньше неудавшегося.
+func TestStore_OrderedWaitsForHeadBackoff(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+	for i := 1; i <= 3; i++ {
+		if err := s.Insert(ctx, "evt", payload(t, sample{N: i})); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	msgs := listMode(t, tr, s, ctx, 10, outboxkit.PublishOrdered)
+
+	if err := s.RecordFailures(ctx, []outboxkit.Failure{
+		{Ref: msgs[0].Ref(), Err: "nak", RetryAfter: time.Hour},
+	}); err != nil {
+		t.Fatalf("record failures: %v", err)
+	}
+
+	if got := listMode(t, tr, s, ctx, 10, outboxkit.PublishOrdered); len(got) != 0 {
+		t.Fatalf("ordered jumped the queue head: %d msgs", len(got))
+	}
+	// batch в той же ситуации дренирует остальные строки.
+	if got := list(t, tr, s, ctx, 10); len(got) != 2 {
+		t.Fatalf("batch list = %d msgs, want 2", len(got))
+	}
+}
+
+func TestStore_ReviveDead(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+	for i := 1; i <= 3; i++ {
+		if err := s.Insert(ctx, "evt", payload(t, sample{N: i})); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	if err := s.Insert(ctx, "other", payload(t, sample{N: 4})); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	msgs := list(t, tr, s, ctx, 10)
+	fails := make([]outboxkit.Failure, len(msgs))
+	for i, m := range msgs {
+		fails[i] = outboxkit.Failure{Ref: m.Ref(), Err: "boom", Dead: true, RetryAfter: time.Hour}
+	}
+	if err := s.RecordFailures(ctx, fails); err != nil {
+		t.Fatalf("record failures: %v", err)
+	}
+	if left := list(t, tr, s, ctx, 10); len(left) != 0 {
+		t.Fatalf("dead rows still listed: %d", len(left))
+	}
+
+	n, err := s.ReviveDead(ctx, outboxkit.ReviveFilter{Subject: "evt"})
+	if err != nil {
+		t.Fatalf("ReviveDead: %v", err)
+	}
+	if n != 3 {
+		t.Fatalf("revived = %d, want 3 (subject filter)", n)
+	}
+	revived := list(t, tr, s, ctx, 10)
+	if len(revived) != 3 {
+		t.Fatalf("listed after revive = %d, want 3", len(revived))
+	}
+	for _, m := range revived {
+		if m.Attempts != 0 {
+			t.Fatalf("attempts = %d after revive, want 0", m.Attempts)
+		}
+	}
+
+	// Фильтр по id и времени: чужой subject остаётся dead.
+	n, err = s.ReviveDead(ctx, outboxkit.ReviveFilter{IDs: []int64{msgs[0].ID}, Since: time.Now().Add(-time.Hour)})
+	if err != nil {
+		t.Fatalf("ReviveDead by id: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("revived = %d, want 0 (already alive)", n)
+	}
+	var dead int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM outbox WHERE dead_at IS NOT NULL`).Scan(&dead); err != nil {
+		t.Fatalf("count dead: %v", err)
+	}
+	if dead != 1 {
+		t.Fatalf("dead rows = %d, want 1 (other subject untouched)", dead)
+	}
+}
+
+func TestStore_CustomTable(t *testing.T) {
+	db, tr, ctx := startStore(t, testkit.WithMigrations(pgstore.TableMigrations("outbox_orders")))
+
+	s, err := pgstore.NewStoreFor(db, "outbox_orders")
 	if err != nil {
 		t.Fatalf("NewStoreFor: %v", err)
 	}
-	if err := s.EnsurePartitions(ctx, 1); err != nil {
-		t.Fatalf("ensure partitions: %v", err)
+	if s.Table() != "outbox_orders" {
+		t.Fatalf("Table = %q", s.Table())
 	}
 
-	if err := s.Insert(ctx, "order.created", sample{Foo: "x", N: 1}); err != nil {
+	if err := s.Insert(ctx, "order.created", payload(t, sample{Foo: "x", N: 1})); err != nil {
 		t.Fatalf("insert: %v", err)
 	}
 	msgs := list(t, tr, s, ctx, 10)
 	if len(msgs) != 1 || msgs[0].Subject != "order.created" {
 		t.Fatalf("unexpected msgs: %+v", msgs)
 	}
-	if err := s.MarkPublished(ctx, []int64{msgs[0].ID}); err != nil {
+	if err := s.MarkPublished(ctx, refs(msgs[0])); err != nil {
 		t.Fatalf("mark: %v", err)
 	}
 	if left := list(t, tr, s, ctx, 10); len(left) != 0 {
@@ -159,13 +293,10 @@ func TestStore_CustomTable(t *testing.T) {
 }
 
 func TestStore_HappyPath(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 
-	if err := s.Insert(ctx, "user.created", sample{Foo: "bar", N: 7}); err != nil {
+	if err := s.Insert(ctx, "user.created", payload(t, sample{Foo: "bar", N: 7})); err != nil {
 		t.Fatalf("Insert: %v", err)
 	}
 
@@ -173,11 +304,11 @@ func TestStore_HappyPath(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("want 1 msg, got %d", len(msgs))
 	}
-	if msgs[0].Subject != "user.created" {
-		t.Fatalf("subject mismatch: %s", msgs[0].Subject)
+	if msgs[0].Subject != "user.created" || msgs[0].CreatedAt.IsZero() {
+		t.Fatalf("unexpected message: %+v", msgs[0])
 	}
 
-	if err := s.MarkPublished(ctx, []int64{msgs[0].ID}); err != nil {
+	if err := s.MarkPublished(ctx, refs(msgs[0])); err != nil {
 		t.Fatalf("MarkPublished: %v", err)
 	}
 	var publishedAt *time.Time
@@ -193,16 +324,66 @@ func TestStore_HappyPath(t *testing.T) {
 	}
 }
 
-func TestStore_RollbackDropsMessage(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
+// MessageRef несёт ключ партиционирования: UPDATE'ы тика бьют только по своим
+// партициям и не задевают соседние.
+func TestStore_MarkAndFailAcrossPartitions(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+	if err := s.EnsurePartitions(ctx, 1); err != nil {
+		t.Fatalf("ensure partitions: %v", err)
 	}
+
+	now := time.Now().UTC()
+	old := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0).AddDate(0, 0, 5)
+	oldName, oldSQL := pgstore.PartitionSQL("outbox", old)
+	if _, err := db.Exec(ctx, oldSQL); err != nil {
+		t.Fatalf("create partition %s: %v", oldName, err)
+	}
+	if _, err := db.Exec(ctx,
+		`INSERT INTO outbox (subject, payload, created_at) VALUES ('evt', '{"n":0}', $1)`, old); err != nil {
+		t.Fatalf("insert into old partition: %v", err)
+	}
+	if err := s.Insert(ctx, "evt", payload(t, sample{N: 1})); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	msgs := list(t, tr, s, ctx, 10)
+	if len(msgs) != 2 {
+		t.Fatalf("listed %d msgs, want 2", len(msgs))
+	}
+	if !msgs[0].CreatedAt.Before(msgs[1].CreatedAt) {
+		t.Fatalf("unexpected order: %v, %v", msgs[0].CreatedAt, msgs[1].CreatedAt)
+	}
+
+	// Отмечаем только строку старой партиции.
+	if err := s.MarkPublished(ctx, refs(msgs[0])); err != nil {
+		t.Fatalf("MarkPublished: %v", err)
+	}
+	left := list(t, tr, s, ctx, 10)
+	if len(left) != 1 || left[0].ID != msgs[1].ID {
+		t.Fatalf("mark hit the wrong partition: %+v", left)
+	}
+
+	// И фиксируем неудачу только строке текущей партиции.
+	if err := s.RecordFailures(ctx, []outboxkit.Failure{{Ref: msgs[1].Ref(), Err: "nak"}}); err != nil {
+		t.Fatalf("RecordFailures: %v", err)
+	}
+	var attempts int
+	if err := db.QueryRow(ctx, `SELECT attempts FROM outbox WHERE id = $1`, msgs[0].ID).Scan(&attempts); err != nil {
+		t.Fatalf("select attempts: %v", err)
+	}
+	if attempts != 0 {
+		t.Fatalf("attempts of the other partition row = %d, want 0", attempts)
+	}
+}
+
+func TestStore_RollbackDropsMessage(t *testing.T) {
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 
 	wantErr := errors.New("business failure")
 	err := tr.WithTx(ctx, func(ctx context.Context) error {
-		if err := s.Insert(ctx, "user.created", sample{Foo: "rollback", N: 1}); err != nil {
+		if err := s.Insert(ctx, "user.created", payload(t, sample{Foo: "rollback", N: 1})); err != nil {
 			return err
 		}
 		return wantErr
@@ -216,7 +397,7 @@ func TestStore_RollbackDropsMessage(t *testing.T) {
 	}
 
 	err = tr.WithTx(ctx, func(ctx context.Context) error {
-		return s.Insert(ctx, "user.created", sample{Foo: "commit", N: 2})
+		return s.Insert(ctx, "user.created", payload(t, sample{Foo: "commit", N: 2}))
 	})
 	if err != nil {
 		t.Fatalf("WithTx commit: %v", err)
@@ -229,13 +410,10 @@ func TestStore_RollbackDropsMessage(t *testing.T) {
 // Ordered: пока одна транзакция держит голову очереди, вторая получает ErrBusy,
 // а не следующие строки.
 func TestStore_ListOrdered_HeadLockedIsBusy(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
-	for i := 0; i < 4; i++ {
-		if err := s.Insert(ctx, "evt", sample{N: i}); err != nil {
+	for i := range 4 {
+		if err := s.Insert(ctx, "evt", payload(t, sample{N: i})); err != nil {
 			t.Fatalf("insert: %v", err)
 		}
 	}
@@ -272,5 +450,97 @@ func TestStore_ListOrdered_HeadLockedIsBusy(t *testing.T) {
 	})
 	if err != nil || len(got) != 2 {
 		t.Fatalf("batch list: err=%v len=%d, want 2 unlocked rows", err, len(got))
+	}
+}
+
+func TestStore_EmptyBatchesAreNoops(t *testing.T) {
+	s := pgstore.NewStore(nil)
+	if err := s.MarkPublished(context.Background(), nil); err != nil {
+		t.Fatalf("MarkPublished(nil): %v", err)
+	}
+	if err := s.RecordFailures(context.Background(), nil); err != nil {
+		t.Fatalf("RecordFailures(nil): %v", err)
+	}
+}
+
+// Ошибки хранилища доходят до вызывающего обёрнутыми, а не теряются.
+func TestStore_StorageErrorsSurface(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s, err := pgstore.NewStoreFor(db, "outbox_missing")
+	if err != nil {
+		t.Fatalf("NewStoreFor: %v", err)
+	}
+
+	if err := s.Insert(ctx, "evt", payload(t, sample{N: 1})); err == nil {
+		t.Fatal("Insert on a missing table must fail")
+	}
+	if _, err := s.Backlog(ctx); err == nil {
+		t.Fatal("Backlog on a missing table must fail")
+	}
+	if err := s.MarkPublished(ctx, []outboxkit.MessageRef{{ID: 1, CreatedAt: time.Now()}}); err == nil {
+		t.Fatal("MarkPublished on a missing table must fail")
+	}
+	if err := s.RecordFailures(ctx, []outboxkit.Failure{{Ref: outboxkit.MessageRef{ID: 1, CreatedAt: time.Now()}}}); err == nil {
+		t.Fatal("RecordFailures on a missing table must fail")
+	}
+	if _, err := s.ReviveDead(ctx, outboxkit.ReviveFilter{}); err == nil {
+		t.Fatal("ReviveDead on a missing table must fail")
+	}
+	if err := s.EnsurePartitions(ctx, 1); err == nil {
+		t.Fatal("EnsurePartitions on a missing table must fail")
+	}
+
+	err = tr.WithTx(ctx, func(ctx context.Context) error {
+		_, err := s.ListUnpublished(ctx, 10, outboxkit.PublishBatch)
+		return err
+	})
+	if err == nil || errors.Is(err, outboxkit.ErrBusy) {
+		t.Fatalf("ListUnpublished err = %v, want a wrapped storage error", err)
+	}
+}
+
+// Выборка идёт по началу транзакции вставки, а не по порядку коммитов: событие
+// из долгой транзакции публикуется раньше того, что закоммитилось первым.
+// Домен, которому нужен строгий порядок, сериализует писателей сам.
+func TestStore_OrderFollowsTransactionStart(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+
+	longStarted := make(chan struct{})
+	shortCommitted := make(chan struct{})
+	longDone := make(chan error, 1)
+	go func() {
+		longDone <- tr.WithTx(ctx, func(ctx context.Context) error {
+			var started time.Time
+			if err := db.QueryRow(ctx, "SELECT transaction_timestamp()").Scan(&started); err != nil {
+				return err
+			}
+			close(longStarted)
+			<-shortCommitted
+			return s.Insert(ctx, "long", payload(t, sample{N: 1}))
+		})
+	}()
+	<-longStarted
+
+	if err := tr.WithTx(ctx, func(ctx context.Context) error {
+		return s.Insert(ctx, "short", payload(t, sample{N: 2}))
+	}); err != nil {
+		t.Fatalf("short tx: %v", err)
+	}
+	close(shortCommitted)
+	if err := <-longDone; err != nil {
+		t.Fatalf("long tx: %v", err)
+	}
+
+	msgs := list(t, tr, s, ctx, 10)
+	if len(msgs) != 2 {
+		t.Fatalf("listed %d msgs, want 2", len(msgs))
+	}
+	if msgs[0].Subject != "long" || msgs[1].Subject != "short" {
+		t.Fatalf("order = %s,%s; ожидался порядок начала транзакций", msgs[0].Subject, msgs[1].Subject)
+	}
+	// Первой публикуется строка, вставленная и закоммиченная последней.
+	if msgs[0].ID < msgs[1].ID {
+		t.Fatalf("ids = %d,%d; тест не воспроизвёл пересечение транзакций", msgs[0].ID, msgs[1].ID)
 	}
 }

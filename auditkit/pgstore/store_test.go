@@ -3,6 +3,7 @@ package pgstore_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,14 @@ import (
 	"git.stit.tech/stit-core/golibinfra/auditkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
+
+func startStore(t *testing.T) (*pgstore.Store, *testkit.PostgresFixture, context.Context) {
+	t.Helper()
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	t.Cleanup(cancel)
+	return pgstore.NewStore(pg.DB(t)), pg, ctx
+}
 
 func TestStore_Log_ErrorPrefix(t *testing.T) {
 	s := pgstore.NewStore(nil)
@@ -22,18 +31,24 @@ func TestStore_Log_ErrorPrefix(t *testing.T) {
 	}
 }
 
-func TestStore_Log(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
+// Запрос не должен уходить в базу: невалидную Entry ловит Validate.
+func TestStore_Log_InvalidEntry(t *testing.T) {
+	s := pgstore.NewStore(nil)
+	for _, e := range []auditkit.Entry{
+		{},
+		{Action: "user.create"},
+		{Resource: "user"},
+		{Action: strings.Repeat("a", auditkit.MaxActionLen+1), Resource: "user"},
+	} {
+		if err := s.Log(context.Background(), e); !errors.Is(err, auditkit.ErrInvalidEntry) {
+			t.Fatalf("Log(%+v) = %v, want ErrInvalidEntry", e, err)
+		}
 	}
+}
 
-	fx := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
-	db := fx.DB(t)
-
-	s := pgstore.NewStore(db)
-
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+func TestStore_Log(t *testing.T) {
+	s, pg, ctx := startStore(t)
+	db := pg.DB(t)
 
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	entry := auditkit.Entry{
@@ -98,5 +113,86 @@ func TestStore_Log(t *testing.T) {
 	}
 	if idx != 1 {
 		t.Fatal("audit_log_at_idx missing: миграция 0002 не применилась")
+	}
+}
+
+// Гарантия кита: внутри Transactor.WithTx запись живёт и откатывается вместе с
+// доменной операцией, вне — уходит в autocommit.
+func TestStore_Log_JoinsTx(t *testing.T) {
+	s, pg, ctx := startStore(t)
+	db, tr := pg.DB(t), pg.Transactor(t)
+
+	count := func(action string) int {
+		t.Helper()
+		var n int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM audit_log WHERE action = $1`, action).Scan(&n); err != nil {
+			t.Fatalf("count(%s): %v", action, err)
+		}
+		return n
+	}
+
+	wantErr := errors.New("domain failed")
+	err := tr.WithTx(ctx, func(txCtx context.Context) error {
+		if err := s.Log(txCtx, auditkit.Entry{Action: "tx.rollback", Resource: "user"}); err != nil {
+			return err
+		}
+		return wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("WithTx = %v, want %v", err, wantErr)
+	}
+	if n := count("tx.rollback"); n != 0 {
+		t.Fatalf("rows after rollback = %d, want 0", n)
+	}
+
+	if err := tr.WithTx(ctx, func(txCtx context.Context) error {
+		return s.Log(txCtx, auditkit.Entry{Action: "tx.commit", Resource: "user"})
+	}); err != nil {
+		t.Fatalf("WithTx commit: %v", err)
+	}
+	if n := count("tx.commit"); n != 1 {
+		t.Fatalf("rows after commit = %d, want 1", n)
+	}
+
+	if err := s.Log(ctx, auditkit.Entry{Action: "no.tx", Resource: "user"}); err != nil {
+		t.Fatalf("Log without tx: %v", err)
+	}
+	if n := count("no.tx"); n != 1 {
+		t.Fatalf("rows written outside tx = %d, want 1", n)
+	}
+}
+
+func TestStore_Log_InsertError(t *testing.T) {
+	s, _, ctx := startStore(t)
+
+	canceled, cancel := context.WithCancel(ctx)
+	cancel()
+	err := s.Log(canceled, auditkit.Entry{Action: "user.create", Resource: "user"})
+	if err == nil || !strings.HasPrefix(err.Error(), "auditkit: insert: ") {
+		t.Fatalf("Log with canceled ctx = %v, want auditkit: insert: prefix", err)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Log error must wrap context.Canceled, got %v", err)
+	}
+}
+
+// Миграция 0002 строит audit_log_at_idx с CONCURRENTLY: файл обязан остаться
+// однооператорным, иначе драйвер уходит в неявную транзакцию и миграция падает
+// на «CREATE INDEX CONCURRENTLY cannot run inside a transaction block».
+func TestMigrations_AtIndexIsBuiltConcurrently(t *testing.T) {
+	_, pg, ctx := startStore(t)
+	db := pg.DB(t)
+
+	var valid bool
+	err := db.QueryRow(ctx, `
+		SELECT i.indisvalid
+		FROM pg_class c
+		JOIN pg_index i ON i.indexrelid = c.oid
+		WHERE c.relname = 'audit_log_at_idx'`).Scan(&valid)
+	if err != nil {
+		t.Fatalf("audit_log_at_idx missing after migrations: %v", err)
+	}
+	if !valid {
+		t.Fatal("audit_log_at_idx is invalid: CREATE INDEX CONCURRENTLY did not finish")
 	}
 }

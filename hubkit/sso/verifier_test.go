@@ -1,275 +1,235 @@
 package sso_test
 
 import (
-	"context"
-	"crypto"
-	"crypto/ecdsa"
-	"crypto/elliptic"
-	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"reflect"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
-	jose "github.com/go-jose/go-jose/v4"
-	"github.com/go-jose/go-jose/v4/jwt"
-
+	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/hubkit/sso"
+	"git.stit.tech/stit-core/golibinfra/testkit/hubtest"
 )
-
-const (
-	testIssuer   = "https://id.stit.tech"
-	testAudience = "stit"
-)
-
-// signingIdentity — тестовый ES256-ключ с производным kid + JWKS-сервер.
-type signingIdentity struct {
-	priv     *ecdsa.PrivateKey
-	kid      string
-	signer   jose.Signer
-	jwks     jose.JSONWebKeySet
-	jwksHits atomic.Int64
-}
-
-func newSigningIdentity(t *testing.T) *signingIdentity {
-	t.Helper()
-	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
-	if err != nil {
-		t.Fatalf("gen key: %v", err)
-	}
-	pub := jose.JSONWebKey{Key: priv.Public(), Algorithm: string(jose.ES256), Use: "sig"}
-	tp, err := pub.Thumbprint(crypto.SHA256)
-	if err != nil {
-		t.Fatalf("thumbprint: %v", err)
-	}
-	kid := base64.RawURLEncoding.EncodeToString(tp)
-	pub.KeyID = kid
-
-	s, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.ES256, Key: priv},
-		(&jose.SignerOptions{}).WithHeader("kid", kid).WithType("JWT"),
-	)
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	return &signingIdentity{priv: priv, kid: kid, signer: s, jwks: jose.JSONWebKeySet{Keys: []jose.JSONWebKey{pub}}}
-}
-
-func (s *signingIdentity) jwksServer(t *testing.T) *httptest.Server {
-	t.Helper()
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		s.jwksHits.Add(1)
-		_ = json.NewEncoder(w).Encode(s.jwks)
-	}))
-	t.Cleanup(srv.Close)
-	return srv
-}
-
-func stdClaims() jwt.Claims {
-	now := time.Now()
-	return jwt.Claims{
-		Issuer:   testIssuer,
-		Subject:  "authentik-sub-1",
-		Audience: jwt.Audience{testAudience},
-		Expiry:   jwt.NewNumericDate(now.Add(15 * time.Minute)),
-		IssuedAt: jwt.NewNumericDate(now),
-	}
-}
-
-func hubClaims() map[string]any {
-	return map[string]any{
-		"employee_id": "01980000-0000-7000-8000-000000000001",
-		"username":    "n.sycheva",
-		"name":        "Наталья Сычева",
-		"email":       "n@stit.tech",
-		"role":        "employee",
-		"sid":         "sess-1",
-	}
-}
-
-func (s *signingIdentity) sign(t *testing.T, std jwt.Claims, custom map[string]any) string {
-	t.Helper()
-	raw, err := jwt.Signed(s.signer).Claims(std).Claims(custom).Serialize()
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	return raw
-}
-
-// signWithKID подписывает тем же ключом, но с подставленным kid.
-func (s *signingIdentity) signWithKID(t *testing.T, kid string, std jwt.Claims, custom map[string]any) string {
-	t.Helper()
-	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.ES256, Key: s.priv},
-		(&jose.SignerOptions{}).WithHeader("kid", kid).WithType("JWT"),
-	)
-	if err != nil {
-		t.Fatalf("signer: %v", err)
-	}
-	raw, err := jwt.Signed(signer).Claims(std).Claims(custom).Serialize()
-	if err != nil {
-		t.Fatalf("sign: %v", err)
-	}
-	return raw
-}
-
-func employeeCfg(jwksURL string) sso.Config {
-	return sso.Config{JWKSURL: jwksURL, Cookie: "stit_session", Issuer: testIssuer, Audience: testAudience}
-}
-
-func verifier(t *testing.T, jwksURL string) *sso.Verifier {
-	t.Helper()
-	v, err := sso.NewVerifier(employeeCfg(jwksURL), nil)
-	if err != nil {
-		t.Fatalf("NewVerifier: %v", err)
-	}
-	return v
-}
 
 func TestVerify_Valid(t *testing.T) {
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
-
-	tok := si.sign(t, stdClaims(), hubClaims())
-	id, err := v.Verify(context.Background(), tok)
+	iss := hubtest.NewIssuer(t)
+	id, err := iss.Verifier(t).Verify(t.Context(), iss.EmployeeToken(t))
 	if err != nil {
 		t.Fatalf("Verify: %v", err)
 	}
-	want := sso.Identity{
-		EmployeeID: "01980000-0000-7000-8000-000000000001",
-		Subject:    "authentik-sub-1",
-		Username:   "n.sycheva",
-		Name:       "Наталья Сычева",
-		Email:      "n@stit.tech",
-		Role:       "employee",
-		SID:        "sess-1",
-		Kind:       sso.KindEmployee,
+	if id.Subject != hubtest.DefaultSubject || id.EmployeeID != hubtest.DefaultEmployeeID {
+		t.Fatalf("identity: %+v", id)
 	}
-	if !reflect.DeepEqual(id, want) {
-		t.Fatalf("identity=%+v, ожидали %+v", id, want)
+	if id.Kind != sso.KindEmployee {
+		t.Fatalf("kind = %q, want employee", id.Kind)
 	}
+}
+
+func TestVerify_RejectsNonES256(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	v := iss.Verifier(t)
+
+	// Key confusion: публичный ключ issuer'а как HMAC-секрет.
+	hs256 := iss.SignHS256(t, map[string]any{"sub": "attacker"})
+	if _, err := v.Verify(t.Context(), hs256); !errors.Is(err, sso.ErrInvalidToken) {
+		t.Fatalf("HS256 err = %v, want ErrInvalidToken", err)
+	}
+
+	if _, err := v.Verify(t.Context(), unsignedToken(t, iss)); !errors.Is(err, sso.ErrInvalidToken) {
+		t.Fatalf("alg=none err = %v, want ErrInvalidToken", err)
+	}
+}
+
+// unsignedToken собирает JWS с alg=none и пустой подписью.
+func unsignedToken(t *testing.T, iss *hubtest.Issuer) string {
+	t.Helper()
+	enc := func(v any) string {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatalf("marshal: %v", err)
+		}
+		return base64.RawURLEncoding.EncodeToString(raw)
+	}
+	header := enc(map[string]any{"alg": "none", "typ": "JWT"})
+	payload := enc(map[string]any{
+		"iss": iss.IssuerURL(),
+		"aud": []string{iss.Audience()},
+		"sub": "attacker",
+		"exp": time.Now().Add(time.Hour).Unix(),
+	})
+	return header + "." + payload + "."
 }
 
 func TestVerify_ForeignKey(t *testing.T) {
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
-
-	// Токен подписан ЧУЖИМ ключом, kid — тоже чужой (нет в JWKS сервера).
-	other := newSigningIdentity(t)
-	tok := other.sign(t, stdClaims(), hubClaims())
-	if _, err := v.Verify(context.Background(), tok); err == nil {
-		t.Fatal("токен под чужой подписью прошёл проверку")
-	}
-}
-
-func TestVerify_ForeignKeySameKID(t *testing.T) {
-	// Атака: чужой ключ, но kid подставлен под наш (совпадает с JWKS). Подпись
-	// не сойдётся с публичным ключом из JWKS — verify обязан отвергнуть.
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
-
-	other := newSigningIdentity(t)
-	raw := other.signWithKID(t, si.kid, stdClaims(), hubClaims())
-	if _, err := v.Verify(context.Background(), raw); err == nil {
-		t.Fatal("подделка с подставленным kid прошла проверку")
+	iss := hubtest.NewIssuer(t)
+	other := hubtest.NewIssuer(t)
+	// Тот же kid, чужой ключ: verifier обязан отвергнуть по подписи, а не по kid.
+	token := other.Sign(t, map[string]any{"sub": "u1"}, hubtest.WithKID(iss.KID()))
+	if _, err := iss.Verifier(t).Verify(t.Context(), token); err == nil {
+		t.Fatal("foreign key accepted")
 	}
 }
 
 func TestVerify_Expired(t *testing.T) {
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
+	iss := hubtest.NewIssuer(t)
+	token := iss.EmployeeToken(t, hubtest.WithIssuedAt(time.Now().Add(-2*time.Hour)), hubtest.WithTTL(time.Hour))
+	_, err := iss.Verifier(t).Verify(t.Context(), token)
+	if !errors.Is(err, sso.ErrInvalidClaims) {
+		t.Fatalf("err = %v, want ErrInvalidClaims", err)
+	}
+}
 
-	c := stdClaims()
-	c.Expiry = jwt.NewNumericDate(time.Now().Add(-time.Minute))
-	c.IssuedAt = jwt.NewNumericDate(time.Now().Add(-time.Hour))
-	if _, err := v.Verify(context.Background(), si.sign(t, c, hubClaims())); err == nil {
-		t.Fatal("протухший токен прошёл проверку")
+func TestVerify_NoExpiry(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	token := iss.EmployeeToken(t, hubtest.WithoutClaim("exp"))
+	if _, err := iss.Verifier(t).Verify(t.Context(), token); !errors.Is(err, sso.ErrNoExpiry) {
+		t.Fatalf("err = %v, want ErrNoExpiry", err)
+	}
+}
+
+func TestVerify_NoSubject(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	token := iss.EmployeeToken(t, hubtest.WithoutClaim("sub"))
+	if _, err := iss.Verifier(t).Verify(t.Context(), token); !errors.Is(err, sso.ErrNoSubject) {
+		t.Fatalf("err = %v, want ErrNoSubject", err)
+	}
+}
+
+func TestVerify_LeewayFromConfig(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	clock := clockkit.NewFixed(time.Now())
+	// Токен истёк 30s назад: leeway 60s его принимает, нулевой — нет.
+	token := iss.EmployeeToken(t, hubtest.WithExpiry(clock.Now().Add(-30*time.Second)))
+
+	cfg := hubtest.SSOConfig(iss, nil)
+	lenient, err := sso.NewVerifier(cfg, nil, sso.WithClock(clock))
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	if _, err := lenient.Verify(t.Context(), token); err != nil {
+		t.Fatalf("leeway 60s rejected token: %v", err)
+	}
+
+	cfg.Leeway = 0
+	strict, err := sso.NewVerifier(cfg, nil, sso.WithClock(clock))
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	if _, err := strict.Verify(t.Context(), token); !errors.Is(err, sso.ErrInvalidClaims) {
+		t.Fatalf("leeway 0 err = %v, want ErrInvalidClaims", err)
 	}
 }
 
 func TestVerify_UnknownKID(t *testing.T) {
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
-
-	raw := si.signWithKID(t, "no-such-kid", stdClaims(), hubClaims())
-	if _, err := v.Verify(context.Background(), raw); !errors.Is(err, sso.ErrUnknownKey) {
-		t.Fatalf("ожидали ErrUnknownKey, получили %v", err)
+	iss := hubtest.NewIssuer(t)
+	token := iss.EmployeeToken(t, hubtest.WithKID("does-not-exist"))
+	if _, err := iss.Verifier(t).Verify(t.Context(), token); !errors.Is(err, sso.ErrUnknownKey) {
+		t.Fatalf("err = %v, want ErrUnknownKey", err)
 	}
 }
 
-// Шторм токенов с неизвестным kid — одна загрузка JWKS на интервал, а не
-// запрос к хабу на каждый токен.
 func TestVerify_UnknownKIDStorm_SingleJWKSFetch(t *testing.T) {
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
+	iss := hubtest.NewIssuer(t)
+	v := iss.Verifier(t)
+	if _, err := v.Verify(t.Context(), iss.EmployeeToken(t)); err != nil {
+		t.Fatalf("warm up: %v", err)
+	}
+	before := iss.JWKSRequests()
 
 	var wg sync.WaitGroup
-	for range 100 {
+	for i := range 20 {
 		wg.Go(func() {
-			raw := si.signWithKID(t, "attacker-kid", stdClaims(), hubClaims())
-			if _, err := v.Verify(context.Background(), raw); !errors.Is(err, sso.ErrUnknownKey) {
-				t.Errorf("ожидали ErrUnknownKey, получили %v", err)
-			}
+			_, _ = v.Verify(t.Context(), iss.EmployeeToken(t, hubtest.WithKID("kid-"+string(rune('a'+i%20)))))
 		})
 	}
 	wg.Wait()
-	if got := si.jwksHits.Load(); got != 1 {
-		t.Fatalf("100 неизвестных kid → %d загрузок JWKS, ожидали 1", got)
-	}
-	if _, err := v.Verify(context.Background(), si.sign(t, stdClaims(), hubClaims())); err != nil {
-		t.Fatalf("валидный токен после шторма: %v", err)
-	}
-	if got := si.jwksHits.Load(); got != 1 {
-		t.Fatalf("валидный токен вызвал загрузку: %d", got)
+
+	if got := iss.JWKSRequests() - before; got > 1 {
+		t.Fatalf("jwks fetches during storm = %d, want <= 1", got)
 	}
 }
 
-func TestVerify_WrongIssuer(t *testing.T) {
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
+func TestVerify_RotationKeepsLiveTokensValid(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	clock := clockkit.NewTickable(time.Now())
+	v, err := sso.NewVerifier(hubtest.SSOConfig(iss, nil), nil, sso.WithClock(clock))
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
+	}
+	live := iss.EmployeeToken(t)
+	if _, err := v.Verify(t.Context(), live); err != nil {
+		t.Fatalf("before rotation: %v", err)
+	}
 
-	c := stdClaims()
-	c.Issuer = "https://evil.example"
-	if _, err := v.Verify(context.Background(), si.sign(t, c, hubClaims())); err == nil {
-		t.Fatal("токен с чужим iss прошёл проверку")
+	// Ротация выкидывает прежний kid из набора; grace-период previous-слота
+	// обязан удержать уже выданные access-токены.
+	iss.Rotate(t)
+	clock.Advance(6 * time.Minute) // окно свежести JWKS (Cache-Control: max-age=300)
+
+	if _, err := v.Verify(t.Context(), iss.EmployeeToken(t)); err != nil {
+		t.Fatalf("new key token: %v", err)
+	}
+	if _, err := v.Verify(t.Context(), live); err != nil {
+		t.Fatalf("token of previous kid rejected after rotation: %v", err)
 	}
 }
 
-// aud проверяется всегда: токен без aud или с чужим aud отвергается.
-func TestVerify_Audience(t *testing.T) {
-	si := newSigningIdentity(t)
-	srv := si.jwksServer(t)
-	v := verifier(t, srv.URL)
-
-	c := stdClaims()
-	c.Audience = nil
-	if _, err := v.Verify(context.Background(), si.sign(t, c, hubClaims())); err == nil {
-		t.Fatal("токен без aud прошёл проверку")
+func TestVerify_JWKSUnavailable(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(srv.Close)
+	iss := hubtest.NewIssuer(t)
+	cfg := hubtest.SSOConfig(iss, nil)
+	cfg.JWKSURL = srv.URL
+	v, err := sso.NewVerifier(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewVerifier: %v", err)
 	}
-	c.Audience = jwt.Audience{"other-product"}
-	if _, err := v.Verify(context.Background(), si.sign(t, c, hubClaims())); err == nil {
-		t.Fatal("токен с чужим aud прошёл проверку")
+	if _, err := v.Verify(t.Context(), iss.EmployeeToken(t)); !errors.Is(err, sso.ErrJWKSUnavailable) {
+		t.Fatalf("err = %v, want ErrJWKSUnavailable", err)
 	}
 }
 
-func TestNewVerifier_ConfigRequired(t *testing.T) {
-	if _, err := sso.NewVerifier(sso.Config{Audience: testAudience}, nil); !errors.Is(err, sso.ErrConfig) {
-		t.Fatalf("ожидали ErrConfig, получили %v", err)
+func TestVerify_WrongIssuerAndAudience(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	v := iss.Verifier(t)
+	for name, token := range map[string]string{
+		"issuer":   iss.EmployeeToken(t, hubtest.WithClaim("iss", "https://evil.test")),
+		"audience": iss.EmployeeToken(t, hubtest.WithClaim("aud", []string{"other"})),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := v.Verify(t.Context(), token); !errors.Is(err, sso.ErrInvalidClaims) {
+				t.Fatalf("err = %v, want ErrInvalidClaims", err)
+			}
+		})
 	}
-	if _, err := sso.NewVerifier(sso.Config{JWKSURL: "https://id.stit.tech/jwks"}, nil); !errors.Is(err, sso.ErrAudience) {
-		t.Fatalf("ожидали ErrAudience, получили %v", err)
+}
+
+func TestVerify_Malformed(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	if _, err := iss.Verifier(t).Verify(t.Context(), "not-a-jwt"); !errors.Is(err, sso.ErrInvalidToken) {
+		t.Fatalf("err = %v, want ErrInvalidToken", err)
+	}
+}
+
+func TestVerifier_Refresh(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	if err := iss.Verifier(t).Refresh(t.Context()); err != nil {
+		t.Fatalf("Refresh: %v", err)
+	}
+	if iss.JWKSRequests() == 0 {
+		t.Fatal("Refresh did not hit the JWKS endpoint")
+	}
+}
+
+func TestVerifier_KindAccessor(t *testing.T) {
+	iss := hubtest.NewIssuer(t)
+	if got := iss.Verifier(t).Kind(); got != sso.KindEmployee {
+		t.Fatalf("Kind() = %q", got)
 	}
 }

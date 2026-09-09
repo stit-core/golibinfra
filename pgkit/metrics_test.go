@@ -16,9 +16,6 @@ import (
 )
 
 func TestInstrumentPool_EmitsPoolStatsPerRole(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration")
-	}
 	pg := testkit.StartPostgres(t)
 	cfg := pgkit.PoolConfig{
 		DSN: pg.DSN, MaxConns: 5, MinConns: 1,
@@ -51,15 +48,15 @@ func TestInstrumentPool_EmitsPoolStatsPerRole(t *testing.T) {
 	}
 
 	want := []string{
-		"db_pool_acquired_conns",
-		"db_pool_idle_conns",
-		"db_pool_total_conns",
-		"db_pool_max_conns",
-		"db_pool_constructing_conns",
-		"db_pool_empty_acquire_total",
-		"db_pool_canceled_acquire_total",
-		"db_pool_acquire_total",
-		"db_pool_acquire_duration_seconds_total",
+		"pg_pool_acquired_conns",
+		"pg_pool_idle_conns",
+		"pg_pool_total_conns",
+		"pg_pool_max_conns",
+		"pg_pool_constructing_conns",
+		"pg_pool_empty_acquire_total",
+		"pg_pool_canceled_acquire_total",
+		"pg_pool_acquire_total",
+		"pg_pool_acquire_duration_seconds_total",
 	}
 	roles := map[string]map[string]bool{}
 	for _, sm := range rm.ScopeMetrics {

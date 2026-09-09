@@ -21,7 +21,7 @@ app := fx.New(
     clockkit.Module,
     logkit.Module,
     amocrmkit.Module,
-    fx.Provide(httpclient.NewConfig, amocrmkit.NewConfig),
+    fx.Provide(logkit.NewConfig, httpclient.NewConfig, amocrmkit.NewConfig),
     fx.Invoke(func(c *amocrmkit.Client) {
         acc := amocrmkit.Account{Subdomain: "mycompany", TLD: "ru", Token: accessToken}
         page, err := c.ListLeads(ctx, acc, amocrmkit.ListParams{Limit: 50})
@@ -30,9 +30,13 @@ app := fx.New(
 )
 ```
 
+`logkit.Module` требует `logkit.Config` в графе, поэтому `logkit.NewConfig`
+регистрируется рядом с остальными.
+
 Минимальные ENV — нет обязательных: `Config` целиком на дефолтах
-(`AMOCRM_RATE_RPS=7`, `AMOCRM_HOST_OVERRIDE=""`), таймаут/retry/breaker — из
-`HTTPCLIENT_*`. Подробности — [configuration.md](configuration.md).
+(`AMOCRM_RATE_RPS=7`, `AMOCRM_MAX_WAIT=5s`, `AMOCRM_HOST_OVERRIDE=""`),
+таймаут/retry/breaker — из `HTTPCLIENT_*`. Подробности —
+[configuration.md](configuration.md).
 
 ## Подключение через прямой New
 
@@ -55,9 +59,12 @@ created, err := c.CreateLeads(ctx, acc, []amocrmkit.LeadInput{{Name: "Сделк
 func New(cfg Config, hcCfg httpclient.Config, clock clockkit.Clock, log logkit.Logger, opts ...Option) (*Client, error)
 ```
 
-`RateRPS` обязан быть `> 0` (`ErrConfig`). При `clock == nil` подставляется
-`clockkit.Real{}`, при `log == nil` — `logkit.Nop()`. Опции `WithTransport` /
-`WithHTTPClient` — в [configuration.md](configuration.md).
+`RateRPS` обязан быть `> 0` (`ErrConfig`); нулевой `MaxWait` заменяется дефолтом
+(5s). `hcCfg` тоже валидируется — клиента без таймаута собрать нельзя, а
+`RetryNonIdempotent` кит принудительно выключает (повтор POST в amoCRM создаёт
+дубль). При `clock == nil` подставляется `clockkit.Real{}`, при `log == nil` —
+`logkit.Nop()`. Опции `WithTransport` / `WithHTTPClient` — в
+[configuration.md](configuration.md).
 
 ## REST v4: координаты аккаунта
 
@@ -105,6 +112,18 @@ out, err := c.CreateLeads(ctx, acc, []amocrmkit.LeadInput{
 `RequestID` в `*Input` — клиентский ключ дедупликации внутри батча: amoCRM
 возвращает его обратно в соответствующем `CreatedEntity`.
 
+### Чтение одной сущности
+
+```go
+lead, err := c.GetLead(ctx, acc, leadID, "contacts", "companies") // GET /leads/{id}?with=contacts,companies
+contact, err := c.GetContact(ctx, acc, contactID)
+company, err := c.GetCompany(ctx, acc, companyID)
+customer, err := c.GetCustomer(ctx, acc, customerID)
+```
+
+Пустой ответ на такой запрос — `ErrNotFound` (нулевую сущность с `err == nil`
+кит не отдаёт). Все id — `int64`.
+
 ### Завершение задачи
 
 ```go
@@ -126,25 +145,53 @@ types, err := c.GetAccountTaskTypes(ctx, acc) // GET /account?with=task_types
 же валидацию):
 
 ```go
-tok, err := c.ExchangeCode(ctx, "mycompany", "ru", clientID, clientSecret, code, redirectURI)
-// tok.AccessToken, tok.RefreshToken, tok.ExpiresIn, tok.ServerTime
-expiresAt := tok.ExpiresAt() // = ServerTime + ExpiresIn (UTC), не локальные часы
+app := amocrmkit.OAuthConfig{ClientID: clientID, ClientSecret: clientSecret, RedirectURI: redirectURI}
+acc := amocrmkit.Account{Subdomain: "mycompany", TLD: "ru"} // Token не нужен
 
-tok2, err := c.RefreshToken(ctx, "mycompany", "ru", clientID, clientSecret, refreshToken, redirectURI)
+pair, err := c.ExchangeCode(ctx, acc, app, code)
+// pair.AccessToken, pair.RefreshToken, pair.ExpiresIn, pair.ServerTime
+expiresAt := pair.ExpiresAt() // = ServerTime + ExpiresIn (UTC), не локальные часы
+
+pair2, err := c.RefreshToken(ctx, acc, app, pair.RefreshToken)
 ```
 
 `redirect_uri` обязателен в теле **обоих** grant'ов, включая `refresh_token`
-(требование wire-контракта amoCRM).
+(требование wire-контракта amoCRM). Если amoCRM не прислал `server_time`, кит
+подставляет свои часы: `ExpiresAt` не уезжает в 1970.
 
-Хранение токенов, превентивный refresh (порог 5 мин до истечения) и оркестрация —
-у потребителя. Кит определяет контракт `TokenSource`, но сам его не вызывает —
-актуальный access-токен потребитель кладёт в `Account.Token` перед вызовом:
+### Одноразовый refresh-токен
+
+**Refresh-токен amoCRM одноразовый.** После успешного обмена старый токен
+недействителен, а новая пара существует только в ответе. Отсюда два инварианта:
+
+1. Новую пару сохраняют **до** того, как ей воспользуются; неудача сохранения =
+   потеря интеграции.
+2. Refresh на аккаунт сериализуется. Два параллельных обмена (job + HTTP-хендлер,
+   две реплики) — второй получает `ErrAuth`, и если первая пара не сохранилась,
+   аккаунт нужно переавторизовывать вручную.
+
+Кит даёт `RefreshCoordinator` поверх `TokenStore` потребителя — single-flight на
+аккаунт: конкурентные вызовы делят один сетевой обмен.
 
 ```go
-type TokenSource interface {
-    Token(ctx context.Context, accountSubdomain string) (string, error)
+type TokenStore interface {
+    Load(ctx context.Context, acc amocrmkit.Account) (amocrmkit.TokenPair, error)
+    Save(ctx context.Context, acc amocrmkit.Account, p amocrmkit.TokenPair) error
 }
+
+rc := amocrmkit.NewRefreshCoordinator(c, store, app) // опция: WithRefreshSkew(10*time.Minute)
+
+token, err := rc.Token(ctx, acc) // отдаёт живой access-токен или обновляет пару
+if errors.Is(err, amocrmkit.ErrAuth) {
+    // пара потеряна: аккаунту нужна переавторизация владельцем (needs_reauth)
+}
+acc.Token = token
+page, err := c.ListLeads(ctx, acc, amocrmkit.ListParams{Limit: 50})
 ```
+
+Координатор сериализует refresh **внутри процесса**. В нескольких репликах
+`TokenStore.Load`/`Save` должны опираться на блокировку хранилища
+(`SELECT … FOR UPDATE`), иначе гонка возвращается на уровень БД.
 
 ## amoJo Chat
 
@@ -201,32 +248,50 @@ func handle(w http.ResponseWriter, r *http.Request) {
 }
 ```
 
-## Drive: чанковая загрузка файла
+## Drive: загрузка файла
 
 Drive ходит на динамический `drive_url` аккаунта (не выводится из subdomain).
-Сначала резолвим его, затем сессионная загрузка чанками:
+Сначала резолвим его, затем грузим файл — `UploadFile` сам режет поток на части
+по `max_part_size` и идёт по цепочке `next_url`:
 
 ```go
 driveURL, err := c.GetDriveURL(ctx, acc)
 
-sess, err := c.CreateUploadSession(ctx, acc, driveURL, amocrmkit.UploadSessionInput{
-    FileName: "doc.pdf",
-    FileSize: total,
-})
+f, err := os.Open("doc.pdf")
+defer f.Close()
+st, err := f.Stat()
 
-uploadURL := sess.UploadURL
-var file amocrmkit.File
-offset := int64(0)
-for _, chunk := range chunks { // размер чанка ≤ sess.MaxPartSize
-    contentRange := fmt.Sprintf("bytes %d-%d/%d", offset, offset+int64(len(chunk))-1, total)
-    file, err = c.UploadPart(ctx, acc, uploadURL, contentRange, chunk)
-    // промежуточный ответ несёт next upload_url; последняя часть — финальный File
-    offset += int64(len(chunk))
-}
+file, err := c.UploadFile(ctx, acc, driveURL, amocrmkit.UploadSessionInput{
+    FileName:    "doc.pdf",
+    FileSize:    st.Size(), // обязан совпадать с длиной потока
+    ContentType: "application/pdf",
+}, f)
 
 // Привязать загруженный файл к сущности (202).
 err = c.AttachFiles(ctx, acc, "leads", leadID, []amocrmkit.AttachFileInput{{FileUUID: file.UUID}})
 ```
+
+В памяти живёт не больше одной части. Ручной цикл нужен, только если частями
+управляет сам потребитель (докачка, свой источник данных):
+
+```go
+sess, err := c.CreateUploadSession(ctx, acc, driveURL, in)
+
+uploadURL, offset := sess.UploadURL, int64(0)
+for _, chunk := range chunks { // размер чанка ≤ sess.MaxPartSize
+    contentRange := fmt.Sprintf("bytes %d-%d/%d", offset, offset+int64(len(chunk))-1, in.FileSize)
+    part, err := c.UploadPart(ctx, acc, uploadURL, contentRange, chunk)
+    if part.NextURL == "" {
+        file = part // последняя часть — финальный File с UUID
+        break
+    }
+    uploadURL = part.NextURL // промежуточный ответ: адрес следующей части
+    offset += int64(len(chunk))
+}
+```
+
+`driveURL` и `upload_url` должны лежать на `https://*.amocrm.<TLD>` аккаунта,
+иначе кит откажет с `ErrInvalidAccount`: Bearer не уходит на чужой хост.
 
 ## Обработка ошибок
 
@@ -238,16 +303,21 @@ _, err := c.ListLeads(ctx, acc, amocrmkit.ListParams{})
 switch {
 case err == nil:
     // ok
-case errors.Is(err, amocrmkit.ErrInvalidAccount):
-    // координаты аккаунта вне формата — ошибка данных, не сети; retry бесполезен
+case errors.Is(err, amocrmkit.ErrInvalidAccount), errors.Is(err, amocrmkit.ErrInvalidRequest):
+    // отказ до сети (координаты, сегмент пути, связь вне матрицы) — retry бесполезен
 case errors.Is(err, amocrmkit.ErrRateLimited):
     var apiErr *amocrmkit.APIError
     if errors.As(err, &apiErr) {
-        // apiErr.RetryAfter — секунды (поле тела retry_after на 429)
+        // apiErr.RetryAfter — секунды (поле тела retry_after или заголовок Retry-After).
+        // Ошибка без APIError = лимитер отклонил вызов локально (аккаунт на паузе).
     }
-    // throttle / отложить
+    // отложить аккаунт, не повторять сразу
+case errors.Is(err, amocrmkit.ErrPaymentRequired):
+    // 402 — подписка закончилась: пауза аккаунта до оплаты, не dead-letter
+case errors.Is(err, amocrmkit.ErrForbidden):
+    // 403 — нет прав ЛИБО аккаунт заблокирован за превышение rps: пауза, не dead-letter
 case errors.Is(err, amocrmkit.ErrAuth):
-    // 401 — обновить токен через token-store и повторить
+    // 401 — обновить пару через RefreshCoordinator и повторить
 case errors.Is(err, amocrmkit.ErrValidation):
     var apiErr *amocrmkit.APIError
     if errors.As(err, &apiErr) {

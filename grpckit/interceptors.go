@@ -11,6 +11,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"git.stit.tech/stit-core/golibinfra/idkit"
+	"git.stit.tech/stit-core/golibinfra/internal/grpcstatus"
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
@@ -67,7 +68,7 @@ func recoveryUnary(log logkit.Logger) grpc.UnaryServerInterceptor {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Error(ctx, "grpc panic recovered", "method", info.FullMethod, "panic", rec, "stack", string(debug.Stack()))
-				err = status.Errorf(codes.Internal, "internal error")
+				err = status.Error(codes.Internal, "internal error")
 			}
 		}()
 		return handler(ctx, req)
@@ -79,7 +80,7 @@ func recoveryStream(log logkit.Logger) grpc.StreamServerInterceptor {
 		defer func() {
 			if rec := recover(); rec != nil {
 				log.Error(ss.Context(), "grpc panic recovered", "method", info.FullMethod, "panic", rec, "stack", string(debug.Stack()))
-				err = status.Errorf(codes.Internal, "internal error")
+				err = status.Error(codes.Internal, "internal error")
 			}
 		}()
 		return handler(srv, ss)
@@ -110,19 +111,9 @@ func logRPC(ctx context.Context, log logkit.Logger, method string, dur time.Dura
 	switch {
 	case err == nil:
 		log.Info(ctx, "grpc call", kv...)
-	case isServerFault(code):
+	case grpcstatus.IsServerFault(code):
 		log.Error(ctx, "grpc call failed", append(kv, "error", err.Error())...)
 	default:
 		log.Warn(ctx, "grpc call failed", append(kv, "error", err.Error())...)
 	}
-}
-
-// isServerFault — коды, за которыми стоит сбой сервера; остальные не-OK исходы
-// (клиентская ошибка, отказ в доступе, отмена) — ожидаемые, для них Warn.
-func isServerFault(code codes.Code) bool {
-	switch code {
-	case codes.Internal, codes.Unknown, codes.DataLoss, codes.Unavailable, codes.Unimplemented:
-		return true
-	}
-	return false
 }

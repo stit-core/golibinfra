@@ -37,15 +37,17 @@ func isAuthExempt(fullMethod string) bool {
 	return false
 }
 
+const bearerPrefix = "bearer "
+
+// bearerToken принимает и «Bearer <token>» (регистр префикса любой), и голый
+// токен; пустой остаток после префикса — не токен, а отсутствие токена, иначе
+// порт аутентификации зря дёргает свой стор.
 func bearerToken(ctx context.Context) string {
 	v := metadataFirst(ctx, authMetadataKey)
-	if v == "" {
-		return ""
+	if len(v) >= len(bearerPrefix) && strings.EqualFold(v[:len(bearerPrefix)], bearerPrefix) {
+		return strings.TrimSpace(v[len(bearerPrefix):])
 	}
-	if len(v) > 7 && strings.EqualFold(v[:7], "Bearer ") {
-		return v[7:]
-	}
-	return v
+	return strings.TrimSpace(v)
 }
 
 // authenticate не отдаёт клиенту текст ошибки порта: он может нести внутренние

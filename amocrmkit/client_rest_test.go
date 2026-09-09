@@ -176,7 +176,7 @@ func TestLinkEntities_RejectsOutOfMatrix(t *testing.T) {
 		{ToEntityID: 2, ToEntityType: "customers"},
 	})
 	if err == nil {
-		t.Fatal("ожидалась ошибка для leads↔customers (вне матрицы)")
+		t.Fatal("expected an error for leads↔customers (outside the link matrix)")
 	}
 }
 

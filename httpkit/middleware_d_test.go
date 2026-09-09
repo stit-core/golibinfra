@@ -1,6 +1,7 @@
 package httpkit_test
 
 import (
+	"bytes"
 	"errors"
 	"io"
 	"net/http"
@@ -214,5 +215,93 @@ func TestChain_FlushReachesUnderlyingWriter(t *testing.T) {
 	h.ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/", nil))
 	if !flushed || !rec.Flushed {
 		t.Fatalf("flush must reach the recorder: handler=%v recorder=%v", flushed, rec.Flushed)
+	}
+}
+
+// Регрессия: без Expose-Headers cross-origin SPA не читает X-Request-ID,
+// Location и Retry-After, которые кит сам же и ставит.
+func TestCORS_ExposeHeaders(t *testing.T) {
+	cfg := httpkit.CORSConfig{
+		Origins:       []string{"https://app.example.com"},
+		ExposeHeaders: []string{"X-Request-ID", "Location"},
+	}
+	h := httpkit.CORS(cfg)(http.HandlerFunc(okHandler))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://app.example.com")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Expose-Headers"); got != "X-Request-ID, Location" {
+		t.Fatalf("Access-Control-Expose-Headers = %q", got)
+	}
+}
+
+// Регрессия: прямой вызов CORS() минует Config.Validate, поэтому связка
+// «*» + credentials не должна отражать произвольный origin.
+func TestCORS_WildcardNeverEchoesOriginWithCredentials(t *testing.T) {
+	h := httpkit.CORS(httpkit.CORSConfig{Origins: []string{"*"}, AllowCredentials: true})(http.HandlerFunc(okHandler))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("Origin", "https://evil.example")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if got := rec.Header().Get("Access-Control-Allow-Origin"); got != "*" {
+		t.Errorf("ACAO = %q, want *", got)
+	}
+	if got := rec.Header().Get("Access-Control-Allow-Credentials"); got != "" {
+		t.Errorf("credentials must not be granted to a wildcard origin: %q", got)
+	}
+}
+
+func TestAccessLog_QuietPathsAndDurationUnit(t *testing.T) {
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := httpkit.AccessLog(log, "/ready")(http.HandlerFunc(okHandler))
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if buf.Len() != 0 {
+		t.Fatalf("successful probe must not write an Info line: %s", buf.String())
+	}
+
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/orders", nil))
+	line := buf.String()
+	if !strings.Contains(line, `"path":"/orders"`) || !strings.Contains(line, `"duration_ms":`) {
+		t.Fatalf("access log line: %s", line)
+	}
+	if strings.Contains(line, `"dur":`) {
+		t.Fatalf("duration must carry its unit in the field name: %s", line)
+	}
+}
+
+func TestAccessLog_QuietPathStillLogsFailures(t *testing.T) {
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := httpkit.AccessLog(log, "/ready")(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ready", nil))
+	if !strings.Contains(buf.String(), `"status":503`) {
+		t.Fatalf("failing probe must stay in the log: %s", buf.String())
+	}
+}
+
+func TestAccessLog_PanicStillLogged(t *testing.T) {
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	h := httpkit.AccessLog(log)(httpkit.Recovery(logkit.Nop())(http.HandlerFunc(func(http.ResponseWriter, *http.Request) {
+		panic("boom")
+	})))
+	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/boom", nil))
+	if !strings.Contains(buf.String(), `"status":500`) || !strings.Contains(buf.String(), `"path":"/boom"`) {
+		t.Fatalf("panic request must produce an access-log line: %s", buf.String())
 	}
 }

@@ -4,46 +4,175 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
+	"strings"
+	"unicode"
 )
 
-// Дефолтные паттерны — эвристики компактных форм: email, телефон (E.164 с «+»
-// либо RU-номер 7/8 + 10 цифр), карта (4×4 цифры). Свои — LOG_REDACT_PATTERNS.
+const defaultReplaceWith = "[REDACTED]"
+
+// Дефолтный набор — эвристики компактных форм PII и очевидных секретов.
+// Порядок важен: «Bearer <jwt>» должен схлопываться целиком, поэтому схемы
+// авторизации стоят раньше JWT.
 var defaultRedactPatterns = Patterns{
 	`[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}`,
 	`\+\d{10,15}\b|\b[78]\d{10}\b`,
 	`\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b`,
+	`(?i)\bbearer\s+[A-Za-z0-9\-._~+/]+=*`,
+	`(?i)\bbasic\s+[A-Za-z0-9+/]{8,}={0,2}`,
+	`\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+`,
+	`\bsk-ant-[A-Za-z0-9_-]{16,}`,
+	`\bsk-[A-Za-z0-9]{20,}\b`,
 }
 
 type redactHandler struct {
 	inner slog.Handler
-	res   []*regexp.Regexp
+	rules redactRules
 	with  string
+}
+
+// redactRules — скомпилированный набор масок.
+type redactRules struct {
+	re *regexp.Regexp
+	// hint включён только для дефолтного набора: pre-filter выведен из него.
+	hint bool
 }
 
 // NewRedactHandler маскирует msg и строковые значения атрибутов (включая
 // With()-attrs, группы, LogValuer, error и JSON-представление Any-значений);
 // числа, bool, time и duration не трогает.
 func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) {
-	patterns := cfg.Patterns
-	if len(patterns) == 0 {
-		patterns = defaultRedactPatterns
+	if inner == nil {
+		return nil, errors.New("logkit: NewRedactHandler: nil inner handler")
 	}
-	res := make([]*regexp.Regexp, 0, len(patterns))
-	for _, p := range patterns {
-		re, err := regexp.Compile(p)
-		if err != nil {
-			return nil, fmt.Errorf("%w: LOG_REDACT_PATTERNS %q: %w", ErrConfig, p, err)
-		}
-		res = append(res, re)
+	rules, err := compileRedact(cfg)
+	if err != nil {
+		return nil, err
 	}
 	with := cfg.ReplaceWith
 	if with == "" {
-		with = "[REDACTED]"
+		with = defaultReplaceWith
 	}
-	return &redactHandler{inner: inner, res: res, with: with}, nil
+	return &redactHandler{inner: inner, rules: rules, with: with}, nil
+}
+
+// compileRedact собирает один альтернативный regexp: одна прогонка по строке
+// вместо N. Замена — литеральная, поэтому «$» в ReplaceWith безопасен.
+func compileRedact(cfg RedactConfig) (redactRules, error) {
+	with := cfg.ReplaceWith
+	if with == "" {
+		with = defaultReplaceWith
+	}
+	for _, r := range with {
+		if r == '"' || r == '\\' || unicode.IsControl(r) {
+			return redactRules{}, fmt.Errorf(
+				"%w: LOG_REDACT_REPLACE_WITH %q: %q breaks the JSON encoding of redacted values",
+				ErrConfig, with, string(r),
+			)
+		}
+	}
+
+	patterns := cfg.Patterns
+	hint := len(patterns) == 0
+	if hint {
+		patterns = defaultRedactPatterns
+	}
+	parts := make([]string, 0, len(patterns))
+	for _, p := range patterns {
+		sub, err := regexp.Compile(p)
+		if err != nil {
+			return redactRules{}, fmt.Errorf("%w: LOG_REDACT_PATTERNS %q: %w", ErrConfig, p, err)
+		}
+		// Совпадение с пустой строкой вставляет замену между каждой парой
+		// символов: нечитаемым становится весь лог, а не одно значение.
+		if sub.MatchString("") {
+			return redactRules{}, fmt.Errorf("%w: LOG_REDACT_PATTERNS %q: pattern matches the empty string", ErrConfig, p)
+		}
+		parts = append(parts, "(?:"+p+")")
+	}
+	re, err := regexp.Compile(strings.Join(parts, "|"))
+	if err != nil {
+		return redactRules{}, fmt.Errorf("%w: LOG_REDACT_PATTERNS %q: %w", ErrConfig, patterns, err)
+	}
+	return redactRules{re: re, hint: hint}, nil
+}
+
+// minRedactDigits — сколько цифр подряд нужно, чтобы совпал самый короткий из
+// «цифровых» дефолтов (телефон — 11, карта — 16 с разделителями).
+const minRedactDigits = 11
+
+// defaultHint — необходимое условие совпадения дефолтного набора: у каждой
+// маски есть обязательный литерал («@», «+», «bearer», «basic», «eyJ», «sk-»)
+// либо цепочка минимум из minRedactDigits цифр. Скан по байтам дешевле
+// прогонки regexp'а на порядки: её цена — O(длина × размер программы), а
+// программа объединённого набора — почти две сотни инструкций.
+func defaultHint[T string | []byte](s T) bool {
+	run, sep := 0, false
+	for i := 0; i < len(s); i++ {
+		switch c := s[i]; {
+		case c == '@' || c == '+':
+			return true
+		case c >= '0' && c <= '9':
+			run++
+			sep = false
+			if run >= minRedactDigits {
+				return true
+			}
+			continue
+		case numSep(c) && run > 0 && !sep:
+			sep = true
+			continue
+		case c == 'b' || c == 'B':
+			if foldPrefix(s[i:], "bearer") || foldPrefix(s[i:], "basic") {
+				return true
+			}
+		case c == 'e':
+			if literalPrefix(s[i:], "eyJ") {
+				return true
+			}
+		case c == 's':
+			if literalPrefix(s[i:], "sk-") {
+				return true
+			}
+		}
+		run, sep = 0, false
+	}
+	return false
+}
+
+// numSep — разделитель между группами цифр номера карты; надмножество «\s»
+// и «-» из маски, чтобы цепочка не рвалась раньше, чем у regexp'а.
+func numSep(c byte) bool {
+	return c == '-' || c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r'
+}
+
+// foldPrefix сравнивает начало s с ASCII-строкой want без учёта регистра;
+// want — только строчные буквы.
+func foldPrefix[T string | []byte](s T, want string) bool {
+	if len(s) < len(want) {
+		return false
+	}
+	for i := 0; i < len(want); i++ {
+		if s[i]|0x20 != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func literalPrefix[T string | []byte](s T, want string) bool {
+	if len(s) < len(want) {
+		return false
+	}
+	for i := 0; i < len(want); i++ {
+		if s[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func (h *redactHandler) Enabled(ctx context.Context, l slog.Level) bool {
@@ -64,25 +193,31 @@ func (h *redactHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	for i, a := range attrs {
 		out[i] = h.attr(a)
 	}
-	return &redactHandler{inner: h.inner.WithAttrs(out), res: h.res, with: h.with}
+	return &redactHandler{inner: h.inner.WithAttrs(out), rules: h.rules, with: h.with}
 }
 
 func (h *redactHandler) WithGroup(name string) slog.Handler {
-	return &redactHandler{inner: h.inner.WithGroup(name), res: h.res, with: h.with}
+	return &redactHandler{inner: h.inner.WithGroup(name), rules: h.rules, with: h.with}
 }
 
 func (h *redactHandler) text(s string) string {
-	for _, re := range h.res {
-		s = re.ReplaceAllString(s, h.with)
+	if h.rules.hint && !defaultHint(s) {
+		return s
 	}
-	return s
+	if !h.rules.re.MatchString(s) {
+		return s
+	}
+	return h.rules.re.ReplaceAllLiteralString(s, h.with)
 }
 
 func (h *redactHandler) bytes(b []byte) []byte {
-	for _, re := range h.res {
-		b = re.ReplaceAll(b, []byte(h.with))
+	if h.rules.hint && !defaultHint(b) {
+		return b
 	}
-	return b
+	if !h.rules.re.Match(b) {
+		return b
+	}
+	return h.rules.re.ReplaceAllLiteral(b, []byte(h.with))
 }
 
 func (h *redactHandler) attr(a slog.Attr) slog.Attr {
@@ -104,20 +239,47 @@ func (h *redactHandler) attr(a slog.Attr) slog.Attr {
 	}
 }
 
-// anyAttr: error — как строка (так его рендерит и JSONHandler); прочее — через
-// JSON, и только если маска что-то заменила, значение подменяется RawMessage.
+// anyAttr: error — как строка (так его рендерит и JSONHandler); прочее —
+// маршалится один раз, дальше по конвейеру идёт уже готовый JSON.
 func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
-	if err, ok := x.(error); ok {
+	switch t := x.(type) {
+	case nil:
+		return slog.Any(key, x)
+	case json.RawMessage:
+		return h.jsonAttr(key, t)
+	case []byte:
+		return slog.Any(key, h.bytes(t))
+	case error:
 		if _, isMarshaler := x.(json.Marshaler); !isMarshaler {
-			return slog.String(key, h.text(err.Error()))
+			return slog.String(key, h.text(t.Error()))
 		}
 	}
-	b, err := json.Marshal(x)
+	b, err := marshalJSON(x)
 	if err != nil {
 		return slog.Any(key, x)
 	}
-	if rb := h.bytes(b); !bytes.Equal(rb, b) {
-		return slog.Any(key, json.RawMessage(rb))
+	return h.jsonAttr(key, b)
+}
+
+// jsonAttr: маска работает по JSON-байтам, поэтому паттерн или ReplaceWith с
+// кавычкой могут сделать значение невалидным — тогда оно уходит строкой, а не
+// «!ERROR».
+func (h *redactHandler) jsonAttr(key string, b []byte) slog.Attr {
+	rb := h.bytes(b)
+	if !json.Valid(rb) {
+		return slog.String(key, string(rb))
 	}
-	return slog.Any(key, x)
+	return slog.Any(key, json.RawMessage(rb))
+}
+
+// marshalJSON повторяет кодирование slog.JSONHandler (без HTML-escape), чтобы
+// маскированное и нетронутое значение выглядели одинаково.
+func marshalJSON(x any) ([]byte, error) {
+	var buf bytes.Buffer
+	enc := json.NewEncoder(&buf)
+	enc.SetEscapeHTML(false)
+	if err := enc.Encode(x); err != nil {
+		return nil, err
+	}
+	return bytes.TrimRight(buf.Bytes(), "\n"), nil
 }

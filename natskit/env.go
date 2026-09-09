@@ -11,12 +11,13 @@ import (
 
 // loadEnv заполняет структуру по тегам `envconfig`, читая переменные под prefix
 // (пустой prefix — голые имена). Ключ без префикса НЕ подхватывается как
-// fallback: иначе именованный инстанс молча унаследовал бы URL и список стримов
-// дефолтного и ушёл публиковать в чужую шину.
+// fallback (envconfig.Process это делает): иначе именованный инстанс молча
+// унаследовал бы URL и список стримов дефолтного и ушёл публиковать в чужую шину.
+// Явно пустое значение равно «переменная не задана» — берётся тег `default`.
 func loadEnv(prefix string, spec any) error {
 	rv := reflect.ValueOf(spec)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() || rv.Elem().Kind() != reflect.Struct {
-		return fmt.Errorf("natskit: loadEnv wants non-nil pointer to struct, got %T", spec)
+		return fmt.Errorf("%w: loadEnv wants non-nil pointer to struct, got %T", ErrConfig, spec)
 	}
 	return loadFields(prefix, rv.Elem())
 }
@@ -44,15 +45,19 @@ func loadFields(prefix string, sv reflect.Value) error {
 		}
 		key = strings.ToUpper(key)
 
+		// `NATS_MAX_RECONNECTS=` в .env, Helm с `value: ""` и compose с
+		// незаданной подстановкой дают заданную, но пустую переменную. Пустое
+		// значение — «не задано»: иначе оно молча обнуляло бы безопасный дефолт
+		// кита (ни одной попытки reconnect'а, ретрай без backoff'а).
 		raw, ok := os.LookupEnv(key)
-		if !ok {
+		if !ok || raw == "" {
 			raw = meta.Tag.Get("default")
 		}
 		if raw == "" {
 			continue
 		}
 		if err := setField(field, raw); err != nil {
-			return fmt.Errorf("natskit: %s: %w", key, err)
+			return fmt.Errorf("%w: %s: %w", ErrConfig, key, err)
 		}
 	}
 	return nil

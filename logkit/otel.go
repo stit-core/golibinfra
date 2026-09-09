@@ -9,29 +9,39 @@ import (
 	"strconv"
 	"time"
 
+	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
-)
+	"go.opentelemetry.io/otel/log/noop"
 
-const otelScope = "git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
+)
 
 type otelHandler struct {
 	logger log.Logger
 	level  slog.Leveler
-	attrs  []log.KeyValue
+	attrs  []attribute.KeyValue
 	group  *otelGroup
 }
 
 // otelGroup — открытая WithGroup-группа; next — объемлющая.
 type otelGroup struct {
 	name  string
-	attrs []log.KeyValue
+	attrs []attribute.KeyValue
 	next  *otelGroup
 }
 
 // NewOTelHandler — мост slog → OTel Logs API: уровень, msg, атрибуты и группы
-// маппятся в log.Record; trace/span id SDK берёт из ctx сам.
+// маппятся в log.Record; trace/span id SDK берёт из ctx сам. nil-аргументы
+// дают no-op sink и уровень info.
 func NewOTelHandler(lp log.LoggerProvider, level slog.Leveler) slog.Handler {
-	return &otelHandler{logger: lp.Logger(otelScope), level: level}
+	if lp == nil {
+		lp = noop.NewLoggerProvider()
+	}
+	if level == nil {
+		level = slog.LevelInfo
+	}
+	logger := lp.Logger(otelkit.Scope("logkit"), log.WithInstrumentationVersion(otelkit.Version()))
+	return &otelHandler{logger: logger, level: level}
 }
 
 func (h *otelHandler) Enabled(ctx context.Context, l slog.Level) bool {
@@ -47,22 +57,20 @@ func (h *otelHandler) Handle(ctx context.Context, r slog.Record) error {
 	rec.SetObservedTimestamp(time.Now())
 	rec.SetSeverity(severity(r.Level))
 	rec.SetSeverityText(r.Level.String())
-	rec.SetBody(log.StringValue(r.Message))
+	rec.SetBody(attribute.StringValue(r.Message))
 	rec.AddAttributes(h.attrs...)
 
-	kvs := make([]log.KeyValue, 0, r.NumAttrs())
+	kvs := make([]attribute.KeyValue, 0, r.NumAttrs())
 	r.Attrs(func(a slog.Attr) bool {
-		if kv, ok := convertAttr(a); ok {
-			kvs = append(kvs, kv)
-		}
+		kvs = appendAttr(kvs, a)
 		return true
 	})
 	for g := h.group; g != nil; g = g.next {
-		kvs = append(append(make([]log.KeyValue, 0, len(g.attrs)+len(kvs)), g.attrs...), kvs...)
+		kvs = append(append(make([]attribute.KeyValue, 0, len(g.attrs)+len(kvs)), g.attrs...), kvs...)
 		if len(kvs) == 0 {
 			continue
 		}
-		kvs = []log.KeyValue{log.Map(g.name, kvs...)}
+		kvs = []attribute.KeyValue{groupValue(g.name, kvs)}
 	}
 	rec.AddAttributes(kvs...)
 	h.logger.Emit(ctx, rec)
@@ -70,19 +78,17 @@ func (h *otelHandler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 func (h *otelHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	kvs := make([]log.KeyValue, 0, len(attrs))
+	kvs := make([]attribute.KeyValue, 0, len(attrs))
 	for _, a := range attrs {
-		if kv, ok := convertAttr(a); ok {
-			kvs = append(kvs, kv)
-		}
+		kvs = appendAttr(kvs, a)
 	}
 	out := *h
 	if h.group == nil {
-		out.attrs = append(append(make([]log.KeyValue, 0, len(h.attrs)+len(kvs)), h.attrs...), kvs...)
+		out.attrs = append(append(make([]attribute.KeyValue, 0, len(h.attrs)+len(kvs)), h.attrs...), kvs...)
 		return &out
 	}
 	g := *h.group
-	g.attrs = append(append(make([]log.KeyValue, 0, len(g.attrs)+len(kvs)), g.attrs...), kvs...)
+	g.attrs = append(append(make([]attribute.KeyValue, 0, len(g.attrs)+len(kvs)), g.attrs...), kvs...)
 	out.group = &g
 	return &out
 }
@@ -109,74 +115,84 @@ func severity(l slog.Level) log.Severity {
 	return log.Severity(s)
 }
 
-func convertAttr(a slog.Attr) (log.KeyValue, bool) {
+// appendAttr следует контракту slog: пустой Attr отбрасывается, группа с
+// пустым ключом инлайнится, группа без атрибутов отбрасывается.
+func appendAttr(dst []attribute.KeyValue, a slog.Attr) []attribute.KeyValue {
 	if a.Equal(slog.Attr{}) {
-		return log.KeyValue{}, false
+		return dst
 	}
 	v := a.Value.Resolve()
-	if v.Kind() == slog.KindGroup {
-		in := v.Group()
-		if len(in) == 0 {
-			return log.KeyValue{}, false
-		}
-		kvs := make([]log.KeyValue, 0, len(in))
-		for _, g := range in {
-			if kv, ok := convertAttr(g); ok {
-				kvs = append(kvs, kv)
-			}
-		}
-		if a.Key == "" {
-			return log.KeyValue{}, false
-		}
-		return log.Map(a.Key, kvs...), true
+	if v.Kind() != slog.KindGroup {
+		return append(dst, attribute.KeyValue{Key: attribute.Key(a.Key), Value: convertValue(v)})
 	}
-	return log.KeyValue{Key: a.Key, Value: convertValue(v)}, true
+	in := v.Group()
+	if a.Key == "" {
+		for _, g := range in {
+			dst = appendAttr(dst, g)
+		}
+		return dst
+	}
+	kvs := make([]attribute.KeyValue, 0, len(in))
+	for _, g := range in {
+		kvs = appendAttr(kvs, g)
+	}
+	if len(kvs) == 0 {
+		return dst
+	}
+	return append(dst, groupValue(a.Key, kvs))
 }
 
-func convertValue(v slog.Value) log.Value {
+// groupValue укладывает группу в MAP-значение записи. attribute.MapValue
+// сортирует ключи, поэтому внутри группы OTel-sink отдаёт их по алфавиту, а не
+// в порядке вызова, — в отличие от локального JSON-sink'а.
+func groupValue(name string, kvs []attribute.KeyValue) attribute.KeyValue {
+	return attribute.KeyValue{Key: attribute.Key(name), Value: attribute.MapValue(kvs...)}
+}
+
+func convertValue(v slog.Value) attribute.Value {
 	switch v.Kind() {
 	case slog.KindString:
-		return log.StringValue(v.String())
+		return attribute.StringValue(v.String())
 	case slog.KindInt64:
-		return log.Int64Value(v.Int64())
+		return attribute.Int64Value(v.Int64())
 	case slog.KindUint64:
 		u := v.Uint64()
 		if u > math.MaxInt64 {
-			return log.StringValue(strconv.FormatUint(u, 10))
+			return attribute.StringValue(strconv.FormatUint(u, 10))
 		}
-		return log.Int64Value(int64(u)) //nolint:gosec // диапазон проверен выше
+		return attribute.Int64Value(int64(u))
 	case slog.KindFloat64:
-		return log.Float64Value(v.Float64())
+		return attribute.Float64Value(v.Float64())
 	case slog.KindBool:
-		return log.BoolValue(v.Bool())
+		return attribute.BoolValue(v.Bool())
 	case slog.KindDuration:
-		return log.Int64Value(v.Duration().Nanoseconds())
+		return attribute.Int64Value(v.Duration().Nanoseconds())
 	case slog.KindTime:
-		return log.StringValue(v.Time().Format(time.RFC3339Nano))
+		return attribute.StringValue(v.Time().Format(time.RFC3339Nano))
 	case slog.KindAny:
 		return convertAny(v.Any())
 	default:
-		return log.StringValue(v.String())
+		return attribute.StringValue(v.String())
 	}
 }
 
 // convertAny держит OTel-представление совпадающим с JSON-sink'ом: error —
 // строка, []byte — bytes, прочее — JSON-строка.
-func convertAny(x any) log.Value {
+func convertAny(x any) attribute.Value {
 	switch t := x.(type) {
 	case nil:
-		return log.Value{}
+		return attribute.Value{}
 	case error:
 		if _, isMarshaler := x.(json.Marshaler); !isMarshaler {
-			return log.StringValue(t.Error())
+			return attribute.StringValue(t.Error())
 		}
 	case json.RawMessage:
-		return log.StringValue(string(t))
+		return attribute.StringValue(string(t))
 	case []byte:
-		return log.BytesValue(t)
+		return attribute.ByteSliceValue(t)
 	}
-	if b, err := json.Marshal(x); err == nil {
-		return log.StringValue(string(b))
+	if b, err := marshalJSON(x); err == nil {
+		return attribute.StringValue(string(b))
 	}
-	return log.StringValue(fmt.Sprintf("%+v", x))
+	return attribute.StringValue(fmt.Sprintf("%+v", x))
 }

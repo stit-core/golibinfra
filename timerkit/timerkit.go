@@ -1,7 +1,7 @@
-// Package timerkit — periodic jobs через fx group `timer.job`: Module
-// поднимает горутину на каждую Job, запускает Run по интервалу (с опциональными
-// дедлайном, джиттером и стартовым прогоном), ловит panic'и, эмитит метрики и
-// на остановке дожидается завершения запусков.
+// Package timerkit — periodic jobs через fx-группу Group: Module поднимает
+// горутину на каждую Job, запускает Run по интервалу (с опциональными дедлайном,
+// джиттером и стартовым прогоном), ловит panic'и, эмитит спан и метрики и на
+// остановке дожидается завершения запусков.
 package timerkit
 
 import (
@@ -13,18 +13,28 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	"go.opentelemetry.io/otel/trace"
 
+	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
+// ErrJob — невалидная Job; возвращается из OnStart и валит старт приложения.
 var ErrJob = errors.New("timerkit: invalid job")
 
+// Job — периодическая задача: Run вызывается каждые Interval, пока жив
+// fx-lifecycle приложения.
 type Job struct {
-	Name     string
+	// Name — идентификатор в логах, спанах и label'е `job` метрик; обязателен и
+	// уникален в пределах приложения.
+	Name string
+	// Interval — пауза между запусками, отсчитывается от конца предыдущего; > 0.
 	Interval time.Duration
-	Run      func(ctx context.Context) error
+	// Run — тело задачи; обязательно. Ошибка логируется и не прерывает цикл.
+	Run func(ctx context.Context) error
 
 	// Timeout — дедлайн ctx одного запуска; 0 — без дедлайна.
 	Timeout time.Duration
@@ -63,6 +73,7 @@ func validate(jobs []Job) error {
 }
 
 var (
+	tracer  = otelkit.Tracer("timerkit")
 	jobRuns = otelkit.Must(otelkit.Meter("timerkit").Int64Counter(
 		"timer_job_runs_total",
 		metric.WithDescription("Timer job runs by result"),
@@ -71,17 +82,20 @@ var (
 		"timer_job_duration_seconds",
 		metric.WithDescription("Timer job run duration"),
 		metric.WithUnit("s"),
+		otelkit.DurationBuckets(),
 	))
 )
 
 type runner struct {
-	log logkit.Logger
-	// after — time.After в проде; тесты подставляют управляемый таймер.
-	after func(time.Duration) <-chan time.Time
+	log   logkit.Logger
+	clock clockkit.Clock
 }
 
-func newRunner(log logkit.Logger) *runner {
-	return &runner{log: log, after: time.After}
+func newRunner(log logkit.Logger, clock clockkit.Clock) *runner {
+	if clock == nil {
+		clock = clockkit.Real{}
+	}
+	return &runner{log: log, clock: clock}
 }
 
 // run: ожидание отсчитывается от завершения предыдущего запуска, запуски одной
@@ -91,10 +105,12 @@ func (r *runner) run(ctx context.Context, j Job) {
 		r.once(ctx, j)
 	}
 	for {
+		timer := r.clock.NewTimer(wait(j))
 		select {
 		case <-ctx.Done():
+			timer.Stop()
 			return
-		case <-r.after(wait(j)):
+		case <-timer.C():
 			if ctx.Err() != nil {
 				return
 			}
@@ -111,27 +127,37 @@ func wait(j Job) time.Duration {
 }
 
 func (r *runner) once(ctx context.Context, j Job) {
+	ctx, span := tracer.Start(ctx, "timerkit.job "+j.Name,
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(attribute.String("timer.job", j.Name)),
+	)
+	defer span.End()
+
 	runCtx, cancel := ctx, context.CancelFunc(func() {})
 	if j.Timeout > 0 {
 		runCtx, cancel = context.WithTimeout(ctx, j.Timeout)
 	}
 	defer cancel()
 
-	start := time.Now()
+	start := r.clock.Now()
 	result := "ok"
 	func() {
 		defer func() {
 			if p := recover(); p != nil {
 				result = "panic"
+				span.RecordError(fmt.Errorf("panic: %v", p))
+				span.SetStatus(codes.Error, "panic")
 				r.log.Error(ctx, "timerkit: panic in job", "job", j.Name, "panic", p, "stack", string(debug.Stack()))
 			}
 		}()
 		if err := j.Run(runCtx); err != nil {
 			result = "error"
+			span.RecordError(err)
+			span.SetStatus(codes.Error, err.Error())
 			r.log.Error(ctx, "timerkit: job error", "job", j.Name, "error", err)
 		}
 	}()
 
-	jobDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("job", j.Name)))
+	jobDuration.Record(ctx, r.clock.Since(start).Seconds(), metric.WithAttributes(attribute.String("job", j.Name)))
 	jobRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("job", j.Name), attribute.String("result", result)))
 }

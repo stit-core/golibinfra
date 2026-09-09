@@ -4,43 +4,54 @@
 `metrics.go` и точек записи в `jwt.go` / `hasher.go` / `totp.go`.
 
 Meter: `git.stit.tech/stit-core/golibinfra/authnkit` (через `internal/otelkit`).
-Спанов кит не эмитит.
+Спанов кит не эмитит; `ctx` в сигнатурах нужен, чтобы измерения несли baggage и
+exemplar'ы вызывающего.
 
 ## Метрики
 
 | Метрика | Тип | Unit | Labels | Назначение |
 |---|---|---|---|---|
-| `jwt_verifications_total` | Int64 Counter | — | `result` | Исход разбора JWT в `HS256JWT.Parse`. |
-| `password_hash_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Hash`. |
-| `password_verify_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Verify`. |
-| `totp_verifications_total` | Int64 Counter | — | `result` | Исход `TOTPGenerator.Verify`. |
+| `authn_jwt_verifications_total` | Int64 Counter | — | `result` | Исход разбора JWT в `HS256JWT.Parse`/`ParseAccess`/`ParseRefresh`. |
+| `authn_password_hash_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Hash`. |
+| `authn_password_verify_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Verify` или `VerifyDummy`. |
+| `authn_totp_verifications_total` | Int64 Counter | — | `result` | Исход `TOTPGenerator.Verify`/`VerifyOnce`. |
+
+Границы бакетов обеих гистограмм — общие для репозитория `otelkit.DurationBuckets()`
+(`0.005 … 30` с): дефолт OTel SDK рассчитан на миллисекунды и сложил бы все
+измерения кита в первый bucket.
 
 ### Значения label `result`
 
-`jwt_verifications_total`:
+`authn_jwt_verifications_total`:
 
 | `result` | Когда |
 |---|---|
-| `ok` | токен валиден, подпись и сроки прошли |
+| `ok` | токен валиден, подпись, сроки и (если запрошен) тип прошли |
 | `expired` | сработал `exp` с учётом leeway (`ErrTokenExpired`) |
 | `signature_invalid` | подпись не сошлась (`ErrTokenSignature`) |
+| `wrong_type` | `ParseAccess`/`ParseRefresh` получили токен другого типа (`ErrWrongTokenType`) |
+| `audience_mismatch` | не совпал ожидаемый `iss`/`aud` (`ErrTokenAudience`) |
 | `malformed` | битый токен / не-HS256 alg / нет `exp` / `nbf`,`iat` в будущем / payload не объект (`ErrTokenMalformed`) |
 
-`totp_verifications_total`:
+`authn_totp_verifications_total`:
 
 | `result` | Когда |
 |---|---|
 | `ok` | код принят |
-| `invalid` | код отвергнут (в т.ч. нечитаемый секрет) |
+| `invalid` | код отвергнут |
+| `secret_invalid` | секрет не читается как base32 (порча данных, не ошибка ввода) |
+| `replay` | `VerifyOnce`: код уже был принят в своём окне |
+| `store_error` | `VerifyOnce`: `UsedCodeStore` недоступен |
 
 ## Что эмитится, а что нет
 
-- `Hash` и `Verify` пишут гистограмму **на каждый вызов**, независимо от исхода
-  (запись в `defer`). Метки исхода у них нет — гистограмма меряет только время.
-- `jwt_verifications_total` инкрементится **только в `Parse`**; `Sign` метрик не
-  пишет.
-- `totp_verifications_total` инкрементится **только в `Verify`**; `Generate`
+- `Hash`, `Verify` и `VerifyDummy` пишут гистограмму **на каждый вызов**,
+  независимо от исхода (запись в `defer`). Метки исхода у них нет — гистограмма
+  меряет только время.
+- `authn_jwt_verifications_total` инкрементится **только при разборе**; `Sign*`
   метрик не пишет.
+- `authn_totp_verifications_total` инкрементится **только при проверке кода**
+  (ровно один раз на вызов `Verify`/`VerifyOnce`); `Generate` метрик не пишет.
 - RBAC (`Registry`) метрик не эмитит.
 
 ## Инициализация

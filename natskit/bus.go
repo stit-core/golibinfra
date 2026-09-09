@@ -1,14 +1,6 @@
-// Package natskit — pub/sub поверх NATS: интерфейс Bus (Subscribe/SubscribeQueue),
-// типизированные helper'ы PublishJSON[T]/SubscribeJSON[T], опц. JetStream
-// (StreamBus: батч-async публикация + дедуп по Nats-Msg-Id; poison-обработка
-// consumer'а — MaxDeliver→DLQ/Term, NAK c backoff), panic recovery в
-// subscriber'ах, backpressure через семафор (NATS_MAX_IN_FLIGHT) и graceful
-// Close с ожиданием обработчиков. W3C trace-context инжектится в nats.Header,
-// чтобы consumer-спан был child'ом producer-спана. Subject и Header сообщения
-// доступны handler'у через SubjectFromContext(ctx)/HeadersFromContext(ctx).
-// Эмитит nats_messages_{published,consumed}_total (consumed status:
-// ok|handler_error|panic|dead), nats_{publish,handle}_duration_seconds,
-// nats_inflight_messages.
+// Package natskit — pub/sub поверх NATS: Bus (Core, fire-and-forget) и StreamBus
+// (JetStream, at-least-once с DLQ), backpressure, graceful Close и
+// trace-propagation через nats.Header. Конфиг и сигналы — natskit/README.md.
 package natskit
 
 import (
@@ -28,8 +20,14 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
+// ErrTerminal — маркер «не ретраить»: обработчик, вернувший обёрнутую им ошибку,
+// в JetStream получает Term (DLQ, если задан) вместо NAK. Для Core — обычная
+// ошибка обработчика.
+var ErrTerminal = errors.New("natskit: terminal")
+
+// Bus — Core NATS: публикация без персиста, fan-out и queue-подписки.
 type Bus interface {
-	Publish(ctx context.Context, subject string, payload any) error
+	Publish(ctx context.Context, subject string, payload []byte, opts ...PublishOption) error
 	// Subscribe — fan-out: сообщение получает каждый инстанс. ctx ограничивает
 	// только регистрацию; время жизни подписки — Subscription и Close инстанса.
 	Subscribe(ctx context.Context, subject string, handler Handler) (Subscription, error)
@@ -39,48 +37,41 @@ type Bus interface {
 }
 
 type natsBus struct {
-	c     *Conn
-	conn  *nats.Conn
-	log   logkit.Logger
-	sem   *semaphore.Weighted
-	instr *natsInstruments
+	c              *Conn
+	conn           *nats.Conn
+	log            logkit.Logger
+	sem            *semaphore.Weighted
+	handlerTimeout time.Duration
+	instr          *natsInstruments
 }
 
+// NewBus собирает Core-шину поверх соединения; обычный путь — Client.Bus().
 func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus {
+	if log == nil {
+		log = logkit.Nop()
+	}
+	instance := cfg.Instance
+	if instance == "" {
+		instance = DefaultInstance
+	}
 	return &natsBus{
-		c:     conn,
-		conn:  conn.raw(),
-		log:   log,
-		sem:   semaphore.NewWeighted(int64(intOr(cfg.Backpressure.MaxInFlight, defaultMaxInFlight))),
-		instr: newNatsInstruments(cfg.Instance),
+		c:              conn,
+		conn:           conn.raw(),
+		log:            log.With("instance", instance),
+		sem:            semaphore.NewWeighted(int64(intOr(cfg.Backpressure.MaxInFlight, defaultMaxInFlight))),
+		handlerTimeout: cfg.HandlerTimeout,
+		instr:          newNatsInstruments(instance, ""),
 	}
 }
 
-func (b *natsBus) Publish(ctx context.Context, subject string, payload any) error {
-	data, err := json.Marshal(payload)
-	if err != nil {
-		return fmt.Errorf("natskit: marshal payload: %w", err)
-	}
+func (b *natsBus) Publish(ctx context.Context, subject string, payload []byte, opts ...PublishOption) error {
+	po := NewPublishSpec(opts...)
+	// pubCtx несёт producer-span: измерение с ним получает exemplar на этот трейс.
+	msg, pubCtx, span := b.instr.startPublishSpan(ctx, subject, payload, po)
 
-	msg, _, span := b.instr.startPublishSpan(ctx, subject, data)
 	start := time.Now()
-
 	pubErr := b.conn.PublishMsg(msg)
-	dur := time.Since(start).Seconds()
-
-	status := "ok"
-	if pubErr != nil {
-		status = "error"
-		span.RecordError(pubErr)
-		span.SetStatus(codes.Error, pubErr.Error())
-	}
-	span.End()
-
-	b.instr.publishedTotal.Add(ctx, 1, b.instr.attrs(
-		attribute.String("subject", subject),
-		attribute.String("status", status),
-	))
-	b.instr.publishDuration.Record(ctx, dur, b.instr.attrs(attribute.String("subject", subject)))
+	b.instr.recordPublish(pubCtx, po, time.Since(start), pubErr, span)
 
 	if pubErr != nil {
 		return fmt.Errorf("natskit: publish: %w", pubErr)
@@ -141,11 +132,17 @@ func (b *natsBus) subscribe(ctx context.Context, subject, queue string, handler 
 }
 
 func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler Handler) {
-	subjAttr := b.instr.attrs(attribute.String("subject", subject))
-	b.instr.inflight.Add(context.Background(), 1, subjAttr)
-	defer b.instr.inflight.Add(context.Background(), -1, subjAttr)
-
-	ctx, span := b.instr.startConsumerSpan(context.Background(), msg)
+	// Метрики пишутся с ctx обработчика: он несёт consumer-span, без которого
+	// у гистограммы нет exemplar'а в трейс этой обработки.
+	ctx, span := b.instr.startConsumerSpan(b.c.handlerContext(), msg, subject)
+	if b.handlerTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.handlerTimeout)
+		defer cancel()
+	}
+	subjAttr := b.instr.subjectAttrs(subject)
+	b.instr.inflight.Add(ctx, 1, subjAttr)
+	defer b.instr.inflight.Add(ctx, -1, subjAttr)
 	start := time.Now()
 
 	status := "ok"
@@ -163,12 +160,10 @@ func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler Handler) {
 				"stack", string(debug.Stack()),
 			)
 		}
+		b.instr.consumedTotal.Add(ctx, 1,
+			b.instr.subjectAttrs(subject, attribute.String("status", status)))
+		b.instr.handleDuration.Record(ctx, dur, subjAttr)
 		span.End()
-		b.instr.consumedTotal.Add(context.Background(), 1, b.instr.attrs(
-			attribute.String("subject", subject),
-			attribute.String("status", status),
-		))
-		b.instr.handleDuration.Record(context.Background(), dur, subjAttr)
 	}()
 
 	if err := handler(ctx, msg.Data); err != nil {
@@ -181,23 +176,32 @@ func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler Handler) {
 	}
 }
 
-func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T) error {
-	return b.Publish(ctx, subject, msg)
+// PublishJSON маршалит msg в JSON и публикует его в Core NATS.
+func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T, opts ...PublishOption) error {
+	data, err := json.Marshal(msg)
+	if err != nil {
+		return fmt.Errorf("natskit: marshal payload: %w", err)
+	}
+	return b.Publish(ctx, subject, data, opts...)
 }
 
+// SubscribeJSON — fan-out подписка с декодом payload в T.
 func SubscribeJSON[T any](b Bus, ctx context.Context, subject string, h func(ctx context.Context, msg T) error) (Subscription, error) {
 	return b.Subscribe(ctx, subject, decodeJSON(h))
 }
 
+// SubscribeQueueJSON — queue-подписка с декодом payload в T.
 func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string, h func(ctx context.Context, msg T) error) (Subscription, error) {
 	return b.SubscribeQueue(ctx, subject, queue, decodeJSON(h))
 }
 
+// decodeJSON: битый payload не станет валидным при ределивери — ошибка декода
+// терминальна (JetStream отправит сообщение в DLQ, а не в цикл ретраев).
 func decodeJSON[T any](h func(ctx context.Context, msg T) error) Handler {
 	return func(ctx context.Context, payload []byte) error {
 		var v T
 		if err := json.Unmarshal(payload, &v); err != nil {
-			return fmt.Errorf("natskit: unmarshal: %w", err)
+			return fmt.Errorf("%w: unmarshal payload: %w", ErrTerminal, err)
 		}
 		return h(ctx, v)
 	}

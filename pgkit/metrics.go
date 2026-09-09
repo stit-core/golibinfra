@@ -10,40 +10,41 @@ import (
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 )
 
-const (
-	RolePrimary = "primary"
-	RoleReplica = "replica"
-)
+// RolePrimary — значение label role для пула primary.
+const RolePrimary = "primary"
 
-// InstrumentPool вешает db_pool_* (label role) на пул через глобальный Meter;
-// Registration.Unregister — на shutdown.
+// RoleReplica — значение label role для пула реплики.
+const RoleReplica = "replica"
+
+// InstrumentPool вешает pg_pool_* (label role) на пул через глобальный Meter;
+// снять регистрацию на shutdown — Registration.Unregister.
 func InstrumentPool(pool *pgxpool.Pool, role string) metric.Registration {
 	m := otelkit.Meter("pgkit")
-	acquired := otelkit.Must(m.Int64ObservableGauge("db_pool_acquired_conns",
+	acquired := otelkit.Must(m.Int64ObservableGauge("pg_pool_acquired_conns",
 		metric.WithDescription("Connections currently acquired from pool"),
 	))
-	idle := otelkit.Must(m.Int64ObservableGauge("db_pool_idle_conns",
+	idle := otelkit.Must(m.Int64ObservableGauge("pg_pool_idle_conns",
 		metric.WithDescription("Idle connections in pool"),
 	))
-	total := otelkit.Must(m.Int64ObservableGauge("db_pool_total_conns",
+	total := otelkit.Must(m.Int64ObservableGauge("pg_pool_total_conns",
 		metric.WithDescription("Total open connections in pool"),
 	))
-	maxc := otelkit.Must(m.Int64ObservableGauge("db_pool_max_conns",
+	maxc := otelkit.Must(m.Int64ObservableGauge("pg_pool_max_conns",
 		metric.WithDescription("Configured pool maximum"),
 	))
-	constructing := otelkit.Must(m.Int64ObservableGauge("db_pool_constructing_conns",
+	constructing := otelkit.Must(m.Int64ObservableGauge("pg_pool_constructing_conns",
 		metric.WithDescription("Connections currently being constructed"),
 	))
-	emptyAcq := otelkit.Must(m.Int64ObservableCounter("db_pool_empty_acquire_total",
+	emptyAcq := otelkit.Must(m.Int64ObservableCounter("pg_pool_empty_acquire_total",
 		metric.WithDescription("Acquires that had to wait because pool was empty"),
 	))
-	canceledAcq := otelkit.Must(m.Int64ObservableCounter("db_pool_canceled_acquire_total",
+	canceledAcq := otelkit.Must(m.Int64ObservableCounter("pg_pool_canceled_acquire_total",
 		metric.WithDescription("Acquires canceled by ctx before completion"),
 	))
-	acqTotal := otelkit.Must(m.Int64ObservableCounter("db_pool_acquire_total",
+	acqTotal := otelkit.Must(m.Int64ObservableCounter("pg_pool_acquire_total",
 		metric.WithDescription("Total successful acquire calls"),
 	))
-	acqDur := otelkit.Must(m.Float64ObservableCounter("db_pool_acquire_duration_seconds_total",
+	acqDur := otelkit.Must(m.Float64ObservableCounter("pg_pool_acquire_duration_seconds_total",
 		metric.WithDescription("Cumulative time spent waiting for acquire"),
 		metric.WithUnit("s"),
 	))

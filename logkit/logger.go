@@ -1,25 +1,33 @@
-// Package logkit — структурный logger поверх slog: JSON-записи в stdout
-// (LOG_STDOUT) или в произвольный writer, опциональный второй sink в OTel
-// LoggerProvider (OTLP), PII-redact на уровне атрибутов, trace_id/span_id из
-// ctx, user-registered attrs (RegisterAttr) и метрика log_messages_total{level}.
+// Package logkit — структурный логгер поверх log/slog: JSON или text в
+// локальный sink, опциональный второй sink в OTel LoggerProvider, PII-redact,
+// trace_id/span_id и ctx-атрибуты на верхнем уровне записи.
 package logkit
 
-import "context"
+import (
+	"context"
+	"log/slog"
+)
 
+// Logger — единственный способ логирования в сервисах: ctx первым аргументом,
+// kv — пары ключ-значение в стиле slog.
 type Logger interface {
 	Debug(ctx context.Context, msg string, kv ...any)
 	Info(ctx context.Context, msg string, kv ...any)
 	Warn(ctx context.Context, msg string, kv ...any)
 	Error(ctx context.Context, msg string, kv ...any)
 	With(kv ...any) Logger
+	// Enabled позволяет пропустить дорогую подготовку атрибутов.
+	Enabled(ctx context.Context, level slog.Level) bool
 }
 
+// Nop возвращает Logger-заглушку: ничего не пишет и не паникует.
 func Nop() Logger { return nopLogger{} }
 
 type nopLogger struct{}
 
-func (nopLogger) Debug(context.Context, string, ...any) {}
-func (nopLogger) Info(context.Context, string, ...any)  {}
-func (nopLogger) Warn(context.Context, string, ...any)  {}
-func (nopLogger) Error(context.Context, string, ...any) {}
-func (nopLogger) With(...any) Logger                    { return nopLogger{} }
+func (nopLogger) Debug(context.Context, string, ...any)    {}
+func (nopLogger) Info(context.Context, string, ...any)     {}
+func (nopLogger) Warn(context.Context, string, ...any)     {}
+func (nopLogger) Error(context.Context, string, ...any)    {}
+func (nopLogger) With(...any) Logger                       { return nopLogger{} }
+func (nopLogger) Enabled(context.Context, slog.Level) bool { return false }

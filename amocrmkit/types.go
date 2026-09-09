@@ -4,7 +4,7 @@ package amocrmkit
 // возвращает строки/числа/булевы/объекты в зависимости от типа поля), поэтому
 // Value — any; потребитель маппит по field_type/field_id.
 type CustomFieldValue struct {
-	FieldID   int                    `json:"field_id,omitempty"`
+	FieldID   int64                  `json:"field_id,omitempty"`
 	FieldName string                 `json:"field_name,omitempty"`
 	FieldCode string                 `json:"field_code,omitempty"`
 	FieldType string                 `json:"field_type,omitempty"`
@@ -14,7 +14,7 @@ type CustomFieldValue struct {
 // CustomFieldValueItem — одно значение доп. поля.
 type CustomFieldValueItem struct {
 	Value    any    `json:"value,omitempty"`
-	EnumID   int    `json:"enum_id,omitempty"`
+	EnumID   int64  `json:"enum_id,omitempty"`
 	EnumCode string `json:"enum_code,omitempty"`
 }
 
@@ -22,7 +22,7 @@ type CustomFieldValueItem struct {
 // одно значение. Для outbound-мутаций, где не нужны field_code/enum/несколько
 // значений; разворачивается в CustomFieldValue через CustomFieldValues.
 type CustomFieldEdit struct {
-	FieldID int
+	FieldID int64
 	Value   any
 }
 
@@ -53,32 +53,33 @@ func CustomFieldValues(edits []CustomFieldEdit) []CustomFieldValue {
 
 // Tag — тег сущности (в GET-ответе _embedded.tags).
 type Tag struct {
-	ID    int    `json:"id,omitempty"`
+	ID    int64  `json:"id,omitempty"`
 	Name  string `json:"name,omitempty"`
 	Color string `json:"color,omitempty"`
 }
 
 // TagRef — ссылка на тег для tags_to_add/tags_to_delete (по id или name).
 type TagRef struct {
-	ID   int    `json:"id,omitempty"`
+	ID   int64  `json:"id,omitempty"`
 	Name string `json:"name,omitempty"`
 }
 
 // CreatedEntity — типовой элемент ответа POST/PATCH batch
 // (_embedded.<entity>[]{id, request_id, updated_at, _links}).
 type CreatedEntity struct {
-	ID        int    `json:"id"`
+	ID        int64  `json:"id"`
 	RequestID string `json:"request_id,omitempty"`
 	UpdatedAt int64  `json:"updated_at,omitempty"`
-	Links     Links  `json:"_links,omitempty"`
+	Links     Links  `json:"_links"`
 }
 
-// ContactRef / CompanyRef — элементы _embedded.contacts/companies сделки.
+// ContactRef — элемент _embedded.contacts сделки.
 type ContactRef struct {
-	ID     int  `json:"id"`
-	IsMain bool `json:"is_main,omitempty"`
+	ID     int64 `json:"id"`
+	IsMain bool  `json:"is_main,omitempty"`
 }
 
+// CompanyRef — элемент _embedded.companies сделки.
 type CompanyRef struct {
-	ID int `json:"id"`
+	ID int64 `json:"id"`
 }

@@ -1,7 +1,6 @@
-// Package cachekit — Redis-обёртка: Cache (байтовый KV с TTL, атомарные
-// SetNX/GetDel, тегированная инвалидация), типизированные GetJSON[T]/SetJSON[T],
-// IdempotencyStore для httpkit и health-проба. Эмитит cache_commands_total и
-// cache_command_duration_seconds.
+// Package cachekit — доступ к Redis: байтовый Cache с TTL, атомарными
+// SetNX/GetDel/CompareAndDelete и тегированной инвалидацией, типизированные
+// GetJSON/SetJSON, IdempotencyStore для httpkit и health-проба для /ready.
 package cachekit
 
 import (
@@ -9,6 +8,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -16,13 +17,50 @@ import (
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 )
 
+// ErrConfig — невалидный Config: сервис падает на старте, а не на первой команде.
+var ErrConfig = errors.New("cachekit: invalid config")
+
+// ErrServerVersion — сервер старше minRedisMajor: тегированная инвалидация на
+// нём не работает. Проверка снимается REDIS_SKIP_VERSION_CHECK=true.
+var ErrServerVersion = errors.New("cachekit: unsupported redis server version")
+
+// minRedisMajor — тегированная инвалидация опирается на `PEXPIRE … GT`
+// (Redis 7.0+); на 6.x скрипт падает не на первой записи в тег, а на второй.
+const minRedisMajor = 7
+
+// Config — параметры клиента Redis; envconfig-теги — public API кита.
 type Config struct {
 	URL          string        `envconfig:"REDIS_URL" default:"redis://localhost:6379/0"`
+	KeyPrefix    string        `envconfig:"REDIS_KEY_PREFIX" default:""`
 	PoolSize     int           `envconfig:"REDIS_POOL_SIZE" default:"10"`
+	MaxRetries   int           `envconfig:"REDIS_MAX_RETRIES" default:"3"`
 	DialTimeout  time.Duration `envconfig:"REDIS_DIAL_TIMEOUT" default:"5s"`
 	ReadTimeout  time.Duration `envconfig:"REDIS_READ_TIMEOUT" default:"3s"`
 	WriteTimeout time.Duration `envconfig:"REDIS_WRITE_TIMEOUT" default:"3s"`
 	PingOnStart  bool          `envconfig:"REDIS_PING_ON_START" default:"true"`
+	// SkipVersionCheck снимает проверку версии сервера на старте — для
+	// redis-совместимых серверов, которые не отдают redis_version в INFO.
+	SkipVersionCheck bool `envconfig:"REDIS_SKIP_VERSION_CHECK" default:"false"`
+}
+
+// Validate проверяет инварианты конфига; вызывается из NewConfig и NewRedisCache.
+func (c Config) Validate() error {
+	switch {
+	case c.PoolSize < 1:
+		return fmt.Errorf("%w: PoolSize must be >= 1", ErrConfig)
+	case c.MaxRetries < -1:
+		return fmt.Errorf("%w: MaxRetries must be >= -1 (-1 disables retries)", ErrConfig)
+	case c.DialTimeout < 0:
+		return fmt.Errorf("%w: DialTimeout < 0", ErrConfig)
+	case c.ReadTimeout < 0:
+		return fmt.Errorf("%w: ReadTimeout < 0", ErrConfig)
+	case c.WriteTimeout < 0:
+		return fmt.Errorf("%w: WriteTimeout < 0", ErrConfig)
+	}
+	if _, err := redis.ParseURL(c.URL); err != nil {
+		return fmt.Errorf("%w: URL: %w", ErrConfig, err)
+	}
+	return nil
 }
 
 // Cache — байтовый KV. Промах везде — found == false, err == nil.
@@ -33,37 +71,105 @@ type Cache interface {
 	SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
 	// GetDel читает и удаляет атомарно: одноразовые токены и state.
 	GetDel(ctx context.Context, key string) ([]byte, bool, error)
+	// CompareAndDelete удаляет ключ атомарно и только если его значение равно
+	// expected: снятие собственного резерва, не затирающее чужую запись.
+	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
 	Delete(ctx context.Context, keys ...string) error
-	// SetWithTags пишет ключ и добавляет его в наборы tag:<tag> для InvalidateByTag.
+	// SetWithTags пишет ключ и добавляет его в наборы tag:<tag> для InvalidateByTag;
+	// набор живёт не меньше самого долгоживущего своего члена.
 	SetWithTags(ctx context.Context, key string, value []byte, ttl time.Duration, tags ...string) error
 	InvalidateByTag(ctx context.Context, tag string) error
 	Ping(ctx context.Context) error
+	// Close идемпотентен: повторный вызов возвращает nil.
 	Close() error
 }
 
 const tagPrefix = "tag:"
 
+// invalidateBatch — размер порции SPOP: набор в миллион членов не превращается
+// в один блокирующий ответ, но и round-trip'ов остаётся немного.
+const invalidateBatch = 256
+
+// setWithTagsScript держит TTL набора не меньше TTL любого живого члена: новый
+// набор получает TTL записи, существующий — только продление (PEXPIRE … GT),
+// а запись без TTL делает набор персистентным. PEXPIRE … GT — Redis >= 7.0.
+var setWithTagsScript = redis.NewScript(`
+local ttl = tonumber(ARGV[2])
+if ttl > 0 then
+  redis.call('SET', KEYS[1], ARGV[1], 'PX', ttl)
+else
+  redis.call('SET', KEYS[1], ARGV[1])
+end
+for i = 2, #KEYS do
+  local fresh = redis.call('EXISTS', KEYS[i]) == 0
+  redis.call('SADD', KEYS[i], KEYS[1])
+  if ttl <= 0 then
+    redis.call('PERSIST', KEYS[i])
+  elseif fresh then
+    redis.call('PEXPIRE', KEYS[i], ttl)
+  else
+    redis.call('PEXPIRE', KEYS[i], ttl, 'GT')
+  end
+end
+return 1
+`)
+
+// invalidateTagScript снимает членство и удаляет ключи одной командой: между
+// отдельными SPOP и UNLINK сетевой сбой оставил бы ключи в Redis вне какого-либо
+// тега — следующий InvalidateByTag их бы уже не нашёл. Ключи-члены не объявлены
+// в KEYS: кит работает с одиночным сервером, не с cluster-режимом.
+var invalidateTagScript = redis.NewScript(`
+local members = redis.call('SPOP', KEYS[1], ARGV[1])
+if #members > 0 then
+  redis.call('UNLINK', unpack(members))
+end
+return #members
+`)
+
+var compareAndDeleteScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) == ARGV[1] then
+  return redis.call('DEL', KEYS[1])
+end
+return 0
+`)
+
 type redisCache struct {
 	client *redis.Client
+	prefix string
 }
 
+// NewRedisCache собирает Cache поверх go-redis; без fx закрывать Close самому.
+// Версию сервера проверяет Module на старте — вне fx это делает checkServerVersion.
 func NewRedisCache(cfg Config) (Cache, error) {
+	return newRedisCache(cfg)
+}
+
+func newRedisCache(cfg Config) (*redisCache, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	opts, err := redis.ParseURL(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("cachekit: parse redis url: %w", err)
 	}
 	opts.PoolSize = cfg.PoolSize
+	opts.MaxRetries = cfg.MaxRetries
 	opts.DialTimeout = cfg.DialTimeout
 	opts.ReadTimeout = cfg.ReadTimeout
 	opts.WriteTimeout = cfg.WriteTimeout
+	// Иначе go-redis ставит на сокет только ReadTimeout, и команда переживает
+	// бюджет запроса: дедлайн ctx до соединения не доходит.
+	opts.ContextTimeoutEnabled = true
 
 	client := redis.NewClient(opts)
-	client.AddHook(newMetricsHook())
-	return &redisCache{client: client}, nil
+	client.AddHook(newObserveHook())
+	return &redisCache{client: client, prefix: cfg.KeyPrefix}, nil
 }
 
+func (c *redisCache) key(key string) string { return c.prefix + key }
+
 func (c *redisCache) Get(ctx context.Context, key string) ([]byte, bool, error) {
-	val, err := c.client.Get(ctx, key).Bytes()
+	val, err := c.client.Get(ctx, c.key(key)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, false, nil
 	}
@@ -74,14 +180,14 @@ func (c *redisCache) Get(ctx context.Context, key string) ([]byte, bool, error) 
 }
 
 func (c *redisCache) Set(ctx context.Context, key string, value []byte, ttl time.Duration) error {
-	if err := c.client.Set(ctx, key, value, ttl).Err(); err != nil {
+	if err := c.client.Set(ctx, c.key(key), value, ttl).Err(); err != nil {
 		return fmt.Errorf("cachekit: set: %w", err)
 	}
 	return nil
 }
 
 func (c *redisCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
-	ok, err := c.client.SetNX(ctx, key, value, ttl).Result()
+	ok, err := c.client.SetNX(ctx, c.key(key), value, ttl).Result()
 	if err != nil {
 		return false, fmt.Errorf("cachekit: setnx: %w", err)
 	}
@@ -89,7 +195,7 @@ func (c *redisCache) SetNX(ctx context.Context, key string, value []byte, ttl ti
 }
 
 func (c *redisCache) GetDel(ctx context.Context, key string) ([]byte, bool, error) {
-	val, err := c.client.GetDel(ctx, key).Bytes()
+	val, err := c.client.GetDel(ctx, c.key(key)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, false, nil
 	}
@@ -99,43 +205,56 @@ func (c *redisCache) GetDel(ctx context.Context, key string) ([]byte, bool, erro
 	return val, true, nil
 }
 
+func (c *redisCache) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
+	deleted, err := compareAndDeleteScript.Run(ctx, c.client, []string{c.key(key)}, expected).Int64()
+	if err != nil {
+		return false, fmt.Errorf("cachekit: compare and delete: %w", err)
+	}
+	return deleted > 0, nil
+}
+
 func (c *redisCache) Delete(ctx context.Context, keys ...string) error {
 	if len(keys) == 0 {
 		return nil
 	}
-	if err := c.client.Del(ctx, keys...).Err(); err != nil {
+	full := make([]string, len(keys))
+	for i, k := range keys {
+		full[i] = c.key(k)
+	}
+	if err := c.client.Unlink(ctx, full...).Err(); err != nil {
 		return fmt.Errorf("cachekit: delete: %w", err)
 	}
 	return nil
 }
 
 func (c *redisCache) SetWithTags(ctx context.Context, key string, value []byte, ttl time.Duration, tags ...string) error {
-	pipe := c.client.TxPipeline()
-	pipe.Set(ctx, key, value, ttl)
-	for _, tag := range tags {
-		tagKey := tagPrefix + tag
-		pipe.SAdd(ctx, tagKey, key)
-		if ttl > 0 {
-			// Набор живёт ttl после последней записи с этим тегом.
-			pipe.Expire(ctx, tagKey, ttl)
-		}
+	if len(tags) == 0 {
+		return c.Set(ctx, key, value, ttl)
 	}
-	if _, err := pipe.Exec(ctx); err != nil {
+	keys := make([]string, 0, len(tags)+1)
+	keys = append(keys, c.key(key))
+	for _, tag := range tags {
+		keys = append(keys, c.key(tagPrefix+tag))
+	}
+	if err := setWithTagsScript.Run(ctx, c.client, keys, value, milliseconds(ttl)).Err(); err != nil {
 		return fmt.Errorf("cachekit: set with tags: %w", err)
 	}
 	return nil
 }
 
 func (c *redisCache) InvalidateByTag(ctx context.Context, tag string) error {
-	tagKey := tagPrefix + tag
-	keys, err := c.client.SMembers(ctx, tagKey).Result()
-	if err != nil && !errors.Is(err, redis.Nil) {
-		return fmt.Errorf("cachekit: invalidate tag members: %w", err)
+	tagKey := c.key(tagPrefix + tag)
+	for {
+		// SPOP снимает членство до удаления ключей: конкурентный SetWithTags
+		// либо попадёт в текущую порцию, либо пересоздаст набор со своим ключом.
+		popped, err := invalidateTagScript.Run(ctx, c.client, []string{tagKey}, invalidateBatch).Int64()
+		if err != nil {
+			return fmt.Errorf("cachekit: invalidate tag: %w", err)
+		}
+		if popped < invalidateBatch {
+			return nil
+		}
 	}
-	if err := c.client.Del(ctx, append(keys, tagKey)...).Err(); err != nil {
-		return fmt.Errorf("cachekit: invalidate delete: %w", err)
-	}
-	return nil
 }
 
 func (c *redisCache) Ping(ctx context.Context) error {
@@ -145,17 +264,67 @@ func (c *redisCache) Ping(ctx context.Context) error {
 	return nil
 }
 
+// checkServerVersion валит старт на сервере старше minRedisMajor: иначе первая
+// запись в новый тег проходит, а вторая падает ошибкой скрипта — отказ
+// «иногда работает» дороже в диагностике, чем отказ на старте.
+func (c *redisCache) checkServerVersion(ctx context.Context) error {
+	info, err := c.client.Info(ctx, "server").Result()
+	if err != nil {
+		return fmt.Errorf("cachekit: info server: %w", err)
+	}
+	return checkInfoVersion(info)
+}
+
+func checkInfoVersion(info string) error {
+	version := infoField(info, "redis_version")
+	if version == "" {
+		return fmt.Errorf("%w: INFO server reports no redis_version; set REDIS_SKIP_VERSION_CHECK=true for a non-standard server", ErrServerVersion)
+	}
+	head, _, _ := strings.Cut(version, ".")
+	major, err := strconv.Atoi(head)
+	if err != nil {
+		return fmt.Errorf("%w: cannot read the major version of %q; set REDIS_SKIP_VERSION_CHECK=true for a non-standard server", ErrServerVersion, version)
+	}
+	if major < minRedisMajor {
+		return fmt.Errorf("%w: server reports %s, cachekit needs >= %d.0 (tagged invalidation uses PEXPIRE … GT)",
+			ErrServerVersion, version, minRedisMajor)
+	}
+	return nil
+}
+
+// infoField — значение поля ответа INFO (строки вида `<name>:<value>`).
+func infoField(info, name string) string {
+	for line := range strings.SplitSeq(info, "\n") {
+		if v, ok := strings.CutPrefix(strings.TrimSpace(line), name+":"); ok {
+			return strings.TrimSpace(v)
+		}
+	}
+	return ""
+}
+
 func (c *redisCache) Close() error {
-	if err := c.client.Close(); err != nil {
+	if err := c.client.Close(); err != nil && !errors.Is(err, redis.ErrClosed) {
 		return fmt.Errorf("cachekit: close: %w", err)
 	}
 	return nil
 }
 
-func Probe(c Cache) healthkit.Probe {
-	return c.Ping
+// milliseconds — TTL в целых миллисекундах для PEXPIRE; sub-миллисекундный TTL
+// округляется вверх, иначе он неотличим от «без срока жизни».
+func milliseconds(ttl time.Duration) int64 {
+	ms := ttl.Milliseconds()
+	if ttl > 0 && ms == 0 {
+		return 1
+	}
+	return ms
 }
 
+// Probe — health-проба кэша для fx-группы `healthkit.probes` (healthkit.Provide).
+func Probe(c Cache) healthkit.Probe {
+	return healthkit.New("cachekit", c.Ping)
+}
+
+// GetJSON читает значение и разбирает его в T; битый JSON — ошибка с found == false.
 func GetJSON[T any](ctx context.Context, c Cache, key string) (T, bool, error) {
 	var zero T
 	data, found, err := c.Get(ctx, key)
@@ -169,6 +338,7 @@ func GetJSON[T any](ctx context.Context, c Cache, key string) (T, bool, error) {
 	return v, true, nil
 }
 
+// SetJSON сериализует value и пишет его по ключу с TTL (0 — без срока жизни).
 func SetJSON[T any](ctx context.Context, c Cache, key string, value T, ttl time.Duration) error {
 	data, err := json.Marshal(value)
 	if err != nil {

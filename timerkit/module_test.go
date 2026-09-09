@@ -9,30 +9,31 @@ import (
 
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-func newApp(t *testing.T, jobs ...Job) *fx.App {
+func newApp(t *testing.T, opts ...fx.Option) *fx.App {
 	t.Helper()
-	opts := []fx.Option{
+	app := fx.New(append([]fx.Option{
 		fx.NopLogger,
-		fx.Provide(func() logkit.Logger { return logkit.Nop() }),
+		fx.Provide(logkit.Nop),
 		Module,
-	}
-	for _, j := range jobs {
-		opts = append(opts, fx.Supply(fx.Annotate(j, fx.ResultTags(`group:"timer.job"`))))
-	}
-	app := fx.New(opts...)
+	}, opts...)...)
 	if err := app.Err(); err != nil {
 		t.Fatalf("fx.New: %v", err)
 	}
 	return app
 }
 
+func supplyJob(j Job) fx.Option {
+	return Provide(func() Job { return j })
+}
+
 func TestModule_StartRunsJobAndStopWaits(t *testing.T) {
 	started := make(chan struct{})
 	finished := make(chan struct{})
-	app := newApp(t, Job{
+	app := newApp(t, supplyJob(Job{
 		Name: "greeter", Interval: time.Hour, RunOnStart: true,
 		Run: func(ctx context.Context) error {
 			close(started)
@@ -40,7 +41,7 @@ func TestModule_StartRunsJobAndStopWaits(t *testing.T) {
 			close(finished)
 			return nil
 		},
-	})
+	}))
 	if err := app.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestModule_StartRunsJobAndStopWaits(t *testing.T) {
 }
 
 func TestModule_InvalidJobFailsOnStart(t *testing.T) {
-	app := newApp(t, Job{Name: "broken", Interval: 0, Run: func(context.Context) error { return nil }})
+	app := newApp(t, supplyJob(Job{Name: "broken", Interval: 0, Run: func(context.Context) error { return nil }}))
 	err := app.Start(context.Background())
 	if !errors.Is(err, ErrJob) || !strings.Contains(err.Error(), `"broken"`) {
 		t.Fatalf("Start err = %v, want ErrJob naming the job", err)
@@ -65,13 +66,13 @@ func TestModule_InvalidJobFailsOnStart(t *testing.T) {
 
 func TestModule_StopHonoursDeadline(t *testing.T) {
 	release := make(chan struct{})
-	app := newApp(t, Job{
+	app := newApp(t, supplyJob(Job{
 		Name: "stuck", Interval: time.Hour, RunOnStart: true,
 		Run: func(context.Context) error {
 			<-release
 			return nil
 		},
-	})
+	}))
 	if err := app.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
@@ -81,5 +82,125 @@ func TestModule_StopHonoursDeadline(t *testing.T) {
 	defer cancel()
 	if err := app.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Stop err = %v, want DeadlineExceeded while the job ignores ctx", err)
+	}
+}
+
+// Расписание идёт по clockkit.Clock из графа: тест двигает часы и не спит.
+func TestModule_SchedulesOnClockFromGraph(t *testing.T) {
+	clock := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+	runs := make(chan struct{}, 1)
+	app := newApp(t,
+		fx.Supply(fx.Annotate(clock, fx.As(new(clockkit.Clock)))),
+		supplyJob(Job{
+			Name: "scheduled", Interval: time.Hour,
+			Run: func(context.Context) error {
+				runs <- struct{}{}
+				return nil
+			},
+		}),
+	)
+	if err := app.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+
+	clock.WaitTimers(1)
+	select {
+	case <-runs:
+		t.Fatal("job ran before the interval elapsed")
+	default:
+	}
+	clock.Advance(time.Hour)
+	select {
+	case <-runs:
+	case <-time.After(5 * time.Second):
+		t.Fatal("job did not run after the clock passed the interval")
+	}
+}
+
+// Регрессия: конструктор неверного типа кладёт значение в группу другим типом,
+// и job молча не запускается.
+func TestProvide_RejectsWrongConstructor(t *testing.T) {
+	tests := []struct {
+		name string
+		ctor any
+	}{
+		{name: "returns bare func", ctor: func() func(context.Context) error {
+			return func(context.Context) error { return nil }
+		}},
+		{name: "returns error only", ctor: func() error { return nil }},
+		{name: "returns nothing", ctor: func() {}},
+		{name: "job second", ctor: func() (error, Job) { return nil, Job{} }}, //nolint:staticcheck // проверяется именно неверный порядок результатов
+		{name: "not a function", ctor: Job{}},
+		{name: "nil", ctor: nil},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := fx.New(fx.NopLogger, Provide(tt.ctor))
+			err := app.Err()
+			if err == nil {
+				t.Fatal("want error from fx.New, got nil")
+			}
+			if !strings.Contains(err.Error(), "timerkit: Provide") {
+				t.Fatalf("error must name timerkit.Provide: %v", err)
+			}
+		})
+	}
+}
+
+// Provide кладёт в ту же группу, из которой читает Module: и одиночную Job, и
+// срез (flatten), и конструктор с ошибкой.
+func TestProvide_LandsInGroupModuleReads(t *testing.T) {
+	ran := make(chan string, 3)
+	job := func(name string) Job {
+		return Job{Name: name, Interval: time.Hour, RunOnStart: true, Run: func(context.Context) error {
+			ran <- name
+			return nil
+		}}
+	}
+	app := newApp(t,
+		Provide(func() Job { return job("single") }),
+		Provide(func() (Job, error) { return job("with-error"), nil }),
+		Provide(func() []Job { return []Job{job("flat-1"), job("flat-2")} }),
+	)
+	if err := app.Start(context.Background()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = app.Stop(context.Background()) })
+
+	seen := map[string]bool{}
+	for range 4 {
+		select {
+		case name := <-ran:
+			seen[name] = true
+		case <-time.After(5 * time.Second):
+			t.Fatalf("jobs that ran: %v, want all four", seen)
+		}
+	}
+}
+
+// Аннотации вызывающего (параметр из другой группы) сочетаются с групповой.
+func TestProvide_KeepsCallerAnnotations(t *testing.T) {
+	type source struct{ name string }
+	app := newApp(t,
+		fx.Provide(fx.Annotate(func() source { return source{name: "engine"} }, fx.ResultTags(`group:"sources"`))),
+		Provide(
+			func(sources []source) []Job {
+				jobs := make([]Job, 0, len(sources))
+				for _, s := range sources {
+					jobs = append(jobs, Job{Name: s.name, Interval: time.Hour, Run: func(context.Context) error { return nil }})
+				}
+				return jobs
+			},
+			fx.ParamTags(`group:"sources"`),
+		),
+		fx.Invoke(fx.Annotate(func(jobs []Job) {
+			if len(jobs) != 1 || jobs[0].Name != "engine" {
+				t.Errorf("jobs in group = %v, want one named engine", jobs)
+			}
+		}, fx.ParamTags(`group:"`+Group+`"`))),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("fx: %v", err)
 	}
 }

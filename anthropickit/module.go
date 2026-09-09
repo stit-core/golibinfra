@@ -7,9 +7,9 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module не provide'ит Config (asymmetry note в pgkit/module.go). Дешёвый mode:
+// Module provide'ит anthropickit.API. Config собирает приложение: дешёвый путь —
 // fx.Provide(anthropickit.NewConfig). Опции (WithPriceTable и т.п.) — через свой
-// конструктор поверх New, если нужны.
+// конструктор поверх New. Health-проба opt-in: healthkit.Provide(anthropickit.Probe).
 var Module = fx.Module(
 	"anthropickit",
 	fx.Provide(
@@ -17,6 +17,7 @@ var Module = fx.Module(
 	),
 )
 
+// NewConfig грузит Config из окружения и валидирует её.
 func NewConfig() (Config, error) {
 	var c Config
 	if err := envconfig.Process("", &c); err != nil {

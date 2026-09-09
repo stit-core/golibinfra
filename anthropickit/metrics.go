@@ -32,9 +32,12 @@ func newInstruments() *instruments {
 	return &instruments{
 		calls: otelkit.Must(m.Int64Counter("anthropic_api_calls_total",
 			metric.WithDescription("Claude API calls by model, operation, status and pricing coverage"))),
+		// Генерация идёт десятками секунд и минутами: на общей шкале (потолок 30 с)
+		// весь хвост лёг бы в +Inf и p95 не отличался бы от p99.
 		latency: otelkit.Must(m.Float64Histogram("anthropic_api_latency_seconds",
 			metric.WithDescription("Claude API call latency"),
-			metric.WithUnit("s"))),
+			metric.WithUnit("s"),
+			otelkit.LongDurationBuckets())),
 		tokens: otelkit.Must(m.Int64Counter("anthropic_api_tokens_total",
 			metric.WithDescription("Claude tokens by model and kind"))),
 		cost: otelkit.Must(m.Int64Counter("anthropic_api_cost_micros_total",
@@ -42,7 +45,8 @@ func newInstruments() *instruments {
 	}
 }
 
-// callResult — итог одного вызова API для метрик.
+// callResult — итог одного вызова API для метрик. model — запрошенная модель;
+// priced говорит, есть ли в прайс-таблице та модель, по которой посчитан cost.
 type callResult struct {
 	op     string
 	model  string

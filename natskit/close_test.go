@@ -14,19 +14,17 @@ import (
 )
 
 func TestConn_CloseWaitsForInflightHandler(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	url := startJetStreamNATS(t)
+	url := natsURL(t)
 	conn, err := natskit.NewConn(clientConfig(url), logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewConn: %v", err)
 	}
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	subject := subj(t, "slow")
 
 	started := make(chan struct{}, 1)
 	var finished atomic.Bool
-	if _, err := bus.Subscribe(context.Background(), "slow.work", func(context.Context, []byte) error {
+	if _, err := bus.Subscribe(context.Background(), subject, func(context.Context, []byte) error {
 		started <- struct{}{}
 		time.Sleep(time.Second)
 		finished.Store(true)
@@ -34,7 +32,7 @@ func TestConn_CloseWaitsForInflightHandler(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := bus.Publish(context.Background(), "slow.work", "x"); err != nil {
+	if err := bus.Publish(context.Background(), subject, []byte("x")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	recv(t, started, 5*time.Second, "handler start")
@@ -50,16 +48,13 @@ func TestConn_CloseWaitsForInflightHandler(t *testing.T) {
 	if conn.Status() != natsgo.CLOSED {
 		t.Fatalf("status after Close = %s, want CLOSED", conn.Status())
 	}
-	if _, err := bus.Subscribe(context.Background(), "late", func(context.Context, []byte) error { return nil }); !errors.Is(err, natskit.ErrClosed) {
+	if _, err := bus.Subscribe(context.Background(), subj(t, "late"), func(context.Context, []byte) error { return nil }); !errors.Is(err, natskit.ErrClosed) {
 		t.Fatalf("Subscribe after Close err = %v, want ErrClosed", err)
 	}
 }
 
 func TestConn_CloseGivesUpAfterDrainTimeout(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	url := startJetStreamNATS(t)
+	url := natsURL(t)
 	log := &memLogger{}
 	cfg := clientConfig(url)
 	cfg.DrainTimeout = 300 * time.Millisecond
@@ -68,17 +63,18 @@ func TestConn_CloseGivesUpAfterDrainTimeout(t *testing.T) {
 		t.Fatalf("NewConn: %v", err)
 	}
 	bus := natskit.NewBus(conn, log, natskit.Config{})
+	subject := subj(t, "stuck")
 
 	started := make(chan struct{}, 1)
 	release := make(chan struct{})
-	if _, err := bus.Subscribe(context.Background(), "stuck.work", func(context.Context, []byte) error {
+	if _, err := bus.Subscribe(context.Background(), subject, func(context.Context, []byte) error {
 		started <- struct{}{}
 		<-release
 		return nil
 	}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := bus.Publish(context.Background(), "stuck.work", "x"); err != nil {
+	if err := bus.Publish(context.Background(), subject, []byte("x")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	recv(t, started, 5*time.Second, "handler start")
@@ -93,19 +89,92 @@ func TestConn_CloseGivesUpAfterDrainTimeout(t *testing.T) {
 		t.Fatalf("status after Close = %s, want CLOSED", conn.Status())
 	}
 	if !log.has("warn", "natskit: drain timeout, handlers still in flight") {
-		t.Fatalf("drain timeout not logged: %+v", log.entries)
+		t.Fatalf("drain timeout not logged: %v", log.dump())
+	}
+}
+
+// Обработчик, переживший бюджет drain, получает отмену ctx — кооперативная
+// остановка вместо потери соединения без единого сигнала.
+func TestConn_CloseCancelsHandlerContext(t *testing.T) {
+	url := natsURL(t)
+	cfg := clientConfig(url)
+	cfg.DrainTimeout = 300 * time.Millisecond
+	conn, err := natskit.NewConn(cfg, logkit.Nop())
+	if err != nil {
+		t.Fatalf("NewConn: %v", err)
+	}
+	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	subject := subj(t, "cancelme")
+
+	started := make(chan struct{}, 1)
+	cancelled := make(chan error, 1)
+	if _, err := bus.Subscribe(context.Background(), subject, func(hctx context.Context, _ []byte) error {
+		started <- struct{}{}
+		<-hctx.Done()
+		cancelled <- hctx.Err()
+		return hctx.Err()
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := bus.Publish(context.Background(), subject, []byte("x")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	recv(t, started, 5*time.Second, "handler start")
+
+	conn.Close()
+	if err := recv(t, cancelled, 5*time.Second, "handler cancellation"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("handler ctx err = %v, want Canceled", err)
+	}
+}
+
+// CloseContext укладывается в дедлайн ctx (fx StopTimeout), даже если
+// DrainTimeout больше.
+func TestConn_CloseContextHonoursDeadline(t *testing.T) {
+	url := natsURL(t)
+	cfg := clientConfig(url)
+	cfg.DrainTimeout = 30 * time.Second
+	conn, err := natskit.NewConn(cfg, logkit.Nop())
+	if err != nil {
+		t.Fatalf("NewConn: %v", err)
+	}
+	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	subject := subj(t, "hang")
+
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	if _, err := bus.Subscribe(context.Background(), subject, func(context.Context, []byte) error {
+		started <- struct{}{}
+		<-release
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := bus.Publish(context.Background(), subject, []byte("x")); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	recv(t, started, 5*time.Second, "handler start")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	begin := time.Now()
+	conn.CloseContext(ctx)
+	close(release)
+	if elapsed := time.Since(begin); elapsed > 5*time.Second {
+		t.Fatalf("CloseContext took %v, want ≈ctx deadline", elapsed)
+	}
+	if conn.Status() != natsgo.CLOSED {
+		t.Fatalf("status after CloseContext = %s, want CLOSED", conn.Status())
 	}
 }
 
 // JetStream: Close ждёт обработчик, и его Ack успевает уйти до закрытия
 // соединения — новый инстанс с тем же durable сообщение не получает.
 func TestClient_CloseWaitsForJetStreamHandler(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
-	url := startJetStreamNATS(t)
+	url := natsURL(t)
+	stream := nameFor(t)
+	subject := subj(t, "slow")
 	cfg := clientConfig(url)
-	cfg.JetStream = jsConfig("ORDERS").JetStream
+	cfg.JetStream = jsConfig(stream).JetStream
 	cfg.JetStream.AckWait = 2 * time.Second
 	cfg.JetStream.HandlerTimeout = 10 * time.Second
 
@@ -115,7 +184,7 @@ func TestClient_CloseWaitsForJetStreamHandler(t *testing.T) {
 	}
 	started := make(chan struct{}, 1)
 	var finished atomic.Bool
-	if _, err := client.Stream().SubscribeStream(context.Background(), "ORDERS", "ORDERS.slow", "slow",
+	if _, err := client.Stream().SubscribeStream(context.Background(), stream, subject, "slow",
 		func(context.Context, []byte) error {
 			started <- struct{}{}
 			time.Sleep(time.Second)
@@ -124,7 +193,7 @@ func TestClient_CloseWaitsForJetStreamHandler(t *testing.T) {
 		}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
-	if err := client.Stream().PublishStream(context.Background(), "ORDERS.slow", []byte(`{}`)); err != nil {
+	if err := client.Stream().PublishStream(context.Background(), subject, []byte(`{}`)); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
 	recv(t, started, 10*time.Second, "handler start")
@@ -140,7 +209,7 @@ func TestClient_CloseWaitsForJetStreamHandler(t *testing.T) {
 	}
 	t.Cleanup(again.Close)
 	redelivered := make(chan struct{}, 1)
-	if _, err := again.Stream().SubscribeStream(context.Background(), "ORDERS", "ORDERS.slow", "slow",
+	if _, err := again.Stream().SubscribeStream(context.Background(), stream, subject, "slow",
 		func(context.Context, []byte) error {
 			redelivered <- struct{}{}
 			return nil
@@ -151,20 +220,17 @@ func TestClient_CloseWaitsForJetStreamHandler(t *testing.T) {
 }
 
 func TestConn_CloseIsIdempotentAndNilSafe(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skipping integration test in short mode")
-	}
 	var nilConn *natskit.Conn
 	nilConn.Close()
+	nilConn.CloseContext(context.Background())
 
-	url := startJetStreamNATS(t)
-	conn, err := natskit.NewConn(clientConfig(url), logkit.Nop())
+	conn, err := natskit.NewConn(clientConfig(natsURL(t)), logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewConn: %v", err)
 	}
 	conn.Close()
 	conn.Close()
-	if err := conn.Healthy(); err == nil {
-		t.Fatal("Healthy after Close = nil, want error")
+	if err := conn.Healthy(); !errors.Is(err, natskit.ErrConnectionClosed) {
+		t.Fatalf("Healthy after Close = %v, want ErrConnectionClosed", err)
 	}
 }

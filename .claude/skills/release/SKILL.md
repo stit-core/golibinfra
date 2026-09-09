@@ -23,25 +23,37 @@ description: Выпустить новую версию golibinfra — make gate
 
 1. **Gate на чистом дереве.** `make gate-clean` — `make check` в worktree от HEAD
    (ловит незакоммиченные и gitignored-файлы, от которых зависит сборка).
-   Красное → не релизим. Для китов с БД/шиной дополнительно `make test-full`.
-2. **Версия (semver).** Breaking change (коммиты с `!` / `BREAKING CHANGE:` с
-   прошлого тега) → major (`vN.0.0`; для N ≥ 2 module path получает суффикс `/vN`
-   в `go.mod` и импортах); совместимые добавления → minor; только фиксы → patch.
+   Красное → не релизим. Для китов с БД/шиной дополнительно `make test-full`
+   (Docker). `make hooks` держит тот же `make check` на pre-push.
+2. **Версия (semver по форме, политика — `README.md § Версионирование`).**
+   Совместимость между minor'ами `v1` не гарантируется: **breaking-изменения идут
+   minor'ом** (`vX.Y+1.0`) и обязаны быть перечислены в аннотации тега с шагом
+   миграции. Только фиксы без смены публичных сигнатур, дефолтов, имён метрик и
+   envconfig-тегов → patch. Major (`/vN` в module path) — отдельное решение
+   оператора, когда потребители перестанут обновляться синхронно с библиотекой.
    Список коммитов с прошлого тега:
-   `git log $(git describe --tags --abbrev=0)..HEAD --oneline`.
+   `git log $(git describe --tags --abbrev=0)..HEAD --oneline`;
+   breaking среди них — `... --oneline | grep '!:'`.
    Спроси у пользователя версию, если неочевидно.
-3. **Release notes в аннотации тега.** Обязательные секции: `Breaking` (что
-   сломано и как мигрировать, по китам), `Изменения` (кратко), `Гейт` (что гонялось).
+3. **Release notes в аннотации тега.** Обязательные секции: `Breaking` (по китам,
+   строкой «что изменилось → как мигрировать»; ни одно breaking не пропущено),
+   `Поведение` (сменившиеся дефолты и исходы без смены сигнатур), `Изменения`
+   (новое: API, метрики, testkit-сабпакеты, опции), `Гейт` (что гонялось).
    Пуш — гейт человека, делаем по явной просьбе:
    ```bash
    git tag -a vX.Y.Z -F - <<'EOF'
    vX.Y.Z
 
    Breaking:
-   - httpkit: MapSentinel → MapIs/MapAs; RegisterHealth(api, log, probes...)
+   - httpkit: NewServer(cfg, schemes...) → NewServer(cfg, opts...) — схемы через httpkit.WithSecuritySchemes(...)
+   - ...
+
+   Поведение:
+   - natskit: NATS_MAX_RECONNECTS по умолчанию -1 (бесконечные попытки)
    - ...
 
    Изменения:
+   - testkit/logtest: capture-логгер для тестов потребителя
    - ...
 
    Гейт: make gate-clean, make test-full (Docker).
@@ -49,7 +61,13 @@ description: Выпустить новую версию golibinfra — make gate
    git push origin vX.Y.Z
    ```
 4. **Следующий шаг — консьюмеру.** Напечатай блок обновления для `<org>/backend`
-   (форк `go-backend-template`) вместе с миграционными пунктами из `Breaking`:
+   (форк `go-backend-template`) и для `ai-gateway-template` / `amocrm-gateway-template`
+   вместе с миграционными пунктами из `Breaking` — только теми, что задевают код
+   конкретного шаблона. Сначала сверь baseline консьюмера (`grep golibinfra go.mod`):
+   если он отстаёт больше чем на один тег, пунктов из аннотаций между baseline и
+   целевой версией столько же, сколько в текущей, — перечисли цепочку, а не только
+   последний шаг (`git tag -l --format='%(contents)' <тег>` на каждую промежуточную
+   версию; breaking-коммиты отрезка — `git log <baseline>..<тег> --oneline | grep '!:'`):
    ```bash
    go get git.stit.tech/stit-core/golibinfra@vX.Y.Z
    go mod tidy

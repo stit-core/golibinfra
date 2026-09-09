@@ -7,15 +7,17 @@
 ## `testkit.StartPostgres`
 
 ```go
-func StartPostgres(t *testing.T, opts ...PostgresOption) *PostgresFixture
+func StartPostgres(t testing.TB, opts ...testkit.Option) *PostgresFixture
 
-func WithMigrations(sources ...pgkit.Source) PostgresOption // источники китов/приложения
-func WithMigrationsDir(path string) PostgresOption          // каталог приложения (источник app)
+func WithMigrations(sources ...pgkit.Source) testkit.Option // источники китов/приложения
+func WithMigrationsDir(path string) testkit.Option          // каталог приложения (источник app)
+func WithImage(ref string) testkit.Option                   // другой образ (pgvector, postgis)
 ```
 
-Поднимает `postgres:17-alpine` на свободном порту, ждёт готовности и регистрирует
-`t.Cleanup` для остановки контейнера. Переданные источники применяются через
-`pgkit.MigrateUpAll` — так же, как это делает `MigrateModule`.
+Поднимает `testkit.PostgresImage` на свободном порту, ждёт готовности и
+регистрирует `t.Cleanup` для остановки контейнера. Под `-short` и без Docker сам
+делает `t.Skip`. Переданные источники применяются через `pgkit.MigrateUpAll` —
+так же, как это делает `MigrateModule`.
 
 ```go
 type PostgresFixture struct {
@@ -23,19 +25,20 @@ type PostgresFixture struct {
     Container *tcpostgres.PostgresContainer
 }
 
-func (f *PostgresFixture) DB(t *testing.T) *pgkit.DB
+func (f *PostgresFixture) Pool(t testing.TB) *pgxpool.Pool
+func (f *PostgresFixture) DB(t testing.TB) *pgkit.DB
+func (f *PostgresFixture) Transactor(t testing.TB) pgkit.Transactor
+func (f *PostgresFixture) PoolConfig() pgkit.PoolConfig
 ```
 
-`Fixture.DB(t)` открывает `pgxpool` к контейнеру, оборачивает в `*pgkit.DB` и
-регистрирует закрытие пула в `t.Cleanup`.
+`Pool`, `DB` и `Transactor` работают поверх одного пула фикстуры, открытого
+через `pgkit.NewPool` с prod-дефолтами (session-таймауты, otelpgx); пул
+закрывается в `t.Cleanup` теста, стартовавшего контейнер.
 
 ## Рецепт: пул с реальной БД
 
 ```go
 func TestRepo(t *testing.T) {
-    if testing.Short() {
-        t.Skip("integration")
-    }
     pg := testkit.StartPostgres(t, testkit.WithMigrationsDir("testdata/migrations"))
     cfg := pgkit.PoolConfig{
         DSN:      pg.DSN,
@@ -88,12 +91,24 @@ reg := pgkit.InstrumentPool(pool, pgkit.RolePrimary)
 defer reg.Unregister()
 
 var rm metricdata.ResourceMetrics
-_ = reader.Collect(context.Background(), &rm) // → db_pool_*{role="primary"} в rm.ScopeMetrics
+_ = reader.Collect(context.Background(), &rm) // → pg_pool_*{role="primary"} в rm.ScopeMetrics
+```
+
+## Рецепт: домен без Postgres
+
+Фейки `pgkit.Transactor` живут в `testkit/pgtest`: `pgtest.Identity` прогоняет
+`fn` без транзакции, `pgtest.Recorder` считает вызовы. Оба кладут в `ctx`
+маркер `pgkit.WithTestTx`, поэтому код, гейтящийся на `pgkit.InTx` (например
+`outboxkit/pgstore` с `WithRequireTx`), проходит и без БД:
+
+```go
+svc := NewService(repo, pgtest.Identity{})
+if err := svc.Do(ctx); err != nil { /* ... */ }
 ```
 
 ## Запуск
 
 ```bash
-go test -short -race ./...   # unit: контейнер-тесты помечены testing.Short() и скипаются
+go test -short -race ./...   # unit: контейнер-тесты скипает testkit.RequireDocker
 go test -race ./...          # integration: поднимает Postgres (нужен Docker)
 ```

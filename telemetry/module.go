@@ -2,28 +2,32 @@ package telemetry
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/kelseyhightower/envconfig"
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/metric"
-	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module не provide'ит Config — caller регистрирует его сам
-// (fx.Provide(telemetry.NewConfig)). Отдаёт *Providers, trace.Tracer,
-// metric.Meter и log.LoggerProvider (второй sink для logkit.Module).
+// Module поднимает SDK и гасит его на OnStop. Config он не provide'ит — caller
+// регистрирует telemetry.NewConfig и logkit.NewConfig сам. Инструменты киты
+// берут у глобальных провайдеров (otel.Tracer/otel.Meter), поэтому в граф
+// уходят только *Providers и log.LoggerProvider (второй sink для logkit).
+//
+// fx.Invoke обязателен: без него конструктор ленив, и граф без потребителя
+// *Providers стартовал бы с no-op инструментацией всех китов и без Shutdown.
 var Module = fx.Module(
 	"telemetry",
 	fx.Provide(
 		newProvidersWithLifecycle,
-		func(*Providers) trace.Tracer { return otel.Tracer(tracerName) },
-		func(*Providers) metric.Meter { return otel.Meter(tracerName) },
 		func(p *Providers) log.LoggerProvider { return p.LoggerProvider },
 	),
+	fx.Invoke(func(*Providers) {}),
 )
 
+// NewConfig читает Config из ENV и валидирует его.
 func NewConfig() (Config, error) {
 	var c Config
 	if err := envconfig.Process("", &c); err != nil {
@@ -32,11 +36,28 @@ func NewConfig() (Config, error) {
 	return c, c.Validate()
 }
 
-func newProvidersWithLifecycle(lc fx.Lifecycle, cfg Config) (*Providers, error) {
-	p, err := Init(context.Background(), cfg)
+type providerParams struct {
+	fx.In
+
+	LC     fx.Lifecycle
+	Cfg    Config
+	LogCfg logkit.Config
+	Redact logkit.RedactConfig `optional:"true"`
+}
+
+func newProvidersWithLifecycle(p providerParams) (*Providers, error) {
+	// Логгер строится из конфига, а не берётся из графа: logkit.Logger несёт
+	// OTel-sink, и ошибка экспорта логов породила бы новую запись и новую ошибку.
+	// Redact при этом сохраняется: в текст ошибки экспорта попадает URL
+	// коллектора и произвольные атрибуты сообщений SDK.
+	l, err := logkit.NewSlog(p.LogCfg, logkit.WithRedact(p.Redact))
+	if err != nil {
+		return nil, fmt.Errorf("telemetry: error logger: %w", err)
+	}
+	providers, err := Init(context.Background(), p.Cfg, WithErrorLogger(l.Handler()))
 	if err != nil {
 		return nil, err
 	}
-	lc.Append(fx.Hook{OnStop: p.Shutdown})
-	return p, nil
+	p.LC.Append(fx.Hook{OnStop: providers.Shutdown})
+	return providers, nil
 }

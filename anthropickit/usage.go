@@ -23,7 +23,7 @@ func (u Usage) TotalInput() int64 {
 }
 
 func mapUsage(u anthropic.Usage) Usage {
-	return Usage{
+	out := Usage{
 		InputTokens:        u.InputTokens,
 		OutputTokens:       u.OutputTokens,
 		CacheWrite5mTokens: u.CacheCreation.Ephemeral5mInputTokens,
@@ -33,18 +33,25 @@ func mapUsage(u anthropic.Usage) Usage {
 		WebSearchRequests:  u.ServerToolUse.WebSearchRequests,
 		WebFetchRequests:   u.ServerToolUse.WebFetchRequests,
 	}
+	// Бэкенд, отдающий только лумпованный total (прокси, совместимый API), иначе
+	// потерял бы cache-write и в usage, и в стоимости.
+	if out.CacheWrite5mTokens+out.CacheWrite1hTokens == 0 {
+		out.CacheWrite5mTokens = u.CacheCreationInputTokens
+	}
+	return out
 }
 
 // mapDeltaUsage — usage из message_delta стрима. Cache-write split здесь
-// недоступен (только лумпованный total); авторитетный usage — из Stream.Final
-// (аккумулированный Message.Usage с разбивкой по TTL).
+// недоступен: лумпованный total относим к 5m-ставке, авторитетный usage — из
+// Stream.Final.
 func mapDeltaUsage(u anthropic.MessageDeltaUsage) Usage {
 	return Usage{
-		InputTokens:       u.InputTokens,
-		OutputTokens:      u.OutputTokens,
-		CacheReadTokens:   u.CacheReadInputTokens,
-		ThinkingTokens:    u.OutputTokensDetails.ThinkingTokens,
-		WebSearchRequests: u.ServerToolUse.WebSearchRequests,
-		WebFetchRequests:  u.ServerToolUse.WebFetchRequests,
+		InputTokens:        u.InputTokens,
+		OutputTokens:       u.OutputTokens,
+		CacheWrite5mTokens: u.CacheCreationInputTokens,
+		CacheReadTokens:    u.CacheReadInputTokens,
+		ThinkingTokens:     u.OutputTokensDetails.ThinkingTokens,
+		WebSearchRequests:  u.ServerToolUse.WebSearchRequests,
+		WebFetchRequests:   u.ServerToolUse.WebFetchRequests,
 	}
 }

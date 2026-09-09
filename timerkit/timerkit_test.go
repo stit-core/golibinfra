@@ -3,41 +3,26 @@ package timerkit
 import (
 	"context"
 	"errors"
-	"sync"
+	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/trace"
+
+	"git.stit.tech/stit-core/golibinfra/clockkit"
+	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// fakeTimer: after() отдаёт общий канал; fire() блокируется, пока runner не
-// заберёт тик — так тест точно знает, что запуск начался.
-type fakeTimer struct {
-	mu    sync.Mutex
-	waits []time.Duration
-	ch    chan time.Time
-}
-
-func newFakeTimer() *fakeTimer { return &fakeTimer{ch: make(chan time.Time)} }
-
-func (f *fakeTimer) after(d time.Duration) <-chan time.Time {
-	f.mu.Lock()
-	f.waits = append(f.waits, d)
-	f.mu.Unlock()
-	return f.ch
-}
-
-func (f *fakeTimer) fire() { f.ch <- time.Now() }
-
-func (f *fakeTimer) requested() []time.Duration {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return append([]time.Duration(nil), f.waits...)
-}
-
+// Часы теста двигает сам тест: срабатывание таймера происходит внутри Advance,
+// поэтому проверки «ещё не запустился» / «запустился» не требуют sleep.
 type harness struct {
-	timer *fakeTimer
+	clock *clockkit.Tickable
 	runs  chan context.Context
 	stop  context.CancelFunc
 	done  chan struct{}
@@ -45,7 +30,11 @@ type harness struct {
 
 func start(t *testing.T, j Job, hook func(ctx context.Context) error) *harness {
 	t.Helper()
-	h := &harness{timer: newFakeTimer(), runs: make(chan context.Context, 16), done: make(chan struct{})}
+	h := &harness{
+		clock: clockkit.NewTickable(time.Unix(1_700_000_000, 0)),
+		runs:  make(chan context.Context, 16),
+		done:  make(chan struct{}),
+	}
 	j.Run = func(ctx context.Context) error {
 		h.runs <- ctx
 		if hook != nil {
@@ -55,8 +44,7 @@ func start(t *testing.T, j Job, hook func(ctx context.Context) error) *harness {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	h.stop = cancel
-	r := newRunner(logkit.Nop())
-	r.after = h.timer.after
+	r := newRunner(logkit.Nop(), h.clock)
 	go func() {
 		r.run(ctx, j)
 		close(h.done)
@@ -66,6 +54,12 @@ func start(t *testing.T, j Job, hook func(ctx context.Context) error) *harness {
 		<-h.done
 	})
 	return h
+}
+
+// tick дожидается, пока runner поставит таймер, и двигает часы на d.
+func (h *harness) tick(d time.Duration) {
+	h.clock.WaitTimers(1)
+	h.clock.Advance(d)
 }
 
 func (h *harness) waitRun(t *testing.T) context.Context {
@@ -88,18 +82,17 @@ func (h *harness) assertNoRun(t *testing.T) {
 	}
 }
 
-func TestRunner_TickCallsRunAndWaitsInterval(t *testing.T) {
+func TestRunner_WaitsFullIntervalBetweenRuns(t *testing.T) {
 	h := start(t, Job{Name: "j", Interval: 7 * time.Second}, nil)
 
 	h.assertNoRun(t)
-	h.timer.fire()
-	h.waitRun(t)
-	h.timer.fire()
+	h.tick(6 * time.Second)
+	h.assertNoRun(t)
+	h.clock.Advance(time.Second)
 	h.waitRun(t)
 
-	if w := h.timer.requested(); len(w) < 2 || w[0] != 7*time.Second || w[1] != 7*time.Second {
-		t.Fatalf("requested waits = %v, want 7s each", w)
-	}
+	h.tick(7 * time.Second)
+	h.waitRun(t)
 }
 
 func TestRunner_RunOnStart(t *testing.T) {
@@ -123,13 +116,11 @@ func TestRunner_TimeoutSetsDeadline(t *testing.T) {
 
 func TestRunner_JitterWithinRange(t *testing.T) {
 	h := start(t, Job{Name: "j", Interval: 10 * time.Second, Jitter: 2 * time.Second}, nil)
-	h.timer.fire()
-	h.waitRun(t)
-	for _, w := range h.timer.requested() {
-		if w < 10*time.Second || w >= 12*time.Second {
-			t.Fatalf("wait %v outside [10s, 12s)", w)
-		}
-	}
+
+	h.tick(10*time.Second - time.Nanosecond)
+	h.assertNoRun(t) // ожидание не короче Interval
+	h.clock.Advance(2 * time.Second)
+	h.waitRun(t) // и не длиннее Interval+Jitter
 }
 
 func TestRunner_SurvivesErrorAndPanic(t *testing.T) {
@@ -144,7 +135,7 @@ func TestRunner_SurvivesErrorAndPanic(t *testing.T) {
 		return nil
 	})
 	for range 3 {
-		h.timer.fire()
+		h.tick(time.Second)
 		h.waitRun(t)
 	}
 	if got := calls.Load(); got != 3 {
@@ -154,6 +145,7 @@ func TestRunner_SurvivesErrorAndPanic(t *testing.T) {
 
 func TestRunner_StopsOnCancelWhileWaiting(t *testing.T) {
 	h := start(t, Job{Name: "j", Interval: time.Hour}, nil)
+	h.clock.WaitTimers(1)
 	h.stop()
 	select {
 	case <-h.done:
@@ -192,7 +184,7 @@ func TestValidate(t *testing.T) {
 func TestMetrics(t *testing.T) {
 	before := snapshot(t)
 
-	r := newRunner(logkit.Nop())
+	r := newRunner(logkit.Nop(), clockkit.NewTickable(time.Unix(0, 0)))
 	ctx := context.Background()
 	r.once(ctx, Job{Name: "m", Run: func(context.Context) error { return nil }})
 	r.once(ctx, Job{Name: "m", Run: func(context.Context) error { return errors.New("x") }})
@@ -207,4 +199,92 @@ func TestMetrics(t *testing.T) {
 	if got := after.durations["m"] - before.durations["m"]; got != 3 {
 		t.Errorf("timer_job_duration_seconds{job=m} count delta = %d, want 3", got)
 	}
+	// Общие бакеты длительностей: секундная сетка, а не миллисекундные дефолты OTel.
+	if got, want := after.bounds["m"], []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}; !equalFloats(got, want) {
+		t.Errorf("duration buckets = %v, want %v", got, want)
+	}
+}
+
+// Регрессия: без root-спана на запуск инструментированные вызовы внутри Run
+// становятся сиротскими трейсами, а длительность job не связать с трейсом.
+func TestSpanPerRun(t *testing.T) {
+	r := newRunner(logkit.Nop(), clockkit.NewTickable(time.Unix(0, 0)))
+	ctx := context.Background()
+
+	var inner trace.SpanContext
+	r.once(ctx, Job{Name: "span-ok", Run: func(ctx context.Context) error {
+		_, s := otel.Tracer("test").Start(ctx, "inner")
+		inner = s.SpanContext()
+		s.End()
+		return nil
+	}})
+	r.once(ctx, Job{Name: "span-err", Run: func(context.Context) error { return errors.New("boom") }})
+	r.once(ctx, Job{Name: "span-panic", Run: func(context.Context) error { panic("boom") }})
+
+	ok := spanByName(t, "timerkit.job span-ok")
+	if ok.Parent().IsValid() {
+		t.Errorf("job span must be a root span, parent = %v", ok.Parent())
+	}
+	if ok.SpanKind() != trace.SpanKindInternal {
+		t.Errorf("span kind = %v, want internal", ok.SpanKind())
+	}
+	if ok.InstrumentationScope().Name != otelkit.Scope("timerkit") {
+		t.Errorf("scope = %q, want %q", ok.InstrumentationScope().Name, otelkit.Scope("timerkit"))
+	}
+	if !hasAttr(ok, "timer.job", "span-ok") {
+		t.Errorf("attributes = %v, want timer.job=span-ok", ok.Attributes())
+	}
+	if ok.Status().Code != codes.Unset {
+		t.Errorf("successful run status = %v, want unset", ok.Status())
+	}
+	if inner.SpanID() == ok.SpanContext().SpanID() || inner.TraceID() != ok.SpanContext().TraceID() {
+		t.Errorf("inner span %v is not a child of the job span %v", inner, ok.SpanContext())
+	}
+
+	failed := spanByName(t, "timerkit.job span-err")
+	if failed.Status().Code != codes.Error || !strings.Contains(failed.Status().Description, "boom") {
+		t.Errorf("failed run status = %v, want error naming the failure", failed.Status())
+	}
+	if len(failed.Events()) == 0 {
+		t.Error("failed run must record the error as a span event")
+	}
+
+	panicked := spanByName(t, "timerkit.job span-panic")
+	if panicked.Status().Code != codes.Error || panicked.Status().Description != "panic" {
+		t.Errorf("panicked run status = %v, want error/panic", panicked.Status())
+	}
+}
+
+// Рекордер один на пакет и копит спаны между прогонами, поэтому берётся
+// последний совпадающий: под -count=N тест обязан видеть свой запуск.
+func spanByName(t *testing.T, name string) sdktrace.ReadOnlySpan {
+	t.Helper()
+	for _, s := range slices.Backward(spanRecorder.Ended()) {
+		if s.Name() == name {
+			return s
+		}
+	}
+	t.Fatalf("span %q not recorded", name)
+	return nil
+}
+
+func hasAttr(s sdktrace.ReadOnlySpan, key, want string) bool {
+	for _, kv := range s.Attributes() {
+		if string(kv.Key) == key && kv.Value.AsString() == want {
+			return true
+		}
+	}
+	return false
+}
+
+func equalFloats(got, want []float64) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
 }

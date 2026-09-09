@@ -81,8 +81,8 @@ func (b *barrierTransport) published() []int64 {
 
 func insertN(t *testing.T, ctx context.Context, s *pgstore.Store, n int) {
 	t.Helper()
-	for i := 0; i < n; i++ {
-		if err := s.Insert(ctx, "evt", sample{N: i}); err != nil {
+	for i := range n {
+		if err := s.Insert(ctx, "evt", payload(t, sample{N: i})); err != nil {
 			t.Fatalf("insert %d: %v", i, err)
 		}
 	}
@@ -110,9 +110,6 @@ func rowStats(t *testing.T, ctx context.Context, db *pgkit.DB) (published, attem
 
 // Два batch-воркера с пересекающимися тиками делят очередь без дублей.
 func TestWorkers_ConcurrentBatch_NoDuplicates(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 	insertN(t, ctx, s, 10)
@@ -144,9 +141,6 @@ func TestWorkers_ConcurrentBatch_NoDuplicates(t *testing.T) {
 
 // Неудача считается один раз на строку, даже когда тики двух воркеров пересеклись.
 func TestWorkers_ConcurrentBatch_AttemptsCountedOnce(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 	insertN(t, ctx, s, 10)
@@ -171,9 +165,6 @@ func TestWorkers_ConcurrentBatch_AttemptsCountedOnce(t *testing.T) {
 // Ordered: пока первый воркер публикует голову очереди, второй пропускает тик;
 // итоговый порядок публикации — порядок вставки, без дублей.
 func TestWorkers_Ordered_SingleDrainer(t *testing.T) {
-	if testing.Short() {
-		t.Skip("skip integration test in -short")
-	}
 	db, tr, ctx := startStore(t)
 	s := pgstore.NewStore(db)
 	insertN(t, ctx, s, 6)

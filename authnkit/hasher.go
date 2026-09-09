@@ -1,8 +1,3 @@
-// Package authnkit — кирпичики аутентификации: Hasher (Argon2id), HS256-JWT
-// поверх go-jose, TOTP (RFC 6238) и экземплярный RBAC-реестр. Auth-flow'ы
-// (login, refresh, MFA enrollment) — за consumer'ом. Эмитит
-// jwt_verifications_total{result}, password_{hash,verify}_duration_seconds,
-// totp_verifications_total{result}.
 package authnkit
 
 import (
@@ -19,27 +14,67 @@ import (
 	"golang.org/x/crypto/argon2"
 )
 
-var (
-	ErrConfig      = errors.New("authnkit: invalid config")
-	ErrInvalidHash = errors.New("authnkit: invalid argon2id hash")
-)
+// ErrConfig — конфиг кита вне допустимого окна значений.
+var ErrConfig = errors.New("authnkit: invalid config")
+
+// ErrInvalidHash — PHC-строка нечитаема, неканонична или её параметры вне окна.
+var ErrInvalidHash = errors.New("authnkit: invalid argon2id hash")
+
+// ErrHashParams — параметры PHC-строки вне окна кита; заворачивает
+// ErrInvalidHash, поэтому errors.Is по нему тоже истинен.
+var ErrHashParams = fmt.Errorf("%w: parameters out of window", ErrInvalidHash)
 
 // Окно параметров Argon2id, принимаемых и при Hash, и при Verify: параметры
 // PHC-строки приходят из хранилища и без окна управляли бы CPU/RAM процесса.
 const (
+	// MinTime — минимум проходов Argon2id.
+	MinTime = 1
+	// MaxTime — максимум проходов: стоимость Argon2id линейна по t, поэтому
+	// верхняя граница обязательна для строк из хранилища.
+	MaxTime = 64
+	// MinMemoryKiB — минимум памяти на один хэш, КиБ.
 	MinMemoryKiB = 8 * 1024
+	// MaxMemoryKiB — максимум памяти на один хэш, КиБ; при t > 1 фактический
+	// потолок ниже — стоимость ограничена MaxCostKiBPasses.
 	MaxMemoryKiB = 1024 * 1024
-	MinSaltLen   = 8
-	MaxSaltLen   = 64
-	MinKeyLen    = 16
-	MaxKeyLen    = 128
+	// MaxCostKiBPasses — потолок стоимости одного вычисления, КиБ × проходы:
+	// каждый параметр по отдельности в окне (t=64 и m=1 ГиБ), а вместе они
+	// стоят порядка десяти секунд и гигабайта на один Verify. 786432 —
+	// четырёхкратная стоимость дефолтных параметров (t=3, m=64 МиБ).
+	MaxCostKiBPasses = 4 * 3 * 64 * 1024
+	// MinThreads — минимум lanes Argon2id.
+	MinThreads = 1
+	// MaxThreads — максимум lanes: выше числа ядер параллелизм не даёт выигрыша.
+	MaxThreads = 16
+	// MinSaltLen — минимум длины соли, байт.
+	MinSaltLen = 8
+	// MaxSaltLen — максимум длины соли, байт.
+	MaxSaltLen = 64
+	// MinKeyLen — минимум длины хэша, байт.
+	MinKeyLen = 16
+	// MaxKeyLen — максимум длины хэша, байт.
+	MaxKeyLen = 128
 )
 
+// phcB64 — строгий RawStdEncoding: нестрогий декодер Go принимает мусор в
+// хвостовых битах последнего символа, и у одного хэша было бы несколько
+// валидных представлений, а неканоническое осталось бы в БД навсегда.
+var phcB64 = base64.RawStdEncoding.Strict()
+
+// Hasher — хэш пароля и проверка против сохранённой PHC-строки.
 type Hasher interface {
-	Hash(plain string) (string, error)
-	Verify(plain, encoded string) (bool, error)
+	// Hash — самоописывающая PHC-строка для plain.
+	Hash(ctx context.Context, plain string) (string, error)
+	// Verify — совпал ли plain с encoded; ErrInvalidHash — encoded не разобрать.
+	Verify(ctx context.Context, plain, encoded string) (bool, error)
+	// NeedsRehash — параметры encoded отличаются от текущих параметров хэшера.
+	NeedsRehash(encoded string) bool
+	// VerifyDummy — холостая проверка для пути «пользователь не найден».
+	VerifyDummy(ctx context.Context)
 }
 
+// Argon2idParams — параметры Argon2id и одновременно окно, в котором
+// принимаются параметры PHC-строки из хранилища.
 type Argon2idParams struct {
 	Time    uint32 `envconfig:"ARGON2_TIME" default:"3"`
 	Memory  uint32 `envconfig:"ARGON2_MEMORY_KIB" default:"65536"`
@@ -48,14 +83,24 @@ type Argon2idParams struct {
 	SaltLen uint32 `envconfig:"ARGON2_SALTLEN" default:"16"`
 }
 
+// Validate — параметры внутри окна; вне окна → ErrConfig.
+func (p Argon2idParams) Validate() error {
+	if err := p.check(); err != nil {
+		return fmt.Errorf("%w: argon2id: %w", ErrConfig, err)
+	}
+	return nil
+}
+
 func (p Argon2idParams) check() error {
 	switch {
-	case p.Time < 1:
-		return errors.New("t must be >= 1")
-	case p.Threads < 1:
-		return errors.New("p must be >= 1")
+	case p.Time < MinTime || p.Time > MaxTime:
+		return fmt.Errorf("t must be within %d..%d", MinTime, MaxTime)
+	case p.Threads < MinThreads || p.Threads > MaxThreads:
+		return fmt.Errorf("p must be within %d..%d", MinThreads, MaxThreads)
 	case p.Memory < MinMemoryKiB || p.Memory > MaxMemoryKiB:
 		return fmt.Errorf("m must be within %d..%d KiB", MinMemoryKiB, MaxMemoryKiB)
+	case uint64(p.Time)*uint64(p.Memory) > MaxCostKiBPasses:
+		return fmt.Errorf("t*m must not exceed %d KiB-passes", MaxCostKiBPasses)
 	case p.KeyLen < MinKeyLen || p.KeyLen > MaxKeyLen:
 		return fmt.Errorf("hash length must be within %d..%d bytes", MinKeyLen, MaxKeyLen)
 	case p.SaltLen < MinSaltLen || p.SaltLen > MaxSaltLen:
@@ -64,24 +109,27 @@ func (p Argon2idParams) check() error {
 	return nil
 }
 
+// Argon2idHasher — Hasher поверх argon2.IDKey с самоописывающей PHC-строкой.
 type Argon2idHasher struct {
 	p     Argon2idParams
-	instr *instruments
+	instr *hashInstruments
 }
 
-func NewArgon2idHasher(p Argon2idParams) *Argon2idHasher {
-	return &Argon2idHasher{p: p, instr: newInstruments()}
+// NewArgon2idHasher — хэшер с параметрами p; параметры вне окна → ErrConfig.
+func NewArgon2idHasher(p Argon2idParams) (*Argon2idHasher, error) {
+	if err := p.Validate(); err != nil {
+		return nil, err
+	}
+	return &Argon2idHasher{p: p, instr: newHashInstruments()}, nil
 }
 
-func (h *Argon2idHasher) Hash(plain string) (string, error) {
+// Hash считает Argon2id со случайной солью и кодирует результат в PHC-строку.
+func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error) {
 	start := time.Now()
 	defer func() {
-		h.instr.hashDuration.Record(context.Background(), time.Since(start).Seconds())
+		h.instr.hashDuration.Record(ctx, time.Since(start).Seconds())
 	}()
 
-	if err := h.p.check(); err != nil {
-		return "", fmt.Errorf("%w: argon2id: %w", ErrConfig, err)
-	}
 	salt := make([]byte, h.p.SaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("authnkit: salt: %w", err)
@@ -91,17 +139,17 @@ func (h *Argon2idHasher) Hash(plain string) (string, error) {
 		"$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version,
 		h.p.Memory, h.p.Time, h.p.Threads,
-		base64.RawStdEncoding.EncodeToString(salt),
-		base64.RawStdEncoding.EncodeToString(key),
+		phcB64.EncodeToString(salt),
+		phcB64.EncodeToString(key),
 	), nil
 }
 
-// Verify: (false, ErrInvalidHash) — encoded битый или вне окна параметров;
-// (false, nil) — пароль не совпал.
-func (h *Argon2idHasher) Verify(plain, encoded string) (bool, error) {
+// Verify сверяет plain с PHC-строкой encoded: (false, ErrInvalidHash) — encoded
+// битый или вне окна параметров; (false, nil) — пароль не совпал.
+func (h *Argon2idHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) {
 	start := time.Now()
 	defer func() {
-		h.instr.verifyDuration.Record(context.Background(), time.Since(start).Seconds())
+		h.instr.verifyDuration.Record(ctx, time.Since(start).Seconds())
 	}()
 
 	ph, err := parsePHC(encoded)
@@ -110,6 +158,24 @@ func (h *Argon2idHasher) Verify(plain, encoded string) (bool, error) {
 	}
 	got := argon2.IDKey([]byte(plain), ph.salt, ph.params.Time, ph.params.Memory, ph.params.Threads, ph.params.KeyLen)
 	return subtle.ConstantTimeCompare(got, ph.hash) == 1, nil
+}
+
+// dummy* — фиксированные входы VerifyDummy: значения не важны, важна та же
+// стоимость argon2, что у Verify на существующем пользователе.
+var (
+	dummyPassword = []byte("authnkit-dummy-password")
+	dummySalt     = []byte("authnkit-dummy-salt-do-not-store-it-anywhere-0123456789abcdefghij")
+)
+
+// VerifyDummy тратит столько же CPU, сколько Verify: вызывай на пути
+// «пользователь не найден», иначе время ответа выдаёт наличие учётной записи.
+func (h *Argon2idHasher) VerifyDummy(ctx context.Context) {
+	start := time.Now()
+	defer func() {
+		h.instr.verifyDuration.Record(ctx, time.Since(start).Seconds())
+	}()
+
+	_ = argon2.IDKey(dummyPassword, dummySalt[:h.p.SaltLen], h.p.Time, h.p.Memory, h.p.Threads, h.p.KeyLen)
 }
 
 // NeedsRehash — параметры encoded отличаются от параметров хэшера (или строка
@@ -129,6 +195,11 @@ type phc struct {
 }
 
 func parsePHC(encoded string) (phc, error) {
+	// Каноничность: base64-декодер Go молча пропускает \r\n, а ParseUint —
+	// ведущие нули, поэтому одна строка имела бы несколько представлений.
+	if strings.ContainsAny(encoded, " \t\r\n\v\f") {
+		return phc{}, fmt.Errorf("%w: whitespace in hash", ErrInvalidHash)
+	}
 	parts := strings.Split(encoded, "$")
 	if len(parts) != 6 || parts[0] != "" || parts[1] != "argon2id" {
 		return phc{}, fmt.Errorf("%w: not a $argon2id$ string", ErrInvalidHash)
@@ -158,11 +229,11 @@ func parsePHC(encoded string) (phc, error) {
 		return phc{}, fmt.Errorf("%w: p: %w", ErrInvalidHash, err)
 	}
 
-	salt, err := base64.RawStdEncoding.DecodeString(parts[4])
+	salt, err := phcB64.DecodeString(parts[4])
 	if err != nil {
 		return phc{}, fmt.Errorf("%w: salt: %w", ErrInvalidHash, err)
 	}
-	hash, err := base64.RawStdEncoding.DecodeString(parts[5])
+	hash, err := phcB64.DecodeString(parts[5])
 	if err != nil {
 		return phc{}, fmt.Errorf("%w: hash: %w", ErrInvalidHash, err)
 	}
@@ -177,16 +248,25 @@ func parsePHC(encoded string) (phc, error) {
 		KeyLen:  uint32(len(hash)),  //nolint:gosec // длина ограничена MaxKeyLen выше
 		SaltLen: uint32(len(salt)),  //nolint:gosec // длина ограничена MaxSaltLen выше
 	}
+	// Окно проверяется до argon2.IDKey: иначе t/m из строки задавали бы
+	// стоимость вычисления.
 	if err := p.check(); err != nil {
-		return phc{}, fmt.Errorf("%w: %w", ErrInvalidHash, err)
+		return phc{}, fmt.Errorf("%w: %w", ErrHashParams, err)
 	}
 	return phc{params: p, salt: salt, hash: hash}, nil
 }
 
 func parseField(s, prefix string, bits int) (uint64, error) {
-	v, ok := strings.CutPrefix(s, prefix)
+	digits, ok := strings.CutPrefix(s, prefix)
 	if !ok {
 		return 0, fmt.Errorf("expected %q", prefix)
 	}
-	return strconv.ParseUint(v, 10, bits)
+	v, err := strconv.ParseUint(digits, 10, bits)
+	if err != nil {
+		return 0, err
+	}
+	if strconv.FormatUint(v, 10) != digits {
+		return 0, fmt.Errorf("%q is not a canonical number", digits)
+	}
+	return v, nil
 }

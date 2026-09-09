@@ -50,8 +50,8 @@ import "git.stit.tech/stit-core/golibinfra/tzkit"
 
 ```go
 fx.New(
-	fx.Supply(tzkit.Config{TZ: "Europe/Moscow"}), // обычно — поле app-config
-	tzkit.Module,                                 // provide Zone
+	fx.Provide(tzkit.NewConfig), // читает APP_TZ и валидирует его
+	tzkit.Module,                // provide Zone
 	clockkit.Module,
 	fx.Provide(NewService),
 ).Run()
@@ -76,37 +76,65 @@ func (s *Service) Report(from, to tzkit.Day) ([]Row, error) {
 }
 ```
 
-DTO объявляют день и время суток своими типами — huma сам опишет их в OpenAPI:
+DTO объявляют день и время суток своими типами — huma опишет их строками с
+паттерном:
 
 ```go
 type TaskInput struct {
 	Body struct {
-		DueDate *tzkit.Day      `json:"due_date,omitempty"` // "2026-08-08"
-		DueTime *tzkit.WallTime `json:"due_time,omitempty"` // "17:00"
+		DueDate *tzkit.Day      `json:"due_date,omitempty"` // "2026-08-08" либо поле опущено
+		DueTime *tzkit.WallTime `json:"due_time,omitempty"` // "17:00" либо поле опущено
 	}
 }
 ```
 
-Колонки `DATE`/`TIME` читаются и пишутся без промежуточного `time.Time`:
+Необязательный день — либо `*tzkit.Day` с `omitempty` (поле опускается), либо
+`tzkit.Day` с `omitzero` (Go ≥ 1.24, опускается по `Day.IsZero`). Голое поле
+`tzkit.Day` в ответе уезжает как `null` — схема кита это описывает
+(`nullable: true`), так что типизированный клиент не ломается.
+
+Колонки `DATE`/`TIME` читаются и пишутся без промежуточного `time.Time`: `Day`
+и `WallTime` реализуют интерфейсы pgx (`DateValuer`/`DateScanner`,
+`TimeValuer`/`TimeScanner`), поэтому идут аргументом и в `Scan` напрямую:
 
 ```go
-params.DueDate = task.Due.PgDate()          // Day  → pgtype.Date
+row := db.QueryRow(ctx, `SELECT due_date, due_time FROM tasks WHERE id = $1`, id)
+err := row.Scan(&task.Due, &task.At)                  // DATE → Day, TIME → WallTime
+
+_, err = db.Exec(ctx, `UPDATE tasks SET due_date = $1 WHERE id = $2`, task.Due, id)
+```
+
+Для nullable-колонок и явной конвертации остаются хелперы:
+
+```go
+params.DueDate = task.Due.PgDate()          // Day  → pgtype.Date (нулевой Day → NULL)
 params.DueTime = tzkit.PgTimePtr(task.At)   // *WallTime → pgtype.Time
 task.Due = tzkit.DayFromPg(row.DueDate)     // pgtype.Date → Day
 ```
 
 ## Конфигурация
 
-| Поле | ENV | Дефолт | Смысл |
+| Поле | ENV | Дефолт | Правило `Validate` |
 | --- | --- | --- | --- |
-| `Config.TZ` | `APP_TZ` | `Europe/Moscow` | IANA-зона организации |
+| `Config.TZ` | `APP_TZ` | нет, обязательна | непустое IANA-имя, которое резолвится; `"Local"` запрещена |
 
-`Config` kit не провайдит — его регистрирует caller. `NewZone` возвращает ошибку на пустом имени, на неизвестной зоне и на
-`"Local"`; во fx это отказ старта.
+`NewConfig()` читает окружение и валидирует; ошибка — `ErrConfig` (плюс
+`ErrEmptyZone`/`ErrLocalZone` внутри, их видно через `errors.Is`). `Config` kit
+не провайдит — его регистрирует caller: `fx.Provide(tzkit.NewConfig)` или поле
+App-конфига. `NewZone` возвращает ошибку на пустом имени, на неизвестной зоне и
+на `"Local"`; во fx это отказ старта.
+
+Дефолта у `APP_TZ` нет намеренно: любая зона, подставленная библиотекой, — это
+чужие границы суток без единого сигнала в логе. Переменная задаётся в каждом
+деплое явно.
 
 `"Local"` запрещена намеренно: она резолвится в `TZ` процесса, то есть
 возвращает ту самую зависимость от окружения контейнера, ради устранения
 которой kit и нужен.
+
+Данные зон вшиты в бинарь (`_ "time/tzdata"` внутри кита), поэтому образ без
+пакета `tzdata` — alpine, distroless, scratch — резолвит любую IANA-зону;
+отдельный импорт в `main.go` не нужен.
 
 ## Observability
 
@@ -115,6 +143,16 @@ task.Due = tzkit.DayFromPg(row.DueDate)     // pgtype.Date → Day
 
 ## API
 
+### Пакет
+
+| Идентификатор | Что |
+| --- | --- |
+| `DayLayout` = `"2006-01-02"`, `WallLayout` = `"15:04"` | форматы на проводе |
+| `ErrEmptyZone`, `ErrLocalZone` | пустое имя зоны и запрещённая `"Local"` |
+| `ErrConfig` | невалидный `Config` (из `NewConfig`/`Validate`) |
+| `Config`, `NewConfig()`, `Config.Validate()` | `APP_TZ` |
+| `Module` | fx-модуль: `Zone` из `Config` |
+
 ### `Zone`
 
 | Метод | Что |
@@ -122,10 +160,11 @@ task.Due = tzkit.DayFromPg(row.DueDate)     // pgtype.Date → Day
 | `Load(name) (Zone, error)` / `MustLoad(name)` | резолв IANA-имени |
 | `UTC() Zone` | зона UTC явным значением |
 | `NewZone(Config) (Zone, error)` | fx-фабрика |
-| `Name() string` / `Location() *time.Location` | имя и `*time.Location` |
+| `Name() string` / `String() string` | IANA-имя (нулевая зона — `"UTC"`) |
+| `Location() *time.Location` | `*time.Location` зоны |
 | `In(t) time.Time` | тот же момент в этой зоне |
 | `OffsetAt(t) time.Duration` | смещение от UTC в конкретный момент |
-| `IsZero() bool` | зона не резолвлена (ведёт себя как UTC) |
+| `IsZero() bool` | зона не резолвлена (считает в UTC) |
 
 ### `Day`
 
@@ -133,24 +172,27 @@ task.Due = tzkit.DayFromPg(row.DueDate)     // pgtype.Date → Day
 | --- | --- |
 | `NewDay(y, m, d)` | конструктор, нормализует переполнение как `time.Date` |
 | `DayOf(t, z) Day` | день, на который приходится момент в зоне `z` |
-| `ParseDay(s) (Day, error)` | строгий разбор `"2006-01-02"` |
-| `Start(z)` / `End(z)` | полночь дня и начало следующего — полуинтервал `[Start, End)` |
-| `At(w, z) time.Time` | момент времени суток `w` в этом дне |
+| `ParseDay(s) (Day, error)` / `MustParseDay(s)` | строгий разбор `"2006-01-02"` |
+| `Start(z)` / `End(z)` | первый момент суток и начало следующих — полуинтервал `[Start, End)` |
+| `At(w, z) time.Time` | момент времени суток `w` в этом дне, всегда внутри `[Start, End)` |
 | `AddDays(n)` / `DaysUntil(o)` | календарная арифметика |
 | `Before` / `After` / `Equal` / `Compare` | сравнение |
 | `Weekday()` | день недели (от зоны не зависит) |
+| `Date() (int, time.Month, int)` / `IsZero()` | разбор и признак «не задан» |
 | `String()` / JSON / текст | `"2026-08-08"`; нулевой день — `""` и `null` |
-| `PgDate()` / `DayFromPg(v)` | колонка `DATE` |
+| `Schema(huma.Registry)` | OpenAPI: `string`, `format: date`, паттерн, `nullable` |
+| `PgDate()` / `DayFromPg(v)` / `DateValue()` / `ScanDate(v)` | колонка `DATE` |
 
 ### `WallTime`
 
 | Метод | Что |
 | --- | --- |
-| `NewWallTime(h, m)` / `ParseWallTime(s)` | конструкторы; строгий формат `"15:04"` |
+| `NewWallTime(h, m)` / `ParseWallTime(s)` / `MustParseWallTime(s)` | конструкторы; строгий формат `"15:04"` |
 | `Hour()` / `Minute()` / `Duration()` | разбор |
-| `Valid()` | значение в пределах суток |
-| `String()` / JSON / текст | `"17:00"` |
-| `PgTime()` / `WallTimeFromPg(v)` | колонка `TIME` |
+| `Valid()` | значение в пределах суток `[00:00, 24:00)` |
+| `String()` / JSON / текст | `"17:00"`; значение вне суток — ошибка сериализации |
+| `Schema(huma.Registry)` | OpenAPI: `string` с паттерном `HH:MM` |
+| `PgTime()` / `WallTimeFromPg(v)` / `TimeValue()` / `ScanTime(v)` | колонка `TIME` |
 
 ### Свободные функции
 
@@ -169,11 +211,24 @@ task.Due = tzkit.DayFromPg(row.DueDate)     // pgtype.Date → Day
 
 ```go
 zone := tzkit.MustLoad("Europe/Moscow")
-clock := clockkit.NewFixed(tzkit.NewDay(2026, time.August, 8).At(mustWall("09:00"), zone))
+clock := clockkit.NewFixed(tzkit.NewDay(2026, time.August, 8).At(tzkit.MustParseWallTime("09:00"), zone))
 ```
 
 Фиксировать только `time.Now()`, оставив зону на усмотрение раннера, —
 типичная ошибка: тест зелёный локально и красный в CI, где `TZ=UTC`.
+
+Логику, зависящую от границ суток, проверяйте и в зоне с переводом стрелок в
+полночь (`America/Santiago`, `America/Havana`): там сутки бывают 23- и
+25-часовыми, а полночь — отсутствующей или двойной.
+
+Сам кит держит инварианты границ суток и `At` sweep-тестом по **всем** зонам
+базы (перечень читается из `zoneinfo.zip` тулчейна, при его отсутствии — из
+каталога `zoneinfo` системы), каждому дню 2000–2030 и каждому времени суток с
+шагом 10 минут в сутках перевода стрелок. Зоны, ради которых он существует
+(`America/Nuuk`, `America/Scoresbysund`, `Pacific/Apia`), ни в какую выборку по
+именам не попадают — поэтому выборки и нет. Интероп `Day`/`WallTime` с pgx
+проверяется против настоящего Postgres (`testkit.StartPostgres`), а не только
+вызовом `DateValue`/`ScanDate` напрямую.
 
 ## Инварианты и подводные камни
 
@@ -187,19 +242,51 @@ clock := clockkit.NewFixed(tzkit.NewDay(2026, time.August, 8).At(mustWall("09:00
 - **`AddDays` двигает календарь, а не 24 часа.** В сутки перевода стрелок
   `Start` соседних дней отстоят на 23 или 25 часов, но день — следующий.
   Прибавление `24*time.Hour` в такой зоне ломает еженедельную встречу.
-- **`Start` в зоне, где полночи не существует.** В зонах, переводящих стрелки в
-  00:00, `time.Date` нормализует момент вперёд — это корректная первая точка
-  суток, но она не равна «00:00».
+- **`Start` — первый момент суток, даже если полуночи нет.** В зоне, где стрелки
+  переводят через 00:00 (`America/Santiago`, `America/Havana`, `Atlantic/Azores`),
+  полночь либо не существует, либо случается дважды: `Start` возвращает момент
+  перехода в первом случае и первое вхождение во втором, так что
+  `DayOf(d.Start(z), z) == d` и `End(z)` — ровно первый момент следующих суток.
+  Значение при этом может не читаться как `00:00`. Единственное исключение из
+  этого инварианта — сутки, которых в зоне не было вовсе (следующий пункт).
+- **Суток, которых в зоне не было, не существует и у `Day`.** `Pacific/Apia`
+  и `Pacific/Fakaofo` 30 декабря 2011 перешли через линию перемены дат, пропустив
+  календарный день целиком: у `Day{2011-12-30}` в этой зоне `Start == End`,
+  `Span(d, d, z)` — пустой интервал, `DayOf(d.Start(z), z)` — уже 31-е, а `At`
+  на любом времени суток отдаёт этот же момент. Выборка за такой день пуста —
+  это верный ответ, а не потерянные данные.
+- **`At` в переводе стрелок.** Времени, которого в зоне нет, соответствует
+  момент, сдвинутый вперёд на длину провала (`02:30` в ночь перехода Берлина —
+  это `03:30 +0200`); времени, которое случается дважды, — первое вхождение.
+  Результат всегда лежит в `[Start(z), End(z))`: там, где провал упирается в
+  полночь (`America/Nuuk`, `America/Scoresbysund` каждый март — времени
+  `23:00…23:59` в сутках нет), сдвиг вперёд ушёл бы в следующую дату, поэтому
+  `At` отдаёт последний момент своих суток. `At` паникует на `WallTime` вне
+  суток: такое значение получается только приведением `int`, все конструкторы
+  его отвергают.
+- **Нулевая `Zone` считает в UTC.** Это осознанный zero value, а не фолбэк на
+  окружение: UTC детерминирована и не зависит от `TZ` контейнера, поэтому
+  структура, собранная в тесте без fx, ведёт себя предсказуемо. Зона приложения
+  всегда приходит через `NewZone`, который пустое имя отвергает.
+- **`WallTime` вне суток не сериализуется.** `String()` печатает такое значение
+  как `WallTime(n)`, `MarshalText`/`MarshalJSON`/`TimeValue` возвращают ошибку —
+  «25:00» на проводе не появится.
+- **`TIME` читается с минутной точностью.** Секунды и микросекунды колонки
+  отбрасываются; `TIME '24:00:00'` (Postgres такое допускает) — не время суток:
+  `WallTimeFromPg` отдаёт `ok=false`, `WallTimePtrFromPg` — `nil`, `ScanTime` —
+  ошибку. Полночь у `WallTime` валидна, поэтому от NULL её не отличить —
+  необязательную колонку сканируйте в `**WallTime` или `pgtype.Time`.
 - **`PgDate`/`DayFromPg` читают календарные поля, а не переводят зону.** pgx
   кодирует `DATE` по `Y/M/D` самого `time.Time`; прогон значения через
   `.UTC()` или `.In(loc)` перед записью сдвинет дату. Момент превращается в
-  день только через `DayOf` с явной зоной.
+  день только через `DayOf` с явной зоной. `±infinity` — не календарный день:
+  `DayFromPg` даёт нулевой `Day`, `ScanDate` — ошибку.
 - **Границы периода — полуинтервал.** `Span` отдаёт `[start, end)` с
   включительным `to`; в SQL это `>= start AND < end`. `BETWEEN` по моментам
   захватит лишнюю точку.
 - **tzdata вшита в бинарь** (`_ "time/tzdata"` внутри кита): рантайм-образы
-  сервисов — alpine без пакета tzdata, а `CGO_ENABLED=0` отключает системный
-  резолв зон. Отдельный импорт в `main.go` не нужен.
+  сервисов — alpine/distroless/scratch без пакета tzdata, а `CGO_ENABLED=0`
+  отключает системный резолв зон. Отдельный импорт в `main.go` не нужен.
 - **Зона одна на приложение.** Kit не знает про пользователей: если появится
   персональная зона, она подменяет `Zone` в точке резолва, а вся арифметика
   выше остаётся прежней.

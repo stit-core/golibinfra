@@ -12,7 +12,7 @@
 - **OAuth2** — `https://<subdomain>.amocrm.<tld>/oauth2/access_token`, обмен code и
   refresh токенов.
 - **Drive** — динамический `drive_url` аккаунта (резолвится через `GetDriveURL`),
-  Bearer, чанковая загрузка файлов.
+  Bearer, загрузка файлов частями.
 
 Кит **stateless**: не хранит токены, не ведёт persistence, не общается с
 очередями, не содержит бизнес-логики и не оркестрирует мультиаккаунт. Всё это —
@@ -24,14 +24,16 @@
 
 - REST/Drive — структура `Account{Subdomain, TLD, Token}`.
 - amoJo — структура `AmojoTarget{TLD, AccountKey, Secret}`.
-- OAuth — subdomain/tld/client_id/client_secret/code/refresh передаются отдельными
-  параметрами методов.
+- OAuth — тот же `Account` (без `Token`) плюс `OAuthConfig{ClientID, ClientSecret,
+  RedirectURI}`.
 
 Выбор аккаунта и хранение токенов (token-store) — у потребителя. `Config` несёт
 только то, что одинаково для всех аккаунтов.
 
 `.ru` и `.com` — разные домены и невзаимозаменяемы; TLD выбирает потребитель по
-аккаунту.
+аккаунту. Allowlist доменов — `amocrm.ru` и `amocrm.com`: Kommo (`kommo.com`,
+`amojo.kommo.com`) вне scope кита, такие координаты отвергаются
+`ErrInvalidAccount`.
 
 ### Валидация координат
 
@@ -40,7 +42,24 @@ Subdomain и TLD попадают в host запроса, а с ним уход�
 amoJo), сначала проверяет `Subdomain`/`AccountKey` по `^[a-z0-9-]{1,63}$` и
 `TLD ∈ {ru, com}`; несоответствие → `ErrInvalidAccount` без сетевого вызова.
 Server-provided адреса Drive (`drive_url`, `upload_url`) проверяются на
-абсолютный URL с хостом.
+абсолютный `https`-URL, хост которого лежит на `*.amocrm.<TLD>` аккаунта: они
+приходят из ответов сервера и token-store потребителя, а вместе с запросом
+уезжает Bearer. При `HostOverride` проверка выключена (sandbox/e2e).
+
+### Экранирование сегментов пути
+
+Динамические сегменты (`uid` неразобранного, `uuid` файла, id группы полей,
+`scope_id`/`msgid` amoJo) экранируются `url.PathEscape`: значение с `?`, `#` или
+`/` иначе переписало бы адрес вызова. Имена сущностей в пути (`entity`,
+`entity_type`) не экранируются, а проверяются по allowlist
+(`leads|contacts|companies|customers`, для доп-полей — плюс `catalogs/{id}`);
+отказ — `ErrInvalidRequest`, до сети. amoJo подписывает `u.EscapedPath()` — ровно
+тот путь, который уйдёт на провод.
+
+Экранирование не трогает точки, поэтому собранный путь дополнительно проверяется
+целиком (`checkPath` в `resolveURL`): пустой сегмент, `.` и `..` — тоже
+`ErrInvalidRequest` до сети. Иначе сервер, нормализующий путь, выполнил бы не тот
+вызов, о котором просил потребитель.
 
 ## Компоненты
 
@@ -51,7 +70,9 @@ Server-provided адреса Drive (`drive_url`, `upload_url`) проверяю�
 | `instruments` | `metrics.go` | счётчики/гистограмма OTel через `internal/otelkit` |
 | таксономия ошибок | `errors.go` | sentinel'ы `Err*` + `*APIError` |
 | подпись amoJo | `signing.go` | исходящая 5-компонентная подпись + верификация вебхука |
-| OAuth | `oauth.go` | `ExchangeCode`/`RefreshToken`, `Tokens`, `TokenSource` |
+| OAuth | `oauth.go` | `ExchangeCode`/`RefreshToken`, `OAuthConfig`, `TokenPair` |
+| сериализация refresh | `refresh.go` | `TokenStore` + `RefreshCoordinator` (single-flight на аккаунт) |
+| 429 → пауза | `ratelimit_transport.go` | поднимает `retry_after` из тела 429 в заголовок `Retry-After` и штрафует лимитер аккаунта |
 | amoJo Chat | `amojo.go` | channel lifecycle, chats, messages, react/typing/delivery |
 | REST-домены | `client_*.go` | leads/contacts/companies/customers/catalogs/links/tasks/notes/talks/chat/files/config/account |
 | shared wire-типы | `types.go` | `CustomFieldValue`, `Tag`/`TagRef`, `CreatedEntity`, `ContactRef`/`CompanyRef` |
@@ -71,9 +92,12 @@ Server-provided адреса Drive (`drive_url`, `upload_url`) проверяю�
      повторная попытка httpclient проходит через `accountLimiter.beforeAttempt`;
    - запись метрик `amocrm_api_calls_total` и `amocrm_api_duration_seconds`;
    - при `>= 400` — `classify(status, parseAPIError(resp))`; для 429 дополнительно
-     инкремент `amocrm_rate_limited_total` и `Warn`-лог, для 5xx — `Warn`-лог;
-   - `204` / пустое тело → `out` не трогается, ошибки нет;
-   - иначе декод JSON в `out`.
+     пауза лимитера аккаунта на `retry_after`, инкремент
+     `amocrm_rate_limited_total{result="remote"}` и `Warn`-лог, для 5xx — `Warn`-лог;
+   - `204` / пустое тело → для списка и батча «нет данных» (ошибки нет), для
+     одиночной сущности (`getOne`, OAuth) — `ErrNotFound`;
+   - иначе декод JSON в `out`; тело успешного ответа ограничено 32 MiB
+     (`ErrResponseTooLarge`).
 
 ### Generic-обёртки (`client.go`)
 
@@ -111,43 +135,84 @@ HMAC-SHA1 по нетронутому сырому телу (без trim/re-mars
 `AmojoTarget.AccountKey` должен совпадать с `Account.Subdomain` того же аккаунта:
 rate-budget общий для REST и amoJo (см. ниже).
 
+## Retry-политика
+
+Кит владеет своим `httpclient`, поэтому задаёт политику повторов сам:
+
+- `RetryNonIdempotent` у клиента кита принудительно выключен, а `GetBody`
+  мутирующего POST/PATCH обнуляется — httpclient не повторяет запрос, тело
+  которого нельзя перечитать. Так повтор создания сущности не проходит и через
+  чужой `*httpclient.Client` (`WithHTTPClient`), где конфигурацию кит не
+  контролирует. Серверной идемпотентности у amoCRM нет: `request_id`
+  дедуплицирует только внутри одного батча.
+- Повтор разрешается точечно, через `httpclient.AllowRetry(ctx)`: сейчас это
+  ephemeral-вызовы amoJo (`typing`, `delivery_status`).
+- GET/PUT/DELETE идемпотентны по методу и повторяются политикой httpclient
+  (`408/429/502/503/504`).
+
 ## Rate-limit
 
 Потолок amoCRM — **per-account** (по умолчанию 7 rps на аккаунт), поэтому ключ
-лимитера — аккаунт (`subdomain` / `AccountKey`), не глобальный клиент. Бюджет
-общий для всех outbound-вызовов аккаунта (REST + amoJo + Drive + OAuth).
-`rate.Limiter` создаётся с `burst = rps` (короткий всплеск допустим, дальше
-стабильные rps/сек).
+лимитера — аккаунт (`subdomain` + TLD: `demo.amocrm.ru` и `demo.amocrm.com` —
+разные аккаунты), не глобальный клиент. Бюджет общий для всех outbound-вызовов
+аккаунта (REST + amoJo + Drive + OAuth). `rate.Limiter` создаётся с `burst = rps`
+(короткий всплеск допустим, дальше стабильные rps/сек).
 
 Лимитер стоит перед **каждой** попыткой HTTP: первую ждёт `execute`, повторные —
 хук `httpclient.WithBeforeAttempt` (`accountLimiter.beforeAttempt`, аккаунт берёт
 из `ctx`). Так ретраи httpclient не превышают бюджет аккаунта.
 
 Карта лимитеров не растёт бесконечно: аккаунт, молчавший дольше 15 минут
-(`limiterIdleTTL`), удаляется при очередном обращении к лимитеру (sweep не чаще
-раза в TTL). Удаление ничего не теряет — за это время bucket аккаунта полон.
+(`limiterIdleTTL`) и не находящийся на паузе, удаляется при очередном обращении к
+лимитеру (sweep не чаще раза в TTL). Удаление ничего не теряет — за это время
+bucket аккаунта полон.
+
+### 429 и пауза аккаунта
+
+amoCRM отдаёт задержку полем тела `retry_after`, а не только заголовком.
+Транспорт кита поднимает её в `Retry-After` (backoff httpclient умеет только
+заголовок) и **штрафует лимитер аккаунта**: сам заголовок разбирает общий с
+httpclient парсер `httpclient.ParseRetryAfter` (обе формы RFC 9110 — секунды и
+HTTP-дата), пауза обрезается сутками; до конца паузы ни ретраи текущего
+вызова, ни параллельные вызовы того же аккаунта в сеть не уходят. Это важно,
+потому что по доке amoCRM повторное превышение rps ведёт к 403 (блокировке
+аккаунта), а не к очередному 429.
+
+Ожидание слота ограничено `Config.MaxWait` (очередь + пауза): дольше — вызов
+отклоняется локально с `ErrRateLimited` и инкрементом
+`amocrm_rate_limited_total{result="local"}`, не занимая горутину на всю паузу.
+Решение «повторить позже» остаётся за очередью потребителя.
 
 Оркестрация конкурирующих потребителей бюджета в рамках одного аккаунта — у
 сервиса-потребителя.
 
-## OAuth: TTL по серверному времени
+## OAuth: TTL по серверному времени и одноразовый refresh
 
-`Tokens.ExpiresAt()` считается от `ServerTime` (серверное время amoCRM из ответа) +
-`ExpiresIn`, а не от локальных часов — это устраняет clock-skew между потребителем
-и amoCRM. Превентивный refresh и хранение токенов — у потребителя через интерфейс
-`TokenSource`; кит определяет контракт, сам не хранит и не вызывает.
+`TokenPair.ExpiresAt()` считается от `ServerTime` (серверное время amoCRM из
+ответа) + `ExpiresIn`, а не от локальных часов — это устраняет clock-skew между
+потребителем и amoCRM. Если `server_time` в ответе не пришёл, кит подставляет
+`clock.Now()`: иначе TTL считался бы от 1970 и потребитель рефрешил бы по кругу.
 
 `redirect_uri` обязателен в теле и для `refresh_token`-grant'а (требование wire-
 контракта amoCRM), не только для `authorization_code`.
+
+Refresh-токен amoCRM одноразовый: после обмена старый недействителен. Хранение
+пары остаётся у потребителя (`TokenStore`), но сериализацию refresh на аккаунт
+кит берёт на себя — `RefreshCoordinator` поверх `singleflight`: конкурентные
+вызовы делят один обмен, новая пара сохраняется до возврата вызывающему, а отмена
+ctx одного вызывающего не отменяет общий обмен. Между репликами гонку снимает
+блокировка в `TokenStore` (`SELECT … FOR UPDATE`).
 
 ## Drive: динамический host
 
 Drive ходит на `drive_url` аккаунта, который не выводится из subdomain — его
 отдаёт `GetDriveURL` (GET `/api/v4/account?with=drive_url`). Drive-методы
 принимают `driveURL` параметром и передают его в `restReq.base`, переопределяя
-базовый REST-хост. Загрузка файла — сессионная и чанковая: `CreateUploadSession`
-→ серия `UploadPart` (с заголовком `Content-Range`); последняя часть возвращает
-финальный `File`.
+базовый REST-хост (с проверкой домена, см. § Валидация координат). Загрузка
+файла — сессионная и по частям: `CreateUploadSession` → серия `UploadPart` (с
+заголовком `Content-Range`), где промежуточный ответ несёт `next_url` следующей
+части, а финальный — сам `File`. `UploadFile` проходит эту цепочку из `io.Reader`,
+держа в памяти не больше одной части.
 
 ## HostOverride
 
@@ -159,24 +224,32 @@ scheme и host** всех контуров (REST/amoJo/OAuth/Drive); путь, q
 
 ## Ключевые проектные решения (WHY)
 
-- **Свой httpclient, а не общий из графа.** Хук лимитера на каждую попытку
-  живёт в опциях `httpclient.New`; общий клиент приложения его не имел бы, и
-  ретраи обходили бы бюджет аккаунта. Параметры (таймаут/retry/breaker) —
-  `httpclient.Config` из графа, поэтому ENV `HTTPCLIENT_*` общий с приложением.
+- **Свой httpclient, а не общий из графа.** Хук лимитера и транспорт, который
+  видит 429, живут в опциях `httpclient.New`; общий клиент приложения их не имел
+  бы, и ретраи обходили бы бюджет аккаунта. Параметры (таймаут/retry/breaker) —
+  `httpclient.Config` из графа; отдельная политика для amoCRM собирается через
+  `httpclient.NewConfigPrefixed("AMOCRM")`.
 - **HTTP-коды наружу не протекают.** Потребитель различает исходы через `errors.Is`
   по sentinel'ам — это позволяет принимать решения retry/throttle/dead-
   letter, не завязываясь на конкретные числовые статусы. Структурированная деталь
   (`*APIError`) доступна через `errors.As` для логов/диагностики.
-- **Координаты валидируются, а не экранируются.** Формат subdomain/tld у amoCRM
-  фиксирован; всё вне его — ошибка потребителя, а не повод собирать URL «как
-  получится».
+- **Координаты валидируются, сегменты пути экранируются.** Формат subdomain/tld у
+  amoCRM фиксирован — всё вне его ошибка потребителя; а `uid`/`uuid`/`scope_id`
+  приходят из внешних систем, и их безопасно экранировать, а не отвергать.
+- **Отказ до сети — отдельный класс ошибок.** `ErrInvalidRequest`/
+  `ErrInvalidAccount` перманентны по построению: потребителю не нужно гадать,
+  transient это или нет.
 - **`204` и пустое `200`-тело — не ошибка.** amoCRM (особенно RU-инстанс) отдаёт
   204 на GET без данных и пустое тело на части update/pin — кит трактует это как
   «нет данных», а не сбой.
 - **Полиморфные поля — `map[string]any` / `any`.** Содержимое сообщений amoJo,
   значений custom-полей, тел react/typing строит потребитель по типу — кит передаёт
   как есть, не навязывая схему.
-- **`get`-геттеры есть только у `talks`.** Остальные сущности потребитель читает из
-  локального read-model (зеркала), а не read-through к amoCRM; `talks` —
-  единственная сущность без надёжного webhook, поэтому её гидратируют через
-  `GetTalk`.
+- **Пустой ответ на одиночную сущность — `ErrNotFound`.** Нулевой объект с
+  `err == nil` неотличим от найденного; для списков и батчей пустой ответ
+  по-прежнему «нет данных».
+- **Wire-контракты сверены с докой amoCRM.** Матрица связей асимметрична
+  (`companies→leads` допустима, `contacts→leads` — нет); активация пользователей —
+  batch `POST /api/v4/users/{activate,deactivate}` с телом `[{"id":…}]` и без тела
+  ответа; CRM Plugin живёт на `/api/v4/website_buttons` (создание асинхронное:
+  ответ несёт только `source_id` и `trusted_websites`).

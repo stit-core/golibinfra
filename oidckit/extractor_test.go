@@ -6,27 +6,37 @@ import (
 	"net/http/httptest"
 	"testing"
 	"time"
+
+	"git.stit.tech/stit-core/golibinfra/authnkit"
 )
 
-func TestExtractor(t *testing.T) {
-	jwt := sessionSigner(t)
-	e := NewExtractor(jwt)
-
-	token, err := jwt.Sign(map[string]any{
-		"sub":                "emp-1",
-		"preferred_username": "n.sycheva",
-		"name":               "Наталья Сычева",
-		"email":              "n@x.io",
-		"role":               "admin",
-	}, time.Hour)
+func sessionToken(t *testing.T, claims map[string]any) string {
+	t.Helper()
+	token, err := sessionSigner(t).Sign(t.Context(), claims, time.Hour)
 	if err != nil {
 		t.Fatalf("sign: %v", err)
 	}
+	return token
+}
 
+func requestWithCookie(name, value string) *http.Request {
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: CookieAccess, Value: token})
+	r.AddCookie(&http.Cookie{Name: name, Value: value})
+	return r
+}
 
-	ctx, err := e.Extract(r)
+func TestExtractor(t *testing.T) {
+	e := NewExtractor(sessionSigner(t), devCookies)
+	token := sessionToken(t, map[string]any{
+		"sub":                   "u-1",
+		"preferred_username":    "j.doe",
+		"name":                  "Jane Doe",
+		"email":                 "j.doe@example.test",
+		"role":                  "admin",
+		authnkit.ClaimTokenType: SessionTokenType,
+	})
+
+	ctx, err := e.Extract(requestWithCookie(CookieAccess, token))
 	if err != nil {
 		t.Fatalf("Extract: %v", err)
 	}
@@ -34,25 +44,59 @@ func TestExtractor(t *testing.T) {
 	if !ok {
 		t.Fatal("identity не в ctx")
 	}
-	want := Identity{Subject: "emp-1", Username: "n.sycheva", Name: "Наталья Сычева", Email: "n@x.io", Role: "admin"}
+	want := Identity{Subject: "u-1", Username: "j.doe", Name: "Jane Doe", Email: "j.doe@example.test", Role: "admin"}
 	if id != want {
 		t.Fatalf("identity=%+v, ожидали %+v", id, want)
 	}
 }
 
+// Token confusion: под тем же JWT_SECRET живут токены других схем — сессией
+// считается только токен с typ=oidc_session и непустым sub.
+func TestExtractor_RejectsForeignTokens(t *testing.T) {
+	signer := sessionSigner(t)
+	e := NewExtractor(signer, devCookies)
+
+	access, err := signer.SignAccess(t.Context(), map[string]any{"sub": "u-1"})
+	if err != nil {
+		t.Fatalf("SignAccess: %v", err)
+	}
+	refresh, err := signer.SignRefresh(t.Context(), map[string]any{"sub": "u-1"})
+	if err != nil {
+		t.Fatalf("SignRefresh: %v", err)
+	}
+
+	cases := map[string]string{
+		"access-токен парольной схемы":  access,
+		"refresh-токен парольной схемы": refresh,
+		"токен без typ":                 sessionToken(t, map[string]any{"sub": "u-1"}),
+		"сессия без sub":                sessionToken(t, map[string]any{authnkit.ClaimTokenType: SessionTokenType}),
+	}
+	for name, token := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := e.Extract(requestWithCookie(CookieAccess, token)); !errors.Is(err, ErrInvalidSession) {
+				t.Fatalf("ожидали ErrInvalidSession, получили %v", err)
+			}
+		})
+	}
+}
+
 func TestExtractor_NoCookie(t *testing.T) {
-	e := NewExtractor(sessionSigner(t))
+	e := NewExtractor(sessionSigner(t), devCookies)
+
 	r := httptest.NewRequest(http.MethodGet, "/x", nil)
 	if _, err := e.Extract(r); !errors.Is(err, ErrNoSessionCookie) {
+		t.Fatalf("ожидали ErrNoSessionCookie, получили %v", err)
+	}
+	// Cookie под именем чужой политики (без __Host-) не считается сессией.
+	secure := NewExtractor(sessionSigner(t), CookieConfig{})
+	if _, err := secure.Extract(requestWithCookie(CookieAccess, "x")); !errors.Is(err, ErrNoSessionCookie) {
 		t.Fatalf("ожидали ErrNoSessionCookie, получили %v", err)
 	}
 }
 
 func TestExtractor_BadToken(t *testing.T) {
-	e := NewExtractor(sessionSigner(t))
-	r := httptest.NewRequest(http.MethodGet, "/x", nil)
-	r.AddCookie(&http.Cookie{Name: CookieAccess, Value: "garbage"})
-	if _, err := e.Extract(r); err == nil {
+	e := NewExtractor(sessionSigner(t), devCookies)
+	if _, err := e.Extract(requestWithCookie(CookieAccess, "garbage")); err == nil {
 		t.Fatal("мусорный токен прошёл")
 	}
 }
@@ -68,14 +112,11 @@ func TestIdentityCtx(t *testing.T) {
 	}
 }
 
-func TestSessionCookie_SecureFromConfig(t *testing.T) {
-	c := SessionCookie("tok", CookieConfig{Secure: true})
-	if !c.Secure || !c.HttpOnly || c.SameSite != http.SameSiteStrictMode || c.Name != CookieAccess {
-		t.Fatalf("cookie ослаблена: %+v", c)
-	}
-	for _, exp := range ExpiredSessionCookies(CookieConfig{Secure: true}) {
-		if !exp.Secure || exp.MaxAge != -1 {
-			t.Fatalf("expired cookie: %+v", exp)
+func TestMustIdentityFrom_PanicsWithoutIdentity(t *testing.T) {
+	defer func() {
+		if recover() == nil {
+			t.Fatal("MustIdentityFrom без identity не паникует")
 		}
-	}
+	}()
+	MustIdentityFrom(t.Context())
 }

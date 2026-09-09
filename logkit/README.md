@@ -1,32 +1,35 @@
 # logkit
 
-Структурный `Logger` поверх `log/slog`: JSON-записи в stdout (`LOG_STDOUT`) или
-в произвольный `io.Writer`, опциональный второй sink в OTel `LoggerProvider`
-(OTLP), PII-redact на уровне атрибутов, `trace_id`/`span_id` из `ctx`,
-`RegisterAttr` и метрика `log_messages_total{level}`.
+Структурный `Logger` поверх `log/slog`: JSON или text в локальный sink
+(stdout либо произвольный `io.Writer`), опциональный второй sink в OTel
+`LoggerProvider` (OTLP), PII-redact на уровне атрибутов, `trace_id`/`span_id`
+из `ctx`, `RegisterAttr` и метрика `log_messages_total{level}`.
 
 ## Назначение
 
 `logkit` — единая точка логирования сервисов stit. Одна цепочка handler'ов,
 один формат записи, две точки выхода:
 
-- **JSON в stdout** — то, что собирает `docker logs` / файловый сборщик. При
-  `LOG_STDOUT=false` JSON-sink отбрасывает записи (`io.Discard`); произвольный
-  writer — через `NewWithWriter`.
+- **Локальный sink** — то, что собирает `docker logs` / файловый сборщик:
+  JSON (`LOG_FORMAT=json`) или human-readable text (`LOG_FORMAT=text`, для
+  локальной разработки). При `LOG_SILENT=true` записи отбрасываются
+  (`io.Discard`); произвольный writer — опция `WithWriter`.
 - **OTel Logs (OTLP)** — второй sink, включается опцией `WithOTel` или
   автоматически через fx, если в графе есть `log.LoggerProvider`
   (его отдаёт `telemetry.Module`). Уровень, `msg`, атрибуты и группы маппятся в
   `log.Record`; `trace_id`/`span_id` SDK берёт из `ctx` и кладёт в поля записи.
-- **trace-correlation** — при валидном span context в `ctx` JSON-запись
-  получает `trace_id`/`span_id`.
+- **trace-correlation** — при валидном span context в `ctx` запись локального
+  sink'а получает `trace_id`/`span_id`.
 - **`RegisterAttr`** — глобально регистрируемые поля из `ctx` (так `httpkit`
-  пробрасывает `request_id`); попадают в оба sink'а.
+  пробрасывает `request_id`); попадают в оба sink'а. Регистрация ключевая:
+  повторный вызов с тем же ключом заменяет экстрактор, а не добавляет второй.
 - **PII-redact** — `WithRedact` + `RedactConfig`: regex-маски применяются к
   `msg` и строковым значениям атрибутов, включая `With()`-attrs, группы,
   `error` и JSON-представление `Any`-значений; числа, `bool`, `time`, `duration`
   не трогаются. Работает до fan-out — маскируются оба sink'а.
-- **Fail-fast** — невалидный `LOG_LEVEL` или regex в `LOG_REDACT_PATTERNS`
-  даёт ошибку конструктора (в fx — отказ сборки графа).
+- **Fail-fast** — невалидный `LOG_LEVEL`/`LOG_FORMAT`, regex в
+  `LOG_REDACT_PATTERNS` или `LOG_REDACT_REPLACE_WITH` дают ошибку конструктора
+  (в fx — отказ сборки графа).
 
 В production логировать только через `logkit.Logger` (или `*slog.Logger` из
 той же цепочки — `NewSlog`). `fmt.Print*` и `slog.Default()` в прод-коде
@@ -52,29 +55,52 @@ import "git.stit.tech/stit-core/golibinfra/logkit"
 
 ```go
 fx.New(
+	fx.Provide(telemetry.NewConfig),     // нужен telemetry.Module (OTEL_*)
 	fx.Provide(logkit.NewConfig),        // Config из ENV (LOG_*)
 	fx.Provide(logkit.NewRedactConfig),  // опционально: RedactConfig из ENV
 	telemetry.Module,                    // опционально: даёт log.LoggerProvider → OTLP-sink
 	logkit.Module,                       // → logkit.Logger, *slog.Logger
-	fx.Invoke(func(log logkit.Logger) {
-		log.Info(ctx, "service started")
+	fx.Invoke(func(lc fx.Lifecycle, log logkit.Logger) {
+		lc.Append(fx.Hook{
+			OnStart: func(ctx context.Context) error {
+				log.Info(ctx, "service started")
+				return nil
+			},
+		})
 	}),
 )
 ```
 
+`telemetry.Module` требует в графе `telemetry.Config` и `logkit.Config` —
+без первого сборка графа падает. Граф без `telemetry.Module` собирается и
+работает: OTLP-sink не подключается, локальный sink пишет как обычно.
+
 ### Без fx
 
-Конструкторы принимают опции; все возвращают ошибку конфигурации:
+```go
+cfg, err := logkit.NewConfig() // или logkit.Config{Level: "debug"}
+log, err := logkit.New(cfg)    // Logger в stdout
+sl, err := logkit.NewSlog(cfg) // *slog.Logger той же цепочки
+```
+
+Опции `New`/`NewSlog` комбинируются в одном вызове:
 
 ```go
-log, err := logkit.New(cfg)                                   // stdout по cfg.Stdout
-log, err := logkit.NewWithWriter(cfg, os.Stdout)              // явный writer
-log, err := logkit.NewWithWriter(cfg, w,
-	logkit.WithRedact(redactCfg),                             // PII-маски
-	logkit.WithOTel(loggerProvider),                          // второй sink
-	logkit.WithService(svcCfg),                               // service/env/version в каждой записи
+log, err := logkit.New(cfg,
+	logkit.WithWriter(w),            // writer вместо stdout
+	logkit.WithRedact(redactCfg),    // PII-маски
+	logkit.WithOTel(loggerProvider), // второй sink; WithoutOTel() отменяет заданный ранее
+	logkit.WithService(svcCfg),      // service/env/version в каждой записи
 )
 ```
+
+```go
+log := logkit.FromSlog(sl) // одна цепочка для обеих форм
+```
+
+`FromSlog` нужен там, где `*slog.Logger` уже построен (или пришёл из графа):
+обе формы делят цепочку handler'ов и один счётчик записей. `FromSlog(nil)`
+даёт `Nop()`.
 
 ### Логирование с ctx и trace_id
 
@@ -87,26 +113,38 @@ func (h *Handler) Do(ctx context.Context, log logkit.Logger) {
 
 Сигнатуры — `Debug/Info/Warn/Error(ctx, msg string, kv ...any)`; `kv` — пары
 ключ-значение в стиле slog. `With(kv ...any)` возвращает `Logger` с
-прикреплёнными полями.
+прикреплёнными полями. `Enabled(ctx, level)` позволяет пропустить дорогую
+подготовку атрибутов:
+
+```go
+if log.Enabled(ctx, slog.LevelDebug) {
+	log.Debug(ctx, "payload", "body", expensiveDump(req))
+}
+```
 
 ### RegisterAttr — проброс полей из ctx
 
-`RegisterAttr` регистрирует функцию, которую kit зовёт на **каждой** записи;
-при `ok == true` поле добавляется в record (в оба sink'а):
+`RegisterAttr` регистрирует под ключом функцию, которую kit зовёт на **каждой**
+записи; при `ok == true` поле добавляется в record (в оба sink'а, всегда на
+верхнем уровне записи):
 
 ```go
-logkit.RegisterAttr(func(ctx context.Context) (string, any, bool) {
+logkit.RegisterAttr("request_id", func(ctx context.Context) (slog.Value, bool) {
 	if rid, ok := ctx.Value(requestIDKey{}).(string); ok {
-		return "request_id", rid, true
+		return slog.StringValue(rid), true
 	}
-	return "", nil, false
+	return slog.Value{}, false
 })
 ```
+
+Пустой ключ или `nil`-функция — паника на старте. Повторная регистрация того же
+ключа заменяет предыдущую, поэтому граф, собираемый дважды (`fx.New` в тестах и
+в `main`), не даёт дублей поля.
 
 ### Redact
 
 ```go
-log, err := logkit.NewWithWriter(cfg, os.Stdout, logkit.WithRedact(logkit.RedactConfig{Enabled: true}))
+log, err := logkit.New(cfg, logkit.WithRedact(logkit.RedactConfig{Enabled: true}))
 log.With("owner", "owner@example.com").Info(ctx, "login john@example.com", "phone", "+79161234567", "elapsed", 1500*time.Millisecond)
 // → "msg":"login [REDACTED]", "owner":"[REDACTED]", "phone":"[REDACTED]", "elapsed":1500000000
 ```
@@ -118,24 +156,54 @@ log.With("owner", "owner@example.com").Info(ctx, "login john@example.com", "phon
 
 ### `Config`
 
+Zero-value валиден: `info`, JSON, stdout, без `source`.
+
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `LOG_LEVEL` | `Level` | `string` | `info` | Минимальный уровень (`debug`/`info`/`warn`/`error`, регистр не важен; пустая строка = `info`). Невалидное значение → ошибка `NewConfig`/конструктора (`ErrConfig`). |
-| `LOG_STDOUT` | `Stdout` | `bool` | `true` | Писать JSON в stdout. `false` — JSON-sink отбрасывает записи (OTel-sink, если подключён, работает). Default действует через `envconfig`; в struct-литерале zero-value `false` — задавайте поле явно. |
+| `LOG_LEVEL` | `Level` | `string` | `info` | Минимальный уровень (`debug`/`info`/`warn`/`error`, регистр не важен; пустая строка = `info`). Невалидное значение → `ErrConfig`. |
+| `LOG_FORMAT` | `Format` | `string` | `json` | `json` — прод и сборщики логов; `text` — локальная разработка. Другое значение → `ErrConfig`. |
+| `LOG_SOURCE` | `Source` | `bool` | `false` | Добавляет `source` (файл/строка/функция вызывающего) в каждую запись. |
+| `LOG_SILENT` | `Silent` | `bool` | `false` | `true` — локальный sink отбрасывает записи (OTel-sink, если подключён, работает). `WithWriter` приоритетнее: явный writer пишет и при `LOG_SILENT=true`. |
+
+Поле `time` — RFC3339 с наносекундами и offset локальной зоны процесса
+(`2026-05-14T10:30:00.123456789+03:00`); для UTC-времени запускайте процесс с
+`TZ=UTC`.
 
 ### `RedactConfig`
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `LOG_REDACT_ENABLED` | `Enabled` | `bool` | `false` | Включает redact-слой. |
-| `LOG_REDACT_PATTERNS` | `Patterns` | `Patterns` (`[]string`) | *(пусто → дефолтные)* | Regex-фильтры; в ENV разделитель `;` (запятая встречается в квантификаторах `{10,15}`). Невалидный regex → ошибка конструктора (`ErrConfig`). |
-| `LOG_REDACT_REPLACE_WITH` | `ReplaceWith` | `string` | `[REDACTED]` | Строка-замена. |
+| `LOG_REDACT_PATTERNS` | `Patterns` | `Patterns` (`[]string`) | *(пусто → дефолтные)* | Regex-фильтры; в ENV разделитель `;` (запятая встречается в квантификаторах `{10,15}`), литеральная `;` внутри паттерна пишется как `\;`. Невалидный regex → `ErrConfig`. Паттерн, совпадающий с пустой строкой (`a*`, `x?`, пустой элемент), тоже → `ErrConfig`: он вставляет замену между каждой парой символов записи. |
+| `LOG_REDACT_REPLACE_WITH` | `ReplaceWith` | `string` | `[REDACTED]` | Строка-замена, подставляется литерально (`$1` не раскрывается). `"`, `\` и control-символы отвергаются (`ErrConfig`): они ломают JSON-представление структурных значений. |
 
-Дефолтные паттерны (при пустом `Patterns`) — эвристики компактных форм:
-email; телефон — E.164 с `+` (10–15 цифр) либо RU-номер `7`/`8` + 10 цифр;
-карта — 4×4 цифры с опциональным разделителем. Десятизначные идентификаторы
-без `+`/ведущей `7`/`8` не маскируются. Свой набор задаётся целиком — дефолтные
-при этом не применяются.
+Дефолтный набор (применяется, когда `Patterns` пуст) — эвристики компактных
+форм PII и очевидных секретов:
+
+| Что | Паттерн |
+|---|---|
+| email | `[A-Za-z0-9._%+\-]+@[A-Za-z0-9.\-]+\.[A-Za-z]{2,}` |
+| телефон | `\+\d{10,15}\b\|\b[78]\d{10}\b` |
+| карта | `\b\d{4}[-\s]?\d{4}[-\s]?\d{4}[-\s]?\d{4}\b` |
+| `Authorization: Bearer` | `(?i)\bbearer\s+[A-Za-z0-9\-._~+/]+=*` |
+| `Authorization: Basic` | `(?i)\bbasic\s+[A-Za-z0-9+/]{8,}={0,2}` |
+| JWT | `\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+` |
+| Anthropic API key | `\bsk-ant-[A-Za-z0-9_-]{16,}` |
+| generic API key | `\bsk-[A-Za-z0-9]{20,}\b` |
+
+Десятизначные идентификаторы без `+`/ведущей `7`/`8`, UUID, hex-хэши и короткие
+base64-строки не маскируются. Свой набор задаётся целиком — дефолтные при этом
+не применяются.
+
+Дефолтный набор проходит литеральный pre-filter: строка без `@`, `+`, `bearer`,
+`basic`, `eyJ`, `sk-` и без цепочки от 11 цифр до regexp'а не доходит. Это и
+держит цену: прогонка объединённого regexp'а стоит O(длина × размер программы),
+а запись без маркеров секрета обходится сканом по байтам — порядок ×1.6 к той
+же записи без redact'а (потолок держит `TestRedact_CostOfRecordWithoutSecrets`).
+Свой набор pre-filter не проходит: его regexp прогоняется по каждой строке и по
+JSON-байтам структурных значений, поэтому даже одна узкая маска на записи со
+структурой стоит дороже отфильтрованного дефолтного набора
+(`BenchmarkLoggerInfoRedactStruct` против `…NarrowSet`).
 
 ### `ServiceConfig` (`WithService`)
 
@@ -151,16 +219,23 @@ OTel-resource (файловый сборщик). `Module` эту опцию не
 
 ## Observability
 
-- **`log_messages_total`** (counter, label `level`) — через
-  `otel.Meter("git.stit.tech/stit-core/golibinfra/logkit")`, инкремент на каждом
-  `Debug`/`Info`/`Warn`/`Error` (включая отфильтрованные по уровню). Без
-  `MeterProvider` — no-op.
+- **`log_messages_total`** (counter, label `level` ∈ `debug`/`info`/`warn`/`error`)
+  — через `otel.Meter("git.stit.tech/stit-core/golibinfra/logkit")`. Считает
+  **эмитированные записи**: инкремент стоит в handler'е, после проверки уровня,
+  поэтому отфильтрованные вызовы (`Debug` при `LOG_LEVEL=info`) не считаются и
+  не аллоцируют. Записи через `*slog.Logger` из той же цепочки учитываются
+  наравне с `logkit.Logger`. Без `MeterProvider` — no-op.
 - **OTel-sink** — `log.Record` с `Timestamp`, `Severity` (Debug 5 / Info 9 /
   Warn 13 / Error 17), `SeverityText`, `Body = msg`, атрибутами (группы —
-  вложенные map-значения; `duration` — int64 ns; `time` — RFC3339Nano; `error`
-  — строка; прочие `Any` — JSON-строка) и trace/span id из `ctx`.
-  Instrumentation scope — `git.stit.tech/stit-core/golibinfra/logkit`. Уровень
-  фильтрации тот же `LOG_LEVEL`.
+  вложенные map-значения; группа с пустым ключом инлайнится на текущий уровень;
+  `duration` — int64 ns; `time` — RFC3339Nano; `error` — строка; `[]byte` —
+  bytes; прочие `Any` — JSON-строка) и trace/span id из `ctx`.
+  Instrumentation scope — `git.stit.tech/stit-core/golibinfra/logkit`,
+  `otel_scope_version` — версия golibinfra в сборке (как у метрик и спанов
+  остальных китов). Уровень фильтрации тот же `LOG_LEVEL`.
+- **Порядок ключей внутри группы** в OTel-sink'е — алфавитный: так их
+  укладывает `attribute.MapValue`. Локальный JSON-sink сохраняет порядок вызова;
+  атрибуты верхнего уровня порядок сохраняют в обоих sink'ах.
 - Спаны kit не эмитит.
 
 ## API
@@ -172,44 +247,45 @@ type Logger interface {
 	Warn(ctx context.Context, msg string, kv ...any)
 	Error(ctx context.Context, msg string, kv ...any)
 	With(kv ...any) Logger
+	Enabled(ctx context.Context, level slog.Level) bool
 }
 
-func New(cfg Config, opts ...Option) (Logger, error)                        // stdout при cfg.Stdout, иначе io.Discard
+func New(cfg Config, opts ...Option) (Logger, error)
 func NewSlog(cfg Config, opts ...Option) (*slog.Logger, error)
-func NewWithWriter(cfg Config, w io.Writer, opts ...Option) (Logger, error)  // без gating по cfg.Stdout
-func NewSlogWithWriter(cfg Config, w io.Writer, opts ...Option) (*slog.Logger, error)
+func FromSlog(l *slog.Logger) Logger            // nil → Nop()
 func Nop() Logger
 
+func WithWriter(w io.Writer) Option             // приоритетнее Config.Silent
 func WithRedact(cfg RedactConfig) Option
-func WithOTel(lp log.LoggerProvider) Option
+func WithOTel(lp log.LoggerProvider) Option     // nil → sink не добавляется
+func WithoutOTel() Option
 func WithService(cfg ServiceConfig) Option
 
-func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) // обёртка над любым slog.Handler
-func NewOTelHandler(lp log.LoggerProvider, level slog.Leveler) slog.Handler       // мост slog → OTel Logs
+func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) // обёртка над любым slog.Handler; nil inner → ошибка
+func NewOTelHandler(lp log.LoggerProvider, level slog.Leveler) slog.Handler       // мост slog → OTel Logs; nil-аргументы → no-op sink и info
 
-type Attr func(ctx context.Context) (key string, value any, ok bool)
-func RegisterAttr(fn Attr)
+type Attr func(ctx context.Context) (slog.Value, bool)
+func RegisterAttr(key string, fn Attr)          // дедупликация по ключу
 
-func NewConfig() (Config, error)               // envconfig + Validate
-func NewRedactConfig() (RedactConfig, error)
+func NewConfig() (Config, error)                // envconfig + Validate
+func NewRedactConfig() (RedactConfig, error)    // envconfig + Validate
 func NewServiceConfig() (ServiceConfig, error)
 func (c Config) Validate() error
+func (c RedactConfig) Validate() error
 
-var ErrConfig error                            // невалидный уровень или regex
-var Module fx.Option                           // provides *slog.Logger, Logger; optional: RedactConfig, log.LoggerProvider
+var ErrConfig error                             // невалидный уровень, формат, regex или строка-замена
+var Module fx.Option                            // provides *slog.Logger, Logger; optional: RedactConfig, log.LoggerProvider
 ```
 
-Цепочка handler'ов: redact → `RegisterAttr`-атрибуты → fan-out (JSON с
-`trace_id`/`span_id`; OTel). `NewSlog` отдаёт `*slog.Logger` с той же цепочкой
-— для сторонних библиотек, принимающих `*slog.Logger`.
+Цепочка handler'ов: redact → метрика → `RegisterAttr`-атрибуты → fan-out
+(локальный sink с `trace_id`/`span_id`; OTel). `NewSlog` отдаёт `*slog.Logger`
+с той же цепочкой — для сторонних библиотек, принимающих `*slog.Logger`.
 
 ## Тестирование
 
-Writer-конструкторы и разбор JSON:
-
 ```go
 var buf bytes.Buffer
-log, _ := logkit.NewWithWriter(logkit.Config{Level: "debug"}, &buf)
+log, _ := logkit.New(logkit.Config{Level: "debug"}, logkit.WithWriter(&buf))
 log.Info(ctx, "hello", "k", "v")
 
 var m map[string]any
@@ -218,20 +294,38 @@ _ = json.Unmarshal(buf.Bytes(), &m) // m["msg"], m["level"], m["time"], m["k"], 
 
 OTel-sink проверяется через `sdklog.NewLoggerProvider` с `SimpleProcessor` и
 своим in-memory `sdklog.Exporter` (см. `otel_test.go`). `Nop()` — заглушка,
-не паникует и ничего не пишет.
+не паникует, ничего не пишет и на `Enabled` отвечает `false`.
+
+Сниппеты § Быстрый старт закреплены тестами `readme_test.go`: fx-граф — через
+`fx.ValidateApp`, вариант без fx — компиляцией и прогоном.
 
 ## Инварианты и подводные камни
 
 - **В production только `logkit.Logger`.** `fmt.Print*` и `slog.Default()`
   обходят trace-correlation, redact, метрику и единый формат.
+- **ctx-атрибуты всегда на верхнем уровне записи.** `trace_id`/`span_id`/
+  `RegisterAttr`-поля не уезжают внутрь `WithGroup`-группы: под открытыми
+  группами kit добавляет их к корню и реплеит цепочку `With*`. Реплей стоит
+  аллокаций только при открытых группах.
+- **`RegisterAttr`-значения и `trace_id`/`span_id` идут мимо redact:** они
+  добавляются после redact-слоя. Экстрактор, отдающий PII (например `user_id`
+  = email-subject), маскировать нужно на своей стороне.
 - **Redact выключен по умолчанию** и применяется до fan-out: маскируются оба
   sink'а. Маска работает по строкам — `msg`, строковые атрибуты (в т.ч. из
-  `With()` и групп), текст `error`, JSON-представление структур. Числа не
-  трогаются, поэтому unix-ms и наносекундные длительности остаются числами.
-  Дефолтные паттерны — эвристики; подбирайте свои под данные сервиса.
-- **`LOG_STDOUT=false` без OTel-sink'а = записи никуда не идут.**
+  `With()` и групп), текст `error`, JSON-представление структур (`Any`),
+  содержимое `[]byte`. Числа не трогаются, поэтому unix-ms и наносекундные
+  длительности остаются числами. Паттерн, «съедающий» кавычку, сделал бы JSON
+  невалидным — такое значение уходит в лог замаскированной строкой, а не
+  теряется. Дефолтные паттерны — эвристики, и только они проходят pre-filter;
+  свой набор — это прогонка regexp по каждой строке и по JSON-байтам
+  структурных значений, что при высоком log-rate заметно.
+- **`LOG_SILENT=true` без OTel-sink'а = записи никуда не идут.**
+- **`telemetry.Module` требует `telemetry.Config` в графе.** Он же поднимает
+  OTLP-sink, который `logkit.Module` подхватывает опциональной зависимостью:
+  без `telemetry.Module` логи идут только в локальный sink.
 - **Ошибка конфигурации — при конструировании**, не на первой записи:
-  невалидный `LOG_LEVEL`/regex валит старт.
-- **`RegisterAttr` глобален и аддитивен.** Регистрация складывается; зовите
-  при старте.
-- **`log_messages_total` считает вызовы**, включая отфильтрованные по уровню.
+  невалидный `LOG_LEVEL`/`LOG_FORMAT`/regex/`ReplaceWith` валит старт.
+- **`RegisterAttr` глобален.** Регистрация по ключу идемпотентна (последняя
+  побеждает); зовите при старте.
+- **`log_messages_total` считает эмитированные записи** обеих форм логгера;
+  отфильтрованные по уровню вызовы в метрику не попадают.

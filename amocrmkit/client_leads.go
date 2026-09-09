@@ -6,21 +6,18 @@ import (
 	"net/http"
 )
 
-// leads + unsorted. GET /leads/{id} не покрыт: одиночное чтение сущностей —
-// из локального read-model потребителя, не read-through к амо.
-
 // Lead — объект сделки (GET-ответ).
 type Lead struct {
-	ID                 int                `json:"id"`
+	ID                 int64              `json:"id"`
 	Name               string             `json:"name"`
 	Price              int                `json:"price"`
-	ResponsibleUserID  int                `json:"responsible_user_id"`
-	GroupID            int                `json:"group_id"`
-	StatusID           int                `json:"status_id"`
-	PipelineID         int                `json:"pipeline_id"`
-	LossReasonID       *int               `json:"loss_reason_id"`
-	CreatedBy          int                `json:"created_by"`
-	UpdatedBy          int                `json:"updated_by"`
+	ResponsibleUserID  int64              `json:"responsible_user_id"`
+	GroupID            int64              `json:"group_id"`
+	StatusID           int64              `json:"status_id"`
+	PipelineID         int64              `json:"pipeline_id"`
+	LossReasonID       *int64             `json:"loss_reason_id"`
+	CreatedBy          int64              `json:"created_by"`
+	UpdatedBy          int64              `json:"updated_by"`
 	CreatedAt          int64              `json:"created_at"`
 	UpdatedAt          int64              `json:"updated_at"`
 	ClosedAt           *int64             `json:"closed_at"`
@@ -28,7 +25,7 @@ type Lead struct {
 	IsDeleted          bool               `json:"is_deleted"`
 	LaborCost          *int               `json:"labor_cost"`
 	Score              *int               `json:"score"`
-	AccountID          int                `json:"account_id"`
+	AccountID          int64              `json:"account_id"`
 	CustomFieldsValues []CustomFieldValue `json:"custom_fields_values"`
 	Embedded           *LeadEmbedded      `json:"_embedded,omitempty"`
 }
@@ -42,15 +39,15 @@ type LeadEmbedded struct {
 
 // LeadInput — тело POST/PATCH /leads (writable-поля + теги инкрементально).
 type LeadInput struct {
-	ID                 int                `json:"id,omitempty"` // обязателен при PATCH batch
+	ID                 int64              `json:"id,omitempty"` // обязателен при PATCH batch
 	Name               string             `json:"name,omitempty"`
 	Price              *int               `json:"price,omitempty"`
-	StatusID           int                `json:"status_id,omitempty"`
-	PipelineID         int                `json:"pipeline_id,omitempty"`
-	ResponsibleUserID  int                `json:"responsible_user_id,omitempty"`
-	LossReasonID       int                `json:"loss_reason_id,omitempty"`
-	CreatedBy          *int               `json:"created_by,omitempty"`
-	UpdatedBy          *int               `json:"updated_by,omitempty"`
+	StatusID           int64              `json:"status_id,omitempty"`
+	PipelineID         int64              `json:"pipeline_id,omitempty"`
+	ResponsibleUserID  int64              `json:"responsible_user_id,omitempty"`
+	LossReasonID       int64              `json:"loss_reason_id,omitempty"`
+	CreatedBy          *int64             `json:"created_by,omitempty"`
+	UpdatedBy          *int64             `json:"updated_by,omitempty"`
 	CreatedAt          int64              `json:"created_at,omitempty"`
 	UpdatedAt          int64              `json:"updated_at,omitempty"`
 	ClosedAt           int64              `json:"closed_at,omitempty"`
@@ -58,6 +55,12 @@ type LeadInput struct {
 	TagsToAdd          []TagRef           `json:"tags_to_add,omitempty"`
 	TagsToDelete       []TagRef           `json:"tags_to_delete,omitempty"`
 	RequestID          string             `json:"request_id,omitempty"`
+}
+
+// GetLead — GET /api/v4/leads/{id} (with: contacts, companies, catalog_elements, …).
+// Пустой ответ — ErrNotFound.
+func (c *Client) GetLead(ctx context.Context, acc Account, id int64, with ...string) (Lead, error) {
+	return getOne[Lead](ctx, c, acc, "leads.get", fmt.Sprintf("/api/v4/leads/%d", id), withValues(with))
 }
 
 // ListLeads — GET /api/v4/leads.
@@ -80,9 +83,9 @@ func (c *Client) UpdateLeads(ctx context.Context, acc Account, in []LeadInput) (
 type LeadComplexInput struct {
 	Name               string               `json:"name,omitempty"`
 	Price              *int                 `json:"price,omitempty"`
-	StatusID           int                  `json:"status_id,omitempty"`
-	PipelineID         int                  `json:"pipeline_id,omitempty"`
-	ResponsibleUserID  int                  `json:"responsible_user_id,omitempty"`
+	StatusID           int64                `json:"status_id,omitempty"`
+	PipelineID         int64                `json:"pipeline_id,omitempty"`
+	ResponsibleUserID  int64                `json:"responsible_user_id,omitempty"`
 	CustomFieldsValues []CustomFieldValue   `json:"custom_fields_values,omitempty"`
 	TagsToAdd          []TagRef             `json:"tags_to_add,omitempty"`
 	RequestID          string               `json:"request_id,omitempty"`
@@ -113,9 +116,9 @@ type ComplexCompany struct {
 // ComplexResult — элемент ответа /complex. contact_id/company_id = null, если не создавались;
 // request_id — массив (несколько при нескольких дублях одной сделки); merged=true — склейка с дублем.
 type ComplexResult struct {
-	ID        int      `json:"id"`
-	ContactID *int     `json:"contact_id"`
-	CompanyID *int     `json:"company_id"`
+	ID        int64    `json:"id"`
+	ContactID *int64   `json:"contact_id"`
+	CompanyID *int64   `json:"company_id"`
 	RequestID []string `json:"request_id"`
 	Merged    bool     `json:"merged"`
 }
@@ -133,16 +136,16 @@ type Unsorted struct {
 	SourceUID  string `json:"source_uid"`
 	SourceName string `json:"source_name"`
 	Category   string `json:"category"`
-	PipelineID int    `json:"pipeline_id"`
+	PipelineID int64  `json:"pipeline_id"`
 	CreatedAt  int64  `json:"created_at"`
-	AccountID  int    `json:"account_id"`
+	AccountID  int64  `json:"account_id"`
 }
 
 // UnsortedSIPInput — тело POST /leads/unsorted/sip.
 type UnsortedSIPInput struct {
 	SourceUID  string         `json:"source_uid,omitempty"`
 	SourceName string         `json:"source_name,omitempty"`
-	PipelineID int            `json:"pipeline_id,omitempty"`
+	PipelineID int64          `json:"pipeline_id,omitempty"`
 	CreatedAt  int64          `json:"created_at,omitempty"`
 	RequestID  string         `json:"request_id,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
@@ -153,7 +156,7 @@ type UnsortedSIPInput struct {
 type UnsortedFormInput struct {
 	SourceUID  string         `json:"source_uid,omitempty"`
 	SourceName string         `json:"source_name,omitempty"`
-	PipelineID int            `json:"pipeline_id,omitempty"`
+	PipelineID int64          `json:"pipeline_id,omitempty"`
 	CreatedAt  int64          `json:"created_at,omitempty"`
 	RequestID  string         `json:"request_id,omitempty"`
 	Metadata   map[string]any `json:"metadata,omitempty"`
@@ -172,8 +175,8 @@ func (c *Client) CreateUnsortedForms(ctx context.Context, acc Account, in []Unso
 
 // UnsortedAcceptInput — тело accept (привязка к пользователю/статусу).
 type UnsortedAcceptInput struct {
-	UserID   int `json:"user_id,omitempty"`
-	StatusID int `json:"status_id,omitempty"`
+	UserID   int64 `json:"user_id,omitempty"`
+	StatusID int64 `json:"status_id,omitempty"`
 }
 
 // UnsortedLinkInput — тело link (привязка к существующей сущности).
@@ -189,15 +192,15 @@ type UnsortedActionResult struct {
 
 // AcceptUnsorted — POST /api/v4/leads/unsorted/{uid}/accept.
 func (c *Client) AcceptUnsorted(ctx context.Context, acc Account, uid string, in UnsortedAcceptInput) (UnsortedActionResult, error) {
-	return sendOne[UnsortedActionResult](ctx, c, acc, http.MethodPost, "unsorted.accept", fmt.Sprintf("/api/v4/leads/unsorted/%s/accept", uid), in)
+	return sendOne[UnsortedActionResult](ctx, c, acc, http.MethodPost, "unsorted.accept", "/api/v4/leads/unsorted/"+seg(uid)+"/accept", in)
 }
 
 // DeclineUnsorted — DELETE /api/v4/leads/unsorted/{uid}/decline.
 func (c *Client) DeclineUnsorted(ctx context.Context, acc Account, uid string) error {
-	return c.sendNoContent(ctx, acc, http.MethodDelete, "unsorted.decline", fmt.Sprintf("/api/v4/leads/unsorted/%s/decline", uid), nil)
+	return c.sendNoContent(ctx, acc, http.MethodDelete, "unsorted.decline", "/api/v4/leads/unsorted/"+seg(uid)+"/decline", nil)
 }
 
 // LinkUnsorted — POST /api/v4/leads/unsorted/{uid}/link.
 func (c *Client) LinkUnsorted(ctx context.Context, acc Account, uid string, in UnsortedLinkInput) (UnsortedActionResult, error) {
-	return sendOne[UnsortedActionResult](ctx, c, acc, http.MethodPost, "unsorted.link", fmt.Sprintf("/api/v4/leads/unsorted/%s/link", uid), in)
+	return sendOne[UnsortedActionResult](ctx, c, acc, http.MethodPost, "unsorted.link", "/api/v4/leads/unsorted/"+seg(uid)+"/link", in)
 }

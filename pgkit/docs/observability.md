@@ -1,7 +1,7 @@
 # pgkit — observability
 
 Единый источник правды по телеметрии kit'а. Пул инструментируется метриками
-`db_pool_*`, а соединения — per-query спанами через `otelpgx`. Метрики
+`pg_pool_*`, а соединения — спанами через `otelpgx`. Метрики
 регистрирует `InstrumentPool(pool, role)` через глобальный OTel Meter
 (`otel.Meter("git.stit.tech/stit-core/golibinfra/pgkit")`); в fx-графе это
 делает `Module` для primary и replica, привязывая отписку
@@ -12,7 +12,7 @@ Kit **не выставляет** resource-атрибуты
 OTel-resource, настроенный потребителем в его проводке OTel SDK. Без
 зарегистрированного `MeterProvider` инструменты — no-op.
 
-## Метрики `db_pool_*`
+## Метрики `pg_pool_*`
 
 Девять метрик, все снимаются в одном `RegisterCallback` поверх `pool.Stat()`.
 Gauge'и отражают мгновенное состояние пула, counter'ы — кумулятивные счётчики
@@ -20,15 +20,18 @@ pgxpool.
 
 | Имя | Тип | Источник (`pgxpool.Stat`) | Назначение |
 |---|---|---|---|
-| `db_pool_acquired_conns` | Int64ObservableGauge | `AcquiredConns()` | соединения, занятые прямо сейчас |
-| `db_pool_idle_conns` | Int64ObservableGauge | `IdleConns()` | простаивающие соединения |
-| `db_pool_total_conns` | Int64ObservableGauge | `TotalConns()` | всего открытых соединений |
-| `db_pool_max_conns` | Int64ObservableGauge | `MaxConns()` | сконфигурированный лимит пула |
-| `db_pool_constructing_conns` | Int64ObservableGauge | `ConstructingConns()` | соединения в процессе установки |
-| `db_pool_empty_acquire_total` | Int64ObservableCounter | `EmptyAcquireCount()` | acquire'ы, ждавшие из-за пустого пула |
-| `db_pool_canceled_acquire_total` | Int64ObservableCounter | `CanceledAcquireCount()` | acquire'ы, отменённые по `ctx` |
-| `db_pool_acquire_total` | Int64ObservableCounter | `AcquireCount()` | всего успешных acquire'ов |
-| `db_pool_acquire_duration_seconds_total` | Float64ObservableCounter (unit `s`) | `AcquireDuration().Seconds()` | суммарное время ожидания acquire |
+| `pg_pool_acquired_conns` | Int64ObservableGauge | `AcquiredConns()` | соединения, занятые прямо сейчас |
+| `pg_pool_idle_conns` | Int64ObservableGauge | `IdleConns()` | простаивающие соединения |
+| `pg_pool_total_conns` | Int64ObservableGauge | `TotalConns()` | всего открытых соединений |
+| `pg_pool_max_conns` | Int64ObservableGauge | `MaxConns()` | сконфигурированный лимит пула |
+| `pg_pool_constructing_conns` | Int64ObservableGauge | `ConstructingConns()` | соединения в процессе установки |
+| `pg_pool_empty_acquire_total` | Int64ObservableCounter | `EmptyAcquireCount()` | acquire'ы, ждавшие из-за пустого пула |
+| `pg_pool_canceled_acquire_total` | Int64ObservableCounter | `CanceledAcquireCount()` | acquire'ы, отменённые по `ctx` |
+| `pg_pool_acquire_total` | Int64ObservableCounter | `AcquireCount()` | всего успешных acquire'ов |
+| `pg_pool_acquire_duration_seconds_total` | Float64ObservableCounter (unit `s`) | `AcquireDuration().Seconds()` | суммарное время ожидания acquire |
+
+Гистограмм длительности kit не эмитит: латентность запроса несут спаны
+`otelpgx` и его собственная метрика `db.client.operation.duration`.
 
 ### Labels
 
@@ -41,29 +44,57 @@ pgxpool.
 
 ### Чтение
 
-- **Сатурация пула.** `db_pool_acquired_conns / db_pool_max_conns` близко к `1`
-  плюс растущий `db_pool_empty_acquire_total` — пул упирается в лимит; повышай
+- **Сатурация пула.** `pg_pool_acquired_conns / pg_pool_max_conns` близко к `1`
+  плюс растущий `pg_pool_empty_acquire_total` — пул упирается в лимит; повышай
   `PG_MAX_CONNS` (сверяясь с `max_connections` сервера) или снижай длительность
   запросов.
-- **Ожидание acquire.** Рост `db_pool_acquire_duration_seconds_total` относительно
-  `db_pool_acquire_total` (средняя задержка получения соединения) — тот же
+- **Ожидание acquire.** Рост `pg_pool_acquire_duration_seconds_total` относительно
+  `pg_pool_acquire_total` (средняя задержка получения соединения) — тот же
   симптом нехватки соединений.
-- **Отмены.** `db_pool_canceled_acquire_total` растёт — запросы отменяются по
+- **Отмены.** `pg_pool_canceled_acquire_total` растёт — запросы отменяются по
   таймауту/`ctx` ещё на стадии ожидания соединения (обычно следствие сатурации).
 
-## Спаны (`otelpgx`)
+## Спаны и метрики `otelpgx`
 
 При `PG_OTEL_TRACE=true` (default) на `ConnConfig.Tracer` ставится
-`otelpgx.NewTracer()`. Он создаёт **per-query span** на каждый
-`Exec`/`Query`/`QueryRow`/batch, с SQL-атрибутами по семантическим конвенциям
-OTel БД. Спаны наследуют контекст вызова через `ctx`, встраиваясь в общую
-трассу запроса.
+`otelpgx.NewTracer()`; pgxpool дополнительно распознаёт его как `AcquireTracer`.
+Все спаны — `SpanKind=client`, scope `github.com/exaring/otelpgx`, атрибут
+`db.system=postgresql`; они наследуют контекст вызова через `ctx` и встраиваются
+в общую трассу запроса.
 
-Выключение `PG_OTEL_TRACE` убирает per-query спаны (метрики `db_pool_*` от него
-не зависят и продолжают эмититься).
+| Спан | Когда |
+|---|---|
+| `query <SQL>` | `Exec`/`Query`/`QueryRow` |
+| `batch start` | начало `SendBatch` |
+| `batch query <SQL>` | каждый запрос внутри батча |
+| `prepare <SQL>` | подготовка statement'а (кэш prepared statements pgx) |
+| `copy_from <table>` | `CopyFrom` |
+| `connect` | установка физического соединения |
+| `pool.acquire` | получение соединения из пула |
+
+Тот же tracer эмитит две метрики в глобальный Meter (scope
+`github.com/exaring/otelpgx`, не `pgkit`): `db.client.operation.duration`
+(гистограмма, unit `s`) и `db.client.operation.errors` (counter).
+
+**PII.** По умолчанию в спан идёт текст запроса (`db.query.text`), но **не**
+значения аргументов. Литералы внутри SQL при этом попадают в спан целиком —
+персональные данные передавай аргументами (`$1`), а не подстановкой в текст.
+
+Выключение `PG_OTEL_TRACE` убирает все спаны и метрики otelpgx (метрики
+`pg_pool_*` от него не зависят и продолжают эмититься).
+
+## Health-пробы
+
+| Проба | `Name` | Проверка |
+|---|---|---|
+| `pgkit.Probe(db)` | `pgkit` | `SELECT 1` на пуле primary |
+| `pgkit.ReplicaProbe(rw)` | `pgkit/replica` | `SELECT 1` на пуле реплики; без реплики проходит без запроса |
+
+Обе регистрируются через `healthkit.Provide` и попадают в `/ready`; ограничение
+времени одной проверки — `healthkit.WithTimeout`.
 
 ## Источник правды по реестру
 
 Сводка по всем китам — корневой [README § Что эмитит каждый пакет](../../README.md):
-`pgkit` → `db_pool_*` (9 метрик, label `role`) + per-query span (`otelpgx`). Эта
+`pgkit` → `pg_pool_*` (9 метрик, label `role`) + спаны `otelpgx`. Эта
 страница — детальный реестр имён, типов и labels для `pgkit`.

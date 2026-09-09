@@ -27,28 +27,28 @@ retry-политика бизнес-уровня, выбор subject'ов и str
 
 | Файл | Роль |
 |---|---|
-| `bus.go` | `Bus`-интерфейс (`Publish`/`Subscribe`/`SubscribeQueue`), `natsBus` (Core NATS), дженерики `PublishJSON[T]`/`SubscribeJSON[T]`/`SubscribeQueueJSON[T]`, `decodeJSON`. |
-| `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `ensureStreams`/`reconcileStream`, deadline + `InProgress` обработчика (`keepInProgress`), poison-обработка (`failStream`/`terminal`/`deadLetter`), `StreamMsg`, `WithMsgID`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
+| `bus.go` | `Bus`-интерфейс (`Publish`/`Subscribe`/`SubscribeQueue`), `natsBus` (Core NATS), `ErrTerminal`, дженерики `PublishJSON[T]`/`SubscribeJSON[T]`/`SubscribeQueueJSON[T]`, `decodeJSON`. |
+| `publish.go` | `PublishOption` и `PublishSpec` — общие опции публикации обоих транспортов (`WithMsgID`, `WithHeader`, `WithMetricSubject`). |
+| `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `ensureStreams`/`reconcileStream`, deadline + `InProgress` обработчика (`keepInProgress`), poison-обработка (`failStream`/`terminalReason`/`deadLetter`), `StreamMsg`, `SubjectMatches`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
 | `subscription.go` | `Handler`, `Subscription` (`Unsubscribe`/`Drain`), внутренняя `subscription` и `inflightGroup` — учёт работающих обработчиков. |
-| `conn.go` | `Conn` — соединение + реестр подписок; `NewConn` (handlers nats.go → logkit), `Healthy`, graceful `Close`. |
+| `conn.go` | `Conn` — соединение + реестр подписок; `NewConn` (аутентификация, handlers nats.go → logkit), `Healthy`, graceful `Close`/`CloseContext`, `redactURL`, ctx обработчиков. |
 | `client.go` | `Client` — инстанс шины (соединение + `Bus` + `StreamBus`), `New`, `Probe` (`healthkit.Probe`). |
-| `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewConfigPrefixed`. |
+| `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewConfigPrefixed`, `Validate` и `ErrConfig`. |
 | `env.go` | Чтение конфига по тегам `envconfig` с префиксом инстанса — без fallback на беспрефиксные переменные. |
 | `context.go` | `SubjectFromContext` / `HeadersFromContext` — доступ к subject и header'ам входящего сообщения внутри обработчика. |
 | `instrumentation.go` | `natsInstruments` (5 otel-инструментов через `internal/otelkit`), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
-| `module.go` | fx `Module(name)` (Config + `*Client` + `Bus` + `StreamBus`), `HealthProbe(name)`. |
+| `module.go` | fx `Module(name)` (`*Client` + `Bus` + `StreamBus`), `ProvideConfig(name)`, `HealthProbe(name)`. |
 
 ## Bus (Core NATS)
 
 `natsBus` оборачивает `*nats.Conn`. Поток:
 
 ```
-Publish(ctx, subject, payload any)
-   │  json.Marshal(payload)
-   │  startPublishSpan: producer-span + inject trace-context в nats.Header
+Publish(ctx, subject, payload []byte, opts...)
+   │  startPublishSpan: producer-span + заголовки опций + inject trace-context
    ▼
-conn.PublishMsg(msg) ──► nats_messages_published_total{subject,status}
-                         nats_publish_duration_seconds{subject}
+conn.PublishMsg(msg) ──► nats_messages_published_total{status[,subject]}
+                         nats_publish_duration_seconds[{subject}]
 
 Subscribe / SubscribeQueue ──► Subscription (Unsubscribe / Drain)
    │  callback на каждое входящее сообщение
@@ -56,6 +56,7 @@ Subscribe / SubscribeQueue ──► Subscription (Unsubscribe / Drain)
 sem.Acquire(1) ──► track ──► go handleOne(...)   (backpressure: не более MaxInFlight)
    │  inflight +1
    │  startConsumerSpan: extract trace-context → child-span; subject+headers в ctx
+   │  ctx = deadline HandlerTimeout (NATS_HANDLER_TIMEOUT), отменяется при force-close
    ▼
 handler(ctx, msg.Data)
    │  panic → recover → status=panic (сообщение не доставляется повторно)
@@ -72,6 +73,10 @@ queue-группы; так горизонтально масштабируютс
 Core NATS не подтверждает доставку: при handler-ошибке или panic сообщение
 **не** переотправляется — оно уже сконсюмлено. Нужна гарантия доставки и
 ретраи — это JetStream.
+
+`ctx` обработчика несёт deadline `NATS_HANDLER_TIMEOUT` (30s по умолчанию) и
+отменяется, когда `Close` исчерпал бюджет drain: зависший обработчик не держит
+слот семафора до конца жизни процесса и получает сигнал свернуться.
 
 `ctx` в `Subscribe`/`SubscribeQueue` ограничивает только регистрацию (отменённый
 ctx → ошибка сразу). Время жизни подписки — `Subscription` и `Close` инстанса:
@@ -104,9 +109,11 @@ ctx → ошибка сразу). Время жизни подписки — `Su
 - `PublishStream` — синхронно: `PublishMsg` + ждёт `PubAck` (в пределах ctx или
   дефолтного таймаута JetStream API).
 - `PublishStreamBatch` — async: все сообщения уходят `PublishMsgAsync`, затем
-  ожидается `PublishAsyncComplete`, после чего собираются per-message результаты
-  (`results[i] == nil` — персист подтверждён). Внешняя ошибка — сбой всего батча
-  (JS выключен / отмена `ctx`). Порядок персиста best-effort: при частичном сбое
+  метод ждёт исход **каждого своего** future'а (`results[i] == nil` — персист
+  подтверждён). Ожидание пер-future, а не по `PublishAsyncComplete()`: тот канал
+  общий на весь `jetstream.JetStream`, и потерянный `PubAck` соседнего батча
+  задерживал бы этот на весь `PublishAsyncTimeout`. Внешняя ошибка — сбой всего
+  батча (JS выключен / отмена `ctx`). Порядок персиста best-effort: при частичном сбое
   неподтверждённые уходят на ретрай и могут получить более поздний sequence —
   дедуп по `MsgID` гарантирует отсутствие дублей. Потерянный `PubAck` (обрыв
   сети между `PUB` и ответом) закрывается `jetstream.WithPublishAsyncTimeout`
@@ -137,8 +144,10 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
    ├─ успех ───────────────► msg.Ack()          status=ok
    └─ ошибка/panic ────────► failStream(...)
                                 │
-           NumDelivered ≥ MaxDeliver (terminal)?
-                ├─ да  → deadLetter (если DLQSubject задан) + msg.Term()   status=dead
+           errors.Is(err, ErrTerminal) или NumDelivered ≥ MaxDeliver?
+                ├─ да  → deadLetter (если DLQSubject задан)
+                │        ├─ копия ушла → log error + msg.TermWithReason(cause)  status=dead
+                │        └─ отказ DLQ  → log error + Nak                   status=dlq_error
                 └─ нет → NakWithDelay(NakBackoff) | Nak()  status=handler_error|panic
 ```
 
@@ -149,20 +158,33 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
   `ctx` обработчика: зависший обработчик получает отмену, возвращает ошибку и
   сообщение идёт по poison-пути. После deadline `InProgress` не шлётся —
   обработчик, игнорирующий `ctx`, получит ределивери, пока висит.
+- **`ErrTerminal`** — обработчик заявляет, что ретрай бессмыслен (чужая схема,
+  битый payload): кит идёт в DLQ/`Term` с первой попытки. Тем же маркером
+  обёрнута ошибка декода `Subscribe*JSON`.
 - **`MaxDeliver`** — потолок числа доставок. Ставится и на консьюмере
-  (server-side backstop), и проверяется клиентом перед `Term`. `MaxDeliver ≤ 0`
+  (server-side backstop), и проверяется клиентом перед `Term`. `MaxDeliver == 0`
   — без лимита (бесконечный ределивери).
 - **NAK-backoff** — при `NakBackoff > 0` неуспешное сообщение возвращается с
   задержкой (`NakWithDelay`), иначе мгновенно (`Nak`). Задержка распределяет
   ретраи во времени, не упирая консьюмера в горячую петлю.
-- **DLQ** — на исчерпании попыток сообщение перед `Term` republish'ится в
-  `DLQSubject` (Core-публикацией, best-effort) с заголовками `Natskit-Dlq-Origin`
-  (исходный subject), `Natskit-Dlq-Error` (текст ошибки, без переводов строк),
-  `Natskit-Dlq-Msg-Id` (исходный `Nats-Msg-Id`, если был) и остальными исходными
-  header'ами. `Nats-Msg-Id` в копию не переносится: DLQ-subject внутри стрима с
-  окном дедупа иначе молча выбросил бы копию как дубль. `Term` останавливает
-  дальнейший ределивери. Без `DLQSubject` — только `Term` (тихий drop после
-  исчерпания).
+- **DLQ** — на терминальном отказе сообщение перед `Term` republish'ится в
+  `DLQSubject` с заголовками `Natskit-Dlq-Origin`/`-Error`/`-Reason`/`-Stream`/
+  `-Consumer`/`-Deliveries`/`-Instance`/`-Msg-Id` и остальными исходными
+  header'ами (полный список — [configuration.md](configuration.md)).
+  `Nats-Msg-Id` в копию не переносится (иначе стрим с окном дедупа выбросил бы
+  копию как дубль), `Nats-Expected-*` не копируются (они адресованы исходному
+  стриму). Публикация идёт через JetStream, если DLQ-subject накрыт стримом
+  (решается один раз на старте, `StreamNameBySubject`), иначе Core-публикацией
+  с `Flush`. Сам отказ — всегда `error`-запись `natskit: jetstream message dead`,
+  поэтому и без `DLQSubject` причина не теряется.
+- **Фильтр не должен накрывать DLQ-subject.** `SubscribeStream` проверяет это на
+  регистрации (`SubjectMatches`) и возвращает `ErrConfig`: иначе DLQ-копия
+  вернулась бы тому же обработчику и цикл «отказ → копия → отказ» рос бы в стриме
+  без остановки.
+- **Граница DLQ.** Копия появляется, только если последняя доставка провалилась в
+  живом процессе. Умерший процесс и истёкший `AckWait` на последней доставке
+  оставляют сообщение неподтверждённым в стриме: сервер больше не доставляет
+  его, и клиенту нечего дед-леттерить.
 
 `durable` — имя durable-консьюмера: переподключение продолжает с того же места,
 а не с начала стрима. Несколько инстансов с одним `durable` делят нагрузку
@@ -214,39 +236,54 @@ W3C trace-context (`traceparent`/`tracestate`) ездит вместе с соо
 - Core: буфер конечен (pending limits nats.go); переполнение — `slow consumer`,
   сообщения теряются, клиент сообщает об этом через `ErrorHandler` → лог
   `natskit: async error` с числом `dropped`.
-- JetStream: `MaxAckPending = MaxInFlight` на консьюмере — сервер не выдаёт
-  больше неподтверждённых сообщений, чем есть слотов, поэтому семафор здесь
-  почти не блокирует.
+- JetStream: `MaxAckPending = MaxInFlight` — потолок на **консьюмер**, а семафор
+  один на все подписки инстанса. С одной подпиской он почти не блокирует, с N
+  консьюмерами блокировка штатна; на время callback'а `Consume` останавливает
+  heartbeat-монитор, поэтому ложных `consume error` из-за ожидания на семафоре
+  не бывает.
 
 Семафор защищает сервис от перегрузки при всплеске трафика; конкуренция
 обработчиков ограничена, остальное ждёт в буфере.
 
 ## Соединение
 
-`NewConn` вешает на `nats.Conn` handlers, которые пишут в `logkit.Logger`:
-`ErrorHandler` (slow consumer, ошибки протокола), `DisconnectErrHandler`,
-`ReconnectHandler`, `ClosedHandler` (сигнал для `Close`). `DrainTimeout`
-пробрасывается и в nats.go (`nats.DrainTimeout`), чтобы его внутренний drain
-укладывался в тот же бюджет.
+`NewConn` валидирует конфиг, собирает опции аутентификации (`NATS_CREDS_FILE`,
+`NATS_NKEY_SEED_FILE`, `NATS_TLS_CA_FILE`) и вешает на `nats.Conn` handlers,
+которые пишут в `logkit.Logger`: `ErrorHandler` (slow consumer, ошибки
+протокола), `DisconnectErrHandler`, `ReconnectHandler`, `ClosedHandler`.
+`DrainTimeout` пробрасывается и в nats.go (`nats.DrainTimeout`), чтобы его
+внутренний drain укладывался в тот же бюджет.
+
+Любой логируемый URL проходит `redactURL`: userinfo (пароль или токен из
+`NATS_URL`) заменяется на `xxxxx`. `ClosedHandler` вне `Close` означает
+исчерпание reconnect'ов — это `error`-запись с `LastError`, а `Healthy` с этого
+момента отдаёт `ErrConnectionClosed`, отличимый от временного `RECONNECTING`.
 
 ## fx Module
 
-`Module(name)` provide'ит `Config`, `*Client`, `Bus` и `StreamBus` одного
-инстанса и вешает `OnStop`-хук с `Client.Close()` — graceful shutdown.
+`Module(name)` provide'ит `*Client`, `Bus` и `StreamBus` одного инстанса и вешает
+`OnStop`-хук с `Client.CloseContext(ctx)` — graceful shutdown в пределах
+`StopTimeout` приложения.
 
-Пустое имя — дефолтный инстанс: конфиг из `NATS_*`, provide без тега. Непустое —
-конфиг из `<NAME>_NATS_*`, provide под тегом `name:"<name>"`, поэтому инстансы не
-коллизят в графе и приложение с двумя шинами (своя + внешняя) собирается штатно:
+Пустое имя — дефолтный инстанс: `Config` без тега (`fx.Provide(natskit.NewConfig)`).
+Непустое — `Config` под тегом `name:"<name>"` (`natskit.ProvideConfig(name)`
+читает `<NAME>_NATS_*`), и под тем же тегом provide'ятся `*Client`, `Bus`,
+`StreamBus`. Инстансы не коллизят в графе, приложение с двумя шинами собирается
+штатно:
 
 ```go
-natskit.Module(""),     // своя шина
-natskit.Module("hub"),  // внешняя, <NAME>_NATS_* с NAME=HUB
+fx.Provide(natskit.NewConfig), natskit.Module(""),        // своя шина
+natskit.ProvideConfig("hub"), natskit.Module("hub"),      // внешняя, HUB_NATS_*
 fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
 ```
 
+Имя инстанса ограничено `[A-Za-z0-9_.-]`: из него собирается ENV-префикс, и имя
+вроде `hub/v2` дало бы переменные, которые невозможно задать. `Module` и
+`ProvideConfig` отвергают такое имя `ErrConfig` при сборке графа.
+
 `Probe` модуль **не** provide'ит: в readiness имеет смысл класть не каждый
 инстанс. Регистрация — `healthkit.Provide(natskit.Probe)` (дефолтный инстанс)
-или `natskit.HealthProbe(name)`; оба кладут `healthkit.Probe` в группу `health`.
+или `natskit.HealthProbe(name)`; оба кладут `healthkit.Probe` в группу `healthkit.probes`.
 
 ## Ключевые проектные решения (WHY)
 
@@ -270,11 +307,15 @@ fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
   публикаций; effectively-once персист обеспечивает сам JetStream в окне
   `Duplicates`. Это согласовано с `outboxkit`, который ставит namespaced
   `Nats-Msg-Id` при публикации из outbox.
-- **DLQ — Core-публикация, best-effort, без `Nats-Msg-Id`.** Dead-letter уходит
-  обычным `conn.PublishMsg` (не в JetStream): DLQ — диагностический канал, не
-  источник истины. Term всё равно останавливает ределивери; сбой DLQ-публикации
-  логируется, но не блокирует Term. Исходный id сохраняется в
+- **DLQ — по месту хранения subject'а, без `Nats-Msg-Id`.** Если DLQ-subject
+  накрыт стримом, копия публикуется через JetStream и подтверждается `PubAck`;
+  иначе — Core-публикацией с `Flush` (JetStream ждал бы `PubAck`, которого некому
+  прислать, и задержал бы `Term` до ределивери). Исходный id сохраняется в
   `Natskit-Dlq-Msg-Id`.
+- **`Term` — только после успешной копии.** Провал DLQ-публикации оставляет
+  сообщение в стриме (`Nak`, `status=dlq_error`): недоступный DLQ иначе стирал
+  бы данные молча. Цена — ретраи продолжаются, пока DLQ не оживёт; при
+  `MaxDeliver > 0` их обрывает server-side backstop.
 - **Backpressure обязателен.** Без семафора всплеск входящих породил бы
   неограниченное число горутин-обработчиков и съел бы память. `MaxInFlight`
   (default 100) — потолок конкуренции; для JetStream он же `MaxAckPending`.
@@ -285,4 +326,15 @@ fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
   всё равно убьёт процесс по своему таймауту, и лучше закрыть соединение
   осознанно с предупреждением в логе, чем получить SIGKILL посреди обработки.
 - **`Config` не в `Module`.** Симметрично остальным китам: env-контракт собирает
-  приложение, кит лишь его потребляет.
+  приложение (`fx.Provide(natskit.NewConfig)` / `natskit.ProvideConfig(name)`),
+  кит лишь его потребляет — конфиг можно подменить своим конструктором, не
+  прибегая к `fx.Decorate`.
+- **Свой загрузчик ENV.** `envconfig.Process(prefix, &cfg)` при незаданной
+  префиксной переменной берёт значение одноимённой беспрефиксной, и именованный
+  инстанс молча унаследовал бы URL и стримы дефолтного — то есть ушёл бы
+  публиковать в чужую шину. Загрузчик кита (`env.go`) читает только ключи своего
+  префикса.
+- **`Validate` на старте.** Пустой `NATS_URL` молча подключил бы сервис к
+  `nats://127.0.0.1:4222`, а `NATS_JS_ACK_WAIT=1ns` сломал бы keepalive на первом
+  сообщении. Конфиг проверяется целиком в `NewConfig`/`NewConfigPrefixed`/`New`,
+  и сервис падает на старте с `ErrConfig`.

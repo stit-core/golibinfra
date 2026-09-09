@@ -9,10 +9,8 @@ import (
 	"time"
 )
 
-// amoJo использует две РАЗНЫЕ модели подписи (легко перепутать):
-//   - исходящие запросы — строка из 5 компонентов (см. signRequest);
-//   - входящие вебхуки — HMAC-SHA1 только по сырому телу (см. VerifyWebhookSignature).
-// Верифицировать вебхук «исходящей» формулой — не сработает.
+// Исходящий запрос и входящий вебхук amoJo подписываются по-разному: 5-компонентная
+// строка против HMAC по сырому телу (docs/architecture.md § amoJo).
 
 // rfc2822 — формат заголовка Date amoJo. Подпись валидна 15 минут; зона может
 // быть любой, но безопаснее UTC (меньше зависимость от системной зоны).
@@ -59,7 +57,7 @@ func md5Hex(b []byte) string {
 }
 
 func hmacSHA1Hex(msg []byte, secret string) string {
-	mac := hmac.New(sha1.New, []byte(secret)) //nolint:gosec // X-Signature — протокол amoJo
+	mac := hmac.New(sha1.New, []byte(secret))
 	mac.Write(msg)
 	return hex.EncodeToString(mac.Sum(nil))
 }

@@ -2,6 +2,7 @@ package natskit
 
 import (
 	"context"
+	"fmt"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -17,6 +18,8 @@ type Client struct {
 	stream StreamBus
 }
 
+// New поднимает инстанс шины: валидирует конфиг, открывает соединение и
+// декларирует стримы. Пустое имя — DefaultInstance.
 func New(name string, cfg Config, log logkit.Logger) (*Client, error) {
 	if name == "" {
 		name = DefaultInstance
@@ -35,23 +38,34 @@ func New(name string, cfg Config, log logkit.Logger) (*Client, error) {
 	return &Client{name: name, conn: conn, bus: NewBus(conn, log, cfg), stream: stream}, nil
 }
 
+// Name — имя инстанса (атрибут `instance` в сигналах).
 func (c *Client) Name() string { return c.name }
 
+// Bus — Core-шина инстанса.
 func (c *Client) Bus() Bus { return c.bus }
 
+// Stream — JetStream-шина инстанса (заглушка при выключенном JetStream).
 func (c *Client) Stream() StreamBus { return c.stream }
 
+// Conn — соединение инстанса.
 func (c *Client) Conn() *Conn { return c.conn }
 
+// Healthy — готовность соединения (см. Conn.Healthy).
 func (c *Client) Healthy() error { return c.conn.Healthy() }
 
 // Close — graceful: дренит подписки, ждёт обработчики (в пределах DrainTimeout)
 // и закрывает соединение.
 func (c *Client) Close() { c.conn.Close() }
 
-// Probe — health-проба инстанса для fx-группы `health` (healthkit.Provide / HealthProbe).
+// CloseContext — Close с бюджетом min(DrainTimeout, дедлайн ctx).
+func (c *Client) CloseContext(ctx context.Context) { c.conn.CloseContext(ctx) }
+
+// Probe — health-проба инстанса для fx-группы `healthkit.probes` (healthkit.Provide / HealthProbe).
 func Probe(c *Client) healthkit.Probe {
-	return func(context.Context) error {
-		return c.Healthy()
-	}
+	return healthkit.New("natskit/"+c.name, func(context.Context) error {
+		if err := c.Healthy(); err != nil {
+			return fmt.Errorf("natskit: healthy: %w", err)
+		}
+		return nil
+	})
 }

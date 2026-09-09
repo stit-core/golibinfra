@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"net/url"
 	"strconv"
 )
 
@@ -42,7 +43,7 @@ func (c *Client) SyncFeed(ctx context.Context, resource string, after int64, lim
 	case ResourceTags:
 		base = c.tagBase
 	}
-	path := "/api/sync/" + resource + "?after=" + strconv.FormatInt(after, 10)
+	path := "/api/sync/" + url.PathEscape(resource) + "?after=" + strconv.FormatInt(after, 10)
 	if limit > 0 {
 		path += "&limit=" + strconv.Itoa(limit)
 	}

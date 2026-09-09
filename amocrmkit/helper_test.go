@@ -2,6 +2,7 @@ package amocrmkit
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 	"testing"
 	"time"
@@ -29,11 +30,20 @@ func testHTTPConfig() httpclient.Config {
 // HostOverride. RateRPS высокий — тесты не троттлятся (лимит-тесты задают свой).
 func newTestClient(t *testing.T, srvURL string) *Client {
 	t.Helper()
-	c, err := New(Config{RateRPS: 1000, HostOverride: srvURL}, testHTTPConfig(), clockkit.Real{}, logkit.Nop())
+	return newTestClientCfg(t, Config{RateRPS: 1000, HostOverride: srvURL}, testHTTPConfig())
+}
+
+func newTestClientCfg(t *testing.T, cfg Config, hcCfg httpclient.Config, opts ...Option) *Client {
+	t.Helper()
+	c, err := New(cfg, hcCfg, clockkit.Real{}, logkit.Nop(), opts...)
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
 	return c
+}
+
+func testOAuthConfig() OAuthConfig {
+	return OAuthConfig{ClientID: "cid", ClientSecret: "csecret", RedirectURI: "https://cb"}
 }
 
 func testAccount() Account {
@@ -68,6 +78,8 @@ func (l *captureLogger) Info(_ context.Context, msg string, kv ...any)  { l.add(
 func (l *captureLogger) Warn(_ context.Context, msg string, kv ...any)  { l.add("warn", msg, kv) }
 func (l *captureLogger) Error(_ context.Context, msg string, kv ...any) { l.add("error", msg, kv) }
 func (l *captureLogger) With(...any) logkit.Logger                      { return l }
+
+func (l *captureLogger) Enabled(context.Context, slog.Level) bool { return true }
 
 func (l *captureLogger) find(level, msg string) (logEntry, bool) {
 	l.mu.Lock()

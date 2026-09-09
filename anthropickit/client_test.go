@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +19,7 @@ import (
 
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
@@ -54,6 +57,8 @@ func (l *captureLogger) Info(_ context.Context, msg string, kv ...any)  { l.add(
 func (l *captureLogger) Warn(_ context.Context, msg string, kv ...any)  { l.add("warn", msg, kv) }
 func (l *captureLogger) Error(_ context.Context, msg string, kv ...any) { l.add("error", msg, kv) }
 func (l *captureLogger) With(...any) logkit.Logger                      { return l }
+
+func (l *captureLogger) Enabled(context.Context, slog.Level) bool { return true }
 
 func (l *captureLogger) find(level, msg string) (logEntry, bool) {
 	l.mu.Lock()
@@ -157,7 +162,10 @@ func histogram(t *testing.T, reader *sdkmetric.ManualReader, name string, want m
 
 func newTestClient(t *testing.T, srvURL string, log logkit.Logger, mutate func(*Config)) *Client {
 	t.Helper()
-	cfg := Config{APIKey: "sk-test", DefaultModel: "claude-opus-5", MaxRetries: 0}
+	cfg := Config{
+		APIKey: "sk-test", DefaultModel: "claude-opus-5", BaseURL: srvURL,
+		MaxRetries: 0, Timeout: 30 * time.Second,
+	}
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -268,14 +276,49 @@ func TestComplete_ParsesResponseAndRecordsSignals(t *testing.T) {
 		t.Errorf("latency count = %d, want 1", n)
 	}
 
-	var client int
+	var transport int
+	var kit sdktrace.ReadOnlySpan
 	for _, s := range spans.Ended() {
-		if s.SpanKind() == trace.SpanKindClient {
-			client++
+		switch s.Name() {
+		case "anthropic.messages":
+			kit = s
+		default:
+			transport++
 		}
 	}
-	if client != 1 {
-		t.Errorf("client spans = %d, want 1 (otelhttp transport)", client)
+	if transport != 1 {
+		t.Errorf("otelhttp spans = %d, want 1", transport)
+	}
+	if kit == nil {
+		t.Fatal("no anthropic.messages span")
+	}
+	if kit.SpanKind() != trace.SpanKindClient || kit.Status().Code == codes.Error {
+		t.Errorf("kit span kind = %v status = %v", kit.SpanKind(), kit.Status())
+	}
+	wantAttrs := map[attribute.Key]any{
+		"gen_ai.system":                  "anthropic",
+		"gen_ai.operation.name":          "chat",
+		"gen_ai.request.model":           "claude-opus-5",
+		"gen_ai.request.max_tokens":      int64(defaultMaxTokensSync),
+		"gen_ai.response.model":          "claude-opus-5",
+		"gen_ai.response.id":             "msg_01",
+		"gen_ai.usage.input_tokens":      int64(140),
+		"gen_ai.usage.output_tokens":     int64(20),
+		"gen_ai.response.finish_reasons": []string{"end_turn"},
+	}
+	got := map[attribute.Key]any{}
+	for _, a := range kit.Attributes() {
+		got[a.Key] = a.Value.AsInterface()
+	}
+	for k, want := range wantAttrs {
+		if !reflect.DeepEqual(got[k], want) {
+			t.Errorf("span attr %s = %#v, want %#v", k, got[k], want)
+		}
+	}
+	for k := range got {
+		if !strings.HasPrefix(string(k), "gen_ai.") {
+			t.Errorf("unexpected span attribute %s — prompts and payloads must never be recorded", k)
+		}
 	}
 }
 
@@ -323,7 +366,7 @@ func TestComplete_ClassifiesAPIErrors(t *testing.T) {
 		{500, "api_error", ErrServer},
 	}
 	for _, tc := range cases {
-		t.Run(fmt.Sprint(tc.status), func(t *testing.T) {
+		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
 			reader, _ := installOTel(t)
 			srv := httptest.NewServer(apiError(tc.status, tc.typ))
 			t.Cleanup(srv.Close)
@@ -418,15 +461,40 @@ func TestNew_TimeoutBoundsEachRequest(t *testing.T) {
 }
 
 func TestNew_ValidatesConfig(t *testing.T) {
-	cases := map[string]Config{
-		"no key":          {},
-		"negative retry":  {APIKey: "k", MaxRetries: -1},
-		"negative timout": {APIKey: "k", Timeout: -time.Second},
+	valid := Config{
+		APIKey: "k", BaseURL: "https://api.anthropic.com",
+		DefaultModel: "claude-opus-5", MaxRetries: 2, Timeout: time.Minute,
 	}
-	for name, cfg := range cases {
+	mutate := func(fn func(*Config)) Config {
+		c := valid
+		fn(&c)
+		return c
+	}
+	bad := map[string]Config{
+		"zero value":       {},
+		"no key":           mutate(func(c *Config) { c.APIKey = "" }),
+		"no default model": mutate(func(c *Config) { c.DefaultModel = "" }),
+		"negative retry":   mutate(func(c *Config) { c.MaxRetries = -1 }),
+		"zero timeout":     mutate(func(c *Config) { c.Timeout = 0 }),
+		"negative timeout": mutate(func(c *Config) { c.Timeout = -time.Second }),
+		"empty base url":   mutate(func(c *Config) { c.BaseURL = "" }),
+		"schemeless url":   mutate(func(c *Config) { c.BaseURL = "api.anthropic.com" }),
+		"wrong scheme":     mutate(func(c *Config) { c.BaseURL = "ftp://api.anthropic.com" }),
+		"no host":          mutate(func(c *Config) { c.BaseURL = "https://" }),
+		"not a url":        mutate(func(c *Config) { c.BaseURL = "://\x7f" }),
+	}
+	for name, cfg := range bad {
 		if _, err := New(cfg, nil); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: err = %v, want ErrConfig", name, err)
 		}
+	}
+	for name, url := range map[string]string{"http": "http://localhost:8080", "https": "https://api.anthropic.com"} {
+		if _, err := New(mutate(func(c *Config) { c.BaseURL = url }), nil); err != nil {
+			t.Errorf("%s base url rejected: %v", name, err)
+		}
+	}
+	if _, err := New(valid, nil, WithBaseURL("localhost:8080")); !errors.Is(err, ErrConfig) {
+		t.Errorf("WithBaseURL must be validated too: %v", err)
 	}
 }
 
@@ -702,10 +770,376 @@ func TestStream_TimeoutBoundsWholeStream(t *testing.T) {
 }
 
 func TestStream_MappingErrorIsErrStream(t *testing.T) {
+	reader, _ := installOTel(t)
 	c := newTestClient(t, "http://unused", nil, nil)
 	type bogus struct{ Block }
 	st := c.Stream(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: []Block{bogus{}}}}})
 	if st.Next() || !errors.Is(st.Err(), ErrInvalidRequest) {
 		t.Fatalf("errStream: next=%v err=%v", st.Next(), st.Err())
+	}
+	if got := st.Event(); got != (StreamEvent{}) {
+		t.Errorf("Event() = %+v, want the zero event", got)
+	}
+	if got := st.Usage(); got != (Usage{}) {
+		t.Errorf("Usage() = %+v, want zero", got)
+	}
+	resp, err := st.Final()
+	if resp != nil || !errors.Is(err, ErrInvalidRequest) {
+		t.Errorf("Final() = %+v, %v", resp, err)
+	}
+	if err := st.Close(); err != nil {
+		t.Errorf("Close() = %v", err)
+	}
+	if got := counterSum(t, reader, "anthropic_api_calls_total", nil); got != 0 {
+		t.Errorf("a request that never left must not be counted: %d", got)
+	}
+}
+
+func TestComplete_KeepsRedactedThinkingForReplay(t *testing.T) {
+	const withRedacted = `{
+	  "id": "msg_02", "type": "message", "role": "assistant", "model": "claude-opus-5",
+	  "content": [
+	    {"type": "thinking", "thinking": "visible", "signature": "sig"},
+	    {"type": "redacted_thinking", "data": "encrypted-blob"},
+	    {"type": "text", "text": "ok"}
+	  ],
+	  "stop_reason": "end_turn", "stop_sequence": null,
+	  "usage": {"input_tokens": 1, "output_tokens": 1}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(withRedacted))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, srv.URL, nil, nil)
+	resp, err := c.Complete(context.Background(), userRequest("hi"))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if len(resp.Content) != 3 {
+		t.Fatalf("content = %+v", resp.Content)
+	}
+	rt, ok := resp.Content[1].(RedactedThinkingBlock)
+	if !ok || rt.Data != "encrypted-blob" {
+		t.Fatalf("redacted_thinking must survive into Response.Content: %+v", resp.Content[1])
+	}
+}
+
+func TestComplete_RefusalCarriesStopDetails(t *testing.T) {
+	const refusal = `{
+	  "id": "msg_03", "type": "message", "role": "assistant", "model": "claude-opus-5",
+	  "content": [], "stop_reason": "refusal", "stop_sequence": null,
+	  "stop_details": {"type": "refusal", "category": "cyber", "explanation": "policy"},
+	  "usage": {"input_tokens": 1, "output_tokens": 1}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(refusal))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, srv.URL, nil, nil)
+	resp, err := c.Complete(context.Background(), userRequest("hi"))
+	if err != nil {
+		t.Fatalf("refusal must not be an error: %v", err)
+	}
+	if !resp.IsRefusal() || resp.StopDetails == nil {
+		t.Fatalf("response = %+v", resp)
+	}
+	if resp.StopDetails.Category != "cyber" || resp.StopDetails.Explanation != "policy" {
+		t.Errorf("stop details = %+v", resp.StopDetails)
+	}
+}
+
+func TestComplete_ClassifiesTransientStatuses(t *testing.T) {
+	for _, status := range []int{408, 409} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			installOTel(t)
+			srv := httptest.NewServer(apiError(status, "api_error"))
+			t.Cleanup(srv.Close)
+			c := newTestClient(t, srv.URL, nil, nil)
+			_, err := c.Complete(context.Background(), userRequest("hi"))
+			if !errors.Is(err, ErrServer) {
+				t.Fatalf("err = %v, want ErrServer", err)
+			}
+		})
+	}
+}
+
+func TestComplete_PricedFollowsTheModelTheCostIsComputedFrom(t *testing.T) {
+	reader, _ := installOTel(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(messageJSON)) // отвечает claude-opus-5
+	}))
+	t.Cleanup(srv.Close)
+
+	log := &captureLogger{}
+	c := newTestClient(t, srv.URL, log, nil)
+	req := userRequest("hi")
+	req.Model = "my-router-alias"
+	resp, err := c.Complete(context.Background(), req)
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if !resp.CostKnown || resp.Cost == 0 {
+		t.Fatalf("cost comes from the response model: %d known=%v", resp.Cost, resp.CostKnown)
+	}
+	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"priced": "true"}); got != 1 {
+		t.Errorf("priced must agree with the recorded cost: calls{priced=true} = %d", got)
+	}
+	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"model": modelLabelOther}); got != 1 {
+		t.Errorf("unknown requested model must collapse into %q: %d", modelLabelOther, got)
+	}
+	e, ok := log.find("warn", "anthropickit: model is absent from the price table, metric label collapsed")
+	if !ok || e.kv["model"] != "my-router-alias" {
+		t.Errorf("collapsing the label must be logged once: %+v", e)
+	}
+}
+
+func TestComplete_ModelLabelWarnsOncePerModel(t *testing.T) {
+	installOTel(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(messageJSON))
+	}))
+	t.Cleanup(srv.Close)
+
+	log := &captureLogger{}
+	c := newTestClient(t, srv.URL, log, nil)
+	req := userRequest("hi")
+	req.Model = "my-router-alias"
+	for range 3 {
+		if _, err := c.Complete(context.Background(), req); err != nil {
+			t.Fatalf("Complete: %v", err)
+		}
+	}
+
+	var warns int
+	log.mu.Lock()
+	for _, e := range log.entries {
+		if e.msg == "anthropickit: model is absent from the price table, metric label collapsed" {
+			warns++
+		}
+	}
+	log.mu.Unlock()
+	if warns != 1 {
+		t.Errorf("warn count = %d, want 1 per unknown model", warns)
+	}
+}
+
+func TestNew_IgnoresSDKEnvironmentDefaults(t *testing.T) {
+	t.Setenv("ANTHROPIC_AUTH_TOKEN", "stale-bearer")
+	t.Setenv("ANTHROPIC_BASE_URL", "http://wrong.invalid")
+	t.Setenv("ANTHROPIC_API_KEY", "env-key")
+
+	var gotAuth, gotKey string
+	var hits atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		gotAuth = r.Header.Get("Authorization")
+		gotKey = r.Header.Get("x-api-key")
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(messageJSON))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, srv.URL, nil, nil)
+	if _, err := c.Complete(context.Background(), userRequest("hi")); err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if hits.Load() != 1 {
+		t.Fatalf("ANTHROPIC_BASE_URL must not win over Config: hits = %d", hits.Load())
+	}
+	if gotAuth != "" {
+		t.Errorf("Authorization = %q, want none — Config is the only credential source", gotAuth)
+	}
+	if gotKey != "sk-test" {
+		t.Errorf("x-api-key = %q, want the Config key", gotKey)
+	}
+}
+
+func TestStream_CanceledContextKeepsAccountedUsage(t *testing.T) {
+	reader, _ := installOTel(t)
+	released := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fl := w.(http.Flusher)
+		for _, e := range streamEvents[:3] {
+			_, _ = io.WriteString(w, e)
+			fl.Flush()
+		}
+		<-r.Context().Done()
+		close(released)
+	}))
+	t.Cleanup(srv.Close)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	c := newTestClient(t, srv.URL, nil, nil)
+	st := c.Stream(ctx, userRequest("hi"))
+	defer st.Close()
+
+	for range 3 {
+		if !st.Next() {
+			t.Fatalf("Next() = false early: %v", st.Err())
+		}
+	}
+	cancel()
+	for st.Next() {
+	}
+	<-released
+
+	if !errors.Is(st.Err(), context.Canceled) {
+		t.Fatalf("Err = %v, want context.Canceled", st.Err())
+	}
+	if got := st.Usage(); got.InputTokens != 25 || got.CacheReadTokens != 4 {
+		t.Errorf("Usage() = %+v, want the tokens accumulated before the cancel", got)
+	}
+	resp, err := st.Final()
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Final err = %v, want context.Canceled", err)
+	}
+	if resp == nil || resp.Usage.InputTokens != 25 {
+		t.Fatalf("Final must return the partial response with usage: %+v", resp)
+	}
+	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
+		t.Errorf("calls_total{status=error} = %d, want 1", got)
+	}
+	if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": "input"}); got != 25 {
+		t.Errorf("an aborted stream must still be billed: input tokens = %d, want 25", got)
+	}
+	if got := counterSum(t, reader, "anthropic_api_cost_micros_total", nil); got != 125+2+25 {
+		t.Errorf("aborted stream cost = %d, want 152", got)
+	}
+}
+
+func TestStream_FinalBeforeDrainIsAnError(t *testing.T) {
+	installOTel(t)
+	srv := sseServer(t, nil, streamEvents, nil)
+	c := newTestClient(t, srv.URL, nil, nil)
+
+	st := c.Stream(context.Background(), userRequest("hi"))
+	defer st.Close()
+	if !st.Next() {
+		t.Fatalf("Next() = false: %v", st.Err())
+	}
+	if _, err := st.Final(); !errors.Is(err, ErrStreamNotDrained) {
+		t.Fatalf("Final before the drain = %v, want ErrStreamNotDrained", err)
+	}
+	for st.Next() {
+	}
+	if _, err := st.Final(); err != nil {
+		t.Fatalf("Final after the drain = %v", err)
+	}
+}
+
+func TestStream_NextAfterCloseKeepsErrStable(t *testing.T) {
+	installOTel(t)
+	srv := sseServer(t, nil, streamEvents, nil)
+	c := newTestClient(t, srv.URL, nil, nil)
+
+	st := c.Stream(context.Background(), userRequest("hi"))
+	if !st.Next() {
+		t.Fatalf("Next() = false: %v", st.Err())
+	}
+	if err := st.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if st.Next() {
+		t.Fatal("Next() must stay false after Close()")
+	}
+	if err := st.Err(); err != nil {
+		t.Fatalf("Err() after Close() = %v, want nil", err)
+	}
+	if got := st.Usage(); got.InputTokens != 25 {
+		t.Errorf("Usage() after Close() = %+v, want the accumulated usage", got)
+	}
+}
+
+func TestComplete_LumpedCacheCreationIsAccounted(t *testing.T) {
+	reader, _ := installOTel(t)
+	const lumped = `{
+	  "id": "msg_04", "type": "message", "role": "assistant", "model": "claude-opus-5",
+	  "content": [{"type": "text", "text": "ok"}],
+	  "stop_reason": "end_turn", "stop_sequence": null,
+	  "usage": {"input_tokens": 10, "output_tokens": 2, "cache_creation_input_tokens": 40}
+	}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(lumped))
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, srv.URL, nil, nil)
+	resp, err := c.Complete(context.Background(), userRequest("hi"))
+	if err != nil {
+		t.Fatalf("Complete: %v", err)
+	}
+	if resp.Usage.CacheWrite5mTokens != 40 || resp.Usage.TotalInput() != 50 {
+		t.Fatalf("a backend without the TTL split must still be accounted: %+v", resp.Usage)
+	}
+	// 10·5 + 2·25 + 40·6.25 micros.
+	if want := USDMicros(50 + 50 + 250); resp.Cost != want {
+		t.Errorf("cost = %d, want %d", resp.Cost, want)
+	}
+	if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": "cache_write"}); got != 40 {
+		t.Errorf("cache_write tokens = %d, want 40", got)
+	}
+}
+
+func TestStream_ThinkingDeltaIsTranslated(t *testing.T) {
+	installOTel(t)
+	events := []string{
+		sse("message_start", streamStart),
+		sse("content_block_start", `{"type":"content_block_start","index":0,"content_block":{"type":"thinking","thinking":"","signature":""}}`),
+		sse("content_block_delta", `{"type":"content_block_delta","index":0,"delta":{"type":"thinking_delta","thinking":"step"}}`),
+		sse("content_block_stop", `{"type":"content_block_stop","index":0}`),
+		sse("message_delta", `{"type":"message_delta","delta":{"stop_reason":"end_turn","stop_sequence":null},"usage":{"output_tokens":3}}`),
+		sse("message_stop", `{"type":"message_stop"}`),
+	}
+	srv := sseServer(t, nil, events, nil)
+	c := newTestClient(t, srv.URL, nil, nil)
+
+	st := c.Stream(context.Background(), userRequest("hi"))
+	defer st.Close()
+	var thinking strings.Builder
+	for st.Next() {
+		if ev := st.Event(); ev.Type == EventThinkingDelta {
+			thinking.WriteString(ev.Thinking)
+		}
+	}
+	if err := st.Err(); err != nil {
+		t.Fatalf("Err = %v", err)
+	}
+	if thinking.String() != "step" {
+		t.Errorf("thinking delta = %q, want %q", thinking.String(), "step")
+	}
+}
+
+func TestStream_AccumulateErrorIsSurfaced(t *testing.T) {
+	reader, _ := installOTel(t)
+	events := []string{
+		sse("message_start", streamStart),
+		// Дельта в блок, которого не было: рассинхрон индексов ломает аккумуляцию.
+		sse("content_block_delta", `{"type":"content_block_delta","index":7,"delta":{"type":"text_delta","text":"boom"}}`),
+		sse("message_stop", `{"type":"message_stop"}`),
+	}
+	srv := sseServer(t, nil, events, nil)
+	c := newTestClient(t, srv.URL, nil, nil)
+
+	st := c.Stream(context.Background(), userRequest("hi"))
+	defer st.Close()
+	for st.Next() {
+	}
+	if st.Err() == nil {
+		t.Fatal("Err() = nil, want the accumulation failure")
+	}
+	if _, err := st.Final(); err == nil {
+		t.Fatal("Final() must carry the accumulation failure")
+	}
+	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream"}); got != 1 {
+		t.Errorf("calls_total{op=stream} = %d, want 1", got)
 	}
 }

@@ -58,10 +58,10 @@ func TestEvilAccountNeverReachesNetwork(t *testing.T) {
 		if _, err := c.UploadPart(ctx, acc, "https://drive-b.amocrm.ru/upload", "", nil); !errors.Is(err, ErrInvalidAccount) {
 			t.Errorf("UploadPart %+v: err = %v, want ErrInvalidAccount", acc, err)
 		}
-		if _, err := c.ExchangeCode(ctx, acc.Subdomain, acc.TLD, "id", "secret", "code", "https://cb"); !errors.Is(err, ErrInvalidAccount) {
+		if _, err := c.ExchangeCode(ctx, acc, testOAuthConfig(), "code"); !errors.Is(err, ErrInvalidAccount) {
 			t.Errorf("OAuth %+v: err = %v, want ErrInvalidAccount", acc, err)
 		}
-		if _, err := c.RefreshToken(ctx, acc.Subdomain, acc.TLD, "id", "secret", "refresh", "https://cb"); !errors.Is(err, ErrInvalidAccount) {
+		if _, err := c.RefreshToken(ctx, acc, testOAuthConfig(), "refresh"); !errors.Is(err, ErrInvalidAccount) {
 			t.Errorf("OAuth refresh %+v: err = %v, want ErrInvalidAccount", acc, err)
 		}
 		tgt := AmojoTarget{TLD: acc.TLD, AccountKey: acc.Subdomain, Secret: "s"}
@@ -84,8 +84,8 @@ func TestValidAccountBuildsAmocrmHost(t *testing.T) {
 		t.Fatalf("validate: %v", err)
 	}
 	got, err := c.resolveURL(acc.restBase(), "/oauth2/access_token", nil)
-	if err != nil || got != "https://my-company-01.amocrm.com/oauth2/access_token" {
-		t.Fatalf("url = %q, %v", got, err)
+	if err != nil || got.String() != "https://my-company-01.amocrm.com/oauth2/access_token" {
+		t.Fatalf("url = %v, %v", got, err)
 	}
 }
 
@@ -102,11 +102,13 @@ func TestExecuteLogsRateLimitAndServerErrors(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 
+	// Аккаунт после 429 остаётся оштрафованным, поэтому у каждой фазы свой.
 	status.Store(http.StatusTooManyRequests)
-	if _, err := c.ListLeads(context.Background(), testAccount(), ListParams{}); !errors.Is(err, ErrRateLimited) {
+	throttled := Account{Subdomain: "throttled", TLD: "ru", Token: "t"}
+	if _, err := c.ListLeads(context.Background(), throttled, ListParams{}); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("err = %v, want ErrRateLimited", err)
 	}
-	if e, ok := log.find("warn", "amocrmkit: rate limited"); !ok || e.kv["account"] != "demo" || e.kv["retry_after"] != 30 {
+	if e, ok := log.find("warn", "amocrmkit: rate limited"); !ok || e.kv["account"] != "throttled" || e.kv["retry_after"] != 30 {
 		t.Errorf("rate-limited warn = %+v, ok=%v", e, ok)
 	}
 
@@ -119,7 +121,7 @@ func TestExecuteLogsRateLimitAndServerErrors(t *testing.T) {
 	}
 
 	status.Store(http.StatusUnauthorized)
-	if _, err := c.RefreshToken(context.Background(), "demo", "ru", "id", "secret", "r", "https://cb"); !errors.Is(err, ErrAuth) {
+	if _, err := c.RefreshToken(context.Background(), testAccount(), testOAuthConfig(), "r"); !errors.Is(err, ErrAuth) {
 		t.Fatalf("err = %v, want ErrAuth", err)
 	}
 	if e, ok := log.find("warn", "amocrmkit: oauth failed"); !ok || e.kv["grant"] != "refresh_token" {

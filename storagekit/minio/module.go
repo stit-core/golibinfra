@@ -5,52 +5,88 @@ import (
 	"fmt"
 
 	miniogo "github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
 
-func NewClient(cfg storagekit.Config) (*miniogo.Client, error) {
-	if cfg.Endpoint == "" {
-		return nil, fmt.Errorf("storagekit/minio: STORAGE_S3_ENDPOINT is required")
-	}
-	if cfg.Bucket == "" {
-		return nil, fmt.Errorf("storagekit/minio: STORAGE_S3_BUCKET is required")
-	}
-	client, err := miniogo.New(cfg.Endpoint, &miniogo.Options{
-		Creds:  credentials.NewStaticV4(cfg.AccessKey, cfg.SecretKey, ""),
-		Secure: cfg.UseSSL,
-		Region: cfg.Region,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("storagekit/minio: new client: %w", err)
-	}
-	return client, nil
-}
+// ProbeName — имя health-пробы кита в группе `healthkit.probes`.
+const ProbeName = "storagekit"
 
+// Probe — проба существования бакета с собственным дедлайном
+// (STORAGE_S3_PROBE_TIMEOUT): деградация S3 не держит /ready дольше него.
+// Регистрируется потребителем через healthkit.Provide.
 func Probe(client *miniogo.Client, cfg storagekit.Config) healthkit.Probe {
-	return func(ctx context.Context) error {
-		ok, err := client.BucketExists(ctx, cfg.Bucket)
-		if err != nil {
-			return fmt.Errorf("storagekit/minio: bucket exists check: %w", err)
-		}
-		if !ok {
-			return fmt.Errorf("storagekit/minio: bucket %q not found", cfg.Bucket)
-		}
-		return nil
-	}
+	probe := healthkit.New(ProbeName, func(ctx context.Context) error {
+		return checkBucket(ctx, client, cfg.Bucket)
+	})
+	return healthkit.WithTimeout(probe, cfg.ProbeTimeout)
 }
 
-// Module — боевой Storage-провайдер. Подключается рядом с storagekit.Module
-// (тот даёт URLBuilder). Config caller регистрирует сам.
+// Module — боевой Storage/Presigner поверх MinIO/S3. Подключается рядом с
+// storagekit.Module (тот даёт URLBuilder); Config caller провайдит сам.
 var Module = fx.Module(
 	"storagekit/minio",
 	fx.Provide(
 		NewClient,
-		NewUploader,
-		func(u *Uploader) storagekit.Storage { return u },
-		func(u *Uploader) storagekit.Presigner { return u },
+		NewStorage,
+		func(s *Storage) storagekit.Storage { return s },
+		func(s *Storage) storagekit.Presigner { return s },
 	),
+	fx.Invoke(registerStartupCheck),
 )
+
+func registerStartupCheck(lc fx.Lifecycle, client *miniogo.Client, cfg storagekit.Config, log logkit.Logger) {
+	if !cfg.CreateBucket && !cfg.ProbeOnStart {
+		return
+	}
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			if cfg.ProbeTimeout > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, cfg.ProbeTimeout)
+				defer cancel()
+			}
+			if cfg.CreateBucket {
+				if err := ensureBucket(ctx, client, cfg); err != nil {
+					return err
+				}
+			}
+			if !cfg.ProbeOnStart {
+				return nil
+			}
+			if err := checkBucket(ctx, client, cfg.Bucket); err != nil {
+				return err
+			}
+			log.Info(ctx, "storagekit: bucket ready", "bucket", cfg.Bucket)
+			return nil
+		},
+	})
+}
+
+func ensureBucket(ctx context.Context, client *miniogo.Client, cfg storagekit.Config) error {
+	exists, err := client.BucketExists(ctx, cfg.Bucket)
+	if err != nil {
+		return fmt.Errorf("storagekit: bucket exists check %q: %w", cfg.Bucket, err)
+	}
+	if exists {
+		return nil
+	}
+	if err := client.MakeBucket(ctx, cfg.Bucket, miniogo.MakeBucketOptions{Region: cfg.Region}); err != nil {
+		return fmt.Errorf("storagekit: create bucket %q: %w", cfg.Bucket, err)
+	}
+	return nil
+}
+
+func checkBucket(ctx context.Context, client *miniogo.Client, bucket string) error {
+	ok, err := client.BucketExists(ctx, bucket)
+	if err != nil {
+		return fmt.Errorf("storagekit: bucket exists check %q: %w", bucket, err)
+	}
+	if !ok {
+		return fmt.Errorf("storagekit: bucket %q not found", bucket)
+	}
+	return nil
+}

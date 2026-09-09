@@ -2,6 +2,7 @@ package pgkit_test
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
 	"testing"
@@ -12,9 +13,6 @@ import (
 )
 
 func TestNewPool_AppliesSessionTimeouts(t *testing.T) {
-	if testing.Short() {
-		t.Skip("integration")
-	}
 	pg := testkit.StartPostgres(t)
 	cfg := pgkit.PoolConfig{
 		DSN:                    pg.DSN,
@@ -80,5 +78,69 @@ func TestNewPool_ConnectTimeout(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 5*time.Second {
 		t.Fatalf("NewPool took %v, connect timeout not applied", elapsed)
+	}
+}
+
+// Нулевой HealthCheck попадал в pgxpool как HealthCheckPeriod=0 и ронял процесс
+// паникой time.NewTicker(0) из фоновой горутины пула.
+func TestNewPool_ZeroHealthCheckDoesNotPanic(t *testing.T) {
+	t.Parallel()
+	_, err := pgkit.NewPool(context.Background(), pgkit.PoolConfig{
+		DSN:            "postgres://test:test@127.0.0.1:1/test?sslmode=disable",
+		MaxConns:       1,
+		ConnectTimeout: 300 * time.Millisecond,
+	})
+	if err == nil {
+		t.Fatal("expected connect error on a dead port")
+	}
+}
+
+func TestNewPool_RejectsInvalidConfig(t *testing.T) {
+	t.Parallel()
+	_, err := pgkit.NewPool(context.Background(), pgkit.PoolConfig{})
+	if !errors.Is(err, pgkit.ErrConfig) {
+		t.Fatalf("NewPool(zero) err = %v, want ErrConfig", err)
+	}
+}
+
+// Нули PoolConfig означают «дефолт pgxpool», а не «выключено».
+func TestNewPool_ZeroSizesKeepPgxDefaults(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	pool, err := pgkit.NewPool(context.Background(), pgkit.PoolConfig{DSN: pg.DSN})
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	cfg := pool.Config()
+	if cfg.HealthCheckPeriod <= 0 {
+		t.Errorf("HealthCheckPeriod = %v, want pgx default", cfg.HealthCheckPeriod)
+	}
+	if cfg.MaxConns < 1 {
+		t.Errorf("MaxConns = %d, want pgx default >= 1", cfg.MaxConns)
+	}
+	if cfg.MaxConnLifetime <= 0 {
+		t.Errorf("MaxConnLifetime = %v, want pgx default", cfg.MaxConnLifetime)
+	}
+	if cfg.MaxConnIdleTime <= 0 {
+		t.Errorf("MaxConnIdleTime = %v, want pgx default", cfg.MaxConnIdleTime)
+	}
+}
+
+func TestNewPool_WithoutOTelTracer(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	cfg := pg.PoolConfig()
+	cfg.OTelTrace = false
+	pool, err := pgkit.NewPool(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+
+	if tr := pool.Config().ConnConfig.Tracer; tr != nil {
+		t.Fatalf("Tracer = %T, want nil when PG_OTEL_TRACE=false", tr)
+	}
+	if _, err := pool.Exec(context.Background(), "SELECT 1"); err != nil {
+		t.Fatalf("exec: %v", err)
 	}
 }

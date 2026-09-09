@@ -2,13 +2,14 @@ package httpkit
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -20,22 +21,51 @@ import (
 )
 
 func init() {
-	logkit.RegisterAttr(func(ctx context.Context) (string, any, bool) {
+	logkit.RegisterAttr("request_id", func(ctx context.Context) (slog.Value, bool) {
 		if id := RequestIDFrom(ctx); id != "" {
-			return "request_id", id, true
+			return slog.StringValue(id), true
 		}
-		return "", nil, false
+		return slog.Value{}, false
 	})
 }
 
+// HeaderRequestID — заголовок корреляции запроса, общий с grpckit и httpclient.
 const HeaderRequestID = requestid.Header
 
+// RequestIDFrom возвращает request-id из ctx; пустая строка, если его нет.
 func RequestIDFrom(ctx context.Context) string { return requestid.From(ctx) }
 
 // ContextWithRequestID кладёт request-id под общий ключ: HTTP-middleware и
 // gRPC-интерсептор (grpckit) пишут одно и то же место.
 func ContextWithRequestID(ctx context.Context, id string) context.Context {
 	return requestid.With(ctx, id)
+}
+
+type subjectCtxKey struct{}
+
+// ContextWithSubject кладёт идентификатор аутентифицированного субъекта в ctx:
+// по нему scope'ится идемпотентность вместо сырых credentials.
+func ContextWithSubject(ctx context.Context, subject string) context.Context {
+	return context.WithValue(ctx, subjectCtxKey{}, subject)
+}
+
+// SubjectFrom возвращает идентификатор субъекта, положенный ContextWithSubject.
+func SubjectFrom(ctx context.Context) string {
+	s, _ := ctx.Value(subjectCtxKey{}).(string)
+	return s
+}
+
+type authDoneCtxKey struct{}
+
+// withAuthDone помечает ctx как уже аутентифицированный: Idempotency вызывает
+// extractor до replay, и HumaAuth не должен верифицировать те же credentials второй раз.
+func withAuthDone(ctx context.Context) context.Context {
+	return context.WithValue(ctx, authDoneCtxKey{}, true)
+}
+
+func authDone(ctx context.Context) bool {
+	done, _ := ctx.Value(authDoneCtxKey{}).(bool)
+	return done
 }
 
 // RequestID принимает X-Request-ID клиента только печатным ASCII до 128 байт,
@@ -84,61 +114,161 @@ func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
 	}
 }
 
+func pathSet(paths []string) map[string]struct{} {
+	if len(paths) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(paths))
+	for _, p := range paths {
+		if p != "" {
+			set[p] = struct{}{}
+		}
+	}
+	return set
+}
+
 // AccessLog пишет одну строку на запрос; request_id и trace_id добавляет logkit
-// из ctx, поэтому middleware стоит после RequestID и OTel.
-func AccessLog(log logkit.Logger) func(http.Handler) http.Handler {
+// из ctx, поэтому middleware стоит после RequestID и OTel. Успешные ответы на
+// quietPaths (пробы оркестратора) логируются на Debug.
+func AccessLog(log logkit.Logger, quietPaths ...string) func(http.Handler) http.Handler {
+	quiet := pathSet(quietPaths)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()
 			ww := wrap(w)
+			// defer: panic ниже по цепочке тоже должна дать строку запроса.
+			defer func() {
+				kv := []any{
+					"method", r.Method,
+					"path", r.URL.Path,
+					"route", routeLabel(r),
+					"status", ww.status,
+					"bytes", ww.bytes,
+					"duration_ms", float64(time.Since(start).Microseconds()) / 1000,
+				}
+				_, isQuiet := quiet[r.URL.Path]
+				switch {
+				case ww.status >= 500:
+					log.Error(r.Context(), "http", kv...)
+				case ww.status >= 400:
+					log.Warn(r.Context(), "http", kv...)
+				case isQuiet:
+					log.Debug(r.Context(), "http", kv...)
+				default:
+					log.Info(r.Context(), "http", kv...)
+				}
+			}()
 			next.ServeHTTP(ww, r)
-
-			kv := []any{
-				"method", r.Method,
-				"path", r.URL.Path,
-				"route", routeLabel(r),
-				"status", ww.status,
-				"bytes", ww.bytes,
-				"dur", time.Since(start),
-			}
-			switch {
-			case ww.status >= 500:
-				log.Error(r.Context(), "http", kv...)
-			case ww.status >= 400:
-				log.Warn(r.Context(), "http", kv...)
-			default:
-				log.Info(r.Context(), "http", kv...)
-			}
 		})
 	}
 }
 
+// AuthExtractor проверяет credentials запроса и возвращает ctx с личностью;
+// ошибка → 401, обёрнутый ErrAuthUnavailable → 503.
 type AuthExtractor func(r *http.Request) (context.Context, error)
 
-func HumaAuth(api huma.API, extract AuthExtractor) func(huma.Context, func(huma.Context)) {
+// ErrAuthUnavailable — зависимость аутентификации недоступна (JWKS, хаб,
+// session store). Extractor оборачивает её, чтобы клиент получил 503 и не
+// разлогинивал пользователя по 401.
+var ErrAuthUnavailable = errors.New("httpkit: auth backend unavailable")
+
+// HumaAuth проверяет операции с непустым Operation().Security: extractor кладёт
+// личность в ctx операции. Работает на любом huma-адаптере (chi в проде,
+// humatest в тестах потребителя).
+func HumaAuth(log logkit.Logger, extract AuthExtractor) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
-		if extract == nil || len(ctx.Operation().Security) == 0 {
+		if extract == nil || len(ctx.Operation().Security) == 0 || authDone(ctx.Context()) {
 			next(ctx)
 			return
 		}
-		r, w := humachi.Unwrap(ctx)
-		newCtx, err := extract(r)
+		newCtx, err := extract(requestFrom(ctx))
 		if err != nil {
-			_ = huma.WriteErr(api, ctx, http.StatusUnauthorized, "unauthorized")
+			writeHumaAPIError(ctx, authError(ctx.Context(), log, err))
 			return
 		}
-		next(humachi.NewContext(ctx.Operation(), r.WithContext(newCtx), w))
+		next(huma.WithContext(ctx, withAuthDone(newCtx)))
 	}
+}
+
+// authError переводит ошибку extractor'а в APIError и логирует причину: наружу
+// уходит только код, текст ошибки остаётся у оператора.
+func authError(ctx context.Context, log logkit.Logger, err error) *APIError {
+	var apiErr *APIError
+	switch {
+	case errors.Is(err, ErrAuthUnavailable):
+		log.Warn(ctx, "auth backend unavailable", "err", err)
+		return Unavailable("AUTH_UNAVAILABLE", "authentication backend is unavailable")
+	case errors.As(err, &apiErr):
+		log.Debug(ctx, "auth rejected", "err", err, "code", apiErr.Code)
+		return apiErr
+	default:
+		log.Debug(ctx, "auth rejected", "err", err)
+		return Unauthorized("UNAUTHORIZED", "unauthorized")
+	}
+}
+
+func writeHumaAPIError(ctx huma.Context, e *APIError) {
+	ctx.SetHeader("Content-Type", ProblemContentType)
+	ctx.SetStatus(e.Status)
+	_ = json.NewEncoder(ctx.BodyWriter()).Encode(e)
+}
+
+// requestFrom достаёт *http.Request адаптера (humachi в проде, humaflow в
+// humatest); адаптеру без Unwrap запрос собирается из полей huma.Context.
+func requestFrom(hc huma.Context) *http.Request {
+	c := hc
+	for {
+		u, ok := c.(interface{ Unwrap() huma.Context })
+		if !ok {
+			break
+		}
+		c = u.Unwrap()
+	}
+	if u, ok := c.(interface {
+		Unwrap() (*http.Request, http.ResponseWriter)
+	}); ok {
+		if r, _ := u.Unwrap(); r != nil {
+			return r.WithContext(hc.Context())
+		}
+	}
+
+	u := hc.URL()
+	r := (&http.Request{
+		Method:     hc.Method(),
+		URL:        &u,
+		Header:     http.Header{},
+		Host:       hc.Host(),
+		RemoteAddr: hc.RemoteAddr(),
+		TLS:        hc.TLS(),
+		Body:       http.NoBody,
+	}).WithContext(hc.Context())
+	hc.EachHeader(func(name, value string) { r.Header.Add(name, value) })
+	return r
 }
 
 // OTel открывает server-спан и извлекает входящий traceparent. RED-метрики
 // otelhttp выключены: их эмитит Metrics в одном словаре с остальными китами.
-// Имя спана уточняет Metrics после роутинга.
-func OTel() func(http.Handler) http.Handler {
+// Запросы на quietPaths (пробы оркестратора) спан не открывают.
+func OTel(quietPaths ...string) func(http.Handler) http.Handler {
+	quiet := pathSet(quietPaths)
 	return func(next http.Handler) http.Handler {
 		return otelhttp.NewHandler(next, "http",
 			otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()),
-			otelhttp.WithSpanNameFormatter(func(_ string, r *http.Request) string { return r.Method }),
+			otelhttp.WithSpanNameFormatter(spanName),
+			otelhttp.WithFilter(func(r *http.Request) bool {
+				_, isQuiet := quiet[r.URL.Path]
+				return !isQuiet
+			}),
 		)
 	}
+}
+
+// spanName вызывается otelhttp дважды: до роутинга (паттерн неизвестен) и
+// после, когда chi выставил r.Pattern — тогда имя становится «METHOD /route».
+func spanName(_ string, r *http.Request) string {
+	method := methodLabel(r.Method)
+	if route := routeLabel(r); route != "unmatched" {
+		return method + " " + route
+	}
+	return method
 }

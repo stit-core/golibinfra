@@ -9,8 +9,8 @@ import (
 	"go.uber.org/fx"
 )
 
-// Module не provide'ит Config'и: их регистрирует caller (App-структура или
-// `fx.Provide(pgkit.NewPoolConfig, pgkit.NewReplicaConfig)`), как у всех китов.
+// Module — граф пула primary: *pgxpool.Pool, *DB, Transactor и *ReadWriteDB.
+// Config'и provide'ит caller (App-структура или fx.Provide(pgkit.NewPoolConfig)).
 var Module = fx.Module("pgkit",
 	fx.Provide(
 		newPoolWithLifecycle,
@@ -22,34 +22,57 @@ var Module = fx.Module("pgkit",
 	fx.Invoke(func(*ReadWriteDB) {}),
 )
 
+// NewPoolConfig читает PoolConfig из ENV и валидирует его.
 func NewPoolConfig() (PoolConfig, error) {
 	var c PoolConfig
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return c, fmt.Errorf("pgkit: pool config: %w", err)
+	}
+	return c, c.Validate()
 }
 
+// NewReplicaConfig читает ReplicaConfig из ENV и валидирует его.
 func NewReplicaConfig() (ReplicaConfig, error) {
 	var c ReplicaConfig
-	return c, envconfig.Process("", &c)
+	if err := envconfig.Process("", &c); err != nil {
+		return c, fmt.Errorf("pgkit: replica config: %w", err)
+	}
+	return c, c.Validate()
 }
 
 func newPoolWithLifecycle(lc fx.Lifecycle, cfg PoolConfig) (*pgxpool.Pool, error) {
 	return openPool(lc, cfg, RolePrimary)
 }
 
-func newReadWriteDB(lc fx.Lifecycle, master *DB, repCfg ReplicaConfig, poolCfg PoolConfig) (*ReadWriteDB, error) {
-	if repCfg.ReplicaDSN == "" {
-		return NewReadWriteDB(master, master), nil
+// replicaParams: ReplicaConfig опционален — сервис без реплики не обязан его
+// провайдить, zero value означает «реплики нет».
+type replicaParams struct {
+	fx.In
+
+	LC      fx.Lifecycle
+	Master  *DB
+	Pool    PoolConfig
+	Replica ReplicaConfig `optional:"true"`
+}
+
+func newReadWriteDB(p replicaParams) (*ReadWriteDB, error) {
+	if err := p.Replica.Validate(); err != nil {
+		return nil, err
+	}
+	if p.Replica.ReplicaDSN == "" {
+		return NewReadWriteDB(p.Master, p.Master), nil
 	}
 
-	repPoolCfg := poolCfg
-	repPoolCfg.DSN = repCfg.ReplicaDSN
-	repPoolCfg.MaxConns = repCfg.MaxConns
+	repPoolCfg, err := p.Replica.poolConfig(p.Pool)
+	if err != nil {
+		return nil, err
+	}
 
-	pool, err := openPool(lc, repPoolCfg, RoleReplica)
+	pool, err := openPool(p.LC, repPoolCfg, RoleReplica)
 	if err != nil {
 		return nil, fmt.Errorf("pgkit: replica: %w", err)
 	}
-	return NewReadWriteDB(master, NewDB(pool)), nil
+	return NewReadWriteDB(p.Master, NewDB(pool)), nil
 }
 
 func openPool(lc fx.Lifecycle, cfg PoolConfig, role string) (*pgxpool.Pool, error) {

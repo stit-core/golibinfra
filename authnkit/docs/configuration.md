@@ -3,7 +3,14 @@
 Три публичных конфига: `Argon2idParams` (параметры хэширования), `JWTConfig`
 (секрет, TTL и leeway токенов) и `TOTPConfig` (issuer и окно TOTP). Все —
 **part of public API**: имена/типы полей и их envconfig-теги менять = breaking
-change, идёт мажорным апгрейдом (см. [корневой README § Стабильность API](../README.md)).
+change; выпускается minor-релизом, помечается `!` в Conventional Commit и строкой
+миграции в аннотации тега (см. [корневой README § Версионирование](../../README.md)).
+
+У каждого есть `Validate() error`: нарушение окна → `ErrConfig`. `Validate`
+вызывают и envconfig-конструкторы (`NewArgon2idParams` / `NewJWTConfig` /
+`NewTOTPConfig`), и конструкторы примитивов (`NewArgon2idHasher` /
+`NewHS256JWT` / `NewTOTP`), поэтому невалидный конфиг валит старт приложения,
+а не первый запрос.
 
 RBAC конфига не имеет: `Registry` наполняется кодом через `Register`.
 
@@ -14,16 +21,23 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `ARGON2_TIME` | `Time` | `uint32` | `3` | Число итераций (passes), ≥ 1. Растит CPU-стоимость линейно. |
+| `ARGON2_TIME` | `Time` | `uint32` | `3` | Число итераций (passes), окно `1..64`. Растит CPU-стоимость линейно. |
 | `ARGON2_MEMORY_KIB` | `Memory` | `uint32` | `65536` | Память на один хэш, в КиБ (`65536` = 64 МиБ), окно `8192..1048576`. Главный рычаг стойкости. |
-| `ARGON2_THREADS` | `Threads` | `uint8` | `4` | Параллелизм (lanes), ≥ 1. Обычно = числу ядер. |
+| `ARGON2_THREADS` | `Threads` | `uint8` | `4` | Параллелизм (lanes), окно `1..16`. Обычно = числу ядер. |
 | `ARGON2_KEYLEN` | `KeyLen` | `uint32` | `32` | Длина выходного ключа (хэша) в байтах, `16..128`. |
 | `ARGON2_SALTLEN` | `SaltLen` | `uint32` | `16` | Длина случайной соли в байтах, `8..64`. |
 
-Окно значений одно и для `Hash`, и для `Verify` (константы `MinMemoryKiB`,
-`MaxMemoryKiB`, `MinSaltLen`, `MaxSaltLen`, `MinKeyLen`, `MaxKeyLen`): параметры
-хэшера вне окна → `Hash` возвращает `ErrConfig`; PHC-строка вне окна →
-`Verify` возвращает `ErrInvalidHash`.
+Окно значений одно и для `Hash`, и для `Verify` (константы `MinTime`, `MaxTime`,
+`MinMemoryKiB`, `MaxMemoryKiB`, `MaxCostKiBPasses`, `MinThreads`, `MaxThreads`,
+`MinSaltLen`, `MaxSaltLen`, `MinKeyLen`, `MaxKeyLen`): параметры хэшера вне окна →
+`NewArgon2idHasher` возвращает `ErrConfig`; PHC-строка вне окна → `Verify`
+возвращает `ErrInvalidHash` до вычисления Argon2.
+
+`MaxCostKiBPasses` ограничивает произведение `t * m`, а не каждый параметр по
+отдельности: одна проверка стоит не больше четырёх дефолтных хэшей по CPU и не
+больше 768 МиБ по памяти, какой бы ни была строка в хранилище. Из-за него
+`ARGON2_MEMORY_KIB` = 1 ГиБ недостижим ни при каком `t` ≥ 1 — практический
+потолок памяти 786432 КиБ (при `ARGON2_TIME` = 1).
 
 `KeyLen` и `SaltLen` влияют только на новые хэши: при `Verify` фактическая длина
 ключа берётся из самой PHC-строки, а соль — из неё же, поэтому изменение этих
@@ -37,15 +51,20 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Короче 32 байт → `NewHS256JWT` возвращает `ErrConfig`. |
-| `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | TTL для `SignAccess`. `0` в литерале конфига → дефолт кита. |
-| `JWT_REFRESH_TTL` | `RefreshTTL` | `time.Duration` | `720h` | TTL для `SignRefresh` (`720h` = 30 дней). `0` → дефолт кита. |
+| `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Короче 32 байт → `ErrConfig`. |
+| `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | TTL для `SignAccess`. `0` в литерале конфига → дефолт кита; отрицательный → `ErrConfig`. |
+| `JWT_REFRESH_TTL` | `RefreshTTL` | `time.Duration` | `720h` | TTL для `SignRefresh` (`720h` = 30 дней). `0` → дефолт кита; отрицательный → `ErrConfig`. |
 | `JWT_LEEWAY` | `Leeway` | `time.Duration` | `60s` | Допуск рассинхрона часов при проверке `exp`/`nbf`/`iat` в `Parse`. `0` → дефолт кита; отрицательный → `ErrConfig`. |
 
-`Sign(claims, ttl)` принимает TTL явно — для токенов с нестандартным сроком
-(одноразовые ссылки, приглашения). `SignAccess`/`SignRefresh` берут TTL из
-конфига. Пороги и дефолты доступны константами: `MinSecretLen` (32),
-`DefaultAccessTTL`, `DefaultRefreshTTL`, `DefaultLeeway`.
+`Sign(ctx, claims, ttl)` принимает TTL явно — для токенов с нестандартным сроком
+(одноразовые ссылки, приглашения); `ttl <= 0` → `ErrConfig`.
+`SignAccess`/`SignRefresh` берут TTL из конфига. Пороги и дефолты доступны
+константами: `MinSecretLen` (32), `DefaultAccessTTL`, `DefaultRefreshTTL`,
+`DefaultLeeway`.
+
+`iss`/`aud` конфигом не задаются — это опции конструктора `WithIssuer` /
+`WithAudience` (см. [usage.md](usage.md)): они одновременно проставляются при
+подписи и требуются при разборе.
 
 ## TOTPConfig
 
@@ -54,8 +73,12 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `TOTP_ISSUER` | `Issuer` | `string` | — (`required`) | Имя сервиса в otpauth-URL (показывается в authenticator-приложении). |
-| `TOTP_SKEW` | `Skew` | `uint` | `1` | Сколько соседних 30-секундных окон принимается с каждой стороны: `1` → код живёт ~90 с, `0` → только текущее окно. |
+| `TOTP_ISSUER` | `Issuer` | `string` | — (`required`) | Имя сервиса в otpauth-URL (показывается в authenticator-приложении). Пустой или с `:` / `/` → `ErrConfig`: label URL стал бы неоднозначным. |
+| `TOTP_SKEW` | `Skew` | `uint` | `1` | Сколько соседних 30-секундных окон принимается с каждой стороны: `1` → код живёт ~90 с, `0` → только текущее окно. Потолок — `MaxTOTPSkew` (2), выше → `ErrConfig`. |
+
+Период (30 с), число цифр (6) и алгоритм (SHA1) — константы кита (`TOTPPeriod`),
+одинаковые в `Generate` и `Verify`; конфигурировать их незачем, authenticator-
+приложения ждут именно эти значения.
 
 ## Тюнинг стойкости Argon2id
 
@@ -66,7 +89,9 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 
 - **Главный рычаг — `ARGON2_MEMORY_KIB`.** Память дороже всего для атакующего на
   GPU/ASIC; поднимай её в первую очередь, держа `Time` небольшим.
-- `ARGON2_TIME` — добивка, когда память упёрлась в RAM-бюджет инстанса.
+- `ARGON2_TIME` — добивка, когда память упёрлась в RAM-бюджет инстанса; потолки
+  окна (`MaxTime` = 64, `MaxCostKiBPasses` = 786432) на порядок выше любой
+  разумной калибровки и существуют ради строк из хранилища, а не ради тюнинга.
 - `ARGON2_THREADS` ≈ числу доступных ядер; не превышай, иначе lanes сериализуются.
 - Замеряй на целевом железе — `go test -bench` в ките есть
   (`BenchmarkArgon2idHash`/`BenchmarkArgon2idVerify`), снимай число там же, где

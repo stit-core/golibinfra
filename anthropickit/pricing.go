@@ -7,6 +7,9 @@ import "strings"
 // web-search — за 1000 запросов.
 type USDMicros int64
 
+// Price — ставки одной модели. Стоимость считается с усечением вниз по каждой
+// компоненте и не знает про batch, fast mode и тарифные ярусы длинного контекста
+// (docs/configuration.md § Что Cost не учитывает).
 type Price struct {
 	InputPerMTok        USDMicros
 	OutputPerMTok       USDMicros
@@ -54,6 +57,7 @@ func tier(input, output, cacheRead USDMicros) Price {
 var defaultPrices = map[string]Price{
 	"claude-fable-5-1":  tier(10*usd, 50*usd, usd/4), // cache-read 0.025× входа — исключение из правила 0.1×
 	"claude-fable-5":    tier(10*usd, 50*usd, usd),
+	"claude-mythos-5":   tier(10*usd, 50*usd, usd), // тариф Fable 5; доступ — Project Glasswing
 	"claude-opus-5":     tier(5*usd, 25*usd, usd/2),
 	"claude-opus-4-8":   tier(5*usd, 25*usd, usd/2),
 	"claude-opus-4-7":   tier(5*usd, 25*usd, usd/2),

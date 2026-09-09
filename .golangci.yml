@@ -1,36 +1,51 @@
 version: "2"
 run:
   go: "1.26"
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
 linters:
   default: none
   enable:
+    - bodyclose
+    - copyloopvar
     - errcheck
+    - errname
     - errorlint
+    - gocritic
     - gosec
     - govet
     - ineffassign
     - misspell
+    - nilerr
+    - noctx
+    - nolintlint
+    - perfsprint
+    - prealloc
     - revive
     - sqlclosecheck
     - staticcheck
     - unconvert
     - unused
+    - usetesting
   settings:
     errorlint:
       errorf: true
       asserts: true
       comparison: true
+    nolintlint:
+      require-explanation: true
+      require-specific: true
+      allow-unused: false
     revive:
       rules:
         - name: var-naming
         - name: unused-parameter
           disabled: true
         - name: exported
-          disabled: true
   exclusions:
     generated: lax
     presets:
-      - comments
       - common-false-positives
       - legacy
       - std-error-handling
@@ -38,6 +53,8 @@ linters:
       - linters:
           - errcheck
           - gosec
+          - noctx
+          - bodyclose
         path: _test\.go
     paths:
       - third_party$

@@ -14,11 +14,23 @@ import (
 	"git.stit.tech/stit-core/golibinfra/hubkit/client"
 )
 
+func mustClient(t *testing.T, cfg client.Config, doer client.Doer) *client.Client {
+	t.Helper()
+	if cfg.ServiceToken == "" {
+		cfg.ServiceToken = "tok"
+	}
+	c, err := client.New(cfg, doer)
+	if err != nil {
+		t.Fatalf("client.New: %v", err)
+	}
+	return c
+}
+
 func newClient(t *testing.T, h http.HandlerFunc) *client.Client {
 	t.Helper()
 	srv := httptest.NewServer(h)
 	t.Cleanup(srv.Close)
-	return client.New(client.Config{BaseURL: srv.URL, ServiceToken: "tok", ServiceName: "deal"}, srv.Client())
+	return mustClient(t, client.Config{BaseURL: srv.URL, ServiceToken: "tok", ServiceName: "deal"}, srv.Client())
 }
 
 func TestGetCompany_OK(t *testing.T) {
@@ -187,7 +199,7 @@ func TestErrorMapping(t *testing.T) {
 
 func TestTransportError_Unavailable(t *testing.T) {
 	// Клиент на несуществующий адрес — транспортная ошибка маппится в Unavailable.
-	c := client.New(client.Config{BaseURL: "http://127.0.0.1:0"}, &http.Client{Timeout: time.Second})
+	c := mustClient(t, client.Config{BaseURL: "http://127.0.0.1:0"}, &http.Client{Timeout: time.Second})
 	if _, err := c.GetCompany(context.Background(), "x"); !errors.Is(err, client.ErrUnavailable) {
 		t.Fatalf("ожидали ErrUnavailable, получили %v", err)
 	}
@@ -199,7 +211,7 @@ func TestNew_NilDoerDefaults(t *testing.T) {
 		_ = json.NewEncoder(w).Encode(map[string]any{"data": map[string]any{"id": "c1"}})
 	}))
 	t.Cleanup(srv.Close)
-	c := client.New(client.Config{BaseURL: srv.URL}, nil)
+	c := mustClient(t, client.Config{BaseURL: srv.URL}, nil)
 	got, err := c.GetCompany(context.Background(), "c1")
 	if err != nil || got.ID != "c1" {
 		t.Fatalf("GetCompany: %+v %v", got, err)
@@ -219,7 +231,7 @@ func TestDo_CtxDeadlineAlwaysSet(t *testing.T) {
 		deadline, hasDeadline = r.Context().Deadline()
 		return &http.Response{StatusCode: http.StatusNoContent, Body: http.NoBody}, nil
 	})
-	c := client.New(client.Config{BaseURL: "http://hub"}, doer)
+	c := mustClient(t, client.Config{BaseURL: "http://hub"}, doer)
 
 	if err := c.ArchiveCompany(context.Background(), "c1"); err != nil {
 		t.Fatalf("ArchiveCompany: %v", err)
@@ -322,7 +334,7 @@ func TestTagRouting_UsesTagBase(t *testing.T) {
 	}))
 	t.Cleanup(tagSrv.Close)
 
-	c := client.New(client.Config{
+	c := mustClient(t, client.Config{
 		BaseURL:      companySrv.URL,
 		TagBaseURL:   tagSrv.URL,
 		ServiceToken: "tok",
@@ -471,7 +483,7 @@ func TestUpsertDepartment_UsesEmployeeBase(t *testing.T) {
 	}))
 	t.Cleanup(employeeSrv.Close)
 
-	c := client.New(client.Config{
+	c := mustClient(t, client.Config{
 		BaseURL:         companySrv.URL,
 		EmployeeBaseURL: employeeSrv.URL,
 		ServiceToken:    "tok",
@@ -524,7 +536,7 @@ func TestEntityTagsAndDepartments_BaseRouting(t *testing.T) {
 	}))
 	t.Cleanup(employeeSrv.Close)
 
-	c := client.New(client.Config{
+	c := mustClient(t, client.Config{
 		BaseURL:         companySrv.URL,
 		EmployeeBaseURL: employeeSrv.URL,
 		ServiceToken:    "tok",

@@ -1,6 +1,7 @@
 package authnkit
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -25,25 +26,27 @@ func benchJWT(b *testing.B) *HS256JWT {
 }
 
 func BenchmarkJWTSign(b *testing.B) {
+	ctx := context.Background()
 	h := benchJWT(b)
 	claims := benchClaims()
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := h.Sign(claims, time.Minute); err != nil {
+		if _, err := h.Sign(ctx, claims, time.Minute); err != nil {
 			b.Fatal(err)
 		}
 	}
 }
 
 func BenchmarkJWTParse(b *testing.B) {
+	ctx := context.Background()
 	h := benchJWT(b)
-	tok, err := h.Sign(benchClaims(), time.Minute)
+	tok, err := h.Sign(ctx, benchClaims(), time.Minute)
 	if err != nil {
 		b.Fatal(err)
 	}
 	b.ResetTimer()
 	for b.Loop() {
-		if _, err := h.Parse(tok); err != nil {
+		if _, err := h.Parse(ctx, tok); err != nil {
 			b.Fatal(err)
 		}
 	}

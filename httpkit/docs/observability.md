@@ -7,8 +7,9 @@
 ## Метрики
 
 Instrumentation-scope `git.stit.tech/stit-core/golibinfra/httpkit`. Гистограмма
-длительности — явные bucket'ы (сек): `0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5,
-1, 2.5, 5, 10, 30`.
+длительности — `WithUnit("s")` и общие для всех китов bucket'ы
+`otelkit.DurationBuckets()`. Инструменты создаются один раз на процесс и
+переиспользуются всеми middleware.
 
 | Метрика | Тип | Labels | Эмитится | Назначение |
 |---|---|---|---|---|
@@ -20,22 +21,45 @@ Instrumentation-scope `git.stit.tech/stit-core/golibinfra/httpkit`. Гистог
 | `http_idempotency_total` | Int64 Counter | `result` | `Idempotency` | исходы: `stored`, `replayed`, `conflict`, `in_progress`, `skipped`, `error` |
 
 Label `path` везде — chi route-pattern (`/users/{id}`); запрос без маршрута
-получает `unmatched`, так что сканы 404 не растят кардинальность.
+получает `unmatched`, так что сканы 404 не растят кардинальность. Label `method`
+— только стандартные методы (`GET`, `HEAD`, `POST`, `PUT`, `PATCH`, `DELETE`,
+`OPTIONS`, `CONNECT`, `TRACE`), любой другой токен клиента становится `other`.
+
+Panic-запросы, 429 и preflight 204 попадают в `http_requests_total` наравне с
+остальными: `Metrics` стоит выше `Recovery`, `CORS` и `RateLimit` и пишет сэмпл
+через `defer`. У 429 и preflight `path` — `unmatched`: их отвергли до роутинга,
+и chi-паттерн ещё не известен.
 
 ## Спаны
 
 `OTel` стоит вторым в цепочке (после `RequestID`): `otelhttp` открывает
 server-span и извлекает входящий `traceparent`, а все последующие middleware,
-включая `AccessLog` и `Recovery`, работают внутри спана. `Metrics` после
-роутинга даёт спану имя `METHOD /route/{param}`. Собственные RED-метрики
-`otelhttp` выключены, чтобы не дублировать `http_requests_total` другим словарём.
+включая `AccessLog` и `Recovery`, работают внутри спана. Имя спана —
+`METHOD /route/{param}`: форматтер читает chi-паттерн, а otelhttp вызывает его
+повторно после роутинга, когда паттерн уже известен. `Metrics` добавляет на спан
+`http.route` и `request_id`. Собственные RED-метрики `otelhttp` выключены, чтобы
+не дублировать `http_requests_total` другим словарём.
+
+Пути из `HTTP_QUIET_PATHS` (по умолчанию `/health`, `/ready`) спан не открывают:
+пробы оркестратора идут каждые несколько секунд и трейсы им не нужны.
 
 ## Логи
 
-`AccessLog` пишет строку на запрос: `method`, `path`, `route`, `status`, `bytes`,
-`dur`; уровень по статусу (`≥500` Error, `≥400` Warn, иначе Info). `request_id`
-и `trace_id`/`span_id` добавляет `logkit` из ctx.
+`AccessLog` пишет строку на запрос: `method`, `path`, `route`, `status`,
+`bytes`, `duration_ms` (миллисекунды, float); уровень по статусу (`≥500` Error,
+`≥400` Warn, иначе Info). Успешные ответы на `HTTP_QUIET_PATHS` уходят на Debug,
+а их ошибки остаются на Warn/Error. `request_id` и `trace_id`/`span_id`
+добавляет `logkit` из ctx.
 
-`Recovery` логирует `panic recovered` со `stack`; `/ready` логирует каждую
-упавшую пробу (`readiness probe failed`, `probe`, `err`) на `Warn`, не отдавая
-текст ошибки клиенту.
+Остальные строки кита:
+
+- `panic recovered` (Error) со `stack` — `Recovery`.
+- `handler error` (Error) со `status` и полным текстом ошибки — error-hook huma;
+  клиенту при этом уходит нейтральный 500.
+- `auth rejected` (Debug) / `auth backend unavailable` (Warn) — `HumaAuth`.
+- `readiness probe failed` (Warn) с `probe` и `err` — `/ready`; текст ошибки
+  клиенту не отдаётся.
+- `http server listening` (Info) с фактическим `addr` — старт;
+  `http server stopped` (Error) — падение `Serve`, после которого приложение
+  гасится.
+- `http server error` (Warn) — ошибки net/http из `http.Server.ErrorLog`.

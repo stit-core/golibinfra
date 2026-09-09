@@ -2,6 +2,7 @@ package authnkit
 
 import "sync"
 
+// Permission — право в RBAC-реестре, строковый идентификатор вида "users:write".
 type Permission string
 
 // Registry — реестр «роль → права»: наполняется на старте приложения,
@@ -11,6 +12,7 @@ type Registry struct {
 	roles map[string]map[Permission]struct{}
 }
 
+// NewRegistry — пустой реестр ролей.
 func NewRegistry() *Registry {
 	return &Registry{roles: map[string]map[Permission]struct{}{}}
 }
@@ -26,6 +28,7 @@ func (r *Registry) Register(role string, perms ...Permission) {
 	r.roles[role] = set
 }
 
+// Has — есть ли право p у роли role; неизвестная роль или право → false.
 func (r *Registry) Has(role string, p Permission) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
