@@ -11,7 +11,7 @@
 `envconfig.Process` напрямую и **проходит мимо** `config.Source`. `config` нужен
 там, где приложение хочет одну точку загрузки: App-структуру с конфигами китов
 в полях, единый порядок приоритета источников и возможность добавить свой
-`Source` (например, секрет-стор) без правки китов.
+`Source` без правки китов.
 
 Отсюда граница: кастомный `Source` влияет только на структуры, переданные в
 `config.Load`. Если кит подключён через `fx.Provide(<kit>.NewConfig)`, его
@@ -83,8 +83,8 @@ fx.New(
 `Source` после env:
 
 ```go
-fx.Provide(func(v *vault.Client) []config.Source {
-	return []config.Source{config.Env(), vaultSource{v}}
+fx.Provide(func(own MySource) []config.Source {
+	return []config.Source{config.Env(), own} // own — своя реализация config.Source
 })
 ```
 
@@ -141,7 +141,7 @@ type Source interface {
 ```
 
 Источник, заполняющий переданную структуру `dst` (указатель на struct). Штатная
-реализация — `Env`/`EnvPrefixed`. Своя реализация (секрет-стор, файл, remote)
+реализация — `Env`/`EnvPrefixed`. Своя реализация (файл, remote)
 подставляется в `[]Source` наравне с ними; порядок в срезе — порядок приоритета.
 
 ### `Load`

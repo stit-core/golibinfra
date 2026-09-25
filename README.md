@@ -25,11 +25,16 @@ import "git.stit.tech/stit-core/golibinfra/testkit"
 
 ## Где это в экосистеме
 
-`golibinfra` — общая Go-lib экосистемы stit (5 форкаемых шаблонов + 2 общие
-библиотеки). Её импортирует
+`golibinfra` — общая Go-lib экосистемы stit (7 форкаемых шаблонов + 2 общие
+библиотеки: эта и [`pylibinfra`](https://git.stit.tech/stit-core/pylibinfra) для
+Python). Её импортирует
 [`go-backend-template`](https://git.stit.tech/stit-core/go-backend-template)
-(форк `<org>/backend`). Карта всех репо — на
-[витрине stit](https://git.stit.tech/stit-core/stit-public).
+(форк `<org>/backend`), а также бэкенды `ai-gateway-template` и
+`amocrm-gateway-template`. Библиотека не форкается: потребители тянут модуль по
+тегу, а выкатка их образов идёт из `<org>/infra`. Карта репо и операционный флоу —
+[`docs/reference/ecosystem.md`](https://git.stit.tech/stit-core/project-infra-template-compose/src/branch/main/docs/reference/ecosystem.md)
+в `project-infra-template-compose`; витрина всех репо —
+[stit-public](https://git.stit.tech/stit-core/stit-public).
 
 ## Доступ к репозиторию
 
@@ -72,8 +77,9 @@ go mod tidy
 ## Принципы
 
 - **Никакой продуктовой специфики.** Если файл знает про конкретные роли, домены,
-  имена сервисов — он не здесь. Исключения по решению оператора — `hubkit` (SDK
-  хаба stit) и `amocrmkit`; условия их выноса — в `.claude/plans/roadmap.md`.
+  имена сервисов — он не здесь. Исключения — `hubkit` (SDK хаба stit) и
+  `amocrmkit`; их выносят в отдельные модули, когда появляется второй потребитель
+  вне stit-core или конфликт версий зависимостей у потребителя.
 - **Без скрытых зависимостей.** Каждый пакет подключается независимо; `Config`
   даёт caller, `NewConfig` валидирует и падает на старте.
 - **fx-first.** Каждый пакет экспортирует `Module` для проводки.
@@ -136,7 +142,7 @@ go mod tidy
 Каждый кит читает свой эндпоинт из ENV — **разное значение = разный хост**. Это
 «шов» для split-топологии: storage / Postgres / NATS / Redis можно
 развести по отдельным серверам, **не трогая код**. Репликация / HA / failover —
-дело потребителя (швы и скиллы — в `corp-infra-template` и
+дело потребителя: runtime проекта ведёт `<org>/infra` (форк
 `project-infra-template-compose`).
 
 Таблица полная: `make envdoc-check` требует, чтобы каждая endpoint-переменная
@@ -263,7 +269,7 @@ env-таблицей.
 
 ## Версионирование
 
-Семвер по форме (`vX.Y.Z`), политика — по решению оператора:
+Семвер по форме (`vX.Y.Z`), политика:
 
 - **minor** — новая функциональность и breaking-изменения; каждое breaking
   названо в аннотации тега (`Breaking` по китам: что изменилось → как мигрировать);

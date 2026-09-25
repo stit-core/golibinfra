@@ -61,7 +61,7 @@ type Config struct {
 	MetricInterval  time.Duration `envconfig:"OTEL_METRICS_INTERVAL" default:"10s"`
 	LogBatchDelay   time.Duration `envconfig:"OTEL_LOGS_BATCH_DELAY" default:"1s"`
 
-	// Tenant — только local-dev: в проде service.namespace и tenant ставит коллектор.
+	// Tenant — непустой выставляет resource-атрибуты service.namespace и tenant.
 	Tenant string `envconfig:"OTEL_TENANT"`
 
 	OTLPHeaders Headers `envconfig:"OTEL_EXPORTER_OTLP_HEADERS"`

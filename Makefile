@@ -7,12 +7,12 @@ FUZZTIME              ?= 10s
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check fmt fmt-check vet lint test test-full build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
+.PHONY: help check plan-check fmt fmt-check vet lint test test-full build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
 
 help: ## Список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-check: fmt-check vet lint test build tidy-check vuln envdoc-check ## Канонический gate: fmt+vet+lint+test+build+tidy+vuln+envdoc (перед тегом)
+check: fmt-check vet lint test build tidy-check vuln envdoc-check plan-check ## Канонический gate: fmt+vet+lint+test+build+tidy+vuln+envdoc+plans (перед тегом)
 
 fmt: ## Форматирование (gofumpt через golangci-lint)
 	golangci-lint fmt $(PKGS)
@@ -40,6 +40,9 @@ tidy-check: ## go.mod/go.sum синхронны с кодом
 
 vuln: ## govulncheck по всем пакетам
 	govulncheck $(PKGS)
+
+plan-check: ## Формат планов .claude/plans/ (A=--summary — сводка активных планов)
+	bash scripts/validate-plan.sh $(A)
 
 envdoc-check: ## envconfig-теги ↔ доки китов и корневая env-таблица
 	scripts/envdoc-check.sh

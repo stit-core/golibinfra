@@ -32,7 +32,7 @@ gRPC-сервисы (gen-стабы + бизнес-логика) живут в �
    `MaxConcurrentStreams` (если задан), keepalive (`ServerParameters` +
    `EnforcementPolicy{PermitWithoutStream: true}`).
 4. **TLS** — если задана пара `TLSCertFile`/`TLSKeyFile`; иначе сервер слушает
-   plaintext (TLS-терминацию обычно делает корп-mesh/ingress).
+   plaintext (TLS обычно терминирует ingress/прокси перед сервисом).
 5. **Цепочки интерсепторов** — фиксированный порядок (см. ниже); auth и
    интерсепторы потребителя добавляются в хвост.
 6. **Health-сервис** регистрируется всегда (`grpc.health.v1.Health`).

@@ -67,9 +67,9 @@ GOAWAY `too_many_pings` на idle-стримах. Ужесточая `GRPC_KEEPA
 
 TLS навешивается (`grpc.Creds`), когда заданы оба `GRPC_TLS_CERT_FILE` и
 `GRPC_TLS_KEY_FILE`; ошибка чтения cert/key → `New` возвращает
-`grpckit: tls creds: …`. В корп-топологии TLS обычно терминируется на
-mesh/ingress, а сам сервис слушает plaintext — это дефолтный режим (оба поля
-пусты). mTLS (проверка клиентских сертификатов) настраивается через
+`grpckit: tls creds: …`. Когда TLS терминирует ingress/прокси перед сервисом,
+сам сервис слушает plaintext — это дефолтный режим (оба поля пусты). mTLS
+(проверка клиентских сертификатов) настраивается через
 `grpckit.WithServerOptions(grpc.Creds(...))` — см. [usage.md](usage.md).
 
 ## Health

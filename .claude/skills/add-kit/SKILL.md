@@ -1,6 +1,6 @@
 ---
 name: add-kit
-description: Добавить новый kit (пакет) в golibinfra по конвенциям библиотеки — package-doc, fx Module, envconfig-конфиг с Validate, observability через internal/otelkit, healthkit-проба при внешней зависимости, тесты, testkit-сабпакет, README кита (+ docs/ у сложного) и строка-индекс в корневом README и карте CLAUDE.md. Активируй когда юзер говорит "/add-kit", "добавь kit", "новый пакет в golibinfra", "заведи <name>kit", "нужен переиспользуемый примитив X". Для правки существующего kit'а скилл НЕ нужен — это прямой Edit.
+description: Завести в golibinfra новый kit по конвенциям библиотеки — package-doc, fx Module, envconfig-конфиг с Validate, observability через internal/otelkit, healthkit-проба при внешней зависимости, тесты, testkit-сабпакет, README кита (+ docs/ у сложного) и строки в корневом README и карте CLAUDE.md. Используй, когда нужен новый переиспользуемый пакет — инфраструктурный примитив, клиент или helper для нескольких сервисов. Правка существующего кита — прямой Edit, без скилла.
 ---
 
 # Skill: add-kit

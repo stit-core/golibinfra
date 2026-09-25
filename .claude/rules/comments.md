@@ -26,10 +26,10 @@ paths:
 
 ## Допустимо внутри функции (одна короткая строка)
 
-- WHY-инвариант: `// Alias (not new type) so X satisfies Y structurally.`
-- Workaround: `// pgx returns []byte for jsonb; cast manually until v5.7 fix.`
-- Сюрпризное поведение: `// MUST be called before Start — registers handlers in fx graph.`
-- Хитрая константа: `// 90s = upstream nginx idle timeout − 10s safety margin.`
+- WHY-инвариант: `// Алиас, а не новый тип: X структурно удовлетворяет Y.`
+- Workaround: `// pgx отдаёт jsonb как []byte; приводим сами до фикса в v5.7.`
+- Сюрпризное поведение: `// Вызывать до Start: здесь регистрируются хендлеры в fx-графе.`
+- Хитрая константа: `// 90s = idle-таймаут upstream nginx − 10s запаса.`
 
 ## Чек
 

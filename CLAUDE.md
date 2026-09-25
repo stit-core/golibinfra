@@ -6,8 +6,23 @@ auth, БД, messaging, кэш, аудит и т.д. Не сервис и не st
 
 Этот файл — **ядро (always-on) + роутер**. Полная human-доку — `README.md`
 (использование, observability, стабильность API, версионирование). Контекстные
-правила — `.claude/rules/` (path-scoped). Процедуры — `.claude/skills/`. План —
-`.claude/plans/roadmap.md`.
+правила — `.claude/rules/` (path-scoped). Процедуры — `.claude/skills/`. Планы —
+`.claude/plans/` (skill `/plan`).
+
+## Место в экосистеме
+
+Экосистема stit — 7 шаблонов `stit-core/*`, которые форкаются в репо клиентской орги
+`<org>/*`, и две библиотеки: эта и `pylibinfra` (Python-аналог с теми же китами).
+golibinfra не форкается: `<org>/backend` (форк `go-backend-template`) и бэкенды
+`ai-gateway-template` / `amocrm-gateway-template` импортируют модуль по тегу. Отсюда
+уходит только тег (`/release`): обновление зависимости и миграцию по аннотации тега
+потребитель делает своей обвязкой, выкатку образа — `<org>/infra` (`make bump`).
+
+Сюда приходят прямым заходом — сопровождать библиотеку — или с задачей из сервис-репо:
+generic-примитив, которого нет в ките, `go-backend-template` оформляет как PR в golibinfra.
+Работа здесь идёт обвязкой этого репо, гейт — `make check`. Канон карты репо и
+операционного флоу — `docs/reference/ecosystem.md` репо `project-infra-template-compose`
+(в workspace — `../project-infra-template-compose/docs/reference/ecosystem.md`).
 
 ## Точка входа
 
@@ -16,6 +31,8 @@ auth, БД, messaging, кэш, аудит и т.д. Не сервис и не st
   сложного), строка-индекс в корневом README, testkit-сабпакет).
 - **Выпустить версию** — skill `/release` (`make gate-clean` → аннотированный тег
   `vX.Y.Z` с release notes → push → гайд апдейта консьюмера).
+- **Содержательное изменение** (breaking в ките, миграция, работа на несколько коммитов) —
+  через план: skill `/plan` (`.claude/plans/<slug>.md`, бэклог — `.claude/plans/backlog.md`).
 - Точечная правка существующего kit'а — прямой Edit; scaffold не нужен.
 
 ## Команды (gate перед claim «готово»)
@@ -108,8 +125,9 @@ make coverage     # покрытие -short + сводка; ещё есть benc
   имени). `revive.exported` ловит типы, функции, var и const; **методы на
   экспортируемом приёмнике он пропускает** — там правило держит ревью. Package-doc
   — 1–3 строки: что это и какие сигналы эмитит, детали — в README кита.
-- **Язык кода — английский:** тексты ошибок и логов, sentinel'ы
-  `errors.New("<kit>: …")`, обёртки `fmt.Errorf("<kit>: …: %w", err)`.
+- **Язык:** тексты ошибок и логов — английские, sentinel'ы
+  `errors.New("<kit>: …")`, обёртки `fmt.Errorf("<kit>: …: %w", err)`; комментарии
+  и doc-comment'ы — русские, как в окружающем коде.
 - **Observability by default.** Новый kit эмитит метрики/спаны через `internal/otelkit`;
   resource attrs и экспорт настраивает потребитель.
 - **Минимум зависимостей.** Перед новым import — проверь stdlib + существующие deps;
@@ -133,29 +151,32 @@ make coverage     # покрытие -short + сводка; ещё есть benc
 ## Границы
 
 ### Делать всегда
-- Перед claim «готово» — `make check` зелёный; перед тегом — `make gate-clean`.
-- Новый kit — через `/add-kit`; собственный `README.md` кита (+ `docs/` у сложного)
-  и строка-индекс в `README.md § Пакеты` обязательны.
+- Перед claim «готово» — `make check` зелёный; перед тегом — `make gate-clean`
+  (§ Команды).
+- Новый kit — через `/add-kit`: без собственного `README.md` кита (+ `docs/` у сложного)
+  и строки-индекса в `README.md § Пакеты` потребитель его не найдёт.
 - Тронул конфиг / эмитимые метрики / labels / span-attrs — обнови `README.md`
   (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability) и, если
-  переменная — endpoint, строку в `README.md § Per-concern endpoints`;
-  `make envdoc-check` сверяет обе стороны.
+  переменная — endpoint, строку в `README.md § Per-concern endpoints`:
+  `make envdoc-check` сверяет обе стороны и падает на расхождении.
 - Каждый багфикс — с регрессионным тестом; у `Module` кита — fx-тест
   (`fx.ValidateApp` с минимальным набором провайдеров).
 
-### Сначала спросить
-- Менять конвенцию имён метрик (`bizmetric`, `biz_*`) — затрагивает все сервисы.
-- Добавлять новую зависимость в `go.mod`.
-- Удалять кит или менять его границы.
+### Сначала спросить пользователя
+- Смена конвенции имён метрик (`bizmetric`, `biz_*`) — на неё опираются все сервисы.
+- Новая зависимость в `go.mod` — она уезжает в граф каждого потребителя.
+- Удаление кита или смена его границ — breaking для потребителей.
 
-### Не делать никогда
-- `:latest` в примерах и тестах. `fmt.Print*` / `slog.Default()` в production-коде —
-  только `logkit.Logger`.
-- Коммитить product-specific логику — golibinfra общая lib; доменное живёт в
-  сервис-репо. Исключения по решению оператора — `hubkit` (SDK хаба) и `amocrmkit`;
-  триггер выноса — в `roadmap.md § Backlog`.
-- `http.DefaultClient` без таймаута; `context.Background()` в обработчике, где
-  доступен контекст запроса.
+### Не делать
+- `:latest` в примерах и тестах: тег плавает, и тест перестаёт быть воспроизводимым.
+- `fmt.Print*` / `slog.Default()` в production-коде: лог идёт только через
+  `logkit.Logger`, иначе теряет redact, `trace_id`/`request_id` и OTel log-bridge.
+- Product-specific логика: golibinfra — общая lib, доменное живёт в сервис-репо.
+  Исключения — `hubkit` (SDK хаба) и `amocrmkit`; их выносят в отдельные модули, когда
+  появляется второй потребитель вне stit-core или конфликт версий зависимостей у потребителя.
+- `http.DefaultClient` без таймаута и `context.Background()` в обработчике, где
+  доступен контекст запроса: первый вешает вызов без предела, второй теряет отмену,
+  дедлайн и трейс запроса.
 
 ## Forward-only
 

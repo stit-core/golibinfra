@@ -1,6 +1,6 @@
 ---
 name: release
-description: Выпустить новую версию golibinfra — make gate-clean, аннотированный semver-тег vX.Y.Z с release notes + push, затем гайд обновления консьюмера (go get + go mod tidy). Активируй когда юзер говорит "/release", "релизни golibinfra", "подними версию", "выпусти vX.Y.Z", "затегай новую версию lib'ы".
+description: Выпустить новую версию golibinfra — make gate-clean, аннотированный semver-тег vX.Y.Z с release notes + push, затем гайд обновления консьюмера (go get + go mod tidy). Используй, когда пользователь решил выпустить версию библиотеки (релиз, тег, bump версии).
 ---
 
 # Skill: release
@@ -29,8 +29,9 @@ description: Выпустить новую версию golibinfra — make gate
    Совместимость между minor'ами `v1` не гарантируется: **breaking-изменения идут
    minor'ом** (`vX.Y+1.0`) и обязаны быть перечислены в аннотации тега с шагом
    миграции. Только фиксы без смены публичных сигнатур, дефолтов, имён метрик и
-   envconfig-тегов → patch. Major (`/vN` в module path) — отдельное решение
-   оператора, когда потребители перестанут обновляться синхронно с библиотекой.
+   envconfig-тегов → patch. Major (`/vN` в module path) — только по явному решению
+   пользователя: он резервируется на случай, когда потребители перестанут
+   обновляться синхронно с библиотекой.
    Список коммитов с прошлого тега:
    `git log $(git describe --tags --abbrev=0)..HEAD --oneline`;
    breaking среди них — `... --oneline | grep '!:'`.
@@ -63,11 +64,11 @@ description: Выпустить новую версию golibinfra — make gate
 4. **Следующий шаг — консьюмеру.** Напечатай блок обновления для `<org>/backend`
    (форк `go-backend-template`) и для `ai-gateway-template` / `amocrm-gateway-template`
    вместе с миграционными пунктами из `Breaking` — только теми, что задевают код
-   конкретного шаблона. Сначала сверь baseline консьюмера (`grep golibinfra go.mod`):
-   если он отстаёт больше чем на один тег, пунктов из аннотаций между baseline и
-   целевой версией столько же, сколько в текущей, — перечисли цепочку, а не только
-   последний шаг (`git tag -l --format='%(contents)' <тег>` на каждую промежуточную
-   версию; breaking-коммиты отрезка — `git log <baseline>..<тег> --oneline | grep '!:'`):
+   конкретного консьюмера. Сначала сверь baseline консьюмера (`grep golibinfra go.mod`):
+   если он отстаёт больше чем на один тег, миграционные пункты есть в каждой
+   промежуточной аннотации — перечисли цепочку, а не только последний шаг
+   (`git tag -l --format='%(contents)' <тег>` на каждую промежуточную версию;
+   breaking-коммиты отрезка — `git log <baseline>..<тег> --oneline | grep '!:'`):
    ```bash
    go get git.stit.tech/stit-core/golibinfra@vX.Y.Z
    go mod tidy

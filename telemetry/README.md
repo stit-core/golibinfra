@@ -11,16 +11,17 @@ W3C-propagator и runtime-инструментация. Корневой obs-к�
   выставляются глобальными (`otel.SetTracerProvider` / `otel.SetMeterProvider`
   / `global.SetLoggerProvider`); `log.LoggerProvider` дополнительно отдаётся во
   fx-граф — `logkit.Module` подхватывает его как второй sink.
-- **OTLP/HTTP по спецификации** — `OTEL_EXPORTER_OTLP_ENDPOINT` — базовый URL;
-  схема задаёт TLS, per-signal пути `/v1/traces`, `/v1/metrics`, `/v1/logs`
-  дописываются к нему. Для корп ingest — `Authorization: Bearer <OTEL_TOKEN>`
-  и заголовки из `OTEL_EXPORTER_OTLP_HEADERS`.
+- **OTLP/HTTP по спецификации** — `OTEL_EXPORTER_OTLP_ENDPOINT` — базовый URL
+  коллектора, который выбирает потребитель; схема задаёт TLS, per-signal пути
+  `/v1/traces`, `/v1/metrics`, `/v1/logs` дописываются к нему. Аутентификация у
+  коллектора — `Authorization: Bearer <OTEL_TOKEN>` и/или заголовки из
+  `OTEL_EXPORTER_OTLP_HEADERS`.
 - **Метрики и трейсы — только OTLP.** В stdout они не пишутся; без живого
   коллектора экспорт дропается, а ошибка экспорта уходит в лог (см. § Ошибки
   экспорта). stdout-копию логов даёт `logkit`.
 - **Resource-атрибуты** — `service.name`, `service.version`,
-  `deployment.environment.name` из `Config`; `tenant` / `service.namespace` —
-  только при `OTEL_TENANT` (local-dev).
+  `deployment.environment.name` из `Config`; `tenant` и `service.namespace` —
+  только при непустом `OTEL_TENANT`.
 - **Runtime-инструментация** — метрики `go.*` через
   `contrib/instrumentation/runtime`.
 - **TextMap-propagator** — `TraceContext` + `Baggage`, в том числе при
@@ -83,7 +84,7 @@ func (s *Service) Do(ctx context.Context) (err error) {
 | `OTEL_TRACES_BATCH_DELAY` | `TraceBatchDelay` | `time.Duration` | `5s` | период сброса очереди batch-processor'а трейсов |
 | `OTEL_METRICS_INTERVAL` | `MetricInterval` | `time.Duration` | `10s` | период экспорта метрик (он же min-интервал чтения runtime memstats) |
 | `OTEL_LOGS_BATCH_DELAY` | `LogBatchDelay` | `time.Duration` | `1s` | период сброса очереди batch-processor'а логов |
-| `OTEL_TENANT` | `Tenant` | `string` | `""` | local-dev: выставляет `service.namespace` + `tenant`; в проде ставит коллектор — не задавать |
+| `OTEL_TENANT` | `Tenant` | `string` | `""` | непустой выставляет resource-атрибуты `service.namespace` и `tenant` (одно значение); пусто — их нет |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `OTLPHeaders` | `Headers` | `nil` | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения в percent-encoding) |
 | `OTEL_TOKEN` | `OTLPBearerToken` | `string` | `""` | `Authorization: Bearer <token>` к каждому OTLP-запросу; переопределяет `Authorization` из `OTEL_EXPORTER_OTLP_HEADERS` |
 
@@ -177,11 +178,12 @@ stderr — так их печатает SDK по умолчанию.
 | `service.name` | `OTEL_SERVICE_NAME` | **приложение** |
 | `service.version` | `OTEL_SERVICE_VERSION` | **приложение** |
 | `deployment.environment.name` | `APP_ENV` | **приложение** |
-| `tenant` | — | **корп otel-collector** (из `X-Scope-OrgID`) |
-| `service.namespace` | — | **корп otel-collector** (force-upsert, == `tenant`) |
+| `tenant` | `OTEL_TENANT` | **приложение**, опционально |
+| `service.namespace` | `OTEL_TENANT` (то же значение) | **приложение**, опционально |
 
-`OTEL_TENANT` выставляет `tenant` / `service.namespace` только для local-dev
-или неаутентифицированного коллектора; в проде значение перезатирает коллектор.
+Пустой `OTEL_TENANT` не выставляет ни одного из двух атрибутов. Если их
+проставляет сам коллектор, оставьте переменную пустой — у атрибута должен быть
+один источник.
 
 ## API
 
@@ -220,8 +222,6 @@ go test -short -race ./telemetry/
 
 ## Инварианты и подводные камни
 
-- **Не выставлять `tenant` / `service.namespace` в проде.** Их force-сетит
-  корп otel-collector из `X-Scope-OrgID`.
 - **`OTEL_SERVICE_NAME` обязателен при включённой телеметрии** — `Init`/`NewConfig`
   возвращают `ErrConfig`. Без корректных `service.*`/`deployment.environment.name`
   сервис не виден на дашбордах.
@@ -242,6 +242,6 @@ go test -short -race ./telemetry/
   контекст. Держите `fx.StopTimeout` ≥ `OTEL_EXPORT_TIMEOUT`.
 - **Расхождение schema URL не валит старт.** При несовпадении semconv кита и
   builtin-детекторов SDK ресурс собирается без schema URL, атрибуты сохраняются.
-- **Правка `telemetry` — breaking для всех сервисов.** Это часть корп
-  obs-контракта: изменение `Config`, resource-attrs или сигналов затрагивает
-  все сервисы и стандартные дашборды.
+- **Правка `telemetry` — breaking для всех сервисов, подключивших кит.** `Config`,
+  resource-атрибуты и набор сигналов — контракт, на который опираются их env,
+  запросы к бэкенду наблюдаемости и дашборды.
