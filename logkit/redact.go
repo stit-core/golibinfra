@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -299,10 +300,48 @@ func maskable(v slog.Value, class keySecrecy) bool {
 	}
 }
 
-// classifyKey: ключ режется на слова по разделителям, границам camelCase и цифр
+// classifyKey: ключ без подстроки из keyTriggers — не секрет и на слова не
+// режется: обход проверяет каждый ключ map, а подстроки нет почти ни у одного.
+func classifyKey(key string) keySecrecy {
+	if !hasKeyTrigger(key) {
+		return keyPlain
+	}
+	return classifyWords(key)
+}
+
+// keyTriggers — подстроки, без которых ни один ключ не секрет: слова словаря,
+// api и private (api_key, private_key), коды pin и otp.
+var keyTriggers = []string{
+	"api", "authorization", "cookie", "credential", "jwt", "otp", "passphrase", "passwd",
+	"password", "pin", "private", "pwd", "secret", "token",
+}
+
+// keyTriggersAt — keyTriggers по первой букве в обоих регистрах: в позиции ключа
+// сверяются только те, что с неё начинаются.
+var keyTriggersAt = func() (t [256][]string) {
+	for _, w := range keyTriggers {
+		t[w[0]] = append(t[w[0]], w)
+		t[w[0]-'a'+'A'] = append(t[w[0]-'a'+'A'], w)
+	}
+	return t
+}()
+
+// hasKeyTrigger — в ключе есть подстрока из keyTriggers без учёта регистра.
+func hasKeyTrigger(key string) bool {
+	for i := 0; i < len(key); i++ {
+		for _, w := range keyTriggersAt[key[i]] {
+			if foldPrefix(key[i:], w) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// classifyWords: ключ режется на слова по разделителям, границам camelCase и цифр
 // («X-Api-Key», «accessToken», «oauth2Token»), слова сверяются со словарём.
 // По словам, а не подстрокой: «input_tokens» — счётчик, а не секрет.
-func classifyKey(key string) keySecrecy {
+func classifyWords(key string) keySecrecy {
 	class := keyPlain
 	var prev string
 	for i := 0; i < len(key); {
@@ -388,15 +427,10 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 			return slog.String(key, h.text(t.Error()))
 		}
 	}
-	// Обход ключей — только если JSON допускает ключ-секрет; запасной путь пишет
-	// маскированную копию, исходник под ключом-секретом — никогда.
+	// Копия с маскированием — до кодирования: запасной путь пишет её же, исходник
+	// под ключом-секретом — никогда.
+	x = h.maskKeys(x)
 	b, err := marshalJSON(x)
-	if err != nil || keyHint(b) {
-		if mx, changed := h.maskKeys(x); changed {
-			x = mx
-			b, err = marshalJSON(mx)
-		}
-	}
 	if err != nil {
 		return slog.Any(key, x)
 	}
@@ -408,46 +442,13 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 // массивов, в том числе за interface; без таких ключей отдаёт x как есть, не
 // копируя. Копия кодируется в тот же JSON, что оригинал, поэтому указатели не
 // разыменовываются, а типы со своим MarshalJSON или MarshalText не разбираются.
-func (h *redactHandler) maskKeys(x any) (any, bool) {
+func (h *redactHandler) maskKeys(x any) any {
 	v := container(reflect.ValueOf(x))
 	var w walk
 	if !v.IsValid() || !w.secretsIn(v) {
-		return x, false
+		return x
 	}
-	return h.masked(v, map[visit]any{}), true
-}
-
-// keyTriggers — подстроки, без которых ни один ключ не секрет: слова словаря,
-// api и private (api_key, private_key) и код pin.
-var keyTriggers = []string{
-	"api", "authorization", "cookie", "credential", "jwt", "otp", "passphrase", "passwd",
-	"password", "pin", "private", "pwd", "secret", "token",
-}
-
-// keyTriggerStart — первые буквы keyTriggers в обоих регистрах: скан не
-// сверяет слова в позициях, где ни одно не начинается.
-var keyTriggerStart = func() (t [256]bool) {
-	for _, w := range keyTriggers {
-		t[w[0]], t[w[0]-'a'+'A'] = true, true
-	}
-	return t
-}()
-
-// keyHint — необходимое условие секрета по ключу: в JSON значения есть одна из
-// keyTriggers без учёта регистра (ключ map всегда виден в JSON). Без неё обход
-// ключей не нужен.
-func keyHint(b []byte) bool {
-	for i := range b {
-		if !keyTriggerStart[b[i]] {
-			continue
-		}
-		for _, w := range keyTriggers {
-			if foldPrefix(b[i:], w) {
-				return true
-			}
-		}
-	}
-	return false
+	return h.masked(v, map[visit]any{})
 }
 
 var (
@@ -494,11 +495,20 @@ func holdsMaps(t reflect.Type) bool {
 	return true
 }
 
+// selfEncodingCache — reflect.Type → bool: обход спрашивает про каждую map и срез
+// записи, а четыре Implements дороги; типов в логах немного.
+var selfEncodingCache sync.Map
+
 // selfEncoding — тип или указатель на него сам решает, как выглядеть в JSON.
 func selfEncoding(t reflect.Type) bool {
+	if self, ok := selfEncodingCache.Load(t); ok {
+		return self.(bool)
+	}
 	p := reflect.PointerTo(t)
-	return t.Implements(jsonMarshalerType) || t.Implements(textMarshalerType) ||
+	self := t.Implements(jsonMarshalerType) || t.Implements(textMarshalerType) ||
 		p.Implements(jsonMarshalerType) || p.Implements(textMarshalerType)
+	selfEncodingCache.Store(t, self)
+	return self
 }
 
 // visit — пройденный контейнер: цикл (m["self"] = m) и общее поддерево

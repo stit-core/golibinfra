@@ -455,12 +455,20 @@ func TestRedact_CostOfRecordWithoutSecrets(t *testing.T) {
 	for i := range items {
 		items[i] = map[string]any{"id": i, "name": "item", "price": 10}
 	}
-	header := http.Header{}
-	for _, k := range []string{
-		"Accept", "Accept-Encoding", "Accept-Language", "Cache-Control", "Connection",
-		"Host", "Pragma", "Referer", "User-Agent", "X-Request-Id",
-	} {
-		header.Set(k, "v")
+	// Реалистичные заголовки: обход ключей идёт всегда, X-Api-Version со словом
+	// api режется на слова — самый дорогой путь без секрета.
+	header := http.Header{
+		"Accept":          {"application/json, text/plain, */*"},
+		"Accept-Encoding": {"gzip, deflate, br"},
+		"Accept-Language": {"en-US,en;q=0.9"},
+		"Cache-Control":   {"no-cache"},
+		"Connection":      {"keep-alive"},
+		"Host":            {"api.example.com"},
+		"Pragma":          {"no-cache"},
+		"Referer":         {"https://app.example.com/orders"},
+		"User-Agent":      {"Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36"},
+		"X-Api-Version":   {"2"},
+		"X-Request-Id":    {"0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"},
 	}
 	records := map[string][]any{
 		"struct": {"doc", map[string]any{"id": "ORD-42", "items": []string{"a", "b"}, "total": 1500}},
@@ -851,10 +859,10 @@ func TestRedact_FallbackKeepsMasking(t *testing.T) {
 	}
 }
 
-// Регрессия: pre-filter ключей — необходимое условие секрета по ключу. Ключ,
-// который classifyKey считает секретом, обязан пройти keyHint, иначе обход
-// ключей пропустит его, и значение уйдёт в лог открытым.
-func TestRedact_KeyHintNeverMissesASecretKey(t *testing.T) {
+// Регрессия: подстрока из keyTriggers — необходимое условие секрета по ключу.
+// Ключ, который разбор на слова считает секретом, обязан её содержать, иначе
+// classifyKey отсечёт его раньше разбора, и значение уйдёт в лог открытым.
+func TestRedact_KeyTriggerNeverMissesASecretKey(t *testing.T) {
 	fragments := []string{
 		"token", "Token", "TOKEN", "password", "Passwd", "pwd", "passphrase", "secret", "Secret",
 		"authorization", "cookie", "Cookies", "credential", "jwt", "otp", "TOTP", "pin", "Pin", "code",
@@ -867,9 +875,8 @@ func TestRedact_KeyHintNeverMissesASecretKey(t *testing.T) {
 		for range 1 + rnd.IntN(5) {
 			sb.WriteString(fragments[rnd.IntN(len(fragments))])
 		}
-		key := sb.String()
-		if classifyKey(key) != keyPlain && !keyHint([]byte(key)) {
-			t.Fatalf("case %d: key %q is a secret, but keyHint skips it", i, key)
+		if key := sb.String(); classifyWords(key) != keyPlain && !hasKeyTrigger(key) {
+			t.Fatalf("case %d: key %q is a secret, but has no key trigger", i, key)
 		}
 	}
 }
