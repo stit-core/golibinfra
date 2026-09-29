@@ -16,6 +16,18 @@
 - **logkit-redact-otpauth** — ключ `otpauth` (URI provisioning TOTP) по правилу ключей не секрет, а
   base32-секрет в `secret=` дефолтные маски не ловят — он уходит в лог открытым. Триггер: партия 2
   (аудит logkit).
+- **bruteforcekit-lock-remaining** — `Retry-After` отказа потребитель считает своими часами от
+  `LockState.Until` (часы БД): расхождение часов даёт неверную паузу; отдавать остаток блокировки
+  от хранилища (N11 валидатора harden-kits B). Триггер: партия 2 (аудит bruteforcekit).
+- **bruteforcekit-attempt-retry-test** — ветку `Attempt`, которая переучитывает попытку, когда
+  блокировку сняли между чтением и upsert (до 3 раз), тест не воспроизводит. Триггер: партия 2
+  (аудит bruteforcekit).
+- **outboxtest-withtesttx** — `pgkit.WithTestTx` на ctx usecase'а снова пропускает `Publish` мимо
+  транзакции: у фейков `pgtest` и ручной пометки один маркер; контракт держат
+  `outboxkit/docs/testing.md` и аннотация v1.2.0, машина — нет. Триггер: партия 2 (аудит testkit).
+- **timerkit-raw-group** — job с сырым тегом группы `timerkit.jobs` обходит маркер модуля (проверку
+  `timerkit.Module` в графе); контракт «только `timerkit.Provide`» держит README. Триггер: партия 3
+  (`archkit`).
 - **httpkit-auth-bypass** — `api.Adapter().Handle(&op)` с `Security` и сырые маршруты chi
   (`Router().Get`, `Mount`) идут мимо `HumaAuth` и проверки старта: huma вешает middleware API
   только в `huma.Register`, в OpenAPI их нет (N9 валидатора этапа httpkit, эксперимент E20).
