@@ -387,23 +387,35 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 // (http.Header, url.Values, map[string]any), в том числе вложенных; без таких
 // ключей отдаёт x как есть, не копируя. Поля структур не разбираются.
 func (h *redactHandler) maskKeys(x any) any {
-	if _, ok := x.(json.Marshaler); ok {
-		return x
-	}
 	v := reflect.ValueOf(x)
-	if !secretKeysIn(v) {
+	if !secretKeysIn(v, map[uintptr]bool{}) {
 		return x
 	}
-	return h.maskedMap(v)
+	return h.maskedMap(stringMap(v), map[uintptr]map[string]any{})
 }
 
-func secretKeysIn(v reflect.Value) bool {
+var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
+
+// stringMap — v (сквозь interface) как map со строковыми ключами либо
+// невалидный Value; map со своим MarshalJSON не разбирается.
+func stringMap(v reflect.Value) reflect.Value {
 	if v.Kind() == reflect.Interface {
 		v = v.Elem()
 	}
-	if v.Kind() != reflect.Map || v.Type().Key().Kind() != reflect.String || v.Len() == 0 {
+	if v.Kind() != reflect.Map || v.Type().Key().Kind() != reflect.String || v.Type().Implements(jsonMarshalerType) {
+		return reflect.Value{}
+	}
+	return v
+}
+
+// secretKeysIn: есть ли секрет в map или во вложенных map. seen — уже
+// просмотренные map: цикл (m["self"] = m) смотрится один раз, а не бесконечно.
+func secretKeysIn(v reflect.Value, seen map[uintptr]bool) bool {
+	v = stringMap(v)
+	if !v.IsValid() || v.Len() == 0 || seen[v.Pointer()] {
 		return false
 	}
+	seen[v.Pointer()] = true
 	// Значение смотрится, только если ключ-секрет или внутри может быть map:
 	// иначе обход не аллоцирует на каждую пару.
 	elem := v.Type().Elem().Kind()
@@ -419,25 +431,32 @@ func secretKeysIn(v reflect.Value) bool {
 		if class != keyPlain && maskable(slog.AnyValue(val.Interface()), class) {
 			return true
 		}
-		if nestable && secretKeysIn(val) {
+		if nestable && secretKeysIn(val, seen) {
 			return true
 		}
 	}
 	return false
 }
 
-func (h *redactHandler) maskedMap(v reflect.Value) map[string]any {
-	if v.Kind() == reflect.Interface {
-		v = v.Elem()
+// maskedMap копирует map с заменой значений под ключами-секретами, вложенные
+// map — так же. memo — копии пройденных map: рекурсия по циклу конечна, а сам
+// цикл остаётся циклом, и его отвергает JSON, как без маскирования.
+func (h *redactHandler) maskedMap(v reflect.Value, memo map[uintptr]map[string]any) map[string]any {
+	if v.IsNil() {
+		return nil
+	}
+	if out, ok := memo[v.Pointer()]; ok {
+		return out
 	}
 	out := make(map[string]any, v.Len())
+	memo[v.Pointer()] = out
 	for it := v.MapRange(); it.Next(); {
 		k, val := it.Key().String(), it.Value()
-		switch {
+		switch nested := stringMap(val); {
 		case maskable(slog.AnyValue(val.Interface()), classifyKey(k)):
 			out[k] = h.with
-		case secretKeysIn(val):
-			out[k] = h.maskedMap(val)
+		case nested.IsValid():
+			out[k] = h.maskedMap(nested, memo)
 		default:
 			out[k] = val.Interface()
 		}

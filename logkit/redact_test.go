@@ -676,3 +676,32 @@ func TestRedact_MapKeys(t *testing.T) {
 		t.Errorf("plain = %v", m["plain"])
 	}
 }
+
+// Регрессия: обход ключей map помнит пройденные map — map, ссылающийся на
+// себя, не уводит его в бесконечную рекурсию (fatal stack overflow, recover не
+// спасает). Цикл отвергает JSON, как без маскирования; секрет не утекает.
+func TestRedact_CyclicMap(t *testing.T) {
+	plain := map[string]any{"name": "loop"}
+	plain["self"] = plain
+	secret := map[string]any{"password": "opaque-password"}
+	secret["self"] = secret
+
+	for name, doc := range map[string]map[string]any{"plain": plain, "secret": secret} {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := newRedacted(t, &buf, RedactConfig{})
+			l.Info(context.Background(), "cyclic", "doc", doc, "id", "ORD-42")
+
+			if strings.Contains(buf.String(), "opaque-password") {
+				t.Fatalf("secret leaked: %s", buf.String())
+			}
+			m := decodeLine(t, buf.Bytes())
+			if got, _ := m["doc"].(string); !strings.Contains(got, "cycle") {
+				t.Errorf("doc = %v, want the JSON cycle error", m["doc"])
+			}
+			if m["id"] != "ORD-42" {
+				t.Errorf("record broken by a cyclic map: %v", m)
+			}
+		})
+	}
+}
