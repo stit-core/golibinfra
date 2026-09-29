@@ -40,8 +40,10 @@ type APIError struct {
 
 // FieldError — ошибка одного места запроса: location (`body.email`, `path.id`,
 // `query.limit`, `header.<name>`), машинный code и message. Ошибки валидации
-// huma получают code INVALID; значение поля клиенту не возвращается, в том
-// числе хвостом сообщений форматов, которые его цитируют.
+// huma получают code INVALID и значение поля не цитируют: хвост сообщений,
+// которые его цитируют (форматы, ошибка UnmarshalText параметра), обрезается.
+// Текст декодера тела (синтаксис JSON, UnmarshalText/UnmarshalJSON типа поля)
+// huma отдаёт как есть.
 type FieldError struct {
 	Location string `json:"location" doc:"Where in the request: body.<field>, path.<name>, query.<name>, header.<name>"`
 	Code     string `json:"code" doc:"Machine-readable code of this field error"`
@@ -178,16 +180,18 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 	return e
 }
 
-// echoFormats — сообщения форматов huma, которые после «: » цитируют ввод
-// (адрес, URL, префикс uuid, regex, длительность).
-var echoFormats = []string{
+// echoMessages — сообщения huma, которые после «: » цитируют ввод: форматы
+// (адрес, URL, префикс uuid, regex, длительность) и ошибка UnmarshalText
+// параметра (текст декодера: `ParseAddr("…")`).
+var echoMessages = []string{
 	validation.MsgExpectedRFC5322Email, validation.MsgExpectedRFC3986URI,
 	validation.MsgExpectedRFC4122UUID, validation.MsgExpectedRegexp, validation.MsgExpectedDuration,
+	"invalid value: %v", // parseInto huma: константы у сообщения нет
 }
 
-// withoutEcho отрезает у сообщения формата хвост с вводом: в поле бывает пароль.
+// withoutEcho отрезает у сообщения хвост с вводом: в поле бывает пароль.
 func withoutEcho(msg string) string {
-	for _, format := range echoFormats {
+	for _, format := range echoMessages {
 		if prefix, ok := strings.CutSuffix(format, "%v"); ok && strings.HasPrefix(msg, prefix) {
 			return strings.TrimSuffix(prefix, ": ")
 		}

@@ -258,6 +258,11 @@ blocked-by: —
 - N8 валидатора: `Idempotency` берёт логгер параметром, как `Recovery` и `AccessLog`, а не
   опцией — забыть его нельзя; отказ store (get, reserve, set, release) — Warn с `op`.
   5xx `APIError` от extractor'а — Error `auth failed`: 5xx не остаётся без строки причины.
+- Эхо ввода (остаток перепроверки 49e0ed3): текст декодера параметра huma метит префиксом
+  `invalid value: ` — кит режет его, как хвосты форматов; текст декодера тела (синтаксис JSON,
+  `UnmarshalText`/`UnmarshalJSON` типа поля без формата в схеме) идёт без метки и объясняет
+  ошибку с location `body` — обещание сужено до честного: пароль в строковом поле проверяет
+  схема, а не декодер.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -342,7 +347,8 @@ blocked-by: —
       на верхнем уровне `fx.New`, корневой `fx.Invoke`, который строит зависимости (регистрация
       роутов тоже), — до него или внутри `fx.Module`: иначе хук зависимости встанет после HTTP.
     - httpkit (S13): 404/405 — problem+json `NOT_FOUND`/`METHOD_NOT_ALLOWED` (с `Allow`), 422 —
-      `VALIDATION_FAILED` с полями `INVALID` без эха ввода (и в сообщениях форматов), 5xx кита —
+      `VALIDATION_FAILED` с полями `INVALID` без эха ввода (хвост форматов и `invalid value`
+      параметра режется; текст декодера тела — как есть), 5xx кита —
       без `detail` (500 panic, 503 `AUTH_UNAVAILABLE`, `IDEMPOTENCY_UNAVAILABLE`); `Retry-After` —
       из `RetryAfter()` причины, свой заголовок хендлера сохраняется; `handler error` — с `operation`
       и `code`, в логгер своего сервера.

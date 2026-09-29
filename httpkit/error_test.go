@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
+	"net/netip"
 	"strings"
 	"sync"
 	"testing"
@@ -140,6 +142,33 @@ func TestHumaErrors_FormatMessagesDoNotEchoInput(t *testing.T) {
 	for loc, msg := range want {
 		if got[loc] != msg {
 			t.Errorf("%s: message %q, want %q", loc, got[loc], msg)
+		}
+	}
+}
+
+// Ошибка UnmarshalText параметра (у huma — `invalid value: <текст декодера>`) обрезается
+// до базового текста: декодер цитирует ввод (`ParseAddr("…")`).
+func TestHumaErrors_ParamDecoderDoesNotEchoInput(t *testing.T) {
+	type params struct {
+		IP  netip.Addr   `query:"ip"`
+		IPs []netip.Addr `query:"ips"`
+		Hdr netip.Addr   `header:"X-Client-IP"`
+	}
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		huma.Get(api, "/params", func(context.Context, *params) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	})
+	for location, resp := range map[string]*httptest.ResponseRecorder{
+		"query.ip":           api.Get("/params?ip=S3CRETip"),
+		"query.ips":          api.Get("/params?ips=10.0.0.1,S3CRETips"),
+		"header.X-Client-IP": api.Get("/params", "X-Client-IP: S3CRETheader"),
+	} {
+		handlertest.AssertAPIError(t, resp, http.StatusUnprocessableEntity, "VALIDATION_FAILED")
+		if strings.Contains(resp.Body.String(), "S3CRET") {
+			t.Fatalf("%s: the input is echoed: %s", location, resp.Body.String())
+		}
+		errs := handlertest.DecodeAPIError(t, resp).Errors
+		if len(errs) != 1 || errs[0].Location != location || errs[0].Message != "invalid value" {
+			t.Errorf("%s: errors = %+v, want one with message %q", location, errs, "invalid value")
 		}
 	}
 }

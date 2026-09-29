@@ -159,9 +159,14 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 - `request_id` равен `X-Request-ID` ответа и полю `request_id` строк лога запроса.
 - `errors[]` — ошибки мест запроса `{location, code, message}`: у валидации huma
   (`code` — `INVALID`) и у `422 IDEMPOTENCY_KEY_REUSED` (`header.Idempotency-Key`).
-  Значение поля клиенту не возвращается: в нём бывает пароль. Сообщения форматов
-  huma, которые цитируют ввод (email, uri, uuid, regex, duration), обрезаются до
-  базового текста (`expected string to be RFC 5322 email`).
+  Значение поля клиенту не возвращается: в нём бывает пароль. Сообщения huma,
+  которые цитируют ввод, обрезаются до базового текста — форматы (email, uri,
+  uuid, regex, duration: `expected string to be RFC 5322 email`) и ошибка
+  `UnmarshalText` параметра (`invalid value`). Исключение — текст декодера тела
+  с location `body`: синтаксис JSON (называет один символ) и ошибку
+  `UnmarshalText`/`UnmarshalJSON` типа поля, которую ловит не схема, а разбор
+  тела (`netip.Prefix`), huma отдаёт как есть. Строковое поле, где бывает
+  пароль, проверяет схема, а не декодер.
 - 5xx, собранная китом, — только `title`, `status`, `code` и `request_id`: текст
   причины и `detail` уходят в лог строкой `handler error` (`operation`, `status`,
   `code`, `err`).
