@@ -27,7 +27,8 @@ import "git.stit.tech/stit-core/golibinfra/httpkit"
 `OnStop`, падение `Serve` гасит приложение. HTTP начинает слушать после `OnStart`
 всех `fx.Module` графа и гасится до их `OnStop`, где бы `Module` ни стоял среди
 модулей; условие — `Module` на верхнем уровне `fx.New`, а корневой `fx.Invoke`,
-который первым строит зависимость с хуками, — до него. `Config` регистрирует caller.
+который строит зависимости (в том числе регистрирует роуты с хендлерами), — до
+него или внутри `fx.Module`. `Config` регистрирует caller.
 
 ```go
 var userErrors = httpkit.NewErrorMap(

@@ -22,8 +22,8 @@ const SecuritySchemeGroup = "httpkit.security_scheme"
 // (`fx.Provide(httpkit.NewConfig)` или из App-структуры). HTTP слушает после
 // OnStart всех fx.Module графа и гасится до их OnStop: хук сервера вешает Invoke
 // уровня Module, а fx выполняет его после Invoke всех fx.Module. Поэтому Module —
-// на верхнем уровне fx.New, а корневой fx.Invoke, который первым строит
-// зависимость с хуками, — до него.
+// на верхнем уровне fx.New, а корневой fx.Invoke, который строит зависимости (в
+// том числе регистрирует роуты с хендлерами), — до него или внутри fx.Module.
 var Module = fx.Options(
 	fx.Module(
 		"httpkit",

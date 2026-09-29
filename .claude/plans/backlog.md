@@ -16,3 +16,7 @@
 - **logkit-redact-otpauth** — ключ `otpauth` (URI provisioning TOTP) по правилу ключей не секрет, а
   base32-секрет в `secret=` дефолтные маски не ловят — он уходит в лог открытым. Триггер: партия 2
   (аудит logkit).
+- **httpkit-auth-bypass** — `api.Adapter().Handle(&op)` с `Security` и сырые маршруты chi
+  (`Router().Get`, `Mount`) идут мимо `HumaAuth` и проверки старта: huma вешает middleware API
+  только в `huma.Register`, в OpenAPI их нет (N9 валидатора этапа httpkit, эксперимент E20).
+  Триггер: партия 2, пункт B1 (явные публичные операции, дубль METHOD+path).

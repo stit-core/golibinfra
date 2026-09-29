@@ -266,8 +266,10 @@ blocked-by: —
 —
 
 ## Handoff
-- `go-backend-template` при bump: `beforeHTTP` не нужен (корневой Invoke с хуками — до
-  `httpkit.Module`); client-IP — `httpkit.Middlewares`;
+- `go-backend-template` при bump: `beforeHTTP` не нужен, но корневой `fx.Invoke(registerHTTP)` —
+  до `httpkit.Module` или внутри `fx.Module` (иначе зависимость с хуком, которую первыми берут
+  хендлеры, стартует после HTTP); boot-тест — `httpkit.serve` последний в OnStart и первый в
+  OnStop целиком; client-IP — `httpkit.Middlewares`; `HumaConfigGroup` → `httpkit.HumaConfigs`;
   `MapErr` → `ErrorMap.Map` + `Declare`; `LoginGuard` — `Attempt` до проверки пароля +
   `RecordSuccess`; subscriber — `natskit.SubscribeOnStart`; `NATS_JETSTREAM_ENABLED=true` в
   `.env.example`; `logkit.FxLogger` + `fx.RecoverFromPanics()` в `main`; `openapi.json`
@@ -281,14 +283,14 @@ blocked-by: —
   `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 `007d79a`. Этап httpkit закрыт: валидатор —
   PASS (`M/validation-harden-kits-B.md`); его неблокирующие и KDOC-01/06 базового аудита китов
   закрываются до тега отдельными `fix(...)`: KDOC-01 — `80fb648`, N2–N5 — `ac12cfa`, KSEC-01
-  (регрессии) и KSEC-02 — `bb5966a`, N6 — `711bb2e`, N7 — `ea253d0`, N8 — `fix(httpkit)!`.
-- Осталось: N1/N11, KDOC-06, N9 в бэклог; затем S15 —
-  корневые README/CLAUDE.md, `make test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка
-  не запушена.
+  (регрессии) и KSEC-02 — `bb5966a`, N6 — `711bb2e`, N7 — `ea253d0`, N8 — `652ae0a`, N1/N11,
+  KDOC-06 и N9 (бэклог) — `fix(httpkit)` (доки и аннотация).
+- Осталось: перепроверка этих фиксов валидатором, затем S15 — корневые README/CLAUDE.md,
+  `make test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
-  замечаний — `cb32246`…`08b1db1` (`fix(...)`, по находке на коммит). Круг по неблокирующим
-  последней перепроверки (`0f7b32a`: обход ключей без pre-filter, кэш `selfEncoding`; `4b99bf9`:
-  тесты защит обхода; `d62b2e6`: бэклог logkit) проверит валидатор этапа httpkit.
+  замечаний — `cb32246`…`08b1db1` (`fix(...)`, по находке на коммит); круг по неблокирующим
+  последней перепроверки (`0f7b32a`, `4b99bf9`, `d62b2e6`) валидатор этапа httpkit подтвердил без
+  регрессий.
 - Для аннотации тега копить по шагам:
   - Breaking:
     - logkit (KDOC-01): `RedactConfig.Enabled` и `LOG_REDACT_ENABLED` удалены → выключатель
@@ -308,8 +310,9 @@ blocked-by: —
       (`FieldError{Location, Code, Message}`); ошибки huma (валидация, `huma.Error4xx/5xx`, 5xx
       хендлера) во всём процессе — `APIError`, `huma.ErrorModel` и эхо `value` клиент не получает
       → тесты с разбором `ErrorModel` перевести на `APIError`, `openapi.json` перегенерировать.
-    - testkit/handlertest (S13): `APIError`/`APIErrorLocation` удалены — `DecodeAPIError` отдаёт
-      `httpkit.APIError`; `AssertAPIError` проверяет ещё problem+json и `request_id` = `X-Request-ID`.
+    - testkit/handlertest (S13): `APIError`/`APIErrorLocation` удалены → `handlertest.APIError` —
+      `httpkit.APIError`, `Errors[]` — `httpkit.FieldError{Location, Code, Message}` без `Value`;
+      `AssertAPIError` проверяет ещё problem+json и `request_id` = `X-Request-ID`.
     - httpkit (S14): `MapErr`/`MapIs`/`MapAs`/`ErrorMapping` удалены → таблица
       `httpkit.NewErrorMap(httpkit.ErrorRule{Err|Match, Status, Code, Detail, Field})`: в хендлере
       `m.Map(err)`, при регистрации `huma.Register(api, m.Declare(op), h)`, в тесте полноты
@@ -329,11 +332,15 @@ blocked-by: —
     - bruteforcekit (S7): `Guard` — `Attempt` + `RecordSuccess`, `Check`/`RecordFailure`
       удалены: `Attempt` до проверки пароля и вне транзакции (в `Transactor.WithTx` —
       `bruteforcekit.ErrInTx`), `*LockState` → отказ, неудача ничего не требует, успех —
-      `RecordSuccess` (можно в транзакции); `LockState.FailedCount` — попытки окна без успеха;
-      `bruteforcetest.Recorder` — `Attempts()`/`Successes()`.
+      `RecordSuccess` (можно в транзакции); `LockState.FailedCount` — попытки окна без успеха.
+    - testkit/bruteforcetest (S7, KDOC-06): у `Permissive`, `Locked`, `Recorder`, `Counting` —
+      `Attempt` вместо `Check`/`RecordFailure`; `Recorder.Failures()` и `SuccessAttempts()`
+      удалены, `Successes()` отдаёт `[]Attempt` вместо `[]string` (subject — поле `Subject`),
+      `Attempts()` — каждый вызов `Attempt` до проверки пароля, а не неудачи.
   - Поведение:
     - httpkit (S10): HTTP слушает после OnStart всех `fx.Module` и гасится до их OnStop; `Module` —
-      на верхнем уровне `fx.New`, корневой Invoke с хуками — до него (иначе хук встанет после HTTP).
+      на верхнем уровне `fx.New`, корневой `fx.Invoke`, который строит зависимости (регистрация
+      роутов тоже), — до него или внутри `fx.Module`: иначе хук зависимости встанет после HTTP.
     - httpkit (S13): 404/405 — problem+json `NOT_FOUND`/`METHOD_NOT_ALLOWED` (с `Allow`), 422 —
       `VALIDATION_FAILED` с полями `INVALID` без эха ввода (и в сообщениях форматов), 5xx кита —
       без `detail` (500 panic, 503 `AUTH_UNAVAILABLE`, `IDEMPOTENCY_UNAVAILABLE`); `Retry-After` —
@@ -341,6 +348,8 @@ blocked-by: —
       и `code`, в логгер своего сервера.
     - httpkit (N8): отказ store идемпотентности — Warn `idempotency store failed`, 5xx
       `APIError` extractor'а — Error `auth failed`.
+    - testkit/handlertest (S13): `NewAPI` — API сервера `httpkit` на chi (404/405 по контракту,
+      тело до 1 MiB, `request_id` в ответах).
     - timerkit (S1): повторный `timerkit.Module` — ошибка старта `already provided`.
     - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами.
     - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт
