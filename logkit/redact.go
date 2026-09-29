@@ -32,10 +32,10 @@ var defaultRedactPatterns = Patterns{
 }
 
 // secretKeyWords — слова-секреты: слово ключа совпадает с ним или оканчивается на
-// него (accesstoken, newpassword, totp); api_key и private_key ловит пара слов.
+// него (accesstoken, newpassword); api_key и private_key ловит пара слов.
 var secretKeyWords = [...]string{
 	"apikey", "authorization", "cookie", "cookies", "credential", "credentials", "jwt",
-	"otp", "passphrase", "passwd", "password", "privatekey", "pwd", "secret", "token",
+	"passphrase", "passwd", "password", "privatekey", "pwd", "secret", "token",
 }
 
 // keySecrecy — что имя ключа говорит о значении под ним.
@@ -63,7 +63,7 @@ type redactRules struct {
 // NewRedactHandler маскирует msg и строковые значения атрибутов (включая
 // With()-attrs, группы, LogValuer, error и JSON-представление Any-значений), а
 // значение под ключом-секретом (token, password, secret, authorization, cookie,
-// …), в том числе у map, — целиком; числа (кроме кодов вроде otp и pin), bool,
+// …), в том числе у map, — целиком; числа (кроме ключей-кодов otp и pin), bool,
 // time и duration не трогает.
 func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) {
 	if inner == nil {
@@ -301,29 +301,24 @@ func maskable(v slog.Value, class keySecrecy) bool {
 
 // classifyKey: ключ режется на слова по разделителям, границам camelCase и цифр
 // («X-Api-Key», «accessToken», «oauth2Token»), слова сверяются со словарём.
-// По словам, а не подстрокой: «input_tokens» — счётчик, а не секрет. Код —
-// только по последнему слову: otp_attempts и pin_length — счётчики.
+// По словам, а не подстрокой: «input_tokens» — счётчик, а не секрет.
 func classifyKey(key string) keySecrecy {
-	secret := false
-	var prev, w string
+	class := keyPlain
+	var prev string
 	for i := 0; i < len(key); {
-		next, j := nextKeyWord(key, i)
-		if next == "" {
+		w, j := nextKeyWord(key, i)
+		if w == "" {
 			break
 		}
-		prev, w, i = w, next, j
-		if !secret && (secretWord(w) || foldEq(w, "key") && (foldEq(prev, "api") || foldEq(prev, "private"))) {
-			secret = true
+		switch {
+		case codeWord(w):
+			return keyCode
+		case secretWord(w) || foldEq(w, "key") && (foldEq(prev, "api") || foldEq(prev, "private")):
+			class = keySecret
 		}
+		prev, i = w, j
 	}
-	switch {
-	case codeWord(w, prev):
-		return keyCode
-	case secret:
-		return keySecret
-	default:
-		return keyPlain
-	}
+	return class
 }
 
 func secretWord(w string) bool {
@@ -335,22 +330,11 @@ func secretWord(w string) bool {
 	return false
 }
 
-// codeWord: последнее слово ключа — код (otp, totp, pin) или code после кода
-// (otp_code, totp_code, pincode); под таким ключом прячется и число.
-func codeWord(last, prev string) bool {
-	if isCode(last) {
-		return true
-	}
-	if !hasSuffixFold(last, "code") {
-		return false
-	}
-	if stem := last[:len(last)-len("code")]; stem != "" {
-		return isCode(stem)
-	}
-	return isCode(prev)
+// codeWord — слово-код: pin, pincode или слово на otp (otp, totp). Ключ с ним
+// где угодно прячет значение любого вида, и число тоже.
+func codeWord(w string) bool {
+	return foldEq(w, "pin") || foldEq(w, "pincode") || hasSuffixFold(w, "otp")
 }
-
-func isCode(w string) bool { return foldEq(w, "pin") || hasSuffixFold(w, "otp") }
 
 func foldEq(a, b string) bool { return len(a) == len(b) && strings.EqualFold(a, b) }
 

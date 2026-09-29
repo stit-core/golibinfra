@@ -548,7 +548,7 @@ func TestRedact_SecretKeysMaskWholeValue(t *testing.T) {
 		"authorization", "Authorization", "Proxy-Authorization",
 		"cookie", "Set-Cookie", "cookies", "credential", "credentials",
 		"api_key", "apiKey", "APIKey", "X-Api-Key", "apikey", "private_key", "privateKey",
-		"jwt", "otp", "otp_code", "pin", "totp_uri",
+		"jwt", "otp", "otp_code", "otp_value", "pin", "pin_hash", "pincode", "totp_uri",
 		"accesstoken", "refreshtoken", "newpassword", "clientsecret", "setcookie",
 		"pwd", "userPwd", "db_passwd",
 	}
@@ -572,7 +572,7 @@ func TestRedact_NonSecretKeysStay(t *testing.T) {
 	kept := []string{
 		"input_tokens", "tokens", "tokenizer", "key", "cache_key", "idempotency_key",
 		"author", "passage", "secretary", "keyboard", "session_id", "auth_method",
-		"spin", "pinned", "otpauth", "cwd",
+		"spin", "pinned", "ping", "otpauth", "cwd", "zipcode", "opcode", "error_code", "status_code",
 	}
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -609,9 +609,10 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 		"totp", 111111,
 		"totp_code", 222222,
 		"pincode", 3333,
+		"pin_number", 4444,
+		"pin1", 5555,
 		"otp_attempts", 3,
-		"pin_length", 4,
-		"otp_ttl_seconds", 300,
+		"status_code", 200,
 	)
 
 	m := decodeLine(t, buf.Bytes())
@@ -627,15 +628,14 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 	if m["token_count"] != float64(42) || m["password_set"] != true || m["secret"] != nil {
 		t.Errorf("numbers, bool and nil must stay: %v / %v / %v", m["token_count"], m["password_set"], m["secret"])
 	}
-	for _, k := range []string{"otp", "pin", "totp", "totp_code", "pincode"} {
+	// Слово-код где угодно в ключе прячет и число — счётчик рядом с кодом тоже.
+	for _, k := range []string{"otp", "pin", "totp", "totp_code", "pincode", "pin_number", "pin1", "otp_attempts"} {
 		if m[k] != "[REDACTED]" {
 			t.Errorf("%s = %v: a code is a secret even as a number", k, m[k])
 		}
 	}
-	for k, want := range map[string]float64{"otp_attempts": 3, "pin_length": 4, "otp_ttl_seconds": 300} {
-		if m[k] != want {
-			t.Errorf("%s = %v, want the counter %v", k, m[k], want)
-		}
+	if m["status_code"] != float64(200) {
+		t.Errorf("status_code = %v, want the number", m["status_code"])
 	}
 	user, _ := m["user"].(map[string]any)
 	if user["login"] != "u1" || user["password"] != "[REDACTED]" {
