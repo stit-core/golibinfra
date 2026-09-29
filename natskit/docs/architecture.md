@@ -37,7 +37,7 @@ retry-политика бизнес-уровня, выбор subject'ов и str
 | `env.go` | Чтение конфига по тегам `envconfig` с префиксом инстанса — без fallback на беспрефиксные переменные. |
 | `context.go` | `SubjectFromContext` / `HeadersFromContext` — доступ к subject и header'ам входящего сообщения внутри обработчика. |
 | `instrumentation.go` | `natsInstruments` (5 otel-инструментов через `internal/otelkit`), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
-| `module.go` | fx `Module(name)` (`*Client` + `Bus` + `StreamBus`), `ProvideConfig(name)`, `HealthProbe(name)`. |
+| `module.go` | fx `Module(name)` (`*Client` + `Bus` + `StreamBus`), `ProvideConfig(name)`, `HealthProbe(name)`, `SubscribeOnStart` — подписка в `OnStart`, drain в `OnStop`. |
 
 ## Bus (Core NATS)
 

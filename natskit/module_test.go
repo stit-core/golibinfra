@@ -1,10 +1,12 @@
 package natskit_test
 
 import (
+	"context"
 	"errors"
 	"testing"
 
 	"go.uber.org/fx"
+	"go.uber.org/fx/fxtest"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -116,5 +118,69 @@ func TestModule_StartsAndStopsClient(t *testing.T) {
 	}
 	if err := client.Healthy(); !errors.Is(err, natskit.ErrConnectionClosed) {
 		t.Fatalf("Healthy after Stop = %v, want ErrConnectionClosed", err)
+	}
+}
+
+// drainSub — Subscription, которая сообщает о Drain.
+type drainSub struct{ onDrain func() }
+
+func (drainSub) Unsubscribe() error { return nil }
+
+func (s drainSub) Drain(context.Context) error {
+	s.onDrain()
+	return nil
+}
+
+// Регрессия COD-06: жизненный цикл подписки — одна строка. Подписка идёт в
+// OnStart после старта зависимостей, объявленных раньше, и дренится в OnStop
+// до их остановки.
+func TestSubscribeOnStart_SubscribesOnStartDrainsOnStop(t *testing.T) {
+	var events []string
+	record := func(e string) func() { return func() { events = append(events, e) } }
+	app := fxtest.New(t,
+		fx.Invoke(func(lc fx.Lifecycle) {
+			lc.Append(fx.StartStopHook(record("dependency started"), record("dependency stopped")))
+		}),
+		fx.Invoke(func(lc fx.Lifecycle) {
+			natskit.SubscribeOnStart(lc, func(ctx context.Context) (natskit.Subscription, error) {
+				if ctx == nil {
+					t.Error("subscribe got a nil ctx")
+				}
+				record("subscribed")()
+				return drainSub{onDrain: record("drained")}, nil
+			})
+		}),
+	)
+	if len(events) != 0 {
+		t.Fatalf("events before start: %v", events)
+	}
+	app.RequireStart()
+	app.RequireStop()
+
+	want := []string{"dependency started", "subscribed", "drained", "dependency stopped"}
+	if len(events) != len(want) {
+		t.Fatalf("events = %v, want %v", events, want)
+	}
+	for i := range want {
+		if events[i] != want[i] {
+			t.Fatalf("events = %v, want %v", events, want)
+		}
+	}
+}
+
+// Выключенный JetStream — ошибка старта, а не молча не работающий подписчик.
+func TestSubscribeOnStart_JetStreamDisabledFailsStart(t *testing.T) {
+	sb, err := natskit.NewStreamBus(nil, logkit.Nop(), natskit.Config{})
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+	app := fx.New(fx.NopLogger, fx.Invoke(func(lc fx.Lifecycle) {
+		natskit.SubscribeOnStart(lc, func(ctx context.Context) (natskit.Subscription, error) {
+			return natskit.SubscribeStreamJSON(sb, ctx, "orders", "orders.created", "billing",
+				func(context.Context, struct{}) error { return nil })
+		})
+	}))
+	if err := app.Start(t.Context()); !errors.Is(err, natskit.ErrJetStreamDisabled) {
+		t.Fatalf("Start = %v, want ErrJetStreamDisabled", err)
 	}
 }

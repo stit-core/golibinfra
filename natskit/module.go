@@ -76,6 +76,31 @@ func HealthProbe(name string) fx.Option {
 	return healthkit.Provide(Probe, fx.ParamTags(nameTag(name)))
 }
 
+// SubscribeOnStart вешает подписку на жизненный цикл fx: subscribe вызывается в
+// OnStart — после старта зависимостей, объявленных раньше, — с ctx хука (он
+// ограничивает только сам вызов); ошибка подписки, включая ErrJetStreamDisabled,
+// валит старт. OnStop дренит подписку в пределах своего ctx — до остановки
+// этих зависимостей.
+func SubscribeOnStart(lc fx.Lifecycle, subscribe func(ctx context.Context) (Subscription, error)) {
+	var sub Subscription
+	lc.Append(fx.Hook{
+		OnStart: func(ctx context.Context) error {
+			s, err := subscribe(ctx)
+			if err != nil {
+				return fmt.Errorf("natskit: subscribe on start: %w", err)
+			}
+			sub = s
+			return nil
+		},
+		OnStop: func(ctx context.Context) error {
+			if sub == nil {
+				return nil
+			}
+			return sub.Drain(ctx)
+		},
+	})
+}
+
 func newDefaultClient(lc fx.Lifecycle, cfg Config, log logkit.Logger) (*Client, error) {
 	return newClient(lc, DefaultInstance, cfg, log)
 }

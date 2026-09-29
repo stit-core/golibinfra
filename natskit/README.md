@@ -6,7 +6,8 @@ Pub/sub поверх [NATS](https://github.com/nats-io/nats.go): интерфе�
 poison-обработкой DLQ/`MaxDeliver`/NAK-backoff, deadline + `InProgress` для
 медленных обработчиков). Типизированные helper'ы `PublishJSON[T]`/
 `SubscribeJSON[T]` (и stream-варианты) убирают ручной marshal/unmarshal.
-Из коробки: handle подписки (`Subscription` — `Unsubscribe`/`Drain`), graceful
+Из коробки: handle подписки (`Subscription` — `Unsubscribe`/`Drain`) и её
+жизненный цикл в fx (`SubscribeOnStart`), graceful
 `Close` с ожиданием обработчиков (`NATS_DRAIN_TIMEOUT`), deadline обработчика
 (`NATS_HANDLER_TIMEOUT`), panic recovery, backpressure через семафор
 (`NATS_MAX_IN_FLIGHT`), логирование событий соединения (slow consumer,
@@ -34,6 +35,9 @@ import "git.stit.tech/stit-core/golibinfra/natskit"
 (`fx.Provide(natskit.NewConfig)`), как у остальных китов. Пустое имя — дефолтный
 инстанс из `NATS_*`; инстансов может быть несколько (своя шина и внешняя — см.
 [docs/usage.md](docs/usage.md)). `OnStop`-хук модуля делает graceful `Close`.
+Подписку вешает на жизненный цикл `natskit.SubscribeOnStart`: подписка — в
+`OnStart`, drain — в `OnStop`, ошибка подписки (и выключенный JetStream у
+stream-подписки) валит старт.
 
 ```go
 package main
@@ -56,23 +60,23 @@ func main() {
 		logkit.Module,
 		fx.Provide(logkit.NewConfig, natskit.NewConfig), // конфиги — на стороне приложения
 		natskit.Module(""),                              // Client + Bus + StreamBus из NATS_*
-		fx.Invoke(run),
+		fx.Invoke(subscribe),
 	).Run()
 }
 
-func run(bus natskit.Bus) error {
-	ctx := context.Background()
+// subscribe: подписка — в OnStart, drain — в OnStop.
+func subscribe(lc fx.Lifecycle, bus natskit.Bus) {
+	natskit.SubscribeOnStart(lc, func(ctx context.Context) (natskit.Subscription, error) {
+		// Типобезопасный подписчик: payload декодится в OrderCreated автоматически.
+		return natskit.SubscribeJSON(bus, ctx, "orders.created",
+			func(ctx context.Context, m OrderCreated) error {
+				return nil // бизнес-обработка
+			})
+	})
+}
 
-	// Типобезопасный подписчик: payload декодится в OrderCreated автоматически.
-	// Subscription позволяет остановить подписку раньше Close; хранить не обязательно.
-	if _, err := natskit.SubscribeJSON(bus, ctx, "orders.created",
-		func(ctx context.Context, m OrderCreated) error {
-			return nil // бизнес-обработка
-		}); err != nil {
-		return err
-	}
-
-	// Публикация: msg маршалится в JSON, trace-context инжектится в header'ы.
+// publish: msg маршалится в JSON, trace-context инжектится в header'ы.
+func publish(ctx context.Context, bus natskit.Bus) error {
 	return natskit.PublishJSON(bus, ctx, "orders.created", OrderCreated{ID: 42})
 }
 ```

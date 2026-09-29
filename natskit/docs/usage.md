@@ -125,10 +125,10 @@ fx.New(
 	fx.Provide(logkit.NewConfig, natskit.NewConfig),
 	natskit.Module(""),
 	natskit.HealthProbe(""), // опц. проба инстанса в группе healthkit.Group (= healthkit.Provide(natskit.Probe))
-	fx.Invoke(func(bus natskit.Bus, sb natskit.StreamBus) error {
-		// регистрация подписчиков на старте
-		_, err := natskit.SubscribeJSON(bus, context.Background(), "orders.created", handleOrder)
-		return err
+	fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) {
+		natskit.SubscribeOnStart(lc, func(ctx context.Context) (natskit.Subscription, error) {
+			return natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "orders.created", "billing", handleOrder)
+		})
 	}),
 )
 ```
@@ -136,12 +136,26 @@ fx.New(
 Подменить конфиг (тесты, значения из App-структуры) — обычный `fx.Provide`
 своего конструктора `natskit.Config` вместо `natskit.NewConfig`.
 
-Подписки регистрируйте в `fx.Invoke` или в `OnStart`-хуке — до этого граф не
-собран. `Subscribe`/`SubscribeStream` неблокирующие: ставят callback и сразу
-возвращают `Subscription`, обработка идёт в фоновых горутинах. `ctx` в них
-ограничивает только регистрацию (вызовы JetStream API); подписка живёт до
+Подписку на жизненный цикл fx вешает `natskit.SubscribeOnStart(lc, subscribe)`:
+
+```go
+func SubscribeOnStart(lc fx.Lifecycle, subscribe func(ctx context.Context) (Subscription, error))
+```
+
+- `subscribe` вызывается в `OnStart` — после старта зависимостей, объявленных
+  раньше подписчика (пул БД, миграции), с `ctx` хука: он ограничивает только
+  регистрацию.
+- Ошибка подписки валит старт — в том числе `ErrJetStreamDisabled`: подписчик
+  при `NATS_JETSTREAM_ENABLED=false` — ошибка конфигурации, а не молча
+  выключенный приём.
+- `OnStop` дренит подписку в пределах stop-ctx до остановки этих зависимостей:
+  обработчик в работе не упирается в закрытый пул.
+
+`Subscribe`/`SubscribeStream` неблокирующие: ставят callback и сразу возвращают
+`Subscription`, обработка идёт в фоновых горутинах. `ctx` в них ограничивает
+только регистрацию (вызовы JetStream API); подписка живёт до
 `Subscription.Unsubscribe`/`Drain` или `Close` инстанса — `OnStop`-хук `Module`
-делает это сам, handle можно не хранить.
+дренит оставшиеся подписки сам.
 
 ## Остановить одну подписку
 

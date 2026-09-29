@@ -68,6 +68,8 @@ func TestSomething(t *testing.T) {
 | `TestConn_CloseContextHonoursDeadline` | `CloseContext` укладывается в дедлайн ctx, даже когда `DrainTimeout` больше. |
 | `TestClient_CloseWaitsForJetStreamHandler` | JetStream-обработчик успевает `Ack` до закрытия — новый инстанс с тем же durable сообщение не получает. |
 | `TestConn_CloseIsIdempotentAndNilSafe` | повторный и nil-`Close` безопасны; `Healthy` после — `ErrConnectionClosed`. |
+| `TestSubscribeOnStart_SubscribesOnStartDrainsOnStop` | подписка — в `OnStart` после зависимостей, объявленных раньше, drain — в `OnStop` до их остановки (без Docker). |
+| `TestSubscribeOnStart_JetStreamDisabledFailsStart` | `ErrJetStreamDisabled` из stream-подписки валит старт (без Docker). |
 | `TestConn_ReconnectLogsRedactedURL` | пароль из `NATS_URL` не попадает в лог переподключения. |
 | `TestConn_ReconnectsExhaustedIsLoggedAndUnhealthy` | исчерпание reconnect'ов — `error`-запись и `ErrConnectionClosed` у пробы. |
 | `TestClient_ProbeReflectsConnectionState` | проба зелёная на живом соединении и красная после `Close`. |
