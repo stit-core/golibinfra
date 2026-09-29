@@ -5,9 +5,9 @@
 ### Инфраструктурные Go-kit'ы с observability из коробки
 
 Набор переиспользуемых Go-библиотек для сервисов экосистемы stit:
-auth, БД, messaging, кэш, аудит, storage, AI-клиент. Каждый kit — `fx.Module`,
-инструментирован OTel, подключается независимо. Импортируется как Go-модуль из
-бизнес-репозиториев.
+auth, БД, messaging, кэш, аудит, storage, AI-клиент. Каждый kit подключается
+независимо: кит с конфигом или ресурсом отдаёт `fx`-модуль, инструментация — OTel
+по умолчанию. Импортируется как Go-модуль из бизнес-репозиториев.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
 [![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
@@ -82,8 +82,11 @@ go mod tidy
   вне stit-core или конфликт версий зависимостей у потребителя.
 - **Без скрытых зависимостей.** Каждый пакет подключается независимо; `Config`
   даёт caller, `NewConfig` валидирует и падает на старте.
-- **fx-first.** Каждый пакет экспортирует `Module` для проводки.
-- **Observability-by-default.** Все компоненты инструментированы OTel.
+- **fx-first.** Кит с конфигом или ресурсом экспортирует `Module` для проводки (у
+  хранилищ `auditkit` и `bruteforcekit` — в сабпакете `pgstore`); хелперы без
+  состояния (`ptrkit`, `mapkit`, `idkit`, `bizmetric`) и `healthkit` (`Provide`)
+  модуля не имеют.
+- **Observability-by-default.** Все компоненты с I/O инструментированы OTel.
 - **Безопасные дефолты.** Cookie `Secure`, обязательный `aud`, таймауты у каждого
   исходящего вызова, retry только идемпотентных запросов.
 
@@ -111,14 +114,14 @@ go mod tidy
 | [`cachekit`](cachekit/) | Redis ≥ 7.0 (major сверяется на старте — `ErrServerVersion`, снимается `REDIS_SKIP_VERSION_CHECK`; cluster-режим не поддерживается): `Cache` (`Get`/`Set`/`SetNX`/`GetDel`/`CompareAndDelete`/теги), `GetJSON[T]`/`SetJSON[T]`, `IdempotencyStore` для `httpkit`, `MemoryCache` для тестов и single-replica, префикс ключей (`REDIS_KEY_PREFIX`); `cache_commands_*` и спаны `redis <cmd>` |
 | [`healthkit`](healthkit/) | Именованная проба `Probe{Name, Check}` (`New`, `WithTimeout`, `Run`) и `healthkit.Provide` в fx-группу `healthkit.probes`; `/ready` в `httpkit` и health-loop `grpckit` собирают пробы китов |
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`), мусор в переменной валит старт; `Store.Bool/String/Names` |
-| [`timerkit`](timerkit/) | Periodic jobs через fx-группу `timerkit.Group` (регистрация — `timerkit.Provide`): валидация на старте, ожидание джобов на стопе, `Timeout`/`Jitter`/`RunOnStart`, часы из `clockkit`; спан `timerkit.job <name>`, `timer_job_*` |
+| [`timerkit`](timerkit/) | Periodic jobs через fx-группу `timerkit.Group` (регистрация — `timerkit.Provide`, требует `timerkit.Module` в графе): валидация на старте, ожидание джобов на стопе, `Timeout`/`Jitter`/`RunOnStart`, часы из `clockkit`; спан `timerkit.job <name>`, `timer_job_*` |
 | [`telemetry`](telemetry/) | Opt-in bootstrap OTel SDK: tracer/meter/logger providers + OTLP HTTP-экспортёры (`OTEL_EXPORTER_OTLP_ENDPOINT` — URL по спецификации, `OTEL_SDK_DISABLED` — общий выключатель); `log.LoggerProvider` для `logkit`, ошибки экспорта — в `logkit`. Без него kit-инструментация no-op |
 | [`logkit`](logkit/) | `Logger` поверх slog: JSON или text (`LOG_FORMAT`) в stdout (`LOG_SILENT`) + OTel log-bridge, redact PII на уровне атрибутов (включён всегда, выключатель `LOG_REDACT_DISABLED`; дефолты знают Bearer/Basic/JWT/API-ключи и hex-токены, значение под ключом-секретом — целиком), `trace_id`/`request_id` из ctx, `RegisterAttr(key, fn)`, позиция вызывающего (`LOG_SOURCE`); события fx в тот же лог — `FxLogger`; `log_messages_total`; capture-логгер `testkit/logtest` |
-| [`authnkit`](authnkit/) | `Hasher` (Argon2id, строгий PHC, `NeedsRehash`, `VerifyDummy`); HS256 JWT на go-jose с типом токена (`SignAccess`/`SignRefresh`/`ParseAccess`/`ParseRefresh`, `JWT_LEEWAY`); `TOTP` с защитой от replay (`VerifyOnce`, `TOTP_SKEW`); RBAC `Registry`; `authn_*` |
+| [`authnkit`](authnkit/) | `Hasher` (Argon2id с пределом одновременных вычислений, строгий PHC, `NeedsRehash`, `VerifyDummy`); HS256 JWT на go-jose с типом токена (`SignAccess`/`SignRefresh`/`ParseAccess`/`ParseRefresh`, `JWT_LEEWAY`); `TOTP` с защитой от replay (`VerifyOnce`, `TOTP_SKEW`); RBAC `Registry`; `authn_*` |
 | [`oidckit`](oidckit/) | OIDC BFF (Authorization Code + PKCE S256): `Verifier` (discovery, JWKS-кэш, iss/aud/azp/exp/nonce, `OIDC_LEEWAY`), роуты login/callback/me/logout, cookie-сессия HS256 (`__Host-`-имена, `Secure` по умолчанию), `Extractor` → `httpkit.AuthExtractor`, `StateStore` (Redis, атомарный `GetDel`), health-проба; требует `*httpclient.Client` в графе; `oidc_*`; stub IdP — `testkit/oidctest` |
 | [`hubkit`](hubkit/) | SDK хаба stit: `sso` (verify hub-session двух контуров, обязательный `aud`, JWKS-кэш с grace, `Identity` в ctx, гейты), `issuer` (ES256, три слота ключей и JWKS-handler, rotating-refresh с reuse-detection поверх `cachekit`), `client` (типизированный hub API поверх `httpclient`), `sync` (pull-синк проекций в job'ы `timerkit`), `projection` (готовый `pgkit.Source` — `projection.Migrations`), `hubclaims` (имена claim'ов и контуры hub-session JWT — общий контракт `sso` и `issuer`, без зависимостей); `testkit/hubtest` |
 | [`bizmetric`](bizmetric/) | Helper для бизнес-метрик: `Counter/Histogram/Gauge/UpDownCounter`, форсит конвенцию `biz_<domain>_<event>_*` (panic при нарушении), общие бакеты у гистограмм |
-| [`outboxkit`](outboxkit/) | Transactional outbox: тик воркера в одной транзакции (`batch` — SKIP LOCKED между репликами, `ordered` — один активный воркер), публикация в JetStream с дедупом, экспоненциальный backoff и poison→dead с `ReviveDead`, партиции на старте, retention через `DETACH … CONCURRENTLY` (Postgres ≥ 14); `BacklogReporter`; `outbox_*{instance}`; несколько инстансов через `outboxkit.Instance(name, table)` + `pgstore.FactoryModule`; recorder — `testkit/outboxtest` |
+| [`outboxkit`](outboxkit/) | Transactional outbox: тик воркера в одной транзакции (`batch` — SKIP LOCKED между репликами, `ordered` — один активный воркер), публикация в JetStream с дедупом, экспоненциальный backoff и poison→dead с `ReviveDead`, партиции на старте, retention через `DETACH … CONCURRENTLY` (Postgres ≥ 14); `BacklogReporter`; `outbox_*{instance}`; несколько инстансов через `outboxkit.Instance(name, table)` (схема таблицы — в `pgkit.migrations`) + `pgstore.FactoryModule`; recorder (только в транзакции) — `testkit/outboxtest` |
 | [`auditkit`](auditkit/) | Audit-log: `Entry`/`Logger` с обязательными `Action`/`Resource` и лимитами полей, core+pgstore split, запись участвует в транзакции из ctx, время — часы БД; `audit_log_writes_total`, `audit_log_write_duration_seconds`; `testkit/audittest` |
 | [`bruteforcekit`](bruteforcekit/) | Brute-force guard: атомарный учёт попытки до проверки секрета (`Guard.Attempt` + `RecordSuccess`) по паре (subject в нижнем регистре, канонический IP, IPv6 по `/64`), `Cleaner`, `LockState{Until, FailedCount}`, новое окно после истечения lock'а, cleanup-job в группе `timerkit.Group`; `bruteforce_checks_total`, `bruteforce_locks_total`; `testkit/bruteforcetest` |
 | [`clockkit`](clockkit/) | `Clock` (`Now`/`Since`/`After`/`NewTimer`) + test-fakes (`Fixed`, `Tickable` с пробуждением таймеров) для детерминированных временных тестов |
@@ -293,7 +296,7 @@ go get git.stit.tech/stit-core/golibinfra@vX.Y.Z && go mod tidy
 ```bash
 make tools        # golangci-lint + govulncheck пиненных версий
 make hooks        # core.hooksPath=.githooks: pre-push гоняет make check
-make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check
+make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check + plan-check
 make test-full    # + testcontainers (Postgres/NATS/Redis/MinIO), нужен Docker
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
 ```

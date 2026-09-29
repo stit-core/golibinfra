@@ -38,7 +38,7 @@ generic-примитив, которого нет в ките, `go-backend-templ
 ## Команды (gate перед claim «готово»)
 
 ```bash
-make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check
+make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check + plan-check
 make test-full    # + testcontainers (Postgres/NATS/Redis/MinIO), нужен Docker
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
 make tools        # golangci-lint + govulncheck пиненных версий
@@ -55,15 +55,17 @@ make coverage     # покрытие -short + сводка; ещё есть benc
 каждого кита — в его `README.md` рядом с кодом (у сложных китов ещё `docs/`);
 это единый источник правды по киту. Кратко:
 
-- **Фундамент:** `logkit` (slog + PII-redact + trace-id, JSON/text в stdout + OTel
-  log-bridge), `telemetry` (opt-in OTel bootstrap: провайдеры + OTLP-экспортёры;
-  требует в графе `logkit.Config`), `config` (композиция ENV-источников для
-  App-конфига), `clockkit` (`Now`/`Since`/`After`/`NewTimer` + фейки), `timerkit`
-  (periodic jobs; регистрация — `timerkit.Provide`, группа `timerkit.Group`),
+- **Фундамент:** `logkit` (slog + PII-redact по умолчанию + trace-id, JSON/text в
+  stdout + OTel log-bridge; события fx — `FxLogger`), `telemetry` (opt-in OTel
+  bootstrap: провайдеры + OTLP-экспортёры; требует в графе `logkit.Config`), `config`
+  (композиция ENV-источников для App-конфига), `clockkit` (`Now`/`Since`/`After`/
+  `NewTimer` + фейки), `timerkit` (periodic jobs; регистрация — `timerkit.Provide`,
+  требует `timerkit.Module`; группа `timerkit.Group`),
   `flagkit`, `tzkit` (Zone/Day/WallTime), `idkit` (UUIDv7 + `Validate`),
   `ptrkit`, `mapkit`, `bizmetric` (конвенция `biz_*`), `healthkit`
   (`Probe{Name, Check}` + `WithTimeout` для `/ready`).
-- **Транспорт:** `httpkit` (huma/chi server + middleware), `httpclient` (retry +
+- **Транспорт:** `httpkit` (huma/chi server + middleware + контракт ошибок
+  `APIError`/`ErrorMap`), `httpclient` (retry +
   breaker на хост + redirect-политика + SSE), `grpckit` (gRPC-сервер) +
   `grpcclient` (gRPC-клиент).
 - **Данные и messaging:** `pgkit` (pgx pool + миграции + Transactor), `natskit`
@@ -111,8 +113,11 @@ make coverage     # покрытие -short + сводка; ещё есть benc
 ## Стиль (инварианты)
 
 - **gofumpt + golangci-lint** (`.golangci.yml`).
-- **fx-first.** Каждый kit отдаёт `Module`/`<Kit>Module` (`fx.Options`); консьюмер
-  собирает `App` из них. Прямой `New*()` без fx допустим, но менее идиоматичен.
+- **fx-first.** Кит с конфигом или ресурсом отдаёт `Module` (`fx.Option`; у хранилищ —
+  в `pgstore`, дополнительные — `MigrateModule`, `FactoryModule`); консьюмер собирает
+  `App` из них. Хелперы без состояния (`ptrkit`, `mapkit`, `idkit`, `bizmetric`) и
+  `healthkit` (`Provide`) модуля не имеют. Прямой `New*()` без fx допустим, но менее
+  идиоматичен.
 - **Config провайдит caller.** `Module` не читает ENV сам: `fx.Provide(<kit>.NewConfig)`
   или App-структура. Каждый конфиг имеет `Validate() error` с sentinel'ом
   `<kit>.ErrConfig`; `NewConfig` и конструкторы (`New*`) его зовут, поэтому

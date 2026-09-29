@@ -65,6 +65,7 @@ blocked-by: —
 - [x] **AC13** — `Argon2idHasher` считает одновременно не больше `max(1, GOMAXPROCS/Threads)` хэшей; ожидание очереди прерывается ctx. Проверка: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS
   - Подтверждено: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS (из 3×предела одновременных `Hash` считается ровно предел; отмена ctx прерывает ожидание `Hash`/`Verify`/`VerifyDummy`); мутанты «без семафора» и «ожидание без ctx» краснеют
 - [ ] **AC14** — README и доки затронутых китов описывают текущее поведение, `make gate-clean` и `make test-full` зелёные, аннотированный тег `v1.2.0` с разделами `Breaking`/`Поведение`/`Изменения`/`Гейт` в origin вместе с `main`. Проверка: `make gate-clean` → зелёный; `git tag -l --format='%(contents)' v1.2.0` → четыре раздела; `git ls-remote --tags origin v1.2.0` → есть; `git status -sb` → синхронно с origin
+  - Подтверждено, кроме push: корневые README/CLAUDE.md/CONTRIBUTING.md и доки китов описывают текущее поведение; `make test-full` → PASS (56 пакетов), `make gate-clean` → зелёный; локальный тег `v1.2.0` на коммите S15 — четыре раздела, Breaking покрывает все 32 несовместимые строки apidiff `v1.1.0 → HEAD` и env-diff (`LOG_REDACT_*`, `BRUTEFORCE_IPV6_PREFIX`); push `main` и тега — после PASS валидатора партии
 
 ## Шаги
 ### Инфраструктурные киты
@@ -98,8 +99,9 @@ blocked-by: —
 - [x] **S14** — `ErrorMap` (`Map`/`Unmapped`/`Declare`) вместо `MapErr`/`MapIs`/`MapAs`, коды в OpenAPI
   - Проверка: `go test -short -race ./httpkit/` → PASS · Закрывает: AC5 · Зависит от: S13 · Сделано: `007d79a`, `make check` зелёный
 ### Релиз
-- [ ] **S15** — Корневой README/CLAUDE.md сверены, `make test-full`, `make gate-clean`, тег `v1.2.0` локально; push `main` и тега — после PASS валидатора партии
+- [x] **S15** — Корневой README/CLAUDE.md сверены, `make test-full`, `make gate-clean`, тег `v1.2.0` локально; push `main` и тега — после PASS валидатора партии
   - Проверка: `make gate-clean` → зелёный, `make test-full` → PASS · Закрывает: AC14 · Зависит от: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14
+  - Сделано: README/CLAUDE.md/CONTRIBUTING.md — fx-first, состав `make check`, строки timerkit/authnkit/outboxkit/logkit/httpkit; `make test-full` → PASS, `make gate-clean` → зелёный; тег `v1.2.0` локально
 
 ## Решения
 - Все находки подтверждены чтением кода, кроме FX-12 «I/O конструкторов» (ниже).
@@ -183,6 +185,9 @@ blocked-by: —
 - FX-12 «I/O конструкторов» отброшен: Ping пула ограничен `PG_CONNECT_TIMEOUT`, `nats.Connect` —
   `NATS_CONNECT_TIMEOUT`, вызовы JetStream API — 5s nats.go; перенос в OnStart не убирает I/O из
   сборки графа и ломает подписку в `fx.Invoke` — несоразмерно.
+- S15, KDOC-07 (корневые тексты): «каждый кит — `Module`» и состав `make check` без `plan-check`
+  правлены в README, CLAUDE.md и CONTRIBUTING.md разом — одна фраза в трёх местах; остальное
+  KDOC-07 (doc-comment `storagekit`, `internal/httpdoer`) — партии 3.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`), тесты
   `hubkit/sync` (`timerkit.Module`), `oidckit`/`hubkit/sso` (контракт ошибок).
 
@@ -205,10 +210,10 @@ blocked-by: —
   (`M/validation-harden-kits-A.md`, фиксы `cb32246`…`d62b2e6`), S10–S14 с кругом перед релизом
   (`M/validation-harden-kits-B.md`, фиксы `80fb648`…`49e0ed3`); остаток перепроверки 49e0ed3 —
   эхо декодера параметра `55c39b4`, 401 из хука потребителя `a070e1c`, мутант F11 `5243883`.
-- Следующий шаг — S15: корневые README/CLAUDE.md, `make test-full`, `make gate-clean`, тег
-  `v1.2.0` локально; затем валидатор партии, push `main` и тега. Перед коммитом — `make check`
-  (govulncheck зависает на сети — перезапуск).
-- Заготовка аннотации `v1.2.0` (в теге — строки «- кит: что изменилось → как мигрировать»):
+- S15 закрыт: корневые доки сверены, `make test-full` и `make gate-clean` зелёные, локальный тег
+  `v1.2.0` на коммите S15 с аннотацией по заготовке ниже. Ждёт валидатора партии, затем push `main`
+  и тега; после push — закрыть план (удалить, Handoff — аннотацией тега).
+- Аннотация `v1.2.0` (в теге — строки «- кит: что изменилось → как мигрировать»):
   - Breaking:
     - logkit (KDOC-01): `RedactConfig.Enabled` и `LOG_REDACT_ENABLED` удалены → выключатель
       `RedactConfig{Disabled: true}` / `LOG_REDACT_DISABLED=true`, `RedactConfig{Enabled: true}` →
@@ -265,7 +270,7 @@ blocked-by: —
       extractor'а — Error `auth failed`.
     - testkit/handlertest (S13): `NewAPI` — API сервера `httpkit` (404/405 по контракту, тело до
       1 MiB, `request_id` в ответах).
-    - timerkit (S1): повторный `timerkit.Module` — ошибка старта `already provided`.
+    - timerkit (S1): повторный `timerkit.Module` — ошибка сборки графа `already provided`.
     - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами;
       `EnsurePartitions` не валит старт, когда ту же партицию создаёт другой процесс.
     - logkit (S5, KDOC-01): маскирование включено всегда, в том числе без `NewRedactConfig` и у

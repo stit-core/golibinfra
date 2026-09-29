@@ -8,8 +8,9 @@
 
 - Прочитай `README.md` (использование, observability, стабильность API,
   версионирование) и `CLAUDE.md` (карта пакетов, инварианты).
-- Каждый kit самодостаточен: подключается независимо, экспортирует `Module` для
-  fx-проводки. Чтобы понять стиль — посмотри соседний kit рядом с тем, что правишь.
+- Каждый kit самодостаточен и подключается независимо; кит с конфигом или ресурсом
+  экспортирует `Module` для fx-проводки. Чтобы понять стиль — посмотри соседний kit
+  рядом с тем, что правишь.
 - У каждого кита — свой `README.md` рядом с кодом (назначение, быстрый старт,
   конфиг, observability, API, инварианты); у сложных китов сверх него каталог
   `docs/`. Это первый и основной источник правды по киту — начни с него.
@@ -23,7 +24,7 @@
   resource attrs и экспорт настраивает потребитель.
 - **Минимум зависимостей.** Перед новым import проверь stdlib + уже подключённые
   deps. Каждая новая зависимость в `go.mod` обсуждается отдельно.
-- **fx-first.** Каждый kit отдаёт `Module` (`fx.Options`); консьюмер собирает `App`
+- **fx-first.** Кит с конфигом или ресурсом отдаёт `Module`; консьюмер собирает `App`
   из них. `Config` провайдит caller (`fx.Provide(<kit>.NewConfig)`); у конфига есть
   `Validate() error` с sentinel'ом `<kit>.ErrConfig`, который зовут и `NewConfig`,
   и конструкторы — невалидный конфиг валит старт, а не первый запрос.
@@ -51,7 +52,7 @@
 ```bash
 make tools        # один раз: golangci-lint + govulncheck пиненных версий
 make hooks        # один раз: core.hooksPath=.githooks, pre-push гоняет make check
-make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check
+make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check + plan-check
 make test-full    # + testcontainers (нужен Docker) — для китов с БД/шиной/кэшем
 ```
 
