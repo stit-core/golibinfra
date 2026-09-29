@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"reflect"
 	"regexp"
 	"strings"
 	"unicode"
@@ -29,12 +30,25 @@ var defaultRedactPatterns = Patterns{
 	`[0-9A-Fa-f]{32,}`,
 }
 
-// secretKeyWords — слова ключа атрибута, значение под которым маскируется
-// целиком; составные api_key и private_key ловит secretKey по паре слов.
+// secretKeyWords — слова-секреты: слово ключа совпадает с ним или оканчивается на
+// него (accesstoken, newpassword, totp); api_key и private_key ловит пара слов.
 var secretKeyWords = [...]string{
 	"apikey", "authorization", "cookie", "cookies", "credential", "credentials", "jwt",
-	"otp", "passphrase", "passwd", "password", "privatekey", "secret", "token",
+	"otp", "passphrase", "passwd", "password", "privatekey", "pwd", "secret", "token",
 }
+
+// secretCodeWords — коды: слово ключа совпадает целиком, и под ним прячется даже
+// число (otp: 123456).
+var secretCodeWords = [...]string{"otp", "pin"}
+
+// keySecrecy — что имя ключа говорит о значении под ним.
+type keySecrecy int
+
+const (
+	keyPlain  keySecrecy = iota // значение видят только маски
+	keySecret                   // строка, группа и структура заменяются целиком
+	keyCode                     // то же и число
+)
 
 type redactHandler struct {
 	inner slog.Handler
@@ -52,7 +66,8 @@ type redactRules struct {
 // NewRedactHandler маскирует msg и строковые значения атрибутов (включая
 // With()-attrs, группы, LogValuer, error и JSON-представление Any-значений), а
 // значение под ключом-секретом (token, password, secret, authorization, cookie,
-// …) — целиком; числа, bool, time и duration не трогает.
+// …), в том числе у map, — целиком; числа (кроме кодов otp и pin), bool, time и
+// duration не трогает.
 func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) {
 	if inner == nil {
 		return nil, errors.New("logkit: NewRedactHandler: nil inner handler")
@@ -248,7 +263,7 @@ func (h *redactHandler) bytes(b []byte) []byte {
 
 func (h *redactHandler) attr(a slog.Attr) slog.Attr {
 	v := a.Value.Resolve()
-	if secretKey(a.Key) && maskable(v) {
+	if maskable(v, classifyKey(a.Key)) {
 		return slog.String(a.Key, h.with)
 	}
 	switch v.Kind() {
@@ -268,40 +283,51 @@ func (h *redactHandler) attr(a slog.Attr) slog.Attr {
 	}
 }
 
-// maskable: под секретным ключом прячутся строки, группы и структуры; числа,
-// bool, время и nil секрета не несут (token_count — счётчик).
-func maskable(v slog.Value) bool {
+// maskable: под ключом-секретом прячутся строки, группы и структуры, под кодом —
+// ещё и числа; bool, время и nil секрета не несут, как и число под обычным
+// секретом (token_count — счётчик).
+func maskable(v slog.Value, class keySecrecy) bool {
+	if class == keyPlain {
+		return false
+	}
 	switch v.Kind() {
 	case slog.KindString, slog.KindGroup:
 		return true
 	case slog.KindAny:
 		return v.Any() != nil
+	case slog.KindInt64, slog.KindUint64, slog.KindFloat64:
+		return class == keyCode
 	default:
 		return false
 	}
 }
 
-// secretKey: ключ режется на слова по разделителям, границам camelCase и цифр
-// («X-Api-Key», «accessToken», «oauth2Token»), и слово ищется в secretKeyWords.
+// classifyKey: ключ режется на слова по разделителям, границам camelCase и цифр
+// («X-Api-Key», «accessToken», «oauth2Token»), слова сверяются со словарями.
 // По словам, а не подстрокой: «input_tokens» — счётчик, а не секрет.
-func secretKey(key string) bool {
+func classifyKey(key string) keySecrecy {
 	var prev string
 	for i := 0; i < len(key); {
 		var w string
 		if w, i = nextKeyWord(key, i); w == "" {
-			return false
+			return keyPlain
+		}
+		for _, cw := range secretCodeWords {
+			if len(w) == len(cw) && strings.EqualFold(w, cw) {
+				return keyCode
+			}
 		}
 		for _, sw := range secretKeyWords {
-			if strings.EqualFold(w, sw) {
-				return true
+			if len(w) >= len(sw) && strings.EqualFold(w[len(w)-len(sw):], sw) {
+				return keySecret
 			}
 		}
 		if strings.EqualFold(w, "key") && (strings.EqualFold(prev, "api") || strings.EqualFold(prev, "private")) {
-			return true
+			return keySecret
 		}
 		prev = w
 	}
-	return false
+	return keyPlain
 }
 
 // nextKeyWord отдаёт слово ключа с позиции from и позицию за ним.
@@ -350,11 +376,73 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 			return slog.String(key, h.text(t.Error()))
 		}
 	}
-	b, err := marshalJSON(x)
+	b, err := marshalJSON(h.maskKeys(x))
 	if err != nil {
 		return slog.Any(key, x)
 	}
 	return h.jsonAttr(key, b)
+}
+
+// maskKeys прячет значения под ключами-секретами у map со строковыми ключами
+// (http.Header, url.Values, map[string]any), в том числе вложенных; без таких
+// ключей отдаёт x как есть, не копируя. Поля структур не разбираются.
+func (h *redactHandler) maskKeys(x any) any {
+	if _, ok := x.(json.Marshaler); ok {
+		return x
+	}
+	v := reflect.ValueOf(x)
+	if !secretKeysIn(v) {
+		return x
+	}
+	return h.maskedMap(v)
+}
+
+func secretKeysIn(v reflect.Value) bool {
+	if v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	if v.Kind() != reflect.Map || v.Type().Key().Kind() != reflect.String || v.Len() == 0 {
+		return false
+	}
+	// Значение смотрится, только если ключ-секрет или внутри может быть map:
+	// иначе обход не аллоцирует на каждую пару.
+	elem := v.Type().Elem().Kind()
+	nestable := elem == reflect.Map || elem == reflect.Interface
+	key, val := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
+	for it := v.MapRange(); it.Next(); {
+		key.SetIterKey(it)
+		class := classifyKey(key.String())
+		if class == keyPlain && !nestable {
+			continue
+		}
+		val.SetIterValue(it)
+		if class != keyPlain && maskable(slog.AnyValue(val.Interface()), class) {
+			return true
+		}
+		if nestable && secretKeysIn(val) {
+			return true
+		}
+	}
+	return false
+}
+
+func (h *redactHandler) maskedMap(v reflect.Value) map[string]any {
+	if v.Kind() == reflect.Interface {
+		v = v.Elem()
+	}
+	out := make(map[string]any, v.Len())
+	for it := v.MapRange(); it.Next(); {
+		k, val := it.Key().String(), it.Value()
+		switch {
+		case maskable(slog.AnyValue(val.Interface()), classifyKey(k)):
+			out[k] = h.with
+		case secretKeysIn(val):
+			out[k] = h.maskedMap(val)
+		default:
+			out[k] = val.Interface()
+		}
+	}
+	return out
 }
 
 // jsonAttr: маска работает по JSON-байтам, поэтому паттерн или ReplaceWith с

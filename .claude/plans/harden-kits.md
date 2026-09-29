@@ -216,6 +216,14 @@ blocked-by: —
   `Recorder` не отличает пометку фейка Transactor от ручной (один маркер pgkit), а различение
   связало бы outboxtest с pgtest и отвергло бы настоящий `PoolTransactor`; контракт — в
   `outboxkit/docs/testing.md`. Критерий разделов аннотации — в README § Версионирование.
+- Неблок. 1 валидатора (часть): ключ-секрет — слово целиком или окончание слова (`accesstoken`,
+  `newpassword`, `totp`), добавлен `pwd`; коды `otp`/`pin` — только слово целиком, под ними
+  прячется и число; ключи `map` со строковыми ключами (`http.Header`, `url.Values`,
+  `map[string]any`, вложенные) — те же правила, копия map — только при найденном секрете, обход
+  через `SetIterKey`/`SetIterValue` без аллокаций на пару. Цена — около +0.4 µs и +2 аллокации на
+  map-атрибут, запись со структурой без маркеров — около ×2 к записи без redact. Двусмысленные
+  короткие ключи (`pass`, `sid`, `code`, `signature`), поля структур, base64url-токены и пароль
+  в DSN — строкой в бэклоге.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -245,9 +253,9 @@ blocked-by: —
   ctx; S9 (`feat(natskit)`) — `natskit.SubscribeOnStart`. Этап «Инфраструктурные киты» закрыт.
 - Осталось: S10–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — FAIL: B1, B2 и неблокирующие.
-  Фиксы — отдельными `fix(...)`: B1 (`cb32246`, `ErrInTx`) и B2 (`fix(plan)`, аннотация S1/S3)
-  сделаны; дальше маскирование по ключу, маркер timerkit, natskit, outboxkit (партиции, тест
-  `Module`+`FactoryModule`); затем перепроверка валидатором, потом S10 (AC1).
+  Фиксы — отдельными `fix(...)`: B1 (`cb32246`, `ErrInTx`), B2 (`e885daa`, аннотация S1/S3) и
+  маскирование по ключу (`fix(logkit)`) сделаны; дальше маркер timerkit, natskit, outboxkit
+  (партиции, тест `Module`+`FactoryModule`); затем перепроверка валидатором, потом S10 (AC1).
 - Для аннотации тега копить по шагам:
   - Breaking:
     - timerkit (S1): `timerkit.Provide` и киты с job'ами (outboxkit `Module`/`Instance`,
@@ -273,9 +281,10 @@ blocked-by: —
     - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт
       другой процесс.
     - logkit (S5): `LOG_REDACT_ENABLED` по умолчанию `true`; значение под ключом-секретом
-      (token, password, secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 —
-      маской; выключить — `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не
-      маскирует — добавьте его.
+      (token, password, secret, authorization, cookie, …; и по окончанию слова — `accesstoken`),
+      в том числе у ключей `map` (`http.Header`, `url.Values`, `map[string]any`), маскируется
+      целиком, под `otp`/`pin` — и число, hex-цепочки ≥32 — маской; выключить —
+      `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его.
     - bruteforcekit (S6): subject — в нижнем регистре без пробелов по краям,
       `BRUTEFORCE_IPV6_PREFIX` по умолчанию `64` (полный адрес — `128`); блокировки строк со
       старым ключом теряются не дольше `BRUTEFORCE_LOCK_DURATION`.

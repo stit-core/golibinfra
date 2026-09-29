@@ -9,6 +9,8 @@ import (
 	"io"
 	"log/slog"
 	"math/rand/v2"
+	"net/http"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
@@ -523,7 +525,9 @@ func TestRedact_SecretKeysMaskWholeValue(t *testing.T) {
 		"authorization", "Authorization", "Proxy-Authorization",
 		"cookie", "Set-Cookie", "cookies", "credential", "credentials",
 		"api_key", "apiKey", "APIKey", "X-Api-Key", "apikey", "private_key", "privateKey",
-		"jwt", "otp", "otp_code",
+		"jwt", "otp", "otp_code", "pin", "totp_uri",
+		"accesstoken", "refreshtoken", "newpassword", "clientsecret", "setcookie",
+		"pwd", "userPwd", "db_passwd",
 	}
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{Patterns: Patterns{`never-matches-\d`}})
@@ -545,6 +549,7 @@ func TestRedact_NonSecretKeysStay(t *testing.T) {
 	kept := []string{
 		"input_tokens", "tokens", "tokenizer", "key", "cache_key", "idempotency_key",
 		"author", "passage", "secretary", "keyboard", "session_id", "auth_method",
+		"spin", "pinned", "otpauth", "cwd",
 	}
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -576,6 +581,8 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 		"password_set", true,
 		"secret", nil,
 		"user", credsValuer{},
+		"otp", 123456,
+		"pin", uint64(4321),
 	)
 
 	m := decodeLine(t, buf.Bytes())
@@ -590,6 +597,9 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 	}
 	if m["token_count"] != float64(42) || m["password_set"] != true || m["secret"] != nil {
 		t.Errorf("numbers, bool and nil must stay: %v / %v / %v", m["token_count"], m["password_set"], m["secret"])
+	}
+	if m["otp"] != "[REDACTED]" || m["pin"] != "[REDACTED]" {
+		t.Errorf("a code under otp/pin is a secret even as a number: otp=%v pin=%v", m["otp"], m["pin"])
 	}
 	user, _ := m["user"].(map[string]any)
 	if user["login"] != "u1" || user["password"] != "[REDACTED]" {
@@ -623,5 +633,46 @@ func TestRedact_HexChains(t *testing.T) {
 	}
 	if m["short"] != short {
 		t.Errorf("hex chain < 32 must stay: %v", m["short"])
+	}
+}
+
+// Ключи у map со строковыми ключами — http.Header, url.Values, map[string]any и
+// вложенные map — проверяются так же, как ключи атрибутов.
+func TestRedact_MapKeys(t *testing.T) {
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	l.Info(context.Background(), "request",
+		"headers", http.Header{"Cookie": {"session=opaque-cookie"}, "Accept": {"text/html"}},
+		"form", url.Values{"token": {"opaque-token"}, "page": {"2"}},
+		"body", map[string]any{
+			"password": "opaque-password",
+			"user":     map[string]any{"pwd": "opaque-pwd", "name": "alice"},
+			"count":    3,
+		},
+		"plain", map[string]string{"name": "bob"},
+	)
+
+	out := buf.String()
+	for _, secret := range []string{"opaque-cookie", "opaque-token", "opaque-password", "opaque-pwd"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("secret %q leaked: %s", secret, out)
+		}
+	}
+	m := decodeLine(t, buf.Bytes())
+	headers, _ := m["headers"].(map[string]any)
+	if accept, _ := headers["Accept"].([]any); headers["Cookie"] != "[REDACTED]" || len(accept) != 1 || accept[0] != "text/html" {
+		t.Errorf("headers = %v", m["headers"])
+	}
+	form, _ := m["form"].(map[string]any)
+	if page, _ := form["page"].([]any); form["token"] != "[REDACTED]" || len(page) != 1 || page[0] != "2" {
+		t.Errorf("form = %v", m["form"])
+	}
+	body, _ := m["body"].(map[string]any)
+	user, _ := body["user"].(map[string]any)
+	if body["password"] != "[REDACTED]" || user["pwd"] != "[REDACTED]" || user["name"] != "alice" || body["count"] != float64(3) {
+		t.Errorf("body = %v", m["body"])
+	}
+	if plain, _ := m["plain"].(map[string]any); plain["name"] != "bob" {
+		t.Errorf("plain = %v", m["plain"])
 	}
 }
