@@ -185,6 +185,13 @@ blocked-by: —
 - S7: метрика `bruteforce_checks_total{result}` сохраняет имя (дашборды) и считает исходы
   `Attempt`; `bruteforcetest.Recorder` — `Attempts()`/`Successes()` (оба `[]Attempt`),
   `Failures()`/`SuccessAttempts()` удалены: потребителей фейка в шаблонах нет.
+- Вне шагов — `fix(outboxkit)`: `EnsurePartitions` падала `42P07`, когда ту же партицию
+  параллельно создавал другой процесс; с `timerkit.Module` в тестовом графе (S1) хук
+  `pgstore.Module` и keeper-job с `RunOnStart` гонялись, и `TestModule_EnsuresPartitionsOnStart`
+  флакал (~1 из 15), что держало красным `make test-full` — проверку AC7. Та же гонка — у
+  реплик, стартующих вместе. `duplicate_table`/`unique_violation` после `IF NOT EXISTS` значат
+  «партиция уже есть»; регрессия детерминирована: открытая транзакция создаёт ту же партицию.
+  После фикса `make test-full` зелёный целиком.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -208,13 +215,11 @@ blocked-by: —
   S4 (`5333bee`, `feat(logkit)`) — `logkit.FxLogger`: события fx через `*slog.Logger` графа;
   S5 (`73900ca`, `feat(logkit)`) — redact по умолчанию, значение под ключом-секретом, hex ≥32;
   S6 (`2d0aeaf`, `feat(bruteforcekit)`) — subject в нижнем регистре без пробелов, IPv6 /64;
-  S7 (`feat(bruteforcekit)!`) — `Guard.Attempt` до проверки секрета + `RecordSuccess`.
+  S7 (`2b8e39a`, `feat(bruteforcekit)!`) — `Guard.Attempt` до проверки секрета + `RecordSuccess`;
+  `fix(outboxkit)` — `EnsurePartitions` рядом с параллельным создателем партиции.
 - Осталось: S8–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — `fix(outboxkit)`: `EnsurePartitions` падает `42P07`, когда партицию
-  параллельно создаёт другой процесс (keeper-job с `RunOnStart` рядом с хуком `pgstore.Module`,
-  вторая реплика) — флак `TestModule_EnsuresPartitionsOnStart`, воспроизводится
-  детерминированно открытой транзакцией с той же партицией. Затем S8: `authnkit` — семафор
-  `max(1, GOMAXPROCS/Threads)` на Argon2id, ожидание прерывается ctx (AC13).
+- Следующий шаг — S8: `authnkit` — семафор `max(1, GOMAXPROCS/Threads)` на Argon2id (хэш и
+  проверка), ожидание очереди прерывается ctx; `TestArgon2id_Concurrency` (AC13).
 - Для аннотации тега копить по шагам:
   - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
     интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
@@ -227,6 +232,7 @@ blocked-by: —
     неудача ничего не требует, успех — `RecordSuccess`; `bruteforcetest.Recorder` —
     `Attempts()`/`Successes()` (S7).
   - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2);
+    `EnsurePartitions` не валит старт, когда ту же партицию создаёт другой процесс (fix);
     `LOG_REDACT_ENABLED` по умолчанию `true`, значение под ключом-секретом (token, password,
     secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 — маской; выключить —
     `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его (S5);

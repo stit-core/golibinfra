@@ -7,6 +7,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
@@ -57,7 +59,9 @@ func monthStart(t time.Time) time.Time {
 	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
-// EnsurePartitions создаёт партиции текущего и monthsAhead следующих месяцев; идемпотентна.
+// EnsurePartitions создаёт партиции текущего и monthsAhead следующих месяцев;
+// идемпотентна и не падает, когда ту же партицию параллельно создаёт другой
+// процесс (хук и keeper-job на старте, вторая реплика).
 func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 	if monthsAhead < 0 {
 		monthsAhead = 0
@@ -66,11 +70,19 @@ func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 	for i := 0; i <= monthsAhead; i++ {
 		m := base.AddDate(0, i, 0)
 		_, sql := PartitionSQL(s.table, m)
-		if _, err := s.db.Exec(ctx, sql); err != nil {
+		if _, err := s.db.Exec(ctx, sql); err != nil && !createdConcurrently(err) {
 			return fmt.Errorf("outboxkit: ensure partition %s: %w", m.Format("2006-01"), err)
 		}
 	}
 	return nil
+}
+
+// createdConcurrently: IF NOT EXISTS смотрит на имя до блокировки родителя,
+// поэтому проигравший гонку создатель партиции получает duplicate_table (или
+// unique_violation каталога) — партиция уже есть.
+func createdConcurrently(err error) bool {
+	pg, ok := errors.AsType[*pgconn.PgError](err)
+	return ok && (pg.Code == "42P07" || pg.Code == "23505")
 }
 
 // listPartitionsSQL берёт и партиции родителя, и сирот — таблицы с именем

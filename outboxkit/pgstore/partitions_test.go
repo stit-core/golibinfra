@@ -293,6 +293,57 @@ func TestStore_EnsurePartitions(t *testing.T) {
 	}
 }
 
+// Регрессия: партицию, которую параллельно создаёт другой процесс (хук и
+// keeper-job на старте, вторая реплика), EnsurePartitions ждёт и принимает, а не
+// падает duplicate_table, — иначе проигравший гонку валил старт приложения.
+func TestStore_EnsurePartitions_ConcurrentCreator(t *testing.T) {
+	fix, ctx := startFixture(t)
+	db := fix.DB(t)
+	name, createSQL := pgstore.PartitionSQL("outbox", monthsFromNow(0))
+	if _, err := db.Exec(ctx, "DROP TABLE "+name); err != nil {
+		t.Fatalf("drop %s: %v", name, err)
+	}
+
+	tx, err := fix.Pool(t).Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	t.Cleanup(func() { _ = tx.Rollback(context.WithoutCancel(ctx)) })
+	if _, err := tx.Exec(ctx, createSQL); err != nil {
+		t.Fatalf("create %s in the competing transaction: %v", name, err)
+	}
+
+	done := make(chan error, 1)
+	go func() { done <- pgstore.NewStore(db).EnsurePartitions(ctx, 0) }()
+	waitForLockWait(t, ctx, db, "CREATE TABLE IF NOT EXISTS "+name)
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+	if err := <-done; err != nil {
+		t.Fatalf("EnsurePartitions next to a concurrent creator: %v", err)
+	}
+	if !partitionExists(t, ctx, db, name) {
+		t.Fatalf("partition %s missing", name)
+	}
+}
+
+// waitForLockWait ждёт, пока запрос с префиксом prefix повиснет на блокировке.
+func waitForLockWait(t *testing.T, ctx context.Context, db *pgkit.DB, prefix string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		var waiting bool
+		err := db.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM pg_stat_activity
+			WHERE wait_event_type = 'Lock' AND starts_with(query, $1))`, prefix).Scan(&waiting)
+		if err != nil {
+			t.Fatalf("pg_stat_activity: %v", err)
+		}
+		if waiting {
+			return
+		}
+	}
+	t.Fatalf("no query %q waits on a lock", prefix)
+}
+
 func mustName(month time.Time) string {
 	name, _ := pgstore.PartitionSQL("outbox", month)
 	return name
