@@ -35,7 +35,7 @@ var Module = fx.Module("cleanup",
 
 В приложении подключается `timerkit.Module` рядом с модулем, регистрирующим
 job: `timerkit.Provide` требует его в графе, и без него сборка падает с
-`missing type: timerkit.Scheduler` — job, которую никто не запускает, не бывает
+`missing type: timerkit.scheduler` — job, которую никто не запускает, не бывает
 молчаливой. Логи идут через `logkit.Logger` из графа, расписание — по
 `clockkit.Clock`:
 
@@ -113,9 +113,8 @@ type Job struct {
 
 const Group = "timerkit.jobs"                              // имя fx-группы job'ов
 func Provide(ctor any, anns ...fx.Annotation) fx.Option     // конструктор Job или []Job → группа; требует Module
-type Scheduler struct{}                                     // маркер Module в графе
 var ErrJob error                                            // невалидная Job (обёрнута в ошибку OnStart)
-var Module fx.Option                                        // запускает группу, provide'ит Scheduler
+var Module fx.Option                                        // запускает группу, provide'ит маркер для Provide
 ```
 
 | Поле | Роль |
@@ -139,11 +138,13 @@ var Module fx.Option                                        // запускае�
 timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"hubkit.sync.engine"`))
 ```
 
-Каждый `Provide` добавляет в граф `fx.Invoke`, которому нужен `timerkit.Scheduler`
-— его даёт только `Module`. Поэтому модуль кита с job'ами (`outboxkit`,
+Каждый `Provide` добавляет в граф `fx.Invoke`, которому нужен неэкспортируемый
+маркер `timerkit.scheduler` — его даёт только `Module`, подложить его в обход
+нельзя. Поэтому модуль кита с job'ами (`outboxkit`,
 `bruteforcekit/pgstore`, `hubkit/sync`) без `timerkit.Module` не собирается ни в
 `fx.New`, ни в `fx.ValidateApp`, а повторное подключение `Module` — ошибка
-`already provided`, а не двойной запуск job'ов.
+`already provided`, а не двойной запуск job'ов. Job регистрируется только через
+`Provide`: провайдер с сырым тегом группы `timerkit.Group` эту проверку обходит.
 
 Регистрация — только через fx-группу; вне `fx.App` публичного API запуска нет.
 

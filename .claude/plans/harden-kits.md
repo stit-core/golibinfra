@@ -64,7 +64,7 @@ blocked-by: —
 
 ## Шаги
 ### Инфраструктурные киты
-- [x] **S1** — `timerkit.Provide` требует `timerkit.Module` (маркер `timerkit.Scheduler`); fx-тесты и доки зависимых китов
+- [x] **S1** — `timerkit.Provide` требует `timerkit.Module` (маркер модуля в графе); fx-тесты и доки зависимых китов
   - Проверка: `go test -short -race ./timerkit/ ./outboxkit/... ./bruteforcekit/... ./hubkit/...` → PASS · Закрывает: AC6
   - Сделано: `a4030bf` (`make check` зелёный)
 - [x] **S2** — `outboxkit.RepositoryFactory` — интерфейс `Repository`+`Migrations`; `Instance` кладёт миграции в `pgkit.migrations`
@@ -146,84 +146,45 @@ blocked-by: —
   в `ensureStreams` — 5s по умолчанию nats.go, зависший вызов обрывает старт ошибкой. Перенос в
   OnStart не убирает I/O из сборки графа (pgxpool прогревает `MinConns` в фоне) и для natskit
   ломает поддержанную подписку в `fx.Invoke` — несоразмерно.
-- S2: два источника с одним именем `pgkit.MigrateUpAll` отвергает (`duplicate source name`) —
-  ручной `pgkit.ProvideMigrations(pgstore.TableMigrations(t))` рядом с `Instance` валит старт
-  громко; дедупликацию в pgkit не вводим (молча скрыла бы конфликт источников).
-- S2: `pgstore.Module` и `pgstore.FactoryModule` сочетаются (граф и живой старт на Postgres) —
-  строка доков «не сочетаются» была неправдой, исправлена рядом (`usage.md`, doc-comment).
-- S2: юнит-тест группы — на фейковой фабрике: реальная регистрирует backlog-gauge'и, которые
-  без старта не снять; связку с pgstore держит integration-тест через `pgkit.MigrateModule`.
-- S3: ошибка фейка — та же обёртка, что у pgstore (`ErrNoTx` + подсказка про
-  `Transactor.WithTx`); `Recorder` импортирует `pgkit` ради `InTx` — фейк и хранилище
-  решают «в транзакции ли» одной функцией.
-- S4: `FxLogger` — переменная `fx.Option`, как `fx.NopLogger` и `logkit.Module`: параметров нет;
-  берёт `*slog.Logger` графа (`fxevent.SlogLogger` принимает только его) и ставит рутине
-  `UseLogLevel(Debug)` — по умолчанию `fxevent.SlogLogger` пишет её на INFO. Невалидный `LOG_*`
-  не даёт собрать сам логгер событий — fx пишет причину текстом в stderr; это в README, не лечится.
-- S5: hex — маска дефолтного набора `[0-9A-Fa-f]{32,}` без `\b`: цепочка внутри слова тоже
-  секрет, а pre-filter «32 hex подряд» совпадает с маской точно. Программа regexp'а — 188→222
-  инструкций: запись с маркером секрета дороже на 15–25%, без маркеров — ×1.68→×1.76 к записи
-  без redact'а (потолок теста — ×3).
-- S5: ключ-секрет — список слов плюс пары `api`/`private` + `key`; ключ режется на слова
-  (разделители, camelCase, цифры), сравнение `EqualFold` без аллокаций. Действует и при своём
-  наборе масок: ключ — не маска. Числа, `bool`, `nil` под таким ключом остаются.
-- S5: ключи внутри `Any`-структур не разбираются — разбор JSON по токенам с сохранением порядка
-  стоил бы на каждой структуре; путь для структуры с секретами — `slog.LogValuer`-группа (README).
-- S5: граф без `RedactConfig` и нулевой `RedactConfig{}` — без маскирования (`Module` ENV не
-  читает); README велит всегда провайдить `NewRedactConfig` — в шаблоне он есть, в шлюзах нет.
-- S6: subject нормализует `NormalizeKey` (`strings.ToLower(strings.TrimSpace)`) до проверок
-  пустоты и длины — `MaxSubjectLen` про хранимое значение; форму (`phone:+…`) канонизирует
-  caller. `Permissive`/`Locked`/`Recorder` ключ только проверяют, `Recorder` хранит пару как
-  передана: тест сервиса смотрит, что передал сервис.
-- S6: строки со старым ключом (регистр subject'а, полный IPv6) после обновления по новому ключу
-  не находятся — блокировка теряется не дольше `LockDuration`; данные не мигрируем: таблица —
-  эфемерные счётчики, их чистит `Cleanup`.
-- S7: `Guard` — `Attempt` + `RecordSuccess`, `Check`/`RecordFailure` удалены (один способ).
-  Попытка, на которой счётчик достигает порога, проходит и сама ставит блокировку — успех на
-  ней её снимает; попытка под блокировкой строку не пишет (`WHERE`); счётчик выше порога
-  (после понижения `MaxFailures`) блокируется сразу.
-- S7: upsert под блокировкой строки не возвращает — блокировка читается вторым запросом; если
-  она снялась между ними (успех параллельного входа, истечение), попытка переучитывается, не
-  больше `attemptRounds` = 3 раз. Эту ветку тест детерминированно не воспроизводит: нужна гонка
-  между двумя запросами.
-- S7: метрика `bruteforce_checks_total{result}` сохраняет имя (дашборды) и считает исходы
-  `Attempt`; `bruteforcetest.Recorder` — `Attempts()`/`Successes()` (оба `[]Attempt`),
-  `Failures()`/`SuccessAttempts()` удалены: потребителей фейка в шаблонах нет.
-- Вне шагов — `fix(outboxkit)`: `EnsurePartitions` падала `42P07`, когда ту же партицию
-  параллельно создавал другой процесс; с `timerkit.Module` в тестовом графе (S1) хук
-  `pgstore.Module` и keeper-job с `RunOnStart` гонялись, и `TestModule_EnsuresPartitionsOnStart`
-  флакал (~1 из 15), что держало красным `make test-full` — проверку AC7. Та же гонка — у
-  реплик, стартующих вместе. `duplicate_table`/`unique_violation` после `IF NOT EXISTS` значат
-  «партиция уже есть»; регрессия детерминирована: открытая транзакция создаёт ту же партицию.
-  После фикса `make test-full` зелёный целиком.
-- S8: слоты — буферизованный канал ёмкостью `max(1, GOMAXPROCS/Threads)` (GOMAXPROCS на момент
-  конструктора); `Hash`, `Verify` и `VerifyDummy` делят их — dummy ждёт ту же очередь, иначе
-  время ответа снова различало бы пути. Отмена ctx в очереди: `Hash`/`Verify` — ошибка с
-  `ctx.Err()`, `VerifyDummy` пропускает вычисление (ошибки в сигнатуре нет). Гистограммы
-  длительности включают ожидание слота — очередь видна без новой метрики. Шов теста —
-  неэкспортируемое поле `derive` (`argon2.IDKey`): иначе предел проверялся бы таймингами.
-- S9: `subscribe` получает ctx хука `OnStart`: подписки natskit берут ctx только на регистрацию
-  (обработчики живут на ctx соединения), поэтому своего `context.Background()` и `cancel` не
-  нужно; `OnStop` только дренит — отмену зависших обработчиков по бюджету делает `Close` модуля.
-  Быстрый старт README и рецепт fx в `usage.md` — на `SubscribeOnStart` (один способ).
-- Фикс B1 валидатора этапа: `Attempt` в транзакции вызывающего — `bruteforcekit.ErrInTx`
-  (pgstore и все фейки `bruteforcetest` по `pgkit.InTx`, как `DropOldPartitions`): откат логина
-  на неверном пароле снимал учёт, и перебор шёл без предела. `RecordSuccess` в транзакции
-  допустим — откат оставляет счётчик (fail-closed). Сентинел — в core-пакете: хранилище и фейки
-  отдают одну ошибку.
-- Фикс B2: в заготовке аннотации у S1 — шаг миграции и повторный `timerkit.Module`, у S3 —
-  только фейк Transactor. Закрыть лазейку `pgkit.WithTestTx` в самом `outboxtest` дёшево нельзя:
-  `Recorder` не отличает пометку фейка Transactor от ручной (один маркер pgkit), а различение
-  связало бы outboxtest с pgtest и отвергло бы настоящий `PoolTransactor`; контракт — в
-  `outboxkit/docs/testing.md`. Критерий разделов аннотации — в README § Версионирование.
-- Неблок. 1 валидатора (часть): ключ-секрет — слово целиком или окончание слова (`accesstoken`,
-  `newpassword`, `totp`), добавлен `pwd`; коды `otp`/`pin` — только слово целиком, под ними
-  прячется и число; ключи `map` со строковыми ключами (`http.Header`, `url.Values`,
-  `map[string]any`, вложенные) — те же правила, копия map — только при найденном секрете, обход
-  через `SetIterKey`/`SetIterValue` без аллокаций на пару. Цена — около +0.4 µs и +2 аллокации на
-  map-атрибут, запись со структурой без маркеров — около ×2 к записи без redact. Двусмысленные
-  короткие ключи (`pass`, `sid`, `code`, `signature`), поля структур, base64url-токены и пароль
-  в DSN — строкой в бэклоге.
+- S2: одноимённые источники `MigrateUpAll` отвергает (`duplicate source name`), поэтому ручной
+  `ProvideMigrations(TableMigrations(t))` рядом с `Instance` падает громко — дедупликации нет;
+  юнит-тест группы — на фейковой фабрике (реальная регистрирует gauge'и), связку с pgstore держит
+  integration через `MigrateModule`; `pgstore.Module` и `FactoryModule` сочетаются.
+- S3: ошибка фейка — та же обёртка, что у pgstore; фейк и хранилище решают «в транзакции ли»
+  одной функцией `pgkit.InTx`.
+- S4: `FxLogger` — переменная `fx.Option` (как `fx.NopLogger`), берёт `*slog.Logger` графа и
+  ставит рутине DEBUG (по умолчанию `fxevent.SlogLogger` пишет INFO); невалидный `LOG_*` не даёт
+  собрать сам логгер событий — причина уходит текстом в stderr (README).
+- S5 и неблок. 1: hex-маска `[0-9A-Fa-f]{32,}` без `\b`, pre-filter «32 hex подряд» совпадает с
+  ней точно. Ключ режется на слова (разделители, camelCase, цифры); секрет — слово из словаря
+  целиком или его окончание (`accesstoken`, `totp`), `api`/`private` + `key`; коды `otp`/`pin` —
+  слово целиком, прячется и число; те же правила — у ключей `map` со строковыми ключами
+  (`http.Header`, `url.Values`, `map[string]any`, вложенные; копия — только при секрете). Поля
+  структур не разбираются (путь — `LogValuer`-группа). Граф без `RedactConfig` не маскирует
+  (`Module` ENV не читает). Цена без маркеров — около ×2 (потолок теста ×3). Остальные пропуски
+  (`pass`, `sid`, `code`, base64url, DSN) — в бэклоге.
+- S6: `NormalizeKey` — `ToLower(TrimSpace)` до проверок пустоты и длины; фейки кроме `Counting`
+  ключ только проверяют. Строки со старым ключом новым не находятся — блокировка теряется не
+  дольше `LockDuration`, данные не мигрируем (эфемерные счётчики).
+- S7 и B1: `Guard` — `Attempt` + `RecordSuccess`. Попытка на пороге проходит и ставит
+  блокировку, под блокировкой `WHERE` строку не пишет, счётчик выше порога блокируется сразу;
+  под блокировкой её читает второй запрос, снятую между ними попытку переучитываем (не больше 3
+  раз; эту ветку тест не воспроизводит). `Attempt` в транзакции — `ErrInTx` (pgstore и фейки):
+  откат логина снимал учёт; `RecordSuccess` в транзакции допустим (fail-closed). Метрика
+  `bruteforce_checks_total` сохранила имя; у `Recorder` — `Attempts()`/`Successes()`.
+- `fix(outboxkit)` вне шагов: `EnsurePartitions` падала `42P07` рядом с параллельным создателем
+  той же партиции (хук и keeper-job на старте, реплики) — флак `make test-full`, проверки AC7.
+  «Уже есть» — не ошибка; регрессия детерминирована открытой транзакцией.
+- S8: слоты — канал ёмкостью `max(1, GOMAXPROCS/Threads)`, общие для `Hash`/`Verify`/`VerifyDummy`
+  (иначе время ответа различало бы пути); отмена ctx в очереди — ошибка, у `VerifyDummy` —
+  пропуск; ожидание входит в гистограммы; шов теста — неэкспортируемое поле `derive`.
+- S9: `subscribe` получает ctx хука — natskit берёт его только на регистрацию; `OnStop` дренит,
+  отмену зависших обработчиков по бюджету делает `Close` модуля.
+- B2: аннотация — шаг миграции S1, у S3 только фейк Transactor; лазейку `pgkit.WithTestTx` в
+  `outboxtest` дёшево не закрыть (один маркер pgkit у фейка и у ручной пометки) — контракт в
+  `outboxkit/docs/testing.md`; критерий разделов аннотации — в README § Версионирование.
+- Неблок. 7: маркер модуля — неэкспортируемый `timerkit.scheduler`, `fx.Supply` его не подложит;
+  сырой тег группы проверку обходит — контракт «только `Provide`» в README timerkit.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -240,7 +201,7 @@ blocked-by: —
 - Шлюзы (`v0.39.0`): цепочка аннотаций тегов до `v1.2.0`.
 
 ## Где мы сейчас
-- Сделано: план (`bc726e3`), S1 (`a4030bf`, `feat(timerkit)!`) — маркер `timerkit.Scheduler`;
+- Сделано: план (`bc726e3`), S1 (`a4030bf`, `feat(timerkit)!`) — маркер модуля в графе;
   S2 (`887527a`, `feat(outboxkit)!`) — `RepositoryFactory` стал интерфейсом (`Repository`,
   `Migrations`), `Instance` кладёт `pgkit.Source` таблицы в `pgkit.MigrationsGroup`;
   S3 (`16949a0`, `feat(outboxtest)!`) — `Recorder.Publish` вне `pgkit.InTx` → `outboxkit.ErrNoTx`;
@@ -254,14 +215,14 @@ blocked-by: —
 - Осталось: S10–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — FAIL: B1, B2 и неблокирующие.
   Фиксы — отдельными `fix(...)`: B1 (`cb32246`, `ErrInTx`), B2 (`e885daa`, аннотация S1/S3) и
-  маскирование по ключу (`fix(logkit)`) сделаны; дальше маркер timerkit, natskit, outboxkit
-  (партиции, тест `Module`+`FactoryModule`); затем перепроверка валидатором, потом S10 (AC1).
+  маскирование по ключу (`e1d35da`), маркер timerkit (`fix(timerkit)`) сделаны; дальше natskit,
+  outboxkit (партиции, тест `Module`+`FactoryModule`); затем перепроверка валидатором, потом S10.
 - Для аннотации тега копить по шагам:
   - Breaking:
     - timerkit (S1): `timerkit.Provide` и киты с job'ами (outboxkit `Module`/`Instance`,
       `outboxkit/pgstore`, `bruteforcekit/pgstore`, `hubkit/sync`) требуют в графе
       `timerkit.Module` и `logkit.Logger` — добавьте их, в том числе в тестовые графы
-      (`fx.ValidateApp`/`fxtest`).
+      (`fx.ValidateApp`/`fxtest`); без модуля — `missing type: timerkit.scheduler`.
     - outboxkit (S2): `RepositoryFactory` — интерфейс `Repository(table)`/`Migrations(table)`
       вместо func-типа, своя фабрика реализует оба метода; `Instance` сам регистрирует схему
       таблицы — ручной `pgkit.ProvideMigrations(pgstore.TableMigrations(t))` рядом с ним убрать,

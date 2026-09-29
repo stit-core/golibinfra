@@ -120,8 +120,8 @@ func TestModule_ValidateApp(t *testing.T) {
 func TestModule_RequiresTimerkit(t *testing.T) {
 	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
 	err := fx.ValidateApp(fx.NopLogger, deps(&fakeRepo{}, &capturingBus{}, cfg), outboxkit.Module)
-	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
-		t.Fatalf("outboxkit.Module without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.scheduler") {
+		t.Fatalf("outboxkit.Module without timerkit.Module: err = %v, want missing timerkit.scheduler", err)
 	}
 	err = fx.ValidateApp(fx.NopLogger,
 		fx.Provide(
@@ -132,8 +132,8 @@ func TestModule_RequiresTimerkit(t *testing.T) {
 		),
 		outboxkit.Instance("orders", "outbox_orders"),
 	)
-	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
-		t.Fatalf("outboxkit.Instance without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.scheduler") {
+		t.Fatalf("outboxkit.Instance without timerkit.Module: err = %v, want missing timerkit.scheduler", err)
 	}
 }
 

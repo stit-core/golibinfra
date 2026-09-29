@@ -47,8 +47,8 @@ func scheduler() fx.Option {
 // граф обязан не собраться.
 func TestModule_RequiresTimerkit(t *testing.T) {
 	err := fx.ValidateApp(fx.NopLogger, fx.Supply(&pgkit.DB{}, pgstore.Config{}), pgstore.Module)
-	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
-		t.Fatalf("pgstore.Module without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.scheduler") {
+		t.Fatalf("pgstore.Module without timerkit.Module: err = %v, want missing timerkit.scheduler", err)
 	}
 }
 

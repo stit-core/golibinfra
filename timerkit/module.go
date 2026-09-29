@@ -15,14 +15,15 @@ import (
 // Group — имя fx-группы, из которой Module забирает job'ы.
 const Group = "timerkit.jobs"
 
-// Scheduler — маркер Module в графе: Provide требует его, поэтому job без
-// запускающего модуля — ошибка сборки графа (missing type timerkit.Scheduler).
-type Scheduler struct{}
+// scheduler — маркер Module в графе: Provide требует его, поэтому job без
+// запускающего модуля — ошибка сборки графа (missing type timerkit.scheduler).
+// Неэкспортируемый: подложить его в граф в обход Module нельзя.
+type scheduler struct{}
 
 // Module запускает все job'ы группы Group в fx-lifecycle приложения.
 var Module = fx.Module(
 	"timerkit",
-	fx.Supply(Scheduler{}),
+	fx.Supply(scheduler{}),
 	fx.Invoke(startJobs),
 )
 
@@ -42,7 +43,7 @@ func Provide(ctor any, anns ...fx.Annotation) fx.Option {
 	)
 }
 
-func requireModule(Scheduler) {}
+func requireModule(scheduler) {}
 
 var (
 	jobType  = reflect.TypeFor[Job]()

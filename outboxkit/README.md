@@ -29,7 +29,7 @@ Single-instance путь (одна таблица `outbox`, fx-проводка)
 `pgkit` (с `MigrateModule` — он применяет миграции кита), `natskit` (с
 `NATS_JETSTREAM_ENABLED=true` и стримом, покрывающим subject'ы outbox'а) и
 `timerkit` (он гоняет `Worker.Run` по тикеру; без `timerkit.Module` граф не
-собирается — `missing type: timerkit.Scheduler`).
+собирается — `missing type: timerkit.scheduler`).
 
 ```go
 fx.New(

@@ -212,10 +212,15 @@ func TestProvide_RequiresModule(t *testing.T) {
 		return Job{Name: "orphan", Interval: time.Hour, Run: func(context.Context) error { return nil }}
 	})
 	err := fx.ValidateApp(fx.NopLogger, fx.Provide(logkit.Nop), job)
-	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
-		t.Fatalf("ValidateApp without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.scheduler") {
+		t.Fatalf("ValidateApp without timerkit.Module: err = %v, want missing timerkit.scheduler", err)
 	}
 	if err := fx.ValidateApp(fx.NopLogger, fx.Provide(logkit.Nop), Module, job); err != nil {
 		t.Fatalf("ValidateApp with timerkit.Module: %v", err)
+	}
+	// Повторный Module — ошибка сборки, а не двойной запуск job'ов.
+	err = fx.ValidateApp(fx.NopLogger, fx.Provide(logkit.Nop), Module, Module, job)
+	if err == nil || !strings.Contains(err.Error(), "already provided") {
+		t.Fatalf("ValidateApp with timerkit.Module twice: err = %v, want already provided", err)
 	}
 }

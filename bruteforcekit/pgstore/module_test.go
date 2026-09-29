@@ -33,8 +33,8 @@ func TestModule_ProvidesGuardAndCleaner(t *testing.T) {
 func TestModule_RequiresTimerkit(t *testing.T) {
 	t.Parallel()
 	err := fx.ValidateApp(fx.NopLogger, fx.Supply(&pgkit.DB{}, config()), pgstore.Module)
-	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
-		t.Fatalf("pgstore.Module without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.scheduler") {
+		t.Fatalf("pgstore.Module without timerkit.Module: err = %v, want missing timerkit.scheduler", err)
 	}
 }
 

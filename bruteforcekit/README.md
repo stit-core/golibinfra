@@ -29,7 +29,7 @@ import "git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
 `pgkit.MigrateModule` и cleanup-job в группе `timerkit.Group`. Ему нужны `*pgkit.DB`
 (из `pgkit.Module`), `bruteforcekit.Config` (конфиг кит **не** провайдит сам:
 `fx.Provide(bruteforcekit.NewConfig)`) и `timerkit.Module` — без него граф не
-собирается (`missing type: timerkit.Scheduler`): cleanup-job, которую никто не
+собирается (`missing type: timerkit.scheduler`): cleanup-job, которую никто не
 запускает, оставила бы таблицу расти.
 
 ```go
