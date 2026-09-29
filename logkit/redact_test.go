@@ -817,7 +817,9 @@ func (*ownJSONPtr) MarshalJSON() ([]byte, error) { return []byte(`"own-ptr"`), n
 
 // Регрессия R2: копия с маскированием кодируется в тот же JSON, что оригинал.
 // Указатель не разыменовывается — MarshalJSON на указателе у поля зовётся, как
-// без маскирования; типы со своим MarshalJSON не разбираются.
+// без маскирования; типы со своим MarshalJSON не разбираются. Срез рядом с
+// ключом-секретом попадает в копию: элементы копии не адресуемы, и MarshalJSON
+// на указателе у них не позвался бы.
 func TestRedact_MapKeysKeepTypeEncoding(t *testing.T) {
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -826,12 +828,12 @@ func TestRedact_MapKeysKeepTypeEncoding(t *testing.T) {
 			"token": "opaque-token",
 			"acct":  &account{Creds: hiddenCreds{User: "u", Pass: "hidden-pass"}},
 			"own":   ownJSON{"password": "own-secret"},
+			"list":  []ownJSONPtr{{"password": "own-ptr-secret"}},
 		},
-		"list", []ownJSONPtr{{"password": "own-ptr-secret"}},
 	)
 
 	out := buf.String()
-	for _, leaked := range []string{"opaque-token", "hidden-pass"} {
+	for _, leaked := range []string{"opaque-token", "hidden-pass", "own-ptr-secret"} {
 		if strings.Contains(out, leaked) {
 			t.Fatalf("%q leaked: %s", leaked, out)
 		}
@@ -842,8 +844,31 @@ func TestRedact_MapKeysKeepTypeEncoding(t *testing.T) {
 	if creds, _ := acct["Creds"].(map[string]any); creds["user"] != "u" || doc["own"] != "own" {
 		t.Errorf("doc = %v, want the types' own encoding", m["doc"])
 	}
-	if list, _ := m["list"].([]any); len(list) != 1 || list[0] != "own-ptr" {
-		t.Errorf("list = %v, want MarshalJSON of addressable elements", m["list"])
+	if list, _ := doc["list"].([]any); len(list) != 1 || list[0] != "own-ptr" {
+		t.Errorf("list = %v, want MarshalJSON of addressable elements", doc["list"])
+	}
+}
+
+// Регрессия: срез массивов map и срез из его первого массива лежат по одному
+// адресу с одной длиной — у каждого своя копия, иначе один получил бы форму
+// другого.
+func TestRedact_MapKeysAliasedSlicesKeepShape(t *testing.T) {
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	rows := [][1]map[string]string{{{"token": "opaque-alias"}}}
+	l.Info(context.Background(), "alias", "doc", map[string]any{"rows": rows, "first": rows[0][:]})
+
+	if out := buf.String(); strings.Contains(out, "opaque-alias") {
+		t.Fatalf("secret leaked: %s", out)
+	}
+	doc, _ := decodeLine(t, buf.Bytes())["doc"].(map[string]any)
+	for key, want := range map[string]string{
+		"rows":  `[[{"token":"[REDACTED]"}]]`,
+		"first": `[{"token":"[REDACTED]"}]`,
+	} {
+		if got, err := json.Marshal(doc[key]); err != nil || string(got) != want {
+			t.Errorf("%s = %s (%v), want %s", key, got, err, want)
+		}
 	}
 }
 
