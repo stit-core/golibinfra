@@ -77,12 +77,12 @@ func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 	return nil
 }
 
-// createdConcurrently: IF NOT EXISTS смотрит на имя до блокировки родителя,
-// поэтому проигравший гонку создатель партиции получает duplicate_table (или
-// unique_violation каталога) — партиция уже есть.
+// createdConcurrently: IF NOT EXISTS смотрит на имя до блокировки родителя, а
+// блокировка родителя сериализует создателей партиций — проигравший гонку видит
+// закоммиченное имя и получает duplicate_table: партиция уже есть.
 func createdConcurrently(err error) bool {
 	pg, ok := errors.AsType[*pgconn.PgError](err)
-	return ok && (pg.Code == "42P07" || pg.Code == "23505")
+	return ok && pg.Code == "42P07"
 }
 
 // listPartitionsSQL берёт и партиции родителя, и сирот — таблицы с именем

@@ -235,6 +235,59 @@ func TestFactoryModule_InstanceOnCustomTable(t *testing.T) {
 	}
 }
 
+// Таблица outbox (Module) и инстансы (FactoryModule + Instance) живут в одном
+// графе: MigrateModule накатывает обе схемы, публикация идёт каждая в свою.
+func TestModule_CombinesWithFactoryModule(t *testing.T) {
+	fix := testkit.StartPostgres(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, tr := fix.DB(t), fix.Transactor(t)
+
+	var single, orders outboxkit.Publisher
+	app := fxtest.New(t,
+		fx.Supply(
+			db,
+			pgstore.Config{RequireTx: true},
+			pgkit.PoolConfig{DSN: fix.DSN},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+		),
+		fx.Provide(
+			func() natskit.StreamBus { return &noopStreamBus{} },
+			func() pgkit.Transactor { return tr },
+			func() outboxkit.Config {
+				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+			},
+		),
+		scheduler(),
+		pgkit.MigrateModule,
+		pgstore.Module,
+		outboxkit.Module,
+		pgstore.FactoryModule,
+		outboxkit.Instance("orders", "outbox_orders"),
+		fx.Populate(&single),
+		fx.Invoke(fx.Annotate(func(p outboxkit.Publisher) { orders = p }, fx.ParamTags(`name:"orders"`))),
+	)
+	app.RequireStart()
+	defer app.RequireStop()
+
+	for _, p := range []outboxkit.Publisher{single, orders} {
+		if err := tr.WithTx(ctx, func(ctx context.Context) error {
+			return p.Publish(ctx, "order.created", sample{N: 1})
+		}); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	for _, table := range []string{pgstore.DefaultTable, "outbox_orders"} {
+		var n int
+		if err := db.QueryRow(ctx, "SELECT count(*) FROM "+table).Scan(&n); err != nil {
+			t.Fatalf("count %s: %v", table, err)
+		}
+		if n != 1 {
+			t.Fatalf("rows in %s = %d, want 1", table, n)
+		}
+	}
+}
+
 // TableMigrations идемпотентны поверх таблицы, заведённой руками по SchemaSQL.
 func TestTableMigrations_OverExistingTable(t *testing.T) {
 	const table = "outbox_legacy"

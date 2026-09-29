@@ -175,9 +175,8 @@ Subject, Since})` (реализация — `pgstore.Store.ReviveDead`): сбр�
   (`RunOnStart`) и раз в сутки. Оба пути зависят от `pgkit.Migrated`, поэтому
   ждут миграций независимо от порядка модулей в `fx.New`. Идемпотентна:
   `CREATE TABLE IF NOT EXISTS`; создатель, проигравший гонку за ту же партицию
-  (хук и keeper на старте, вторая реплика), получает `duplicate_table` или
-  `unique_violation` каталога, и `EnsurePartitions` принимает их как «партиция
-  уже есть».
+  (хук и keeper на старте, вторая реплика), ждёт блокировку родителя и получает
+  `duplicate_table`, а `EnsurePartitions` принимает его как «партиция уже есть».
 - `RetentionKeeperJob` (раз в сутки) — `DropOldPartitions(ctx, OUTBOX_RETENTION_MONTHS)`:
   отцепляет и дропает партиции, чей месяц старше `OUTBOX_RETENTION_MONTHS` до
   текущего. Партиция с неопубликованными (не-dead) событиями остаётся; такие
