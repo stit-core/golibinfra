@@ -10,8 +10,8 @@
   `AccessLog(log, quietPaths...)`, `Metrics()`,
   `Idempotency(cfg, store, opts...)`. huma-уровень: `HumaAuth(log, extract)`.
 - **Ошибки**: `APIError`, `FieldError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
-  Conflict/Internal/Unavailable`, `MapErr`, `MapIs`, `MapAs[T]`,
-  `ProblemContentType`.
+  Conflict/Internal/Unavailable`, `ErrorMap` (`NewErrorMap`, `ErrorRule`, `Map`,
+  `Declare`, `Unmapped`), `ProblemContentType`.
 - **Auth**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
   `ContextWithSubject`, `SubjectFrom`.
 - **Health**: `RegisterHealth(api, log, probeTimeout, probes...)`, `Probe`
@@ -50,10 +50,12 @@ type GetUserOutput struct {
 }
 
 func registerRoutes(api huma.API, svc *UserService) {
-    huma.Get(api, "/users/{id}", func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
+    huma.Register(api, userErrors.Declare(huma.Operation{
+        OperationID: "getUser", Method: http.MethodGet, Path: "/users/{id}",
+    }), func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
         u, err := svc.Get(ctx, in.ID)
         if err != nil {
-            return nil, httpkit.MapIs(err, ErrUserNotFound, "USER_NOT_FOUND", http.StatusNotFound, "user not found")
+            return nil, userErrors.Map(err)
         }
         out := &GetUserOutput{}
         out.Body.ID, out.Body.Name = u.ID, u.Name
@@ -62,30 +64,54 @@ func registerRoutes(api huma.API, svc *UserService) {
 }
 ```
 
-## APIError / MapErr / MapIs / MapAs
+## Ошибки: APIError и ErrorMap
+
+Проверка входа в хендлере — готовый `APIError`:
 
 ```go
 return nil, httpkit.BadRequest("INVALID_EMAIL", "email is malformed")
-
-err = httpkit.MapErr(err,
-    httpkit.ErrorMapping{Match: func(e error) bool { return errors.Is(e, pgkit.ErrNotFound) },
-        Code: "NOT_FOUND", Status: http.StatusNotFound, Detail: "resource not found"},
-    httpkit.ErrorMapping{Match: func(e error) bool { return errors.Is(e, ErrConflict) },
-        Code: "CONFLICT", Status: http.StatusConflict, Detail: "already exists"},
-)
-
-err = httpkit.MapIs(err, ErrLocked, "LOCKED", http.StatusForbidden, "account locked")
-err = httpkit.MapAs[*ValidationError](err, "VALIDATION", http.StatusUnprocessableEntity, "invalid input")
 ```
 
-Незамапленная ошибка клиенту не показывается: он получает `500
-{"title":"Internal Server Error","status":500,"code":"INTERNAL","request_id":"…"}`,
-а полный текст уходит в лог строкой `handler error` с тем же `request_id`. `nil` →
-`nil`. `MapAs[error]` паникует: такой маппинг превратил бы любую ошибку, включая
-упавшую БД, в выбранный статус. Когда повторить запрос, ответ говорит
-заголовком `Retry-After`: его значение — метод `RetryAfter() time.Duration`
-ошибки в цепочке причины (у 429 — не меньше секунды). Полная форма —
-[architecture.md § Контракт ошибок](architecture.md#контракт-ошибок).
+Доменные ошибки — одна таблица `ErrorMap` на домен или операцию, первое
+совпавшее правило выигрывает. Правило ловит sentinel (`Err`, по `errors.Is`) или
+предикат (`Match`), `Field` кладёт ошибку поля в `errors[]`:
+
+```go
+var userErrors = httpkit.NewErrorMap(
+    httpkit.ErrorRule{Err: user.ErrNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "user not found"},
+    httpkit.ErrorRule{Err: user.ErrConflict, Status: http.StatusConflict, Code: "USER_CONCURRENT_UPDATE", Detail: "user changed concurrently"},
+    httpkit.ErrorRule{Match: policy.IsForbidden, Status: http.StatusForbidden, Code: "FORBIDDEN", Detail: "forbidden"},
+    httpkit.ErrorRule{Err: user.ErrWeakPassword, Status: http.StatusUnprocessableEntity,
+        Code: "USER_WEAK_PASSWORD", Detail: "password too weak", Field: "body.password"},
+    httpkit.ErrorRule{Err: auth.ErrLocked, Status: http.StatusTooManyRequests, Code: "AUTH_LOCKED", Detail: "too many attempts"},
+)
+```
+
+- `Map(err)` — в хендлере: совпавшая ошибка становится `*APIError`, несовпавшая
+  возвращается как есть, и кит отвечает на неё `500 INTERNAL` без текста причины,
+  а причину пишет строкой `handler error` с `operation` и тем же `request_id`.
+  `nil` → `nil`.
+- `Declare(op)` — при регистрации: статусы правил попадают в `op.Errors` (huma
+  добавляет к ним 422 и 500), коды — в описание ответа своего статуса в
+  `openapi.json` (`Conflict: USER_CONCURRENT_UPDATE`).
+- `Unmapped(errs...)` — в тесте полноты: sentinel'ы домена, которых таблица не
+  ловит (ждём пусто).
+
+`NewErrorMap` паникует на сломанной таблице: у правила не ровно одно из `Err` и
+`Match`, нет `Code`, статус вне 400–599 или `Err` уже ловит правило выше (частное
+ставьте над общим). Когда повторить запрос, ответ говорит заголовком
+`Retry-After`: его значение — метод `RetryAfter() time.Duration` доменной ошибки
+в цепочке (у 429 — не меньше секунды):
+
+```go
+type LockedError struct{ Wait time.Duration }
+
+func (e *LockedError) Error() string              { return "account locked" }
+func (e *LockedError) Unwrap() error              { return auth.ErrLocked }
+func (e *LockedError) RetryAfter() time.Duration { return e.Wait }
+```
+
+Полная форма ответа — [architecture.md § Контракт ошибок](architecture.md#контракт-ошибок).
 
 ## Идемпотентность
 

@@ -179,12 +179,13 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 `APIError` реализует `error`, `huma.StatusError` и `huma.ContentTypeFilter`;
 `huma.ErrorWithHeaders` дописывает к нему заголовки. Конструкторы —
 `Error(code, status, detail)` и хелперы `BadRequest`…`Internal`, `Unavailable`.
-Маппинг доменных ошибок:
 
-- `MapErr(err, mappings...)` — таблица `ErrorMapping{Match, Code, Status, Detail}`.
-- `MapIs(err, target, code, status, detail)` — `errors.Is`.
-- `MapAs[T](err, code, status, detail)` — `errors.As` по конкретному типу;
-  `T = error` запрещён (паника), потому что совпал бы с любой ошибкой.
+Доменные ошибки переводит `ErrorMap` — одна таблица правил `ErrorRule` на домен
+или операцию (`NewErrorMap` отвергает сломанную таблицу паникой): `Map` в
+хендлере, `Declare` при регистрации операции (статусы — в `op.Errors`, коды — в
+`op.Metadata`, откуда OnAddOperation сервера переносит их в описание ответа
+статуса), `Unmapped` — в тесте полноты. `Map` сохраняет доменную ошибку причиной
+`APIError`: из неё берётся `Retry-After`.
 
 Вне контракта — ответы самого `net/http` на битый протокол (400, 431): их пишет
 `http.Server` до цепочки. Повтор с `Idempotency-Key` воспроизводит тело оригинала

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math"
 	"net/http"
-	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -206,53 +205,4 @@ func writeAPIError(ctx context.Context, w http.ResponseWriter, e *APIError) {
 	w.Header().Set("Content-Type", ProblemContentType)
 	w.WriteHeader(body.Status)
 	_ = json.NewEncoder(w).Encode(body)
-}
-
-// ErrorMapping — одно правило MapErr: предикат по ошибке и результирующий APIError.
-type ErrorMapping struct {
-	Match  func(error) bool
-	Code   string
-	Status int
-	Detail string
-}
-
-// MapErr переводит ошибку в APIError по первому совпавшему правилу; остальные
-// возвращает как есть (кит ответит на них нейтральным 500 и строкой лога).
-func MapErr(err error, mappings ...ErrorMapping) error {
-	if err == nil {
-		return nil
-	}
-	for _, m := range mappings {
-		if m.Match(err) {
-			return Error(m.Code, m.Status, m.Detail)
-		}
-	}
-	return err
-}
-
-// MapIs переводит ошибку, совпадающую с target по errors.Is, в APIError;
-// остальные возвращает как есть.
-func MapIs(err, target error, code string, status int, detail string) error {
-	if err == nil {
-		return nil
-	}
-	if errors.Is(err, target) {
-		return Error(code, status, detail)
-	}
-	return err
-}
-
-// MapAs переводит ошибку, в цепочке которой есть значение типа T (errors.As),
-// в APIError. T = error запрещён: он совпал бы с любой ошибкой.
-func MapAs[T error](err error, code string, status int, detail string) error {
-	if reflect.TypeFor[T]() == reflect.TypeFor[error]() {
-		panic("httpkit: MapAs[error] matches every error; use MapIs or a concrete type")
-	}
-	if err == nil {
-		return nil
-	}
-	if _, ok := errors.AsType[T](err); ok {
-		return Error(code, status, detail)
-	}
-	return err
 }

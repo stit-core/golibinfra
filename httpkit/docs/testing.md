@@ -5,7 +5,7 @@
 `testkit/handlertest` поднимает huma-API сервера `httpkit` (`NewServer` +
 `BindAPI`, из цепочки — только `RequestID`) под `humatest` без реального
 `*http.Server`: ответы-ошибки те же, что в проде — `request_id`, `Retry-After`,
-404/405 маршрутизатора:
+404/405 маршрутизатора, коды `ErrorMap.Declare` в OpenAPI:
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/testkit/handlertest"
@@ -38,6 +38,21 @@ api := handlertest.NewAPI(t, func(api huma.API) {
 })
 handlertest.AssertAPIError(t, api.Get("/me"), http.StatusUnauthorized, "UNAUTHORIZED")
 ```
+
+## Полнота маппинга ошибок
+
+Каждый sentinel домена сопоставлен таблицей, а его код — в описании ответа:
+
+```go
+func TestUserErrorsComplete(t *testing.T) {
+    if left := userErrors.Unmapped(user.ErrNotFound, user.ErrConflict, user.ErrWeakPassword); len(left) > 0 {
+        t.Fatalf("unmapped domain errors: %v", left)
+    }
+}
+```
+
+Коды `Declare` видны в `api.OpenAPI()` API из `handlertest.NewAPI` или `Module`:
+описание ответа статуса — `Conflict: USER_CONCURRENT_UPDATE`.
 
 ## Middleware напрямую
 

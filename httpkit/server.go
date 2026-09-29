@@ -188,7 +188,8 @@ func (s *Server) BindAPI() huma.API {
 	}
 	maxBody := s.cfg.MaxBody.MaxBytes
 	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation,
-		func(_ *huma.OpenAPI, op *huma.Operation) { op.MaxBodyBytes = maxBody })
+		func(_ *huma.OpenAPI, op *huma.Operation) { op.MaxBodyBytes = maxBody },
+		describeErrorCodes)
 	humaConfig.Transformers = append(humaConfig.Transformers, s.transformError)
 	for _, fn := range s.opts.humaConfig {
 		fn(&humaConfig)

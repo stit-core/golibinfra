@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -14,12 +13,6 @@ import (
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 )
-
-var errSentinel = errors.New("sentinel")
-
-type typedError struct{ msg string }
-
-func (e *typedError) Error() string { return e.msg }
 
 func TestAPIError_JSON(t *testing.T) {
 	raw, err := json.Marshal(httpkit.Error("USER_NOT_FOUND", http.StatusNotFound, "user not found"))
@@ -103,68 +96,6 @@ func TestAPIError_GetStatusAndError(t *testing.T) {
 	if e.Error() != "DUP: already exists" {
 		t.Fatalf("error %q", e.Error())
 	}
-}
-
-func TestMapErr(t *testing.T) {
-	if httpkit.MapErr(nil) != nil {
-		t.Error("nil must stay nil")
-	}
-	mapped := httpkit.MapErr(fmt.Errorf("wrap: %w", errSentinel), httpkit.ErrorMapping{
-		Match:  func(err error) bool { return errors.Is(err, errSentinel) },
-		Code:   "SENTINEL",
-		Status: http.StatusNotFound,
-		Detail: "not found",
-	})
-	var apiErr *httpkit.APIError
-	if !errors.As(mapped, &apiErr) || apiErr.Code != "SENTINEL" {
-		t.Fatalf("expected mapped APIError, got %v", mapped)
-	}
-	orig := errors.New("other")
-	if got := httpkit.MapErr(orig); !errors.Is(got, orig) {
-		t.Error("unmatched error must be returned as is")
-	}
-}
-
-func TestMapIs(t *testing.T) {
-	if httpkit.MapIs(nil, errSentinel, "C", 404, "d") != nil {
-		t.Error("nil must stay nil")
-	}
-	mapped := httpkit.MapIs(fmt.Errorf("repo: %w", errSentinel), errSentinel, "SENT", http.StatusNotFound, "detail")
-	var apiErr *httpkit.APIError
-	if !errors.As(mapped, &apiErr) || apiErr.Status != http.StatusNotFound {
-		t.Fatalf("expected 404 APIError, got %v", mapped)
-	}
-
-	// Регрессия: посторонняя ошибка (например, упавшая БД) не должна стать 404.
-	dbDown := errors.New("connection refused")
-	if got := httpkit.MapIs(dbDown, errSentinel, "SENT", http.StatusNotFound, "detail"); !errors.Is(got, dbDown) {
-		t.Fatalf("unrelated error must pass through, got %v", got)
-	}
-}
-
-func TestMapAs(t *testing.T) {
-	orig := fmt.Errorf("svc: %w", &typedError{msg: "typed"})
-	mapped := httpkit.MapAs[*typedError](orig, "TYPED", http.StatusBadRequest, "typed")
-	var apiErr *httpkit.APIError
-	if !errors.As(mapped, &apiErr) || apiErr.Code != "TYPED" {
-		t.Fatalf("expected APIError, got %v", mapped)
-	}
-	other := errors.New("other")
-	if got := httpkit.MapAs[*typedError](other, "TYPED", http.StatusBadRequest, "typed"); !errors.Is(got, other) {
-		t.Fatalf("unrelated error must pass through, got %v", got)
-	}
-	if httpkit.MapAs[*typedError](nil, "TYPED", http.StatusBadRequest, "typed") != nil {
-		t.Error("nil must stay nil")
-	}
-}
-
-func TestMapAs_ErrorInterfaceForbidden(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Fatal("MapAs[error] must panic: it would match every error")
-		}
-	}()
-	_ = httpkit.MapAs[error](errors.New("x"), "C", 500, "d")
 }
 
 func TestErrorHelpers(t *testing.T) {

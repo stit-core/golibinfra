@@ -17,8 +17,8 @@ import (
 type API = humatest.TestAPI
 
 // NewAPI поднимает in-memory huma.API сервера httpkit (request_id, Retry-After,
-// 404/405 маршрутизатора) и регистрирует на нём хендлеры register. Middleware
-// цепочки, кроме RequestID, в нём нет.
+// 404/405 маршрутизатора, коды ErrorMap.Declare в OpenAPI) и регистрирует на нём
+// хендлеры register. Middleware цепочки, кроме RequestID, в нём нет.
 func NewAPI(t testing.TB, register func(api huma.API)) API {
 	t.Helper()
 	cfg := httpkit.Config{

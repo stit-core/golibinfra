@@ -30,15 +30,21 @@ import "git.stit.tech/stit-core/golibinfra/httpkit"
 который первым строит зависимость с хуками, — до него. `Config` регистрирует caller.
 
 ```go
+var userErrors = httpkit.NewErrorMap(
+    httpkit.ErrorRule{Err: ErrUserNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "user not found"},
+)
+
 app := fx.New(
     logkit.Module,                                  // logkit.Logger
     fx.Provide(logkit.NewConfig, httpkit.NewConfig), // LOG_*/HTTP_* из ENV + Validate
     healthkit.Provide(pgkit.Probe),                 // проба в /ready
     fx.Invoke(func(api huma.API) {                  // корневой Invoke — до httpkit.Module
-        huma.Get(api, "/users/{id}", func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
+        huma.Register(api, userErrors.Declare(huma.Operation{ // коды — в openapi.json
+            OperationID: "getUser", Method: http.MethodGet, Path: "/users/{id}",
+        }), func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
             u, err := svc.Get(ctx, in.ID)
             if err != nil {
-                return nil, httpkit.MapIs(err, ErrUserNotFound, "USER_NOT_FOUND", http.StatusNotFound, "user not found")
+                return nil, userErrors.Map(err) // несопоставленная → 500 без причины + лог
             }
             // ...
         })
@@ -68,7 +74,7 @@ _ = s.Serve()
   `CORSConfig`, `RateLimitConfig`, `MaxBodyConfig`, `SecurityHeadersConfig`,
   `IdempotencyConfig`, правила `Validate`.
 - [docs/observability.md](docs/observability.md) — метрики, labels, спаны, логи.
-- [docs/usage.md](docs/usage.md) — рецепты: роуты, `MapIs`/`MapAs`,
+- [docs/usage.md](docs/usage.md) — рецепты: роуты, `ErrorMap`,
   идемпотентность, CORS/RateLimit за прокси, auth, свои middleware и `huma.Config`,
   readiness, SSE/WebSocket.
 - [docs/testing.md](docs/testing.md) — `testkit/handlertest`, тесты middleware,

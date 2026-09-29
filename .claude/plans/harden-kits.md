@@ -47,7 +47,8 @@ blocked-by: —
   - Подтверждено: `go test -short -race -run TestModule_Middlewares ./httpkit/` → PASS (пять middleware в порядке слайса на каждом запросе, внутри цепочки кита: request-id в ctx, panic ловит `Recovery`); `grep -rn MiddlewareGroup --include=*.go .` → пусто
 - [x] **AC4** — Любой ответ-ошибка сервера `httpkit` (сопоставленная и несопоставленная ошибка хендлера, валидация, auth, неизвестный маршрут, метод, лимит, panic) — `application/problem+json` с `code` и `request_id`, равным `X-Request-ID` и полю лога; 422 несёт `errors[]{location,code,message}`; 5xx без текста причины; 429 с `Retry-After`. Проверка: `go test -short -race -run TestErrorContract ./httpkit/` → PASS
   - Подтверждено: `go test -short -race -run TestErrorContract ./httpkit/` → PASS (12 классов на живом `Module`: `request_id` = `X-Request-ID` = строке access-log, у 5xx и panic — и строке причины; 422 и битый JSON — поля без эха пароля; 5xx без `detail`; `Retry-After` у 429 хендлера и лимитера — 1, у 503 с `RetryAfter()` в причине — 30; 405 с `Allow`); мутанты «без request_id», «5xx с текстом», «405 chi», «5xx без лога», «429 без Retry-After» краснеют
-- [ ] **AC5** — `httpkit.ErrorMap` сопоставляет доменную ошибку (`errors.Is` или предикат) со статусом, `code`, опц. полем и `Retry-After` из `RetryAfter()`; `Unmapped` перечисляет несопоставленные; несопоставленная даёт 500 и строку `handler error` с `operation` в логе; `Declare` кладёт статусы и коды в `openapi.json`. Проверка: `go test -short -race -run 'TestErrorMap' ./httpkit/` → PASS
+- [x] **AC5** — `httpkit.ErrorMap` сопоставляет доменную ошибку (`errors.Is` или предикат) со статусом, `code`, опц. полем и `Retry-After` из `RetryAfter()`; `Unmapped` перечисляет несопоставленные; несопоставленная даёт 500 и строку `handler error` с `operation` в логе; `Declare` кладёт статусы и коды в `openapi.json`. Проверка: `go test -short -race -run 'TestErrorMap' ./httpkit/` → PASS
+  - Подтверждено: `go test -short -race -run 'TestErrorMap' ./httpkit/` → PASS (sentinel сквозь обёртку, предикат, поле в `errors[]`, `Retry-After` 90 из `RetryAfter()` и 1 у 429 без неё, `Unmapped`, 500 и `handler error` с `operation`, описания ответов в OpenAPI, сломанная и затенённая таблица — panic); шесть мутантов краснеют; шаблон в своём worktree через `replace` собирается после механической миграции, его handler-тесты зелёные, коды `Declare` — в его `openapi.json`
 - [x] **AC6** — `timerkit.Provide` без `timerkit.Module` в графе — ошибка сборки (`fx.ValidateApp`), в том числе у `outboxkit.Module`/`Instance` и `bruteforcekit/pgstore.Module`. Проверка: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS
   - Подтверждено: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS на `a4030bf`
 - [x] **AC7** — `outboxkit.Instance(name, table)` кладёт схему таблицы в группу `pgkit.migrations`: `pgkit.MigrateModule` накатывает её без ручного списка. Проверка: `go test -short -race -run TestInstance_ProvidesMigrations ./outboxkit/` → PASS; `make test-full` (pgstore) → PASS
@@ -108,8 +109,9 @@ blocked-by: —
 - [x] **S13** — Контракт ошибок: problem+json с `code`/`request_id`/`errors[]`, `Retry-After`, 404/405 маршрутизатора; `handlertest`
   - Проверка: `go test -short -race ./httpkit/ ./testkit/handlertest/ ./oidckit/ ./cachekit/` → PASS · Закрывает: AC4 · Зависит от: S11
   - Сделано: `feat(httpkit)!` — `go test -short -race ./httpkit/ ./testkit/handlertest/ ./oidckit/ ./cachekit/` → PASS, `make check` зелёный
-- [ ] **S14** — `ErrorMap` (`Map`/`Unmapped`/`Declare`) вместо `MapErr`/`MapIs`/`MapAs`, коды в OpenAPI
+- [x] **S14** — `ErrorMap` (`Map`/`Unmapped`/`Declare`) вместо `MapErr`/`MapIs`/`MapAs`, коды в OpenAPI
   - Проверка: `go test -short -race ./httpkit/` → PASS · Закрывает: AC5 · Зависит от: S13
+  - Сделано: `feat(httpkit)!` — `go test -short -race ./httpkit/` → PASS, `make check` зелёный
 ### Релиз
 - [ ] **S15** — Корневой README/CLAUDE.md сверены, `make test-full`, `make gate-clean`, тег `v1.2.0` локально; push `main` и тега — после PASS валидатора партии
   - Проверка: `make gate-clean` → зелёный, `make test-full` → PASS · Закрывает: AC14 · Зависит от: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14
@@ -140,7 +142,10 @@ blocked-by: —
   `handlertest.NewAPI` — API `httpkit.NewServer` с RequestID, тело — `httpkit.APIError`.
 - `ErrorMap` — одна таблица на домен/операцию: `Map` в хендлере, `Declare` для OpenAPI (коды —
   в описание ответа статуса через OnAddOperation), `Unmapped` для теста полноты;
-  `MapErr`/`MapIs`/`MapAs` удалены — один канонический способ.
+  `MapErr`/`MapIs`/`MapAs` удалены — один канонический способ. S14: таблицу строит только
+  `NewErrorMap` — сломанное правило (не ровно одно из `Err`/`Match`, без `Code`, статус вне
+  4xx–5xx, `Err`, который ловит правило выше) падает panic при сборке, а не молча не срабатывает;
+  коды — в `op.Metadata`, описание ответа — `Conflict: CODE_A, CODE_B`.
 - FX-04 обобщён: маркер требует `timerkit.Provide`, поэтому job без запускающего модуля
   невозможна у любого кита (outboxkit, bruteforcekit/pgstore, hubkit/sync).
 - FX-12 (outbox): `RepositoryFactory` — интерфейс со схемой таблицы: `outboxkit` не может
@@ -252,9 +257,9 @@ blocked-by: —
 - Сделано: план (`bc726e3`); этап «Инфраструктурные киты» — S1 `a4030bf`, S2 `887527a`,
   S3 `16949a0`, S4 `5333bee`, S5 `73900ca`, S6 `2d0aeaf`, S7 `2b8e39a`, S8 `a42b333`, S9 `37da068`
   (содержание — «Шаги») и `fix(outboxkit)` `dd6eed6`; этап httpkit — S10 `832904e`, S11
-  `5c3646e`, S12 `f5f4111`, S13 (`feat(httpkit)!`).
-- Осталось: S14–S15 по «Шагам», дизайн каждого — в «Решениях»; дальше — S14. Тега нет; ветка
-  не запушена.
+  `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 (`feat(httpkit)!`). Этап httpkit закрыт.
+- Осталось: валидатор этапа httpkit (S10–S14), затем S15 — корневые README/CLAUDE.md, `make
+  test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
   замечаний — `cb32246`…`08b1db1` (`fix(...)`, по находке на коммит). Круг по неблокирующим
   последней перепроверки (`0f7b32a`: обход ключей без pre-filter, кэш `selfEncoding`; `4b99bf9`:
@@ -273,6 +278,10 @@ blocked-by: —
       → тесты с разбором `ErrorModel` перевести на `APIError`, `openapi.json` перегенерировать.
     - testkit/handlertest (S13): `APIError`/`APIErrorLocation` удалены — `DecodeAPIError` отдаёт
       `httpkit.APIError`; `AssertAPIError` проверяет ещё problem+json и `request_id` = `X-Request-ID`.
+    - httpkit (S14): `MapErr`/`MapIs`/`MapAs`/`ErrorMapping` удалены → таблица
+      `httpkit.NewErrorMap(httpkit.ErrorRule{Err|Match, Status, Code, Detail, Field})`: в хендлере
+      `m.Map(err)`, при регистрации `huma.Register(api, m.Declare(op), h)`, в тесте полноты
+      `m.Unmapped(sentinel…)` пуст; сломанная таблица (и частное правило под общим) — panic.
     - timerkit (S1): `timerkit.Provide` и киты с job'ами (outboxkit `Module`/`Instance`,
       `outboxkit/pgstore`, `bruteforcekit/pgstore`, `hubkit/sync`) требуют в графе
       `timerkit.Module` и `logkit.Logger` — добавьте их, в том числе в тестовые графы
@@ -315,4 +324,6 @@ blocked-by: —
     - logkit (S4): `logkit.FxLogger` — события fx в структурный лог.
     - natskit (S9): `SubscribeOnStart` — подписка в `OnStart`, drain в `OnStop`, ошибка подписки
       (и `ErrJetStreamDisabled`) валит старт.
+    - httpkit (S14): `ErrorMap.Declare` — статусы и коды ошибок операции в `openapi.json`;
+      `Retry-After` — из `RetryAfter()` доменной ошибки.
 - Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).
