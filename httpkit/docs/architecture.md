@@ -108,8 +108,9 @@ preflight, лимитер, лимит тела, идемпотентность.
   error-hook, `ErrorLog`).
 - `IdempotencyStore` (`optional`) — есть в графе → `Idempotency` с
   `Config.Idempotency` (`HTTP_IDEMPOTENCY_*`).
-- `AuthExtractor` (`optional`) → `HumaAuth` и scope идемпотентности; нет →
-  auth no-op.
+- `AuthExtractor` (`optional`) → `HumaAuth` и scope идемпотентности; нет, а у
+  операции есть `Security`, — старт падает с `ErrAuthNotConfigured` и именами
+  операций.
 - `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI.
 - `[]func(http.Handler) http.Handler` (группа `httpkit.middleware`) → цепочка.
 - `[]func(*huma.Config)` (группа `httpkit.huma_config`) → huma.
@@ -166,9 +167,18 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 Debug), `*APIError` от extractor'а сохраняет свой статус и код, а ошибка,
 обёрнутая в `httpkit.ErrAuthUnavailable` (JWKS/хаб/сессионный store недоступны),
 даёт `503 AUTH_UNAVAILABLE` — деградация зависимости не должна разлогинивать
-пользователя. Middleware работает с `huma.Context` (`*http.Request` достаётся
-из адаптера или собирается из полей контекста), поэтому один и тот же гейт
-тестируется и на prod-адаптере chi, и на `testkit/handlertest`.
+пользователя.
+
+Гейт fail-closed. Если в графе нет `AuthExtractor`, а у операции есть `Security`,
+`Module` не стартует: на `OnStart` сервера, когда все Invoke уже зарегистрировали
+операции, он обходит `OpenAPI().Paths` и возвращает `ErrAuthNotConfigured` с
+именами таких операций. Скрытую операцию (`Hidden`) OpenAPI не видит, поэтому
+`HumaAuth(log, nil)` сам закрывает защищённую операцию: `500 AUTH_NOT_CONFIGURED`
+и строка `auth not configured` с `operation` в логе.
+
+Middleware работает с `huma.Context` (`*http.Request` достаётся из адаптера или
+собирается из полей контекста), поэтому один и тот же гейт тестируется и на
+prod-адаптере chi, и на `testkit/handlertest`.
 
 ## Идемпотентность
 

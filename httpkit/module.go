@@ -2,7 +2,10 @@ package httpkit
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"slices"
+	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/kelseyhightower/envconfig"
@@ -111,12 +114,26 @@ func newServer(in serverIn) (*Server, error) {
 	return s, nil
 }
 
+type serveIn struct {
+	fx.In
+
+	Lifecycle  fx.Lifecycle
+	Shutdowner fx.Shutdowner
+	Server     *Server
+	Extract    AuthExtractor `optional:"true"`
+}
+
 // serve вешает хук сервера. Это Invoke уровня Module, а не конструктор: хуки идут
 // в порядке добавления, и сервер обязан быть последним, чей хук добавлен.
-func serve(lc fx.Lifecycle, sd fx.Shutdowner, s *Server) {
-	log := s.opts.log
-	lc.Append(fx.Hook{
+func serve(in serveIn) {
+	s, sd, log := in.Server, in.Shutdowner, in.Server.opts.log
+	in.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
+			// На OnStart все Invoke уже выполнены: операции зарегистрированы целиком.
+			if ops := securedOperations(s.API()); in.Extract == nil && len(ops) > 0 {
+				return fmt.Errorf("%w: operations with Security need an httpkit.AuthExtractor in the graph: %s",
+					ErrAuthNotConfigured, strings.Join(ops, ", "))
+			}
 			if err := s.Listen(); err != nil {
 				return err
 			}
@@ -136,4 +153,23 @@ func serve(lc fx.Lifecycle, sd fx.Shutdowner, s *Server) {
 			return s.Stop(ctx)
 		},
 	})
+}
+
+// securedOperations — операции OpenAPI с Security (скрытые туда не попадают), по имени.
+func securedOperations(api huma.API) []string {
+	var names []string
+	for path, item := range api.OpenAPI().Paths {
+		for _, op := range []*huma.Operation{item.Get, item.Put, item.Post, item.Delete, item.Options, item.Head, item.Patch, item.Trace} {
+			if op == nil || len(op.Security) == 0 {
+				continue
+			}
+			name := op.OperationID
+			if name == "" {
+				name = op.Method + " " + path
+			}
+			names = append(names, name)
+		}
+	}
+	slices.Sort(names)
+	return names
 }

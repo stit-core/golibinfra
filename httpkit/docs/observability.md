@@ -56,7 +56,8 @@ server-span и извлекает входящий `traceparent`, а все по
 - `panic recovered` (Error) со `stack` — `Recovery`.
 - `handler error` (Error) со `status` и полным текстом ошибки — error-hook huma;
   клиенту при этом уходит нейтральный 500.
-- `auth rejected` (Debug) / `auth backend unavailable` (Warn) — `HumaAuth`.
+- `auth rejected` (Debug) / `auth backend unavailable` (Warn) / `auth not configured`
+  (Error, с `operation`) — `HumaAuth`.
 - `readiness probe failed` (Warn) с `probe` и `err` — `/ready`; текст ошибки
   клиенту не отдаётся.
 - `http server listening` (Info) с фактическим `addr` — старт;

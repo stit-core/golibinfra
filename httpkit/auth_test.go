@@ -13,6 +13,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/danielgtaylor/huma/v2/humatest"
 	"github.com/go-chi/chi/v5"
+	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -146,12 +147,74 @@ func TestHumaAuth_OperationWithoutSecurityStaysOpen(t *testing.T) {
 	}
 }
 
-func TestHumaAuth_NilExtractorIsNoop(t *testing.T) {
-	for name, api := range authAPIs(t, logkit.Nop(), nil) {
+// Регрессия (FX-03): без extractor'а защищённая операция закрыта, а не публична.
+func TestHumaAuth_NilExtractorFailsClosed(t *testing.T) {
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for name, api := range authAPIs(t, log, nil) {
 		t.Run(name, func(t *testing.T) {
-			if resp := api.Get("/guarded"); resp.Code != http.StatusOK {
-				t.Fatalf("without an extractor auth is a no-op: %d", resp.Code)
+			handlertest.AssertAPIError(t, api.Get("/guarded"), http.StatusInternalServerError, "AUTH_NOT_CONFIGURED")
+			if resp := api.Get("/open"); resp.Code != http.StatusOK {
+				t.Fatalf("operation without Security stays open: %d", resp.Code)
 			}
 		})
+	}
+	if !strings.Contains(buf.String(), "auth not configured") || !strings.Contains(buf.String(), `"operation":"guarded"`) {
+		t.Fatalf("a secured operation without an extractor must be logged: %s", buf.String())
+	}
+}
+
+// Операция с Security без AuthExtractor в графе — ошибка старта с именами операций.
+func TestModule_AuthRequiresExtractor(t *testing.T) {
+	secured := func(api huma.API) {
+		registerAuthRoutes(api)
+		huma.Register(api, huma.Operation{
+			OperationID: "guarded-too", Method: http.MethodPost, Path: "/guarded",
+			Security: []map[string][]string{{"Bearer": {}}},
+		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	}
+
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")), fx.Provide(logkit.Nop),
+		fx.Invoke(secured), httpkit.Module)
+	err := app.Start(t.Context())
+	if err == nil {
+		_ = app.Stop(t.Context())
+		t.Fatal("a secured operation without an AuthExtractor must fail the start")
+	}
+	if !errors.Is(err, httpkit.ErrAuthNotConfigured) {
+		t.Fatalf("want ErrAuthNotConfigured, got %v", err)
+	}
+	for _, op := range []string{"guarded", "guarded-too"} {
+		if !strings.Contains(err.Error(), op) {
+			t.Errorf("start error must name operation %s: %v", op, err)
+		}
+	}
+	for _, op := range []string{"open", "get-health", "get-ready"} {
+		if strings.Contains(err.Error(), op+",") || strings.HasSuffix(err.Error(), op) {
+			t.Errorf("start error must not name public operation %s: %v", op, err)
+		}
+	}
+
+	extract := func(*http.Request) (context.Context, error) { return nil, errors.New("no credentials") }
+	srv := startApp(t, fx.Invoke(secured), fx.Supply(httpkit.AuthExtractor(extract)))
+	if resp := get(t, srv, "/guarded"); resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("with an extractor the graph starts and gates the operation: %d", resp.StatusCode)
+	}
+}
+
+// Скрытую операцию старт не видит, но и без extractor'а она закрыта: 500 вместо пропуска.
+func TestModule_AuthHiddenOperationFailsClosed(t *testing.T) {
+	srv := startApp(t, fx.Invoke(func(api huma.API) {
+		huma.Register(api, huma.Operation{
+			OperationID: "hidden", Method: http.MethodGet, Path: "/hidden", Hidden: true,
+			Security: []map[string][]string{{"Bearer": {}}},
+		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	}))
+	resp := get(t, srv, "/hidden")
+	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(bodyString(t, resp), `"code":"AUTH_NOT_CONFIGURED"`) {
+		t.Fatalf("hidden secured operation without an extractor: %d", resp.StatusCode)
 	}
 }

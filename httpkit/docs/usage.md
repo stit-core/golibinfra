@@ -12,8 +12,8 @@
 - **Ошибки**: `APIError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
   Conflict/Internal/Unavailable`, `MapErr`, `MapIs`, `MapAs[T]`,
   `ProblemContentType`.
-- **Auth**: `AuthExtractor`, `ErrAuthUnavailable`, `ContextWithSubject`,
-  `SubjectFrom`.
+- **Auth**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
+  `ContextWithSubject`, `SubjectFrom`.
 - **Health**: `RegisterHealth(api, log, probeTimeout, probes...)`, `Probe`
   (= `healthkit.Probe`).
 - **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
@@ -196,7 +196,9 @@ huma.Register(api, huma.Operation{
 в ctx; ошибка → `401 UNAUTHORIZED`, её текст — только в лог. Инфраструктурную
 ошибку (JWKS/хаб недоступны) оборачивайте в `httpkit.ErrAuthUnavailable` — клиент
 получит `503 AUTH_UNAVAILABLE` вместо разлогина; свой статус задаётся возвратом
-`*httpkit.APIError`. Без extractor'а в графе auth — no-op.
+`*httpkit.APIError`. Операция с `Security` без extractor'а в графе не даёт
+стартовать (`httpkit.ErrAuthNotConfigured` с именами операций), а скрытая —
+отвечает `500 AUTH_NOT_CONFIGURED`.
 
 ```go
 fx.Provide(func(v *authnkit.Verifier) httpkit.AuthExtractor {
