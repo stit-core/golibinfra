@@ -50,7 +50,8 @@ blocked-by: —
   - Подтверждено: `go test -short -race -run TestInstance_ProvidesMigrations ./outboxkit/` → PASS; `make test-full PKGS=./outboxkit/...` → PASS (`TestFactoryModule_InstanceOnCustomTable` заводит таблицу через `pgkit.MigrateModule`); мутант «Instance без группы» краснеет в обоих
 - [x] **AC8** — `outboxtest.Recorder.Publish` вне транзакции возвращает `outboxkit.ErrNoTx` и событие не копит (мутант D02 «Publish вне транзакции» краснеет). Проверка: `go test -short -race ./testkit/outboxtest/` → PASS
   - Подтверждено: `go test -short -race ./testkit/outboxtest/` → PASS (`TestRecorder_PublishRequiresTx`); мутант D02 на ветке догфудера шаблона (`note/usecase.go`: `Publish(ctx, …)` вместо `txCtx`) — на v1.1.0 выжил, на этом golibinfra через `replace` в своём worktree — `TestCreate` FAIL
-- [ ] **AC9** — `logkit.FxLogger` пишет события fx в структурный лог: причина падения старта — JSON-строка уровня ERROR, рутина — DEBUG. Проверка: `go test -short -race -run TestFxLogger ./logkit/` → PASS
+- [x] **AC9** — `logkit.FxLogger` пишет события fx в структурный лог: причина падения старта — JSON-строка уровня ERROR, рутина — DEBUG. Проверка: `go test -short -race -run TestFxLogger ./logkit/` → PASS
+  - Подтверждено: `go test -short -race -run TestFxLogger ./logkit/` → PASS (конструктор, `OnStart`, паника под `fx.RecoverFromPanics` — ERROR с причиной; рутина — DEBUG, при `info` лог пуст); мутанты «рутина на INFO» и `fx.NopLogger` краснеют
 - [ ] **AC10** — `NewRedactConfig` без env включает маскирование; значения под ключами `token`/`password`/`secret`/`authorization`/`cookie`/… и hex-цепочки ≥32 символов маскируются, числа не трогаются. Проверка: `go test -short -race -run 'TestRedact' ./logkit/` → PASS; `make envdoc-check` → OK
 - [ ] **AC11** — `bruteforcekit`: subject нормализуется (trim, нижний регистр), IPv6 по умолчанию сворачивается до /64, `Guard.Attempt` атомарен: из N параллельных попыток пары проходят не больше `MaxFailures`. Проверка: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS
 - [ ] **AC12** — `natskit.SubscribeOnStart` подписывает в OnStart, дренит в OnStop; ошибка подписки (включая `ErrJetStreamDisabled`) валит старт. Проверка: `go test -short -race -run TestSubscribeOnStart ./natskit/` → PASS
@@ -68,8 +69,9 @@ blocked-by: —
 - [x] **S3** — `outboxtest.Recorder` требует транзакцию (`pgkit.InTx`)
   - Проверка: `go test -short -race ./testkit/outboxtest/` → PASS · Закрывает: AC8
   - Сделано: `feat(outboxtest)!` — `go test -short -race ./testkit/outboxtest/` → PASS, `make check` зелёный
-- [ ] **S4** — `logkit.FxLogger`
+- [x] **S4** — `logkit.FxLogger`
   - Проверка: `go test -short -race ./logkit/` → PASS · Закрывает: AC9
+  - Сделано: `feat(logkit)` — `go test -short -race ./logkit/` → PASS, `make check` зелёный
 - [ ] **S5** — `logkit`: маскирование по ключу и hex-токенов, redact включён по умолчанию
   - Проверка: `go test -short -race ./logkit/`, `make envdoc-check` → PASS/OK · Закрывает: AC10
 - [ ] **S6** — `bruteforcekit`: нормализация subject, IPv6 /64 по умолчанию
@@ -145,6 +147,10 @@ blocked-by: —
 - S3: ошибка фейка — та же обёртка, что у pgstore (`ErrNoTx` + подсказка про
   `Transactor.WithTx`); `Recorder` импортирует `pgkit` ради `InTx` — фейк и хранилище
   решают «в транзакции ли» одной функцией.
+- S4: `FxLogger` — переменная `fx.Option`, как `fx.NopLogger` и `logkit.Module`: параметров нет;
+  берёт `*slog.Logger` графа (`fxevent.SlogLogger` принимает только его) и ставит рутине
+  `UseLogLevel(Debug)` — по умолчанию `fxevent.SlogLogger` пишет её на INFO. Невалидный `LOG_*`
+  не даёт собрать сам логгер событий — fx пишет причину текстом в stderr; это в README, не лечится.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -164,10 +170,12 @@ blocked-by: —
 - Сделано: план (`bc726e3`), S1 (`a4030bf`, `feat(timerkit)!`) — маркер `timerkit.Scheduler`;
   S2 (`887527a`, `feat(outboxkit)!`) — `RepositoryFactory` стал интерфейсом (`Repository`,
   `Migrations`), `Instance` кладёт `pgkit.Source` таблицы в `pgkit.MigrationsGroup`;
-  S3 (`feat(outboxtest)!`) — `Recorder.Publish` вне `pgkit.InTx` → `outboxkit.ErrNoTx`.
-- Осталось: S4–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — S4: `logkit.FxLogger` — `fx.WithLogger` через `fxevent.SlogLogger` поверх
-  `*slog.Logger` из графа; рутина — DEBUG, ошибки — ERROR (FX-05); тест `TestFxLogger`.
+  S3 (`16949a0`, `feat(outboxtest)!`) — `Recorder.Publish` вне `pgkit.InTx` → `outboxkit.ErrNoTx`;
+  S4 (`feat(logkit)`) — `logkit.FxLogger`: события fx через `*slog.Logger` графа, ERROR/DEBUG.
+- Осталось: S5–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
+- Следующий шаг — S5: `LOG_REDACT_ENABLED` по умолчанию `true`; маскирование значений под
+  ключами-секретами (сравнение по словам ключа, строки/группы/структуры, числа нет) и
+  hex-цепочек ≥32 в дефолтном наборе; `TestRedact*`, `make envdoc-check`.
 - Для аннотации тега копить по шагам:
   - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
     интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
@@ -177,5 +185,6 @@ blocked-by: —
     транзакции → `outboxkit.ErrNoTx`: usecase в тесте — с фейком `pgtest.Identity`/`Recorder`
     или ctx под `pgkit.WithTestTx` (S3).
   - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2).
-  - Изменения — `pgstore.Module` и `FactoryModule` сочетаются в одном графе (доки, S2).
+  - Изменения — `pgstore.Module` и `FactoryModule` сочетаются в одном графе (доки, S2);
+    `logkit.FxLogger` — события fx в структурный лог (S4).
 - Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).

@@ -60,6 +60,7 @@ fx.New(
 	fx.Provide(logkit.NewRedactConfig),  // опционально: RedactConfig из ENV
 	telemetry.Module,                    // опционально: даёт log.LoggerProvider → OTLP-sink
 	logkit.Module,                       // → logkit.Logger, *slog.Logger
+	logkit.FxLogger,                     // события fx — в тот же лог
 	fx.Invoke(func(lc fx.Lifecycle, log logkit.Logger) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {
@@ -74,6 +75,13 @@ fx.New(
 `telemetry.Module` требует в графе `telemetry.Config` и `logkit.Config` —
 без первого сборка графа падает. Граф без `telemetry.Module` собирается и
 работает: OTLP-sink не подключается, локальный sink пишет как обычно.
+
+`FxLogger` (`fx.WithLogger` поверх `*slog.Logger` графа) пишет события fx
+структурными записями той же цепочки: ошибки сборки и старта (конструктор,
+`Invoke`, `OnStart`/`OnStop`, откат) — `ERROR` с полем `error`, рутина
+(`provided`, `invoking`, хуки, `started`) — `DEBUG`. Опция ставится на верхний
+уровень `fx.New`; вместе с `fx.RecoverFromPanics()` паника конструктора или
+`Invoke` становится такой же ошибкой старта.
 
 ### Без fx
 
@@ -275,6 +283,7 @@ func (c RedactConfig) Validate() error
 
 var ErrConfig error                             // невалидный уровень, формат, regex или строка-замена
 var Module fx.Option                            // provides *slog.Logger, Logger; optional: RedactConfig, log.LoggerProvider
+var FxLogger fx.Option                          // fx.WithLogger: события fx через *slog.Logger графа; ошибки — ERROR, рутина — DEBUG
 ```
 
 Цепочка handler'ов: redact → метрика → `RegisterAttr`-атрибуты → fan-out
@@ -324,7 +333,11 @@ OTel-sink проверяется через `sdklog.NewLoggerProvider` с `Simpl
   OTLP-sink, который `logkit.Module` подхватывает опциональной зависимостью:
   без `telemetry.Module` логи идут только в локальный sink.
 - **Ошибка конфигурации — при конструировании**, не на первой записи:
-  невалидный `LOG_LEVEL`/`LOG_FORMAT`/regex/`ReplaceWith` валит старт.
+  невалидный `LOG_LEVEL`/`LOG_FORMAT`/regex/`ReplaceWith` валит старт. Этой
+  ошибки `FxLogger` не видит: логгер событий fx сам собирается из графа, и fx
+  пишет причину текстом в stderr.
+- **`FxLogger` — только на верхнем уровне `fx.New`.** Внутри `fx.Module` опция
+  ловит лишь события этого модуля, остальные идут в stderr fx.
 - **`RegisterAttr` глобален.** Регистрация по ключу идемпотентна (последняя
   побеждает); зовите при старте.
 - **`log_messages_total` считает эмитированные записи** обеих форм логгера;

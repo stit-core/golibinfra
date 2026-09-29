@@ -26,6 +26,7 @@ func TestReadmeFlagshipExample(t *testing.T) {
 		),
 		telemetry.Module,
 		logkit.Module,
+		logkit.FxLogger,
 		httpkit.Module,
 		pgkit.Module,
 		pgkit.MigrateModule,

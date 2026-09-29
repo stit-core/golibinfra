@@ -20,6 +20,7 @@ func TestReadme_QuickStartWithFx(t *testing.T) {
 		fx.Provide(logkit.NewRedactConfig),
 		telemetry.Module,
 		logkit.Module,
+		logkit.FxLogger,
 		fx.Invoke(func(lc fx.Lifecycle, log logkit.Logger) {
 			lc.Append(fx.Hook{
 				OnStart: func(ctx context.Context) error {
