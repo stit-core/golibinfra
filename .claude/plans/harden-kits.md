@@ -39,7 +39,8 @@ blocked-by: —
 - Перенос I/O конструкторов `pgkit`/`natskit` в OnStart — см. «Решения».
 
 ## Критерии приёмки
-- [ ] **AC1** — HTTP-сервер `httpkit.Module` начинает слушать после OnStart всех fx-модулей и гасится до их OnStop при любом месте `httpkit.Module` среди опций `fx.New`; запрос в полёте на остановке завершается при живых ресурсах. Проверка: `go test -short -race -run 'TestModule_Lifecycle' ./httpkit/` → PASS
+- [x] **AC1** — HTTP-сервер `httpkit.Module` начинает слушать после OnStart всех fx-модулей и гасится до их OnStop при любом месте `httpkit.Module` среди опций `fx.New`; запрос в полёте на остановке завершается при живых ресурсах. Проверка: `go test -short -race -run 'TestModule_Lifecycle' ./httpkit/` → PASS
+  - Подтверждено: `go test -short -race -run 'TestModule_Lifecycle' ./httpkit/` → PASS (`Module` первым, в середине и последним: хук сервера — последний в OnStart и первый в OnStop, запрос в полёте на остановке — 204 при открытом ресурсе); на прежнем коде (хук в конструкторе) краснеют «первым» и «в середине»
 - [ ] **AC2** — Операция с `Security` без `httpkit.AuthExtractor` в графе — ошибка старта с именами операций; `HumaAuth` без extractor'а отвечает на защищённую операцию `500 AUTH_NOT_CONFIGURED`, а не пропускает. Проверка: `go test -short -race -run 'TestModule_Auth|TestHumaAuth' ./httpkit/` → PASS
 - [ ] **AC3** — Порядок middleware потребителя задаёт приложение одним значением `httpkit.Middlewares`; value group с перемешиваемым порядком нет. Проверка: `go test -short -race -run TestModule_Middlewares ./httpkit/` → PASS; `grep -rn MiddlewareGroup --include=*.go .` → пусто
 - [ ] **AC4** — Любой ответ-ошибка сервера `httpkit` (сопоставленная и несопоставленная ошибка хендлера, валидация, auth, неизвестный маршрут, метод, лимит, panic) — `application/problem+json` с `code` и `request_id`, равным `X-Request-ID` и полю лога; 422 несёт `errors[]{location,code,message}`; 5xx без текста причины; 429 с `Retry-After`. Проверка: `go test -short -race -run TestErrorContract ./httpkit/` → PASS
@@ -92,8 +93,9 @@ blocked-by: —
   - Проверка: `go test -short -race ./natskit/` → PASS · Закрывает: AC12
   - Сделано: `feat(natskit)` — `go test -short -race ./natskit/` → PASS, `make check` зелёный, `make test-full` зелёный
 ### httpkit
-- [ ] **S10** — Хук HTTP-сервера в Invoke уровня `httpkit.Module`: старт последним, остановка первой
+- [x] **S10** — Хук HTTP-сервера в Invoke уровня `httpkit.Module`: старт последним, остановка первой
   - Проверка: `go test -short -race ./httpkit/` → PASS · Закрывает: AC1
+  - Сделано: `fix(httpkit)` — `go test -short -race ./httpkit/` → PASS, `make check` зелёный
 - [ ] **S11** — Fail-closed auth: ошибка старта и `HumaAuth` без extractor'а
   - Проверка: `go test -short -race ./httpkit/ ./oidckit/ ./hubkit/...` → PASS · Закрывает: AC2 · Зависит от: S10
 - [ ] **S12** — `httpkit.Middlewares` вместо группы `httpkit.middleware`
@@ -216,6 +218,9 @@ blocked-by: —
   на `otp` где угодно в ключе прячет значение любого вида, и число тоже; счётчик рядом с кодом
   (`otp_attempts`) прячется вместе с ним — правило не угадывает смысл соседних слов, это в
   README; коды вне словаря — в бэклоге. Варианты «последнее слово», «`code` после кода» сняты.
+- S10: `Module` — `fx.Options(fx.Module("httpkit", …), fx.Invoke(serve))`; `newServer` хуков не
+  вешает, логгер и `ShutdownTimeout` хук берёт у `Server`. Тест — по `CallerName` событий fx и
+  запросу в полёте, который на остановке видит открытый ресурс (204), в трёх местах `Module`.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -224,7 +229,8 @@ blocked-by: —
 —
 
 ## Handoff
-- `go-backend-template` при bump: `beforeHTTP` не нужен; client-IP — `httpkit.Middlewares`;
+- `go-backend-template` при bump: `beforeHTTP` не нужен (`httpkit.Module` — на верхнем уровне
+  `fx.New`, корневой Invoke, который первым строит зависимость с хуками, — до него); client-IP — `httpkit.Middlewares`;
   `MapErr` → `ErrorMap.Map` + `Declare`; `LoginGuard` — `Attempt` до проверки пароля +
   `RecordSuccess`; subscriber — `natskit.SubscribeOnStart`; `NATS_JETSTREAM_ENABLED=true` в
   `.env.example`; `logkit.FxLogger` + `fx.RecoverFromPanics()` в `main`; `openapi.json`
@@ -232,29 +238,15 @@ blocked-by: —
 - Шлюзы (`v0.39.0`): цепочка аннотаций тегов до `v1.2.0`.
 
 ## Где мы сейчас
-- Сделано: план (`bc726e3`), S1 (`a4030bf`, `feat(timerkit)!`) — маркер модуля в графе;
-  S2 (`887527a`, `feat(outboxkit)!`) — `RepositoryFactory` стал интерфейсом (`Repository`,
-  `Migrations`), `Instance` кладёт `pgkit.Source` таблицы в `pgkit.MigrationsGroup`;
-  S3 (`16949a0`, `feat(outboxtest)!`) — `Recorder.Publish` вне `pgkit.InTx` → `outboxkit.ErrNoTx`;
-  S4 (`5333bee`, `feat(logkit)`) — `logkit.FxLogger`: события fx через `*slog.Logger` графа;
-  S5 (`73900ca`, `feat(logkit)`) — redact по умолчанию, значение под ключом-секретом, hex ≥32;
-  S6 (`2d0aeaf`, `feat(bruteforcekit)`) — subject в нижнем регистре без пробелов, IPv6 /64;
-  S7 (`2b8e39a`, `feat(bruteforcekit)!`) — `Guard.Attempt` до проверки секрета + `RecordSuccess`;
-  `fix(outboxkit)` (`dd6eed6`) — `EnsurePartitions` рядом с параллельным создателем партиции;
-  S8 (`a42b333`, `feat(authnkit)`) — Argon2id в слотах `max(1, GOMAXPROCS/Threads)`, ожидание по
-  ctx; S9 (`feat(natskit)`) — `natskit.SubscribeOnStart`. Этап «Инфраструктурные киты» закрыт.
-- Осталось: S10–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — FAIL: B1, B2 и неблокирующие.
-  Фиксы — отдельными `fix(...)`: B1 (`cb32246`, `ErrInTx`), B2 (`e885daa`, аннотация S1/S3) и
-  маскирование по ключу (`e1d35da`), маркер timerkit (`f0a8be8`), natskit (`c27e0e4`), outboxkit
-  (`fd627e4`) сделаны. Перепроверка — FAIL: R1 (цикл в map роняет процесс) и неблокирующие;
-  R1 (`181e006`, `seen`/`memo`), срезы map (`e18f3c1`), правило кодов (`315c3c3`) сделаны.
-  Перепроверка 315c3c3 — FAIL: R2 (копия раскрывала то, что тип прятал); R2 (`ff90363`), цена
-  обхода (`c650b95`), простое правило кодов (`08b1db1`) сделаны. Перепроверка 08b1db1 — PASS;
-  круг по её неблокирующим: цена обхода (`0f7b32a`: обход без pre-filter, кэш `selfEncoding`,
-  реалистичный заголовок в тесте), тесты защит обхода (`4b99bf9`) и бэклог (`fix(logkit)`:
-  JSON в `RawMessage`/`[]byte`, `otpauth`, `map` под указателем) сделаны; круг проверит валидатор
-  следующего этапа; дальше — S10.
+- Сделано: план (`bc726e3`); этап «Инфраструктурные киты» — S1 `a4030bf`, S2 `887527a`,
+  S3 `16949a0`, S4 `5333bee`, S5 `73900ca`, S6 `2d0aeaf`, S7 `2b8e39a`, S8 `a42b333`, S9 `37da068`
+  (содержание — «Шаги») и `fix(outboxkit)` `dd6eed6`; этап httpkit — S10 (`fix(httpkit)`).
+- Осталось: S11–S15 по «Шагам», дизайн каждого — в «Решениях»; дальше — S11. Тега нет; ветка
+  не запушена.
+- Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
+  замечаний — `cb32246`…`08b1db1` (`fix(...)`, по находке на коммит). Круг по неблокирующим
+  последней перепроверки (`0f7b32a`: обход ключей без pre-filter, кэш `selfEncoding`; `4b99bf9`:
+  тесты защит обхода; `d62b2e6`: бэклог logkit) проверит валидатор этапа httpkit.
 - Для аннотации тега копить по шагам:
   - Breaking:
     - timerkit (S1): `timerkit.Provide` и киты с job'ами (outboxkit `Module`/`Instance`,
@@ -275,6 +267,9 @@ blocked-by: —
       `RecordSuccess` (можно в транзакции); `LockState.FailedCount` — попытки окна без успеха;
       `bruteforcetest.Recorder` — `Attempts()`/`Successes()`.
   - Поведение:
+    - httpkit (S10): HTTP начинает слушать после OnStart всех `fx.Module` и гасится до их OnStop,
+      где бы ни стоял `httpkit.Module`; `httpkit.Module` — на верхнем уровне `fx.New`, корневой
+      `fx.Invoke`, который первым строит зависимость с хуками, — до него (иначе её хук встанет после HTTP).
     - timerkit (S1): повторный `timerkit.Module` — ошибка старта `already provided`.
     - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами.
     - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт

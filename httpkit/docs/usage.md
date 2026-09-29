@@ -26,11 +26,15 @@
 app := fx.New(
     logkit.Module,
     fx.Provide(logkit.NewConfig, httpkit.NewConfig),
+    fx.Invoke(registerRoutes), // корневой Invoke с зависимостями — до httpkit.Module
     httpkit.Module,
-    fx.Invoke(registerRoutes),
 )
 app.Run()
 ```
+
+HTTP стартует последним и гасится первым: `Module` — на верхнем уровне `fx.New`,
+роуты регистрирует Invoke внутри `fx.Module` домена или корневой `fx.Invoke` до
+`Module` ([architecture.md § Порядок хуков](architecture.md#порядок-хуков)).
 
 ## Добавить роут
 

@@ -21,18 +21,25 @@ const MiddlewareGroup = "httpkit.middleware"
 // HumaConfigGroup — fx-группа правок huma.Config перед созданием API.
 const HumaConfigGroup = "httpkit.huma_config"
 
-// Module не provide'ит Config: caller регистрирует его сам
-// (`fx.Provide(httpkit.NewConfig)` или из App-структуры).
-var Module = fx.Module(
-	"httpkit",
-	fx.Provide(
-		newServerWithLifecycle,
-		func(s *Server) huma.API { return s.API() },
+// Module — сервер, huma.API и /health + /ready; Config регистрирует caller
+// (`fx.Provide(httpkit.NewConfig)` или из App-структуры). HTTP слушает после
+// OnStart всех fx.Module графа и гасится до их OnStop: хук сервера вешает Invoke
+// уровня Module, а fx выполняет его после Invoke всех fx.Module. Поэтому Module —
+// на верхнем уровне fx.New, а корневой fx.Invoke, который первым строит
+// зависимость с хуками, — до него.
+var Module = fx.Options(
+	fx.Module(
+		"httpkit",
+		fx.Provide(
+			newServer,
+			func(s *Server) huma.API { return s.API() },
+		),
+		fx.Invoke(fx.Annotate(
+			registerHealth,
+			fx.ParamTags(``, ``, ``, `group:"`+healthkit.Group+`"`),
+		)),
 	),
-	fx.Invoke(fx.Annotate(
-		registerHealth,
-		fx.ParamTags(``, ``, ``, `group:"`+healthkit.Group+`"`),
-	)),
+	fx.Invoke(serve),
 )
 
 // NewConfig читает HTTP_* из ENV и валидирует конфиг: невалидный — ошибка старта.
@@ -47,9 +54,8 @@ func NewConfig() (Config, error) {
 type serverIn struct {
 	fx.In
 
-	Config     Config
-	Log        logkit.Logger
-	Shutdowner fx.Shutdowner
+	Config Config
+	Log    logkit.Logger
 
 	Extract    AuthExtractor                     `optional:"true"`
 	Store      IdempotencyStore                  `optional:"true"`
@@ -66,7 +72,7 @@ func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe)
 // всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight
 // попадали в RED-метрики и access-log; middleware потребителя — внутри всей
 // цепочки кита.
-func newServerWithLifecycle(lc fx.Lifecycle, in serverIn) (*Server, error) {
+func newServer(in serverIn) (*Server, error) {
 	cfg := in.Config
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -102,28 +108,32 @@ func newServerWithLifecycle(lc fx.Lifecycle, in serverIn) (*Server, error) {
 	}
 	s := NewServer(cfg, opts...)
 	s.BindAPI().UseMiddleware(HumaAuth(in.Log, in.Extract))
+	return s, nil
+}
 
+// serve вешает хук сервера. Это Invoke уровня Module, а не конструктор: хуки идут
+// в порядке добавления, и сервер обязан быть последним, чей хук добавлен.
+func serve(lc fx.Lifecycle, sd fx.Shutdowner, s *Server) {
+	log := s.opts.log
 	lc.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			if err := s.Listen(); err != nil {
 				return err
 			}
-			in.Log.Info(ctx, "http server listening", "addr", s.Addr().String())
+			log.Info(ctx, "http server listening", "addr", s.Addr().String())
 			go func() { //nolint:gosec // горутина сервера живёт дольше ctx OnStart; фоновый ctx только для терминального лога
 				if err := s.Serve(); err != nil {
-					in.Log.Error(context.Background(), "http server stopped", "err", err)
+					log.Error(context.Background(), "http server stopped", "err", err)
 					// Упавший listener — не «работающий» сервис: fx должен погасить приложение.
-					_ = in.Shutdowner.Shutdown(fx.ExitCode(1))
+					_ = sd.Shutdown(fx.ExitCode(1))
 				}
 			}()
 			return nil
 		},
 		OnStop: func(stopCtx context.Context) error {
-			ctx, cancel := context.WithTimeout(stopCtx, cfg.ShutdownTimeout)
+			ctx, cancel := context.WithTimeout(stopCtx, s.cfg.ShutdownTimeout)
 			defer cancel()
 			return s.Stop(ctx)
 		},
 	})
-
-	return s, nil
 }

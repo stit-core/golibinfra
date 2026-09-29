@@ -22,15 +22,17 @@ import "git.stit.tech/stit-core/golibinfra/httpkit"
 `Module` provide'ит `*Server` и `huma.API`, собирает цепочку из `Config`,
 регистрирует `/health` + `/ready` и привязывает lifecycle: порт занимается
 синхронно в `OnStart` (занятый адрес — ошибка старта), graceful shutdown в
-`OnStop`, падение `Serve` гасит приложение. `Config` регистрирует caller.
+`OnStop`, падение `Serve` гасит приложение. HTTP начинает слушать после `OnStart`
+всех `fx.Module` графа и гасится до их `OnStop`, где бы `Module` ни стоял среди
+модулей; условие — `Module` на верхнем уровне `fx.New`, а корневой `fx.Invoke`,
+который первым строит зависимость с хуками, — до него. `Config` регистрирует caller.
 
 ```go
 app := fx.New(
     logkit.Module,                                  // logkit.Logger
     fx.Provide(logkit.NewConfig, httpkit.NewConfig), // LOG_*/HTTP_* из ENV + Validate
-    httpkit.Module,                                 // *Server + huma.API
-    healthkit.Provide(pgkit.Probe),               // проба в /ready
-    fx.Invoke(func(api huma.API) {
+    healthkit.Provide(pgkit.Probe),                 // проба в /ready
+    fx.Invoke(func(api huma.API) {                  // корневой Invoke — до httpkit.Module
         huma.Get(api, "/users/{id}", func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
             u, err := svc.Get(ctx, in.ID)
             if err != nil {
@@ -39,6 +41,7 @@ app := fx.New(
             // ...
         })
     }),
+    httpkit.Module,                                 // *Server + huma.API; HTTP стартует последним
 )
 app.Run()
 ```
