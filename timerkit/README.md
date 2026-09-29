@@ -34,7 +34,10 @@ var Module = fx.Module("cleanup",
 ```
 
 В приложении подключается `timerkit.Module` рядом с модулем, регистрирующим
-job. Логи идут через `logkit.Logger` из графа, расписание — по `clockkit.Clock`:
+job: `timerkit.Provide` требует его в графе, и без него сборка падает с
+`missing type: timerkit.Scheduler` — job, которую никто не запускает, не бывает
+молчаливой. Логи идут через `logkit.Logger` из графа, расписание — по
+`clockkit.Clock`:
 
 ```go
 fx.New(
@@ -109,9 +112,10 @@ type Job struct {
 }
 
 const Group = "timerkit.jobs"                              // имя fx-группы job'ов
-func Provide(ctor any, anns ...fx.Annotation) fx.Option     // конструктор Job или []Job → группа
+func Provide(ctor any, anns ...fx.Annotation) fx.Option     // конструктор Job или []Job → группа; требует Module
+type Scheduler struct{}                                     // маркер Module в графе
 var ErrJob error                                            // невалидная Job (обёрнута в ошибку OnStart)
-var Module fx.Option
+var Module fx.Option                                        // запускает группу, provide'ит Scheduler
 ```
 
 | Поле | Роль |
@@ -135,6 +139,12 @@ var Module fx.Option
 timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"hubkit.sync.engine"`))
 ```
 
+Каждый `Provide` добавляет в граф `fx.Invoke`, которому нужен `timerkit.Scheduler`
+— его даёт только `Module`. Поэтому модуль кита с job'ами (`outboxkit`,
+`bruteforcekit/pgstore`, `hubkit/sync`) без `timerkit.Module` не собирается ни в
+`fx.New`, ни в `fx.ValidateApp`, а повторное подключение `Module` — ошибка
+`already provided`, а не двойной запуск job'ов.
+
 Регистрация — только через fx-группу; вне `fx.App` публичного API запуска нет.
 
 ## Тестирование
@@ -151,8 +161,9 @@ timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"hubkit.sync.engine"`))
 
 ## Инварианты и подводные камни
 
-- **Регистрация — через `timerkit.Provide`.** Он ставит тег группы сам;
-  конструктор неверного типа валит сборку графа, а не молча теряет job.
+- **Регистрация — через `timerkit.Provide`.** Он ставит тег группы сам и
+  требует `timerkit.Module`; конструктор неверного типа и граф без модуля валят
+  сборку, а не молча теряют job.
 - **Валидация — на старте.** `Name == ""`, `Run == nil`, `Interval <= 0`,
   отрицательные `Timeout`/`Jitter`, дубль имени → `OnStart` возвращает
   `ErrJob` с именем job, приложение не стартует.

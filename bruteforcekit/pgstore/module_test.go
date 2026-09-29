@@ -2,12 +2,14 @@ package pgstore_test
 
 import (
 	"errors"
+	"strings"
 	"testing"
 
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
@@ -17,6 +19,7 @@ func TestModule_ProvidesGuardAndCleaner(t *testing.T) {
 	err := fx.ValidateApp(
 		fx.NopLogger,
 		fx.Supply(&pgkit.DB{}, config()),
+		scheduler(),
 		pgstore.Module,
 		fx.Invoke(func(bruteforcekit.Guard, bruteforcekit.Cleaner) {}),
 	)
@@ -25,12 +28,28 @@ func TestModule_ProvidesGuardAndCleaner(t *testing.T) {
 	}
 }
 
+// Регрессия FX-04: без timerkit.Module cleanup-job никто не запускает, и таблица
+// растёт под атакой — граф обязан не собраться.
+func TestModule_RequiresTimerkit(t *testing.T) {
+	t.Parallel()
+	err := fx.ValidateApp(fx.NopLogger, fx.Supply(&pgkit.DB{}, config()), pgstore.Module)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
+		t.Fatalf("pgstore.Module without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	}
+}
+
+// scheduler — timerkit.Module с логгером: cleanup-job кита без него не собирается.
+func scheduler() fx.Option {
+	return fx.Options(fx.Provide(logkit.Nop), timerkit.Module)
+}
+
 // Невалидный конфиг валит старт приложения, а не остаётся молчаливым fail-open.
 func TestModule_RejectsInvalidConfig(t *testing.T) {
 	t.Parallel()
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(&pgkit.DB{}, bruteforcekit.Config{}),
+		scheduler(),
 		pgstore.Module,
 		fx.Invoke(func(bruteforcekit.Guard) {}),
 	)
@@ -48,6 +67,7 @@ func TestModule_RegistersJobAndMigrations(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(&pgkit.DB{}, config()),
+		scheduler(),
 		pgstore.Module,
 		fx.Populate(
 			fx.Annotate(&jobs, fx.ParamTags(`group:"`+timerkit.Group+`"`)),

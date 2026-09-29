@@ -204,3 +204,18 @@ func TestProvide_KeepsCallerAnnotations(t *testing.T) {
 		t.Fatalf("fx: %v", err)
 	}
 }
+
+// Регрессия FX-04: job без Module в графе никто не запускает — это должна быть
+// ошибка сборки графа, а не молча стоящий outbox или неочищаемая таблица.
+func TestProvide_RequiresModule(t *testing.T) {
+	job := Provide(func() Job {
+		return Job{Name: "orphan", Interval: time.Hour, Run: func(context.Context) error { return nil }}
+	})
+	err := fx.ValidateApp(fx.NopLogger, fx.Provide(logkit.Nop), job)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
+		t.Fatalf("ValidateApp without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	}
+	if err := fx.ValidateApp(fx.NopLogger, fx.Provide(logkit.Nop), Module, job); err != nil {
+		t.Fatalf("ValidateApp with timerkit.Module: %v", err)
+	}
+}

@@ -28,8 +28,9 @@ import "git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
 `bruteforcekit.Cleaner`, регистрирует миграции кита в группе
 `pgkit.MigrateModule` и cleanup-job в группе `timerkit.Group`. Ему нужны `*pgkit.DB`
 (из `pgkit.Module`), `bruteforcekit.Config` (конфиг кит **не** провайдит сам:
-`fx.Provide(bruteforcekit.NewConfig)`) и `timerkit.Module` — без него job'ы
-группы никто не запускает и таблица не чистится.
+`fx.Provide(bruteforcekit.NewConfig)`) и `timerkit.Module` — без него граф не
+собирается (`missing type: timerkit.Scheduler`): cleanup-job, которую никто не
+запускает, оставила бы таблицу расти.
 
 ```go
 import (
@@ -361,10 +362,9 @@ guard'у пустой `ip`, падает в юнит-тесте, а не на п
 - **Скользящего окна нет.** Внутри окна неудачи не «истекают» сами: счётчик
   обнуляют `RecordSuccess`, истечение блокировки и `Cleanup` по
   `CleanupRetention`.
-- **Без `timerkit.Module` таблица не чистится.** `pgstore.Module` кладёт
-  cleanup-job в группу `timerkit.Group`, но запускает job'ы группы только
-  `timerkit.Module`. Рост таблицы attacker-driven: строка заводится на каждую
-  новую пару `(subject, ip)`, включая несуществующие subject'ы.
+- **Cleanup-job обязателен.** Рост таблицы attacker-driven: строка заводится на
+  каждую новую пару `(subject, ip)`, включая несуществующие subject'ы. Поэтому
+  `pgstore.Module` без `timerkit.Module` в графе не собирается.
 - **Всё время — часы базы.** `locked_until`, `last_attempt` и их сравнение в
   `Check`/`Cleanup` считаются через `NOW()` Postgres; рассинхрон часов между
   инстансами сервиса на блокировки не влияет. Внутри `pgkit.Transactor.WithTx`

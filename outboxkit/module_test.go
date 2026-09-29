@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,6 +27,11 @@ func deps(repo outboxkit.Repository, bus natskit.StreamBus, cfg outboxkit.Config
 		func() pgkit.Transactor { return &pgtest.Recorder{} },
 		func() outboxkit.Config { return cfg },
 	)
+}
+
+// scheduler — timerkit.Module с логгером: job'ы кита без него не собираются.
+func scheduler() fx.Option {
+	return fx.Options(fx.Provide(logkit.Nop), timerkit.Module)
 }
 
 func jobNames(jobs []timerkit.Job) []string {
@@ -52,6 +58,7 @@ func TestModule_WiresPublisherWorkerAndJob(t *testing.T) {
 	var jobs []timerkit.Job
 	app := fxtest.New(t,
 		deps(repo, &capturingBus{}, cfg),
+		scheduler(),
 		outboxkit.Module,
 		fx.Populate(&pub),
 		fx.Invoke(fx.Annotate(
@@ -86,6 +93,7 @@ func TestModule_WithoutBacklogReporter(t *testing.T) {
 	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
 	app := fxtest.New(t,
 		deps(bareRepo{repo: &fakeRepo{}}, &capturingBus{}, cfg),
+		scheduler(),
 		outboxkit.Module,
 		fx.Invoke(func(*outboxkit.Worker) {}),
 	)
@@ -98,11 +106,36 @@ func TestModule_ValidateApp(t *testing.T) {
 	err := fx.ValidateApp(
 		fx.NopLogger,
 		deps(&fakeRepo{}, &capturingBus{}, cfg),
+		scheduler(),
 		outboxkit.Module,
 		fx.Invoke(func(outboxkit.Publisher, *outboxkit.Worker, *outboxkit.Bus) {}),
 	)
 	if err != nil {
 		t.Fatalf("ValidateApp: %v", err)
+	}
+}
+
+// Регрессия FX-04: без timerkit.Module drain-job никто не запускает — граф
+// обязан не собраться, а не держать outbox молча стоящим.
+func TestModule_RequiresTimerkit(t *testing.T) {
+	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	err := fx.ValidateApp(fx.NopLogger, deps(&fakeRepo{}, &capturingBus{}, cfg), outboxkit.Module)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
+		t.Fatalf("outboxkit.Module without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	}
+	err = fx.ValidateApp(fx.NopLogger,
+		fx.Provide(
+			func() outboxkit.RepositoryFactory {
+				return outboxkit.RepositoryFactory(func(string) (outboxkit.Repository, error) { return &fakeRepo{}, nil })
+			},
+			func() natskit.StreamBus { return &capturingBus{} },
+			func() pgkit.Transactor { return &pgtest.Recorder{} },
+			func() outboxkit.Config { return cfg },
+		),
+		outboxkit.Instance("orders", "outbox_orders"),
+	)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
+		t.Fatalf("outboxkit.Instance without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
 	}
 }
 
@@ -128,6 +161,7 @@ func TestInstance_WiresNamedOutbox(t *testing.T) {
 			func() pgkit.Transactor { return &pgtest.Recorder{} },
 			func() outboxkit.Config { return cfg },
 		),
+		scheduler(),
 		outboxkit.Instance("orders", "outbox_orders"),
 		fx.Invoke(fx.Annotate(func(p outboxkit.Publisher) { pub = p }, fx.ParamTags(`name:"orders"`))),
 		fx.Invoke(fx.Annotate(func(js []timerkit.Job) { jobs = js }, fx.ParamTags(`group:"timerkit.jobs"`))),
@@ -168,6 +202,7 @@ func TestInstance_FactoryErrorFailsStart(t *testing.T) {
 				return outboxkit.Config{BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
 			},
 		),
+		scheduler(),
 		outboxkit.Instance("orders", "Bad Table"),
 	)
 	if err := app.Err(); err == nil {
@@ -196,6 +231,7 @@ func TestInstance_ConfigOverride(t *testing.T) {
 				return outboxkit.Config{BatchSize: 100, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
 			},
 		),
+		scheduler(),
 		outboxkit.Instance("orders", "outbox_orders", outboxkit.WithInstanceConfig(override)),
 		fx.Invoke(fx.Annotate(func(o *outboxkit.Outbox) { ob = o }, fx.ParamTags(`name:"orders"`))),
 	)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -35,6 +36,20 @@ func (noopStreamBus) PublishStreamBatch(_ context.Context, msgs []natskit.Stream
 
 func (noopStreamBus) SubscribeStream(context.Context, string, string, string, natskit.Handler) (natskit.Subscription, error) {
 	return nil, nil
+}
+
+// scheduler — timerkit.Module с логгером: job'ы кита без него не собираются.
+func scheduler() fx.Option {
+	return fx.Options(fx.Provide(logkit.Nop), timerkit.Module)
+}
+
+// Регрессия FX-04: без timerkit.Module keeper-job'ы никто не запускает —
+// граф обязан не собраться.
+func TestModule_RequiresTimerkit(t *testing.T) {
+	err := fx.ValidateApp(fx.NopLogger, fx.Supply(&pgkit.DB{}, pgstore.Config{}), pgstore.Module)
+	if err == nil || !strings.Contains(err.Error(), "timerkit.Scheduler") {
+		t.Fatalf("pgstore.Module without timerkit.Module: err = %v, want missing timerkit.Scheduler", err)
+	}
 }
 
 func TestNewConfig_Defaults(t *testing.T) {
@@ -111,6 +126,7 @@ func TestModule_EnsuresPartitionsOnStart(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(db, pgstore.Config{}),
+		scheduler(),
 		pgstore.Module,
 	)
 	if err := app.Start(ctx); err != nil {
@@ -130,6 +146,7 @@ func TestModule_RejectsInvalidConfig(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(db, pgstore.Config{RetentionMonths: -1}),
+		scheduler(),
 		pgstore.Module,
 		fx.Invoke(func(outboxkit.Repository) {}),
 	)
@@ -170,6 +187,7 @@ func TestFactoryModule_InstanceOnCustomTable(t *testing.T) {
 				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
 			},
 		),
+		scheduler(),
 		pgstore.FactoryModule,
 		outboxkit.Instance("orders", table),
 		fx.Invoke(fx.Annotate(func(p outboxkit.Publisher) { pub = p }, fx.ParamTags(`name:"orders"`))),

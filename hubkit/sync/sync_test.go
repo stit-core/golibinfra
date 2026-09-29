@@ -324,6 +324,8 @@ func TestModule_Graph(t *testing.T) {
 	t.Setenv("HUB_BASE_URL", srv.URL)
 	t.Setenv("HUB_SERVICE_TOKEN", "tok")
 	t.Setenv("HUB_SYNC_INTERVAL", "1h")
+	// Движок тест гонит сам: job timerkit на старте не должен идти параллельно.
+	t.Setenv("HUB_SYNC_RUN_ON_START", "false")
 
 	resource := "companies-module"
 	cur := hubtest.NewCursors()
@@ -340,6 +342,7 @@ func TestModule_Graph(t *testing.T) {
 		fx.Provide(client.NewConfig, hubsync.NewConfig),
 		fx.Provide(logkit.Nop),
 		client.Module,
+		timerkit.Module,
 		hubsync.Module,
 		fx.Provide(fx.Annotate(
 			func(f hubsync.Fetcher, cfg hubsync.Config, log logkit.Logger) (*hubsync.Engine, error) {
