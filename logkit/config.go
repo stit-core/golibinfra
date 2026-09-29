@@ -64,9 +64,10 @@ func (p *Patterns) Decode(value string) error {
 	return nil
 }
 
-// RedactConfig — маскирование PII и секретов в msg и строковых значениях.
+// RedactConfig — маскирование PII и секретов в msg и значениях атрибутов.
+// NewRedactConfig включает его по умолчанию; нулевой RedactConfig — выключен.
 type RedactConfig struct {
-	Enabled     bool     `envconfig:"LOG_REDACT_ENABLED"`
+	Enabled     bool     `envconfig:"LOG_REDACT_ENABLED" default:"true"`
 	Patterns    Patterns `envconfig:"LOG_REDACT_PATTERNS"`
 	ReplaceWith string   `envconfig:"LOG_REDACT_REPLACE_WITH" default:"[REDACTED]"`
 }

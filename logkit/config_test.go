@@ -113,7 +113,7 @@ func TestNewRedactConfig_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.Enabled || cfg.ReplaceWith != "[REDACTED]" || len(cfg.Patterns) != 0 {
+	if !cfg.Enabled || cfg.ReplaceWith != "[REDACTED]" || len(cfg.Patterns) != 0 {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 }

@@ -26,6 +26,14 @@ var defaultRedactPatterns = Patterns{
 	`\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+`,
 	`\bsk-ant-[A-Za-z0-9_-]{16,}`,
 	`\bsk-[A-Za-z0-9]{20,}\b`,
+	`[0-9A-Fa-f]{32,}`,
+}
+
+// secretKeyWords — слова ключа атрибута, значение под которым маскируется
+// целиком; составные api_key и private_key ловит secretKey по паре слов.
+var secretKeyWords = [...]string{
+	"apikey", "authorization", "cookie", "cookies", "credential", "credentials", "jwt",
+	"otp", "passphrase", "passwd", "password", "privatekey", "secret", "token",
 }
 
 type redactHandler struct {
@@ -42,8 +50,9 @@ type redactRules struct {
 }
 
 // NewRedactHandler маскирует msg и строковые значения атрибутов (включая
-// With()-attrs, группы, LogValuer, error и JSON-представление Any-значений);
-// числа, bool, time и duration не трогает.
+// With()-attrs, группы, LogValuer, error и JSON-представление Any-значений), а
+// значение под ключом-секретом (token, password, secret, authorization, cookie,
+// …) — целиком; числа, bool, time и duration не трогает.
 func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) {
 	if inner == nil {
 		return nil, errors.New("logkit: NewRedactHandler: nil inner handler")
@@ -104,18 +113,31 @@ func compileRedact(cfg RedactConfig) (redactRules, error) {
 // «цифровых» дефолтов (телефон — 11, карта — 16 с разделителями).
 const minRedactDigits = 11
 
+// minRedactHex — длина hex-цепочки, которую маскирует дефолтный набор: токен
+// из 16 случайных байт, MD5, SHA-1 и SHA-256 в hex.
+const minRedactHex = 32
+
 // defaultHint — необходимое условие совпадения дефолтного набора: у каждой
-// маски есть обязательный литерал («@», «+», «bearer», «basic», «eyJ», «sk-»)
-// либо цепочка минимум из minRedactDigits цифр. Скан по байтам дешевле
-// прогонки regexp'а на порядки: её цена — O(длина × размер программы), а
-// программа объединённого набора — почти две сотни инструкций.
+// маски есть обязательный литерал («@», «+», «bearer», «basic», «eyJ», «sk-»),
+// цепочка минимум из minRedactDigits цифр либо из minRedactHex hex-символов.
+// Скан по байтам дешевле прогонки regexp'а на порядки: её цена — O(длина ×
+// размер программы), а программа объединённого набора — больше двух сотен
+// инструкций.
 func defaultHint[T string | []byte](s T) bool {
-	run, sep := 0, false
+	run, hex, sep := 0, 0, false
 	for i := 0; i < len(s); i++ {
-		switch c := s[i]; {
+		c := s[i]
+		if isHexDigit(c) {
+			if hex++; hex >= minRedactHex {
+				return true
+			}
+		} else {
+			hex = 0
+		}
+		switch {
 		case c == '@' || c == '+':
 			return true
-		case c >= '0' && c <= '9':
+		case isDigit(c):
 			run++
 			sep = false
 			if run >= minRedactDigits {
@@ -141,6 +163,10 @@ func defaultHint[T string | []byte](s T) bool {
 		run, sep = 0, false
 	}
 	return false
+}
+
+func isHexDigit(c byte) bool {
+	return isDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
 }
 
 // numSep — разделитель между группами цифр номера карты; надмножество «\s»
@@ -222,6 +248,9 @@ func (h *redactHandler) bytes(b []byte) []byte {
 
 func (h *redactHandler) attr(a slog.Attr) slog.Attr {
 	v := a.Value.Resolve()
+	if secretKey(a.Key) && maskable(v) {
+		return slog.String(a.Key, h.with)
+	}
 	switch v.Kind() {
 	case slog.KindString:
 		return slog.String(a.Key, h.text(v.String()))
@@ -238,6 +267,73 @@ func (h *redactHandler) attr(a slog.Attr) slog.Attr {
 		return slog.Attr{Key: a.Key, Value: v}
 	}
 }
+
+// maskable: под секретным ключом прячутся строки, группы и структуры; числа,
+// bool, время и nil секрета не несут (token_count — счётчик).
+func maskable(v slog.Value) bool {
+	switch v.Kind() {
+	case slog.KindString, slog.KindGroup:
+		return true
+	case slog.KindAny:
+		return v.Any() != nil
+	default:
+		return false
+	}
+}
+
+// secretKey: ключ режется на слова по разделителям, границам camelCase и цифр
+// («X-Api-Key», «accessToken», «oauth2Token»), и слово ищется в secretKeyWords.
+// По словам, а не подстрокой: «input_tokens» — счётчик, а не секрет.
+func secretKey(key string) bool {
+	var prev string
+	for i := 0; i < len(key); {
+		var w string
+		if w, i = nextKeyWord(key, i); w == "" {
+			return false
+		}
+		for _, sw := range secretKeyWords {
+			if strings.EqualFold(w, sw) {
+				return true
+			}
+		}
+		if strings.EqualFold(w, "key") && (strings.EqualFold(prev, "api") || strings.EqualFold(prev, "private")) {
+			return true
+		}
+		prev = w
+	}
+	return false
+}
+
+// nextKeyWord отдаёт слово ключа с позиции from и позицию за ним.
+func nextKeyWord(key string, from int) (string, int) {
+	for from < len(key) && !isAlnum(key[from]) {
+		from++
+	}
+	i := from
+	for i < len(key) && isAlnum(key[i]) && (i == from || !keyWordBoundary(key, i)) {
+		i++
+	}
+	return key[from:i], i
+}
+
+// keyWordBoundary: граница перед key[i] — цифра↔буква, строчная→заглавная и
+// конец аббревиатуры перед словом («APIKey» → API, Key).
+func keyWordBoundary(key string, i int) bool {
+	p, c := key[i-1], key[i]
+	switch {
+	case isDigit(p) != isDigit(c):
+		return true
+	case isLower(p) && isUpper(c):
+		return true
+	default:
+		return isUpper(p) && isUpper(c) && i+1 < len(key) && isLower(key[i+1])
+	}
+}
+
+func isDigit(c byte) bool { return c >= '0' && c <= '9' }
+func isLower(c byte) bool { return c >= 'a' && c <= 'z' }
+func isUpper(c byte) bool { return c >= 'A' && c <= 'Z' }
+func isAlnum(c byte) bool { return isDigit(c) || isLower(c) || isUpper(c) }
 
 // anyAttr: error — как строка (так его рендерит и JSONHandler); прочее —
 // маршалится один раз, дальше по конвейеру идёт уже готовый JSON.

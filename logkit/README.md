@@ -23,10 +23,13 @@
 - **`RegisterAttr`** — глобально регистрируемые поля из `ctx` (так `httpkit`
   пробрасывает `request_id`); попадают в оба sink'а. Регистрация ключевая:
   повторный вызов с тем же ключом заменяет экстрактор, а не добавляет второй.
-- **PII-redact** — `WithRedact` + `RedactConfig`: regex-маски применяются к
-  `msg` и строковым значениям атрибутов, включая `With()`-attrs, группы,
-  `error` и JSON-представление `Any`-значений; числа, `bool`, `time`, `duration`
-  не трогаются. Работает до fan-out — маскируются оба sink'а.
+- **PII-redact** — `WithRedact` + `RedactConfig`, включён по умолчанию
+  (`LOG_REDACT_ENABLED=true`): regex-маски применяются к `msg` и строковым
+  значениям атрибутов, включая `With()`-attrs, группы, `error` и
+  JSON-представление `Any`-значений, а значение под ключом-секретом (`token`,
+  `password`, `secret`, `authorization`, `cookie`, …) заменяется целиком; числа,
+  `bool`, `time`, `duration` не трогаются. Работает до fan-out — маскируются оба
+  sink'а.
 - **Fail-fast** — невалидный `LOG_LEVEL`/`LOG_FORMAT`, regex в
   `LOG_REDACT_PATTERNS` или `LOG_REDACT_REPLACE_WITH` дают ошибку конструктора
   (в fx — отказ сборки графа).
@@ -51,13 +54,14 @@ import "git.stit.tech/stit-core/golibinfra/logkit"
 
 `Module` provide'ит `logkit.Logger` и `*slog.Logger`, но **не** конфиги — их
 регистрирует caller. `RedactConfig` и `log.LoggerProvider` — опциональные
-зависимости: нет в графе → redact выключен, OTel-sink не добавляется.
+зависимости: нет в графе → redact выключен, OTel-sink не добавляется; поэтому
+`NewRedactConfig` в граф добавляют всегда — он включает маскирование.
 
 ```go
 fx.New(
 	fx.Provide(telemetry.NewConfig),     // нужен telemetry.Module (OTEL_*)
 	fx.Provide(logkit.NewConfig),        // Config из ENV (LOG_*)
-	fx.Provide(logkit.NewRedactConfig),  // опционально: RedactConfig из ENV
+	fx.Provide(logkit.NewRedactConfig),  // RedactConfig из ENV: маскирование включено
 	telemetry.Module,                    // опционально: даёт log.LoggerProvider → OTLP-sink
 	logkit.Module,                       // → logkit.Logger, *slog.Logger
 	logkit.FxLogger,                     // события fx — в тот же лог
@@ -181,7 +185,7 @@ Zero-value валиден: `info`, JSON, stdout, без `source`.
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `LOG_REDACT_ENABLED` | `Enabled` | `bool` | `false` | Включает redact-слой. |
+| `LOG_REDACT_ENABLED` | `Enabled` | `bool` | `true` | Включает redact-слой. Нулевой `RedactConfig{}` (и граф без `RedactConfig`) — без маскирования. |
 | `LOG_REDACT_PATTERNS` | `Patterns` | `Patterns` (`[]string`) | *(пусто → дефолтные)* | Regex-фильтры; в ENV разделитель `;` (запятая встречается в квантификаторах `{10,15}`), литеральная `;` внутри паттерна пишется как `\;`. Невалидный regex → `ErrConfig`. Паттерн, совпадающий с пустой строкой (`a*`, `x?`, пустой элемент), тоже → `ErrConfig`: он вставляет замену между каждой парой символов записи. |
 | `LOG_REDACT_REPLACE_WITH` | `ReplaceWith` | `string` | `[REDACTED]` | Строка-замена, подставляется литерально (`$1` не раскрывается). `"`, `\` и control-символы отвергаются (`ErrConfig`): они ломают JSON-представление структурных значений. |
 
@@ -198,20 +202,35 @@ Zero-value валиден: `info`, JSON, stdout, без `source`.
 | JWT | `\beyJ[A-Za-z0-9_-]{6,}\.eyJ[A-Za-z0-9_-]{6,}\.[A-Za-z0-9_-]+` |
 | Anthropic API key | `\bsk-ant-[A-Za-z0-9_-]{16,}` |
 | generic API key | `\bsk-[A-Za-z0-9]{20,}\b` |
+| hex-цепочка ≥ 32 (токены, MD5/SHA-1/SHA-256) | `[0-9A-Fa-f]{32,}` |
 
-Десятизначные идентификаторы без `+`/ведущей `7`/`8`, UUID, hex-хэши и короткие
-base64-строки не маскируются. Свой набор задаётся целиком — дефолтные при этом
-не применяются.
+Десятизначные идентификаторы без `+`/ведущей `7`/`8`, UUID, hex короче 32
+символов и короткие base64-строки не маскируются. Свой набор задаётся целиком —
+дефолтные при этом не применяются.
 
 Дефолтный набор проходит литеральный pre-filter: строка без `@`, `+`, `bearer`,
-`basic`, `eyJ`, `sk-` и без цепочки от 11 цифр до regexp'а не доходит. Это и
-держит цену: прогонка объединённого regexp'а стоит O(длина × размер программы),
-а запись без маркеров секрета обходится сканом по байтам — порядок ×1.6 к той
-же записи без redact'а (потолок держит `TestRedact_CostOfRecordWithoutSecrets`).
+`basic`, `eyJ`, `sk-`, без цепочки от 11 цифр и без 32 hex-символов подряд до
+regexp'а не доходит. Это и держит цену: прогонка объединённого regexp'а стоит
+O(длина × размер программы), а запись без маркеров секрета обходится сканом по
+байтам — около ×1.8 к той же записи без redact'а (потолок держит
+`TestRedact_CostOfRecordWithoutSecrets`).
+
 Свой набор pre-filter не проходит: его regexp прогоняется по каждой строке и по
 JSON-байтам структурных значений, поэтому даже одна узкая маска на записи со
 структурой стоит дороже отфильтрованного дефолтного набора
 (`BenchmarkLoggerInfoRedactStruct` против `…NarrowSet`).
+
+Кроме масок, redact смотрит на ключ атрибута — и при дефолтном, и при своём
+наборе. Ключ режется на слова по разделителям, camelCase и цифрам (`X-Api-Key`,
+`accessToken`, `oauth2Token`); если слово — `token`, `password`, `passwd`,
+`passphrase`, `secret`, `authorization`, `cookie`/`cookies`,
+`credential`/`credentials`, `jwt`, `otp`, `apikey`/`api_key`,
+`privatekey`/`private_key`, значение заменяется целиком: строка, группа и
+структура (`Any`). Сравнение по словам, поэтому `input_tokens`, `tokenizer`,
+`cache_key` — не секреты. Числа, `bool` и `nil` под таким ключом остаются
+(`token_count` — счётчик). Ключи внутри `Any`-структуры не разбираются — их
+видят только маски; структуру с секретными полями логируйте через
+`slog.LogValuer`, отдающий группу: ключи группы проверяются.
 
 ### `ServiceConfig` (`WithService`)
 
@@ -319,11 +338,12 @@ OTel-sink проверяется через `sdklog.NewLoggerProvider` с `Simpl
 - **`RegisterAttr`-значения и `trace_id`/`span_id` идут мимо redact:** они
   добавляются после redact-слоя. Экстрактор, отдающий PII (например `user_id`
   = email-subject), маскировать нужно на своей стороне.
-- **Redact выключен по умолчанию** и применяется до fan-out: маскируются оба
-  sink'а. Маска работает по строкам — `msg`, строковые атрибуты (в т.ч. из
-  `With()` и групп), текст `error`, JSON-представление структур (`Any`),
-  содержимое `[]byte`. Числа не трогаются, поэтому unix-ms и наносекундные
-  длительности остаются числами. Паттерн, «съедающий» кавычку, сделал бы JSON
+- **Redact включён по умолчанию** (`NewRedactConfig`) и применяется до
+  fan-out: маскируются оба sink'а. Маска работает по строкам — `msg`,
+  строковые атрибуты (в т.ч. из `With()` и групп), текст `error`,
+  JSON-представление структур (`Any`), содержимое `[]byte`; значение под
+  ключом-секретом заменяется целиком. Числа не трогаются, поэтому unix-ms и
+  наносекундные длительности остаются числами. Паттерн, «съедающий» кавычку, сделал бы JSON
   невалидным — такое значение уходит в лог замаскированной строкой, а не
   теряется. Дефолтные паттерны — эвристики, и только они проходят pre-filter;
   свой набор — это прогонка regexp по каждой строке и по JSON-байтам

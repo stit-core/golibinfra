@@ -91,7 +91,7 @@ func TestRedact_NoFalsePositivesOnPlainText(t *testing.T) {
 		"id":           "ORD-42-sk-1",
 		"path":         "/api/v1/customers/123456",
 		"ten_digits":   "1234567890",
-		"hash":         "9f86d081884c7d659a2feaa0c55ad015",
+		"short_hex":    "9f86d081884c7d659a2feaa0c55ad01",
 	}
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -265,7 +265,7 @@ func TestRedact_BytesValueWithDefaultSet(t *testing.T) {
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
 	body := []byte(`{"status":"ok"}`)
-	l.Info(context.Background(), "payload", "plain", body, "secret", []byte("mail to a@b.io"))
+	l.Info(context.Background(), "payload", "plain", body, "mail", []byte("mail to a@b.io"))
 
 	m := decodeLine(t, buf.Bytes())
 	plain, _ := m["plain"].(string)
@@ -273,10 +273,10 @@ func TestRedact_BytesValueWithDefaultSet(t *testing.T) {
 	if err != nil || string(raw) != string(body) {
 		t.Fatalf("plain body = %v (%v)", m["plain"], err)
 	}
-	masked, _ := m["secret"].(string)
+	masked, _ := m["mail"].(string)
 	raw, err = base64.StdEncoding.DecodeString(masked)
 	if err != nil || string(raw) != "mail to [REDACTED]" {
-		t.Fatalf("secret body = %q (%v)", raw, err)
+		t.Fatalf("mail body = %q (%v)", raw, err)
 	}
 
 	// Цепочка цифр проходит pre-filter, но не совпадает ни с одной маской.
@@ -352,7 +352,7 @@ func TestRedact_DefaultHintSkipsRecordsWithoutSecrets(t *testing.T) {
 		"http log":    `GET /v1/orders/42 handled in 12ms upstream=payments status=200`,
 		"json doc":    `{"id":"ORD-42","items":["a","b"],"total":1500}`,
 		"prose":       "the bearing of the ship changed",
-		"hash":        "9f86d081884c7d659a2feaa0c55ad015",
+		"short hex":   "9f86d081884c7d659a2feaa0c55ad01",
 		"stack frame": "logkit.(*slogLogger).Info(0xc000112000)",
 	}
 	for name, in := range skipped {
@@ -374,6 +374,7 @@ func TestRedact_DefaultHintSkipsRecordsWithoutSecrets(t *testing.T) {
 		"jwt":        "token eyJhbGciOi",
 		"apikey":     "key sk-ant-api03",
 		"digits run": "550e8400-e29b-41d4-a716-446655440000",
+		"hex token":  "reset 9f86d081884c7d659a2feaa0c55ad015",
 	}
 	for name, in := range scanned {
 		t.Run(name, func(t *testing.T) {
@@ -397,9 +398,15 @@ func TestRedact_DefaultHintNeverMissesAMatch(t *testing.T) {
 	}
 
 	const alphabet = "aAbBeEsSkK0123456789@+-. _/=:jJyY\"{}"
+	// Почти одни hex-символы и длина у порога minRedactHex: такие цепочки
+	// первый алфавит не порождает.
+	const hexAlphabet = "0123456789abcdefABCDEF-g"
 	rnd := rand.New(rand.NewPCG(1, 2))
 	for i := range 200_000 {
-		n := 1 + rnd.IntN(24)
+		alphabet, n := alphabet, 1+rnd.IntN(24)
+		if i%16 == 0 {
+			alphabet, n = hexAlphabet, minRedactHex-4+rnd.IntN(8)
+		}
 		var sb strings.Builder
 		for range n {
 			sb.WriteByte(alphabet[rnd.IntN(len(alphabet))])
@@ -476,5 +483,145 @@ func TestRedact_PhonePatternIgnoresPlainNumbers(t *testing.T) {
 	}
 	if m["ru_phone"] != "[REDACTED]" || m["e164"] != "[REDACTED]" {
 		t.Errorf("phones must be redacted: %v / %v", m["ru_phone"], m["e164"])
+	}
+}
+
+// SEC-02 аудита шаблона: без env маскирование включено — mailer, пишущий токен
+// сброса пароля ключом token и ссылкой с hex-токеном, в лог его не отдаёт.
+func TestRedact_EnabledByDefault(t *testing.T) {
+	clearEnv(t, "LOG_REDACT_ENABLED", "LOG_REDACT_PATTERNS", "LOG_REDACT_REPLACE_WITH")
+	cfg, err := NewRedactConfig()
+	if err != nil {
+		t.Fatalf("NewRedactConfig: %v", err)
+	}
+	if !cfg.Enabled {
+		t.Fatal("LOG_REDACT_ENABLED must default to true")
+	}
+
+	const token = "9f86d081884c7d659a2feaa0c55ad0159f86d081884c7d659a2feaa0c55ad015"
+	var buf bytes.Buffer
+	l := mustLogger(t, Config{Level: "debug"}, &buf, WithRedact(cfg))
+	l.Info(context.Background(), "password reset requested",
+		"email", "admin@example.com", "token", "opaque-reset-value", "link", "https://app.example/reset?token="+token)
+
+	out := buf.String()
+	for _, secret := range []string{"admin@example.com", "opaque-reset-value", token} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("secret %q leaked: %s", secret, out)
+		}
+	}
+	if m := decodeLine(t, buf.Bytes()); m["link"] != "https://app.example/reset?token=[REDACTED]" {
+		t.Fatalf("link = %v", m["link"])
+	}
+}
+
+func TestRedact_SecretKeysMaskWholeValue(t *testing.T) {
+	secret := []string{
+		"token", "access_token", "accessToken", "refresh-token", "oauth2Token", "id_token",
+		"password", "new_password", "passwordHash", "passwd", "passphrase",
+		"secret", "client_secret", "AWS_SECRET_ACCESS_KEY",
+		"authorization", "Authorization", "Proxy-Authorization",
+		"cookie", "Set-Cookie", "cookies", "credential", "credentials",
+		"api_key", "apiKey", "APIKey", "X-Api-Key", "apikey", "private_key", "privateKey",
+		"jwt", "otp", "otp_code",
+	}
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{Patterns: Patterns{`never-matches-\d`}})
+	kv := make([]any, 0, len(secret)*2)
+	for _, k := range secret {
+		kv = append(kv, k, "plain-value-"+k)
+	}
+	l.Info(context.Background(), "secrets", kv...)
+
+	m := decodeLine(t, buf.Bytes())
+	for _, k := range secret {
+		if m[k] != "[REDACTED]" {
+			t.Errorf("%s = %v, want [REDACTED]", k, m[k])
+		}
+	}
+}
+
+func TestRedact_NonSecretKeysStay(t *testing.T) {
+	kept := []string{
+		"input_tokens", "tokens", "tokenizer", "key", "cache_key", "idempotency_key",
+		"author", "passage", "secretary", "keyboard", "session_id", "auth_method",
+	}
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	kv := make([]any, 0, len(kept)*2)
+	for _, k := range kept {
+		kv = append(kv, k, "plain-value")
+	}
+	l.Info(context.Background(), "plain", kv...)
+
+	m := decodeLine(t, buf.Bytes())
+	for _, k := range kept {
+		if m[k] != "plain-value" {
+			t.Errorf("%s = %v, want unchanged", k, m[k])
+		}
+	}
+}
+
+// Под ключом-секретом прячутся строка, группа и структура (включая []byte и
+// ключи внутри групп и With), но не числа, bool и nil: token_count — счётчик.
+func TestRedact_SecretKeyValueKinds(t *testing.T) {
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	l.With("session_token", "with-value").Info(context.Background(), "kinds",
+		slog.Group("credentials", slog.String("user", "u1"), slog.String("pass", "p1")),
+		slog.Group("req", slog.String("password", "in-group"), slog.Int("attempt", 2)),
+		"cookie", map[string]any{"sid": "abc"},
+		"token", []byte("raw-bytes"),
+		"token_count", 42,
+		"password_set", true,
+		"secret", nil,
+		"user", credsValuer{},
+	)
+
+	m := decodeLine(t, buf.Bytes())
+	for _, k := range []string{"session_token", "credentials", "cookie", "token"} {
+		if m[k] != "[REDACTED]" {
+			t.Errorf("%s = %v, want [REDACTED]", k, m[k])
+		}
+	}
+	req, _ := m["req"].(map[string]any)
+	if req["password"] != "[REDACTED]" || req["attempt"] != float64(2) {
+		t.Errorf("req group = %v", m["req"])
+	}
+	if m["token_count"] != float64(42) || m["password_set"] != true || m["secret"] != nil {
+		t.Errorf("numbers, bool and nil must stay: %v / %v / %v", m["token_count"], m["password_set"], m["secret"])
+	}
+	user, _ := m["user"].(map[string]any)
+	if user["login"] != "u1" || user["password"] != "[REDACTED]" {
+		t.Errorf("LogValuer group keys must be checked: %v", m["user"])
+	}
+}
+
+// credsValuer — структура с секретным полем, логируемая группой через LogValuer.
+type credsValuer struct{}
+
+func (credsValuer) LogValue() slog.Value {
+	return slog.GroupValue(slog.String("login", "u1"), slog.String("password", "p1"))
+}
+
+func TestRedact_HexChains(t *testing.T) {
+	const (
+		md5    = "9f86d081884c7d659a2feaa0c55ad015"
+		sha256 = "9F86D081884C7D659A2FEAA0C55AD0159F86D081884C7D659A2FEAA0C55AD015"
+		short  = "9f86d081884c7d659a2feaa0c55ad01"
+	)
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	l.Info(context.Background(), "verify "+sha256, "digest", md5, "short", short, "doc", map[string]any{"ref": md5})
+
+	m := decodeLine(t, buf.Bytes())
+	if m["msg"] != "verify [REDACTED]" || m["digest"] != "[REDACTED]" {
+		t.Errorf("hex chains >= 32 must be masked: msg=%v digest=%v", m["msg"], m["digest"])
+	}
+	if doc, _ := m["doc"].(map[string]any); doc["ref"] != "[REDACTED]" {
+		t.Errorf("hex chain inside a struct must be masked: %v", m["doc"])
+	}
+	if m["short"] != short {
+		t.Errorf("hex chain < 32 must stay: %v", m["short"])
 	}
 }

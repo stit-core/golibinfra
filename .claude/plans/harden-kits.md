@@ -52,7 +52,8 @@ blocked-by: —
   - Подтверждено: `go test -short -race ./testkit/outboxtest/` → PASS (`TestRecorder_PublishRequiresTx`); мутант D02 на ветке догфудера шаблона (`note/usecase.go`: `Publish(ctx, …)` вместо `txCtx`) — на v1.1.0 выжил, на этом golibinfra через `replace` в своём worktree — `TestCreate` FAIL
 - [x] **AC9** — `logkit.FxLogger` пишет события fx в структурный лог: причина падения старта — JSON-строка уровня ERROR, рутина — DEBUG. Проверка: `go test -short -race -run TestFxLogger ./logkit/` → PASS
   - Подтверждено: `go test -short -race -run TestFxLogger ./logkit/` → PASS (конструктор, `OnStart`, паника под `fx.RecoverFromPanics` — ERROR с причиной; рутина — DEBUG, при `info` лог пуст); мутанты «рутина на INFO» и `fx.NopLogger` краснеют
-- [ ] **AC10** — `NewRedactConfig` без env включает маскирование; значения под ключами `token`/`password`/`secret`/`authorization`/`cookie`/… и hex-цепочки ≥32 символов маскируются, числа не трогаются. Проверка: `go test -short -race -run 'TestRedact' ./logkit/` → PASS; `make envdoc-check` → OK
+- [x] **AC10** — `NewRedactConfig` без env включает маскирование; значения под ключами `token`/`password`/`secret`/`authorization`/`cookie`/… и hex-цепочки ≥32 символов маскируются, числа не трогаются. Проверка: `go test -short -race -run 'TestRedact' ./logkit/` → PASS; `make envdoc-check` → OK
+  - Подтверждено: `go test -short -race -run 'TestRedact' ./logkit/` → PASS (`TestRedact_EnabledByDefault`, `…SecretKeysMaskWholeValue`, `…NonSecretKeysStay`, `…SecretKeyValueKinds`, `…HexChains`); `make envdoc-check` → OK; мутанты «pre-filter без hex» и `minRedactHex=33` краснеют
 - [ ] **AC11** — `bruteforcekit`: subject нормализуется (trim, нижний регистр), IPv6 по умолчанию сворачивается до /64, `Guard.Attempt` атомарен: из N параллельных попыток пары проходят не больше `MaxFailures`. Проверка: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS
 - [ ] **AC12** — `natskit.SubscribeOnStart` подписывает в OnStart, дренит в OnStop; ошибка подписки (включая `ErrJetStreamDisabled`) валит старт. Проверка: `go test -short -race -run TestSubscribeOnStart ./natskit/` → PASS
 - [ ] **AC13** — `Argon2idHasher` считает одновременно не больше `max(1, GOMAXPROCS/Threads)` хэшей; ожидание очереди прерывается ctx. Проверка: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS
@@ -72,8 +73,9 @@ blocked-by: —
 - [x] **S4** — `logkit.FxLogger`
   - Проверка: `go test -short -race ./logkit/` → PASS · Закрывает: AC9
   - Сделано: `feat(logkit)` — `go test -short -race ./logkit/` → PASS, `make check` зелёный
-- [ ] **S5** — `logkit`: маскирование по ключу и hex-токенов, redact включён по умолчанию
+- [x] **S5** — `logkit`: маскирование по ключу и hex-токенов, redact включён по умолчанию
   - Проверка: `go test -short -race ./logkit/`, `make envdoc-check` → PASS/OK · Закрывает: AC10
+  - Сделано: `feat(logkit)` — `go test -short -race ./logkit/` → PASS, `make envdoc-check` → OK, `make check` зелёный
 - [ ] **S6** — `bruteforcekit`: нормализация subject, IPv6 /64 по умолчанию
   - Проверка: `go test -short -race ./bruteforcekit/...` → PASS · Закрывает: AC11
 - [ ] **S7** — `bruteforcekit`: атомарный `Guard.Attempt` вместо `Check`+`RecordFailure`; фейки `bruteforcetest`
@@ -151,6 +153,17 @@ blocked-by: —
   берёт `*slog.Logger` графа (`fxevent.SlogLogger` принимает только его) и ставит рутине
   `UseLogLevel(Debug)` — по умолчанию `fxevent.SlogLogger` пишет её на INFO. Невалидный `LOG_*`
   не даёт собрать сам логгер событий — fx пишет причину текстом в stderr; это в README, не лечится.
+- S5: hex — маска дефолтного набора `[0-9A-Fa-f]{32,}` без `\b`: цепочка внутри слова тоже
+  секрет, а pre-filter «32 hex подряд» совпадает с маской точно. Программа regexp'а — 188→222
+  инструкций: запись с маркером секрета дороже на 15–25%, без маркеров — ×1.68→×1.76 к записи
+  без redact'а (потолок теста — ×3).
+- S5: ключ-секрет — список слов плюс пары `api`/`private` + `key`; ключ режется на слова
+  (разделители, camelCase, цифры), сравнение `EqualFold` без аллокаций. Действует и при своём
+  наборе масок: ключ — не маска. Числа, `bool`, `nil` под таким ключом остаются.
+- S5: ключи внутри `Any`-структур не разбираются — разбор JSON по токенам с сохранением порядка
+  стоил бы на каждой структуре; путь для структуры с секретами — `slog.LogValuer`-группа (README).
+- S5: граф без `RedactConfig` и нулевой `RedactConfig{}` — без маскирования (`Module` ENV не
+  читает); README велит всегда провайдить `NewRedactConfig` — в шаблоне он есть, в шлюзах нет.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -171,11 +184,11 @@ blocked-by: —
   S2 (`887527a`, `feat(outboxkit)!`) — `RepositoryFactory` стал интерфейсом (`Repository`,
   `Migrations`), `Instance` кладёт `pgkit.Source` таблицы в `pgkit.MigrationsGroup`;
   S3 (`16949a0`, `feat(outboxtest)!`) — `Recorder.Publish` вне `pgkit.InTx` → `outboxkit.ErrNoTx`;
-  S4 (`feat(logkit)`) — `logkit.FxLogger`: события fx через `*slog.Logger` графа, ERROR/DEBUG.
-- Осталось: S5–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — S5: `LOG_REDACT_ENABLED` по умолчанию `true`; маскирование значений под
-  ключами-секретами (сравнение по словам ключа, строки/группы/структуры, числа нет) и
-  hex-цепочек ≥32 в дефолтном наборе; `TestRedact*`, `make envdoc-check`.
+  S4 (`5333bee`, `feat(logkit)`) — `logkit.FxLogger`: события fx через `*slog.Logger` графа;
+  S5 (`feat(logkit)`) — redact по умолчанию, значение под ключом-секретом целиком, hex ≥32.
+- Осталось: S6–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
+- Следующий шаг — S6: `bruteforcekit` — нормализация subject (trim + нижний регистр) и IPv6 по
+  умолчанию /64 (`Config.IPv6Prefix`); фейки `bruteforcetest` — по тому же ключу.
 - Для аннотации тега копить по шагам:
   - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
     интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
@@ -184,7 +197,10 @@ blocked-by: —
     `MigrateModule` падает `duplicate source name` (S2); `outboxtest.Recorder.Publish` вне
     транзакции → `outboxkit.ErrNoTx`: usecase в тесте — с фейком `pgtest.Identity`/`Recorder`
     или ctx под `pgkit.WithTestTx` (S3).
-  - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2).
+  - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2);
+    `LOG_REDACT_ENABLED` по умолчанию `true`, значение под ключом-секретом (token, password,
+    secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 — маской; выключить —
+    `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его (S5).
   - Изменения — `pgstore.Module` и `FactoryModule` сочетаются в одном графе (доки, S2);
     `logkit.FxLogger` — события fx в структурный лог (S4).
 - Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).
