@@ -1,12 +1,15 @@
-// Package outboxtest — фейк outboxkit.Publisher для тестов домена без NATS.
+// Package outboxtest — фейк outboxkit.Publisher для тестов домена без NATS и
+// Postgres; публикует только в транзакции, как pgstore по умолчанию.
 package outboxtest
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"sync"
 
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
 var _ outboxkit.Publisher = (*Recorder)(nil)
@@ -17,14 +20,20 @@ type Event struct {
 	Payload any
 }
 
-// Recorder — in-memory outboxkit.Publisher: копит опубликованные события.
+// Recorder — in-memory outboxkit.Publisher: копит события, опубликованные в
+// транзакции.
 type Recorder struct {
 	mu     sync.Mutex
 	events []Event
 }
 
-// Publish сохраняет событие; ошибки не возвращает.
-func (r *Recorder) Publish(_ context.Context, subject string, payload any) error {
+// Publish сохраняет событие. Вне транзакции (pgkit.InTx: Transactor.WithTx,
+// фейки pgtest) — outboxkit.ErrNoTx, как у pgstore с OUTBOX_REQUIRE_TX=true, и
+// событие не копится.
+func (r *Recorder) Publish(ctx context.Context, subject string, payload any) error {
+	if !pgkit.InTx(ctx) {
+		return fmt.Errorf("%w: wrap the call in pgkit Transactor.WithTx", outboxkit.ErrNoTx)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, Event{Subject: subject, Payload: payload})

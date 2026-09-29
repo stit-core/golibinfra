@@ -4,7 +4,11 @@
 
 Доменный код зависит от `outboxkit.Publisher`, поэтому его тесты обходятся
 `testkit/outboxtest.Recorder` — in-memory реализацией порта с `All`/`Published`/
-`Last`/`Count`/`Reset`. Ни Postgres, ни NATS не нужны.
+`Last`/`Count`/`Reset`. Ни Postgres, ни NATS не нужны. Как pgstore с
+`OUTBOX_REQUIRE_TX=true`, `Recorder` публикует только в транзакции
+(`pgkit.InTx`): вне неё `Publish` отвечает `outboxkit.ErrNoTx` и событие не
+копит, поэтому транзактор домена в тесте — фейк `testkit/pgtest`, он помечает
+`ctx` транзакцией.
 
 ## Core: fake Repository / Transport
 

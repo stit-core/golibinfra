@@ -101,11 +101,12 @@ func WithJetStream() Option
 
 ```go
 func TestPublishesEvent(t *testing.T) {
-	bus := &outboxtest.Recorder{} // реализует outboxkit.Publisher
-	svc := NewService(bus)
+	bus := &outboxtest.Recorder{} // outboxkit.Publisher; вне транзакции — outboxkit.ErrNoTx
+	svc := NewService(pgtest.Identity{}, bus) // фейк Transactor помечает ctx транзакцией
 
-	_ = svc.CreateUser(ctx, "u1")
-
+	if err := svc.CreateUser(ctx, "u1"); err != nil {
+		t.Fatal(err)
+	}
 	if bus.Count() != 1 {
 		t.Fatalf("want 1 event, got %d", bus.Count())
 	}
@@ -166,7 +167,7 @@ huma-хендлеры поверх `httpkit`, а не сам кит.
 | [`logtest`](logtest/) | `logkit` | `Capture`/`CaptureAt` — `logkit.Logger`, копящий записи в памяти: `Entries`, `Find`, `FindFunc`, `Has`, `Reset`; `Entry.Str`/`Entry.Value` читают поля записи. |
 | [`natstest`](natstest/) | `natskit` | `Recorder` — in-memory `natskit.Bus`/`StreamBus` с синхронной доставкой подписчикам: `Publish`/`PublishStream`/`PublishStreamBatch`, `Subscribe`/`SubscribeQueue`/`SubscribeStream`, запросы `Published`/`PublishedOn`/`Subscriptions`/`HandlerErrors`, инжекторы `Deliver` (сообщение «из шины») и `SetPublishError` + `Reset`. |
 | [`oidctest`](oidctest/) | `oidckit` | `New(t)` поднимает stub OIDC-провайдера (discovery, JWKS, `/authorize`, `/token`, RS256/ES256): `SetClaims`, `SetStatus`, `SetTokenBody`, `SetDiscoveryOverride`, `Hits`, `LastAuthorize`; токены для негативных тестов — `IDToken`, `IDTokenWithKID`, `IDTokenHS256`, `IDTokenUnsigned`. |
-| [`outboxtest`](outboxtest/) | `outboxkit` | `Recorder` — in-memory `outboxkit.Publisher`; запросы `All`/`Published`/`Last`/`Count` + `Reset`. |
+| [`outboxtest`](outboxtest/) | `outboxkit` | `Recorder` — in-memory `outboxkit.Publisher`: `Publish` вне транзакции (`pgkit.InTx`) отвечает `outboxkit.ErrNoTx` и событие не копит, как pgstore с `OUTBOX_REQUIRE_TX=true`; запросы `All`/`Published`/`Last`/`Count` + `Reset`. |
 | [`pgtest`](pgtest/) | `pgkit` | `pgkit.Transactor`-фейки (`WithTx` и `WithTxOptions`): `Identity` (прогоняет `fn` без транзакции), `Recorder` (то же + счётчик `Calls`). Оба помечают `ctx` через `pgkit.WithTestTx`, поэтому код с гейтом на `pgkit.InTx` проходит без Postgres. |
 | [`storagetest`](storagetest/) | `storagekit` | `RunContract(t, newSubject)` — общий контрактный набор для `storagekit.Storage`/`Presigner`: боевой адаптер и in-memory проверяются одними кейсами; `Subject{Storage, Presigner, Keys}` описывает проверяемую реализацию. |
 
