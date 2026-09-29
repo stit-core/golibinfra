@@ -61,8 +61,9 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 
 Несколько независимых outbox'ов (таблица на домен) в одном приложении.
 `pgstore.FactoryModule` провайдит фабрику store'ов, `outboxkit.Instance` собирает
-инстанс целиком: store на свою таблицу, транспорт с namespace'ным `Nats-Msg-Id`,
-drain-job, партиции и retention, backlog-gauge'и.
+инстанс целиком: store на свою таблицу, схему таблицы в группе `pgkit.migrations`,
+транспорт с namespace'ным `Nats-Msg-Id`, drain-job, партиции и retention,
+backlog-gauge'и.
 
 ```go
 // сигнатуры
@@ -77,10 +78,6 @@ fx.New(
         pgstore.NewConfig, outboxkit.NewConfig),
     logkit.Module, pgkit.Module, pgkit.MigrateModule, natskit.Module(""), timerkit.Module,
 
-    // миграции таблиц инстансов
-    pgkit.ProvideMigrations(pgstore.TableMigrations("outbox_orders")),
-    pgkit.ProvideMigrations(pgstore.TableMigrations("outbox_leads")),
-
     pgstore.FactoryModule, // outboxkit.RepositoryFactory
     outboxkit.Instance("orders", "outbox_orders"),
     outboxkit.Instance("leads", "outbox_leads",
@@ -93,10 +90,15 @@ fx.New(
 )
 ```
 
-`pgstore.Module` и `pgstore.FactoryModule` вместе не подключаются: оба провайдят
-Store в один граф. Приложению с таблицей `outbox` и доменными таблицами нужен
-`pgstore.Module` плюс `outboxkit.Instance` поверх собственных `NewStoreFor`
-(ручная сборка ниже).
+Схема таблицы инстанса — `pgstore.TableMigrations(table)` с таблицей версий
+`schema_migrations_<table>`: `pgkit.MigrateModule` берёт её из группы и
+накатывает на старте. Отдельно её не регистрируют — второй источник с тем же
+именем `MigrateModule` отвергает (`duplicate source name`). Без `MigrateModule`
+(миграции накатывает отдельный шаг) тот же источник передают в
+`pgkit.MigrateUpAll`.
+
+Таблица `outbox` (`pgstore.Module` и `outboxkit.Module`) и инстансы
+(`pgstore.FactoryModule` и `outboxkit.Instance`) сочетаются в одном графе.
 
 `*Outbox` и `Publisher` инстанса провайдятся под fx-тегом `name:"<name>"`; имя
 инстанса становится label'ом `instance` в метриках и namespace'ом `Nats-Msg-Id`

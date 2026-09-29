@@ -39,8 +39,7 @@ var Module = fx.Module(
 )
 
 // FactoryModule провайдит outboxkit.RepositoryFactory для outboxkit.Instance —
-// multi-instance путь без таблицы DefaultTable. С Module не сочетается: оба
-// провайдят Store одного графа.
+// multi-instance путь; сочетается с Module (таблица DefaultTable).
 var FactoryModule = fx.Module(
 	"outboxkit/pgstore/factory",
 	fx.Provide(NewRepositoryFactory),
@@ -97,15 +96,29 @@ func newStoreFromConfig(p storeParams) (*Store, error) {
 }
 
 // NewRepositoryFactory строит фабрику Store'ов на произвольные таблицы для
-// outboxkit.Instance: конфиг (tx-guard, retention) и часы у всех инстансов общие.
+// outboxkit.Instance: конфиг (tx-guard, retention) и часы у всех инстансов общие,
+// схема таблицы — TableMigrations.
 func NewRepositoryFactory(p storeParams) (outboxkit.RepositoryFactory, error) {
 	if err := p.Cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return func(table string) (outboxkit.Repository, error) {
-		return NewStoreFor(p.DB, table, p.options()...)
-	}, nil
+	return repositoryFactory{db: p.DB, opts: p.options()}, nil
 }
+
+type repositoryFactory struct {
+	db   *pgkit.DB
+	opts []StoreOption
+}
+
+func (f repositoryFactory) Repository(table string) (outboxkit.Repository, error) {
+	s, err := NewStoreFor(f.db, table, f.opts...)
+	if err != nil {
+		return nil, err
+	}
+	return s, nil
+}
+
+func (repositoryFactory) Migrations(table string) pgkit.Source { return TableMigrations(table) }
 
 // partitionParams: зависимость от pgkit.Migrated ставит хук в очередь после
 // миграций, не полагаясь на позицию модуля в fx.New; optional — сборка без

@@ -41,6 +41,8 @@ Core-абстракция отделена от Postgres-реализации, �
   record-failures.
 - `outboxkit/pgstore.Store` — Postgres-реализация `Repository` (и всех
   опциональных интерфейсов).
+- `outboxkit.RepositoryFactory` — хранилище и схема именованной таблицы для
+  `Instance`; реализация — `pgstore.FactoryModule`.
 - `streamTransport` (`NewStreamTransport` / `NewStreamTransportFor`) — адаптер
   `natskit.StreamBus` под `Transport`.
 
@@ -200,7 +202,7 @@ Subject, Since})` (реализация — `pgstore.Store.ReviveDead`): сбр�
 неопубликованным и партиции на текущий месяц + 3 вперёд; `pgstore.Module`
 регистрирует источник в `pgkit.MigrateModule`. Для кастомных таблиц
 (multi-instance) тот же набор даёт `pgstore.TableMigrations(table)` — со своей
-таблицей версий `schema_migrations_<table>`.
+таблицей версий `schema_migrations_<table>`; его регистрирует `outboxkit.Instance`.
 
 ## Single-instance vs multi-instance
 
@@ -212,8 +214,9 @@ id строки идёт как `Nats-Msg-Id`. Корректно, потому 
 
 **Multi-instance** — несколько независимых outbox'ов в одном приложении (по
 таблице на домен): `pgstore.FactoryModule` + `outboxkit.Instance(name, table)` на
-каждый. `Instance` собирает store через `outboxkit.RepositoryFactory`,
-namespace'ный транспорт, drain- и maintenance-job'ы и backlog-gauge'и; `*Outbox`
+каждый. `Instance` берёт из `outboxkit.RepositoryFactory` store и схему таблицы
+(в группу `pgkit.migrations`), собирает namespace'ный транспорт, drain- и
+maintenance-job'ы и backlog-gauge'и; `*Outbox`
 и `Publisher` провайдятся под fx-тегом `name:"<name>"`. Каждая per-domain таблица
 имеет собственный независимый `BIGSERIAL` — id повторяются между таблицами,
 поэтому `Msg-Id` намспейсится именем инстанса.
@@ -246,6 +249,10 @@ outbox-таблиц делят один JetStream-стрим, голый id ст
 
 - **Core отделён от pgstore.** Доменный код зависит от `Repository`/`Publisher`,
   а не от Postgres — другая реализация хранилища не трогает домен.
+- **Схема таблицы — из фабрики.** `Instance` кладёт источник миграций в группу
+  `pgkit.migrations`, поэтому набор таблиц выводится из графа, а не из ручного
+  списка; `outboxkit` не импортирует `pgstore` (цикл), а фабрика знает и
+  хранилище, и его схему.
 - **Тик — транзакция, а не claim-колонки.** Блокировки строк живут ровно
   столько, сколько тик: падение воркера освобождает их откатом, без TTL и
   «протухших» claim'ов; схема таблицы не растёт.

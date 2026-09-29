@@ -151,9 +151,10 @@ if pgkit.IsLockNotAvailable(err) {
 
 `MigrateModule` в `OnStart` под advisory-lock применяет источники китов из
 fx-группы `pgkit.migrations` (их регистрируют `Module` китов —
-`auditkit/pgstore`, `outboxkit/pgstore`, `bruteforcekit/pgstore`), затем каталог
-приложения из `PG_MIGRATIONS_PATH` (default `/migrations`; пустая строка — у
-приложения своих миграций нет). DSN берётся из `PoolConfig`.
+`auditkit/pgstore`, `outboxkit/pgstore`, `bruteforcekit/pgstore` — и
+`outboxkit.Instance`), затем каталог приложения из `PG_MIGRATIONS_PATH`
+(default `/migrations`; пустая строка — у приложения своих миграций нет). DSN
+берётся из `PoolConfig`.
 
 ```go
 fx.New(

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"time"
 
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
@@ -102,6 +103,12 @@ type Maintainer interface {
 	MaintenanceJobs() []timerkit.Job
 }
 
-// RepositoryFactory строит Repository для именованной таблицы: провайдит
-// store-кит (`pgstore.FactoryModule`), потребляет Instance.
-type RepositoryFactory func(table string) (Repository, error)
+// RepositoryFactory строит хранилище и схему именованной таблицы для Instance;
+// провайдит store-кит (`pgstore.FactoryModule`).
+type RepositoryFactory interface {
+	// Repository — хранилище поверх таблицы table.
+	Repository(table string) (Repository, error)
+	// Migrations — источник миграций таблицы table; Instance кладёт его в
+	// группу pgkit.MigrationsGroup.
+	Migrations(table string) pgkit.Source
+}

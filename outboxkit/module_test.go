@@ -125,9 +125,7 @@ func TestModule_RequiresTimerkit(t *testing.T) {
 	}
 	err = fx.ValidateApp(fx.NopLogger,
 		fx.Provide(
-			func() outboxkit.RepositoryFactory {
-				return outboxkit.RepositoryFactory(func(string) (outboxkit.Repository, error) { return &fakeRepo{}, nil })
-			},
+			func() outboxkit.RepositoryFactory { return &fakeFactory{repo: &fakeRepo{}} },
 			func() natskit.StreamBus { return &capturingBus{} },
 			func() pgkit.Transactor { return &pgtest.Recorder{} },
 			func() outboxkit.Config { return cfg },
@@ -145,11 +143,7 @@ func TestInstance_WiresNamedOutbox(t *testing.T) {
 		unpublished: []outboxkit.Message{msg(1, "order.created")},
 		backlog:     []outboxkit.SubjectBacklog{{Subject: "order.created", Oldest: time.Second, Pending: 1}},
 	}
-	var factoryTable string
-	factory := outboxkit.RepositoryFactory(func(table string) (outboxkit.Repository, error) {
-		factoryTable = table
-		return repo, nil
-	})
+	factory := &fakeFactory{repo: repo}
 	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
 
 	var pub outboxkit.Publisher
@@ -168,8 +162,8 @@ func TestInstance_WiresNamedOutbox(t *testing.T) {
 	)
 	app.RequireStart()
 
-	if factoryTable != "outbox_orders" {
-		t.Fatalf("factory table = %q, want outbox_orders", factoryTable)
+	if factory.table != "outbox_orders" {
+		t.Fatalf("factory table = %q, want outbox_orders", factory.table)
 	}
 	if pub == nil {
 		t.Fatal("named Publisher not provided")
@@ -188,10 +182,40 @@ func TestInstance_WiresNamedOutbox(t *testing.T) {
 	app.RequireStop()
 }
 
+// Регрессия FX-12: схема таблицы инстанса приезжает в группу pgkit.migrations
+// сама — pgkit.MigrateModule накатывает её без ручного списка источников.
+func TestInstance_ProvidesMigrations(t *testing.T) {
+	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	var names []string
+	fxtest.New(t,
+		fx.Provide(
+			func() outboxkit.RepositoryFactory { return &fakeFactory{repo: bareRepo{repo: &fakeRepo{}}} },
+			func() natskit.StreamBus { return &capturingBus{} },
+			func() pgkit.Transactor { return &pgtest.Recorder{} },
+			func() outboxkit.Config { return cfg },
+		),
+		scheduler(),
+		outboxkit.Instance("orders", "outbox_orders"),
+		outboxkit.Instance("leads", "outbox_leads"),
+		fx.Invoke(fx.Annotate(
+			func(srcs []pgkit.Source) {
+				for _, s := range srcs {
+					names = append(names, s.VersionTable())
+				}
+			},
+			fx.ParamTags(`group:"`+pgkit.MigrationsGroup+`"`),
+		)),
+	)
+
+	slices.Sort(names)
+	want := []string{"schema_migrations_outbox_leads", "schema_migrations_outbox_orders"}
+	if !slices.Equal(names, want) {
+		t.Fatalf("migration sources = %v, want %v", names, want)
+	}
+}
+
 func TestInstance_FactoryErrorFailsStart(t *testing.T) {
-	factory := outboxkit.RepositoryFactory(func(string) (outboxkit.Repository, error) {
-		return nil, errors.New("bad table")
-	})
+	factory := &fakeFactory{err: errors.New("bad table")}
 	app := fx.New(
 		fx.NopLogger,
 		fx.Provide(
@@ -218,7 +242,7 @@ func TestInstance_EmptyNameRejected(t *testing.T) {
 
 func TestInstance_ConfigOverride(t *testing.T) {
 	repo := &fakeRepo{}
-	factory := outboxkit.RepositoryFactory(func(string) (outboxkit.Repository, error) { return repo, nil })
+	factory := &fakeFactory{repo: repo}
 	override := outboxkit.Config{BatchSize: 7, Interval: 5 * time.Second, PublishMode: outboxkit.PublishOrdered}
 
 	var ob *outboxkit.Outbox
@@ -347,7 +371,6 @@ func TestInstanceRecipeValidates(t *testing.T) {
 		pgkit.MigrateModule,
 		natskit.Module(""),
 		timerkit.Module,
-		pgkit.ProvideMigrations(pgstore.TableMigrations("outbox_orders")),
 		pgstore.FactoryModule,
 		outboxkit.Instance("orders", "outbox_orders"),
 		fx.Invoke(fx.Annotate(func(outboxkit.Publisher) {}, fx.ParamTags(`name:"orders"`))),

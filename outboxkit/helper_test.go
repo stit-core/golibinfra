@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"testing/fstest"
 	"time"
 
 	"go.opentelemetry.io/otel"
@@ -14,8 +15,29 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
+
+// fakeFactory — RepositoryFactory поверх готового репозитория; запоминает
+// запрошенную таблицу.
+type fakeFactory struct {
+	repo  outboxkit.Repository
+	err   error
+	table string
+}
+
+func (f *fakeFactory) Repository(table string) (outboxkit.Repository, error) {
+	f.table = table
+	if f.err != nil {
+		return nil, f.err
+	}
+	return f.repo, nil
+}
+
+func (f *fakeFactory) Migrations(table string) pgkit.Source {
+	return pgkit.Source{Name: table, FS: fstest.MapFS{}, Dir: "."}
+}
 
 type insertedEvent struct {
 	subject string

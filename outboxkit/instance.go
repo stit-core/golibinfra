@@ -107,10 +107,10 @@ func WithInstanceConfig(cfg Config) InstanceOption {
 	return func(o *instanceOptions) { o.cfg = &cfg }
 }
 
-// Instance собирает именованный outbox поверх таблицы table: store из
-// RepositoryFactory, namespace'ный транспорт, drain- и maintenance-job'ы в
-// группе timerkit.Group, backlog-gauge'и. *Outbox и Publisher — под fx-тегом
-// `name:"<name>"`; рецепт — docs/usage.md.
+// Instance собирает именованный outbox поверх таблицы table: store и схему
+// таблицы (в группу pgkit.MigrationsGroup) из RepositoryFactory, namespace'ный
+// транспорт, drain- и maintenance-job'ы в группе timerkit.Group, backlog-gauge'и.
+// *Outbox и Publisher — под fx-тегом `name:"<name>"`; рецепт — docs/usage.md.
 func Instance(name, table string, opts ...InstanceOption) fx.Option {
 	if name == "" {
 		return fx.Error(fmt.Errorf("%w: outbox instance name is empty", ErrConfig))
@@ -125,7 +125,7 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 		fx.Provide(
 			fx.Annotate(
 				func(f RepositoryFactory, sb natskit.StreamBus, tx pgkit.Transactor, cfg Config) (*Outbox, error) {
-					repo, err := f(table)
+					repo, err := f.Repository(table)
 					if err != nil {
 						return nil, err
 					}
@@ -139,6 +139,10 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 			fx.Annotate(
 				func(ob *Outbox) Publisher { return ob.Publisher() },
 				fx.ParamTags(tag), fx.ResultTags(tag),
+			),
+			fx.Annotate(
+				func(f RepositoryFactory) pgkit.Source { return f.Migrations(table) },
+				fx.ResultTags(`group:"`+pgkit.MigrationsGroup+`"`),
 			),
 		),
 		// Зависимость от pgkit.Migrated ставит job'ы обслуживания в очередь

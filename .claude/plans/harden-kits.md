@@ -46,7 +46,8 @@ blocked-by: —
 - [ ] **AC5** — `httpkit.ErrorMap` сопоставляет доменную ошибку (`errors.Is` или предикат) со статусом, `code`, опц. полем и `Retry-After` из `RetryAfter()`; `Unmapped` перечисляет несопоставленные; несопоставленная даёт 500 и строку `handler error` с `operation` в логе; `Declare` кладёт статусы и коды в `openapi.json`. Проверка: `go test -short -race -run 'TestErrorMap' ./httpkit/` → PASS
 - [x] **AC6** — `timerkit.Provide` без `timerkit.Module` в графе — ошибка сборки (`fx.ValidateApp`), в том числе у `outboxkit.Module`/`Instance` и `bruteforcekit/pgstore.Module`. Проверка: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS
   - Подтверждено: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS на `a4030bf`
-- [ ] **AC7** — `outboxkit.Instance(name, table)` кладёт схему таблицы в группу `pgkit.migrations`: `pgkit.MigrateModule` накатывает её без ручного списка. Проверка: `go test -short -race -run TestInstance_ProvidesMigrations ./outboxkit/` → PASS; `make test-full` (pgstore) → PASS
+- [x] **AC7** — `outboxkit.Instance(name, table)` кладёт схему таблицы в группу `pgkit.migrations`: `pgkit.MigrateModule` накатывает её без ручного списка. Проверка: `go test -short -race -run TestInstance_ProvidesMigrations ./outboxkit/` → PASS; `make test-full` (pgstore) → PASS
+  - Подтверждено: `go test -short -race -run TestInstance_ProvidesMigrations ./outboxkit/` → PASS; `make test-full PKGS=./outboxkit/...` → PASS (`TestFactoryModule_InstanceOnCustomTable` заводит таблицу через `pgkit.MigrateModule`); мутант «Instance без группы» краснеет в обоих
 - [ ] **AC8** — `outboxtest.Recorder.Publish` вне транзакции возвращает `outboxkit.ErrNoTx` и событие не копит (мутант D02 «Publish вне транзакции» краснеет). Проверка: `go test -short -race ./testkit/outboxtest/` → PASS
 - [ ] **AC9** — `logkit.FxLogger` пишет события fx в структурный лог: причина падения старта — JSON-строка уровня ERROR, рутина — DEBUG. Проверка: `go test -short -race -run TestFxLogger ./logkit/` → PASS
 - [ ] **AC10** — `NewRedactConfig` без env включает маскирование; значения под ключами `token`/`password`/`secret`/`authorization`/`cookie`/… и hex-цепочки ≥32 символов маскируются, числа не трогаются. Проверка: `go test -short -race -run 'TestRedact' ./logkit/` → PASS; `make envdoc-check` → OK
@@ -60,8 +61,9 @@ blocked-by: —
 - [x] **S1** — `timerkit.Provide` требует `timerkit.Module` (маркер `timerkit.Scheduler`); fx-тесты и доки зависимых китов
   - Проверка: `go test -short -race ./timerkit/ ./outboxkit/... ./bruteforcekit/... ./hubkit/...` → PASS · Закрывает: AC6
   - Сделано: `a4030bf` (`make check` зелёный)
-- [ ] **S2** — `outboxkit.RepositoryFactory` — интерфейс `Repository`+`Migrations`; `Instance` кладёт миграции в `pgkit.migrations`
+- [x] **S2** — `outboxkit.RepositoryFactory` — интерфейс `Repository`+`Migrations`; `Instance` кладёт миграции в `pgkit.migrations`
   - Проверка: `go test -short -race ./outboxkit/...` → PASS · Закрывает: AC7 · Зависит от: S1
+  - Сделано: `feat(outboxkit)!` — `go test -short -race ./outboxkit/...` → PASS, `make test-full PKGS=./outboxkit/...` → PASS, `make check` зелёный
 - [ ] **S3** — `outboxtest.Recorder` требует транзакцию (`pgkit.InTx`)
   - Проверка: `go test -short -race ./testkit/outboxtest/` → PASS · Закрывает: AC8
 - [ ] **S4** — `logkit.FxLogger`
@@ -131,6 +133,13 @@ blocked-by: —
   в `ensureStreams` — 5s по умолчанию nats.go, зависший вызов обрывает старт ошибкой. Перенос в
   OnStart не убирает I/O из сборки графа (pgxpool прогревает `MinConns` в фоне) и для natskit
   ломает поддержанную подписку в `fx.Invoke` — несоразмерно.
+- S2: два источника с одним именем `pgkit.MigrateUpAll` отвергает (`duplicate source name`) —
+  ручной `pgkit.ProvideMigrations(pgstore.TableMigrations(t))` рядом с `Instance` валит старт
+  громко; дедупликацию в pgkit не вводим (молча скрыла бы конфликт источников).
+- S2: `pgstore.Module` и `pgstore.FactoryModule` сочетаются (граф и живой старт на Postgres) —
+  строка доков «не сочетаются» была неправдой, исправлена рядом (`usage.md`, doc-comment).
+- S2: юнит-тест группы — на фейковой фабрике: реальная регистрирует backlog-gauge'и, которые
+  без старта не снять; связку с pgstore держит integration-тест через `pgkit.MigrateModule`.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -147,16 +156,19 @@ blocked-by: —
 - Шлюзы (`v0.39.0`): цепочка аннотаций тегов до `v1.2.0`.
 
 ## Где мы сейчас
-- Сделано: план (`bc726e3`), S1 (`a4030bf`, `feat(timerkit)!`) — маркер `timerkit.Scheduler`
-  (имя `Runner` занято неэкспортируемым `runner` кита); графы тестов outboxkit(+pgstore),
-  bruteforcekit/pgstore и hubkit/sync собираются с `timerkit.Module` + `logkit.Nop`
-  (хелпер `scheduler()` в тестах), `hubkit/sync` — `HUB_SYNC_RUN_ON_START=false`.
-- Осталось: S2–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — S2: `RepositoryFactory` → интерфейс (`Repository(table)`,
-  `Migrations(table) pgkit.Source`), реализация в `outboxkit/pgstore` (`NewRepositoryFactory`),
-  `Instance` провайдит `pgkit.Source` в группу `pgkit.MigrationsGroup`; из рецепта
-  `TestInstanceRecipeValidates` и `outboxkit/docs/usage.md` убрать ручной
-  `pgkit.ProvideMigrations(pgstore.TableMigrations(...))` (сначала проверить, как
-  `pgkit.MigrateUpAll` ведёт себя на двух источниках с одним именем).
-- Для аннотации тега копить по шагам: Breaking — `timerkit.Provide` требует `timerkit.Module`
-  (S1). Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).
+- Сделано: план (`bc726e3`), S1 (`a4030bf`, `feat(timerkit)!`) — маркер `timerkit.Scheduler`;
+  S2 (`feat(outboxkit)!`) — `RepositoryFactory` стал интерфейсом (`Repository`, `Migrations`),
+  `Instance` кладёт `pgkit.Source` таблицы в `pgkit.MigrationsGroup`, реализация —
+  `pgstore.NewRepositoryFactory`; рецепты и доки outboxkit/pgkit без ручного списка.
+- Осталось: S3–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
+- Следующий шаг — S3: `outboxtest.Recorder.Publish` вне транзакции (`!pgkit.InTx(ctx)`) →
+  `outboxkit.ErrNoTx`, событие не копится; тесты рекордера — внутри `pgkit.WithTestTx`.
+- Для аннотации тега копить по шагам:
+  - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
+    интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
+    метода; `Instance` сам регистрирует схему таблицы — ручной
+    `pgkit.ProvideMigrations(pgstore.TableMigrations(t))` рядом с ним убрать, иначе
+    `MigrateModule` падает `duplicate source name` (S2).
+  - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2).
+  - Изменения — `pgstore.Module` и `FactoryModule` сочетаются в одном графе (доки, S2).
+- Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).

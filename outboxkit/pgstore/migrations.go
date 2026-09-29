@@ -16,7 +16,8 @@ var migrationsFS embed.FS
 var Migrations = pgkit.Source{Name: "outboxkit", FS: migrationsFS, Dir: "migrations"}
 
 // TableMigrations — источник миграций outbox-таблицы с произвольным именем
-// (multi-instance): та же схема, своя таблица версий schema_migrations_<table>.
+// (multi-instance): та же схема, своя таблица версий schema_migrations_<table>;
+// outboxkit.Instance кладёт его в группу pgkit.MigrationsGroup через фабрику.
 // Имя длиннее 45 символов pgkit отвергает на прогоне (ограничение Source.Name).
 func TableMigrations(table string) pgkit.Source {
 	return pgkit.Source{Name: table, FS: tableMigrationsFS(table), Dir: "migrations"}

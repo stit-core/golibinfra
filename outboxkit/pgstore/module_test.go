@@ -170,16 +170,29 @@ func TestModule_KeeperJobsRun(t *testing.T) {
 	}
 }
 
-// Multi-instance путь целиком: миграции таблицы, фабрика репозиториев,
-// outboxkit.Instance и его job'ы.
+// Multi-instance путь целиком: схему таблицы накатывает pgkit.MigrateModule из
+// группы, без ручного списка источников; фабрика даёт store, Instance — job'ы.
 func TestFactoryModule_InstanceOnCustomTable(t *testing.T) {
 	const table = "outbox_orders"
-	db, tr, ctx := startStore(t, testkit.WithMigrations(pgstore.TableMigrations(table)))
+	fix, ctx := startFixture(t)
+	db, tr := fix.DB(t), fix.Transactor(t)
+	var exists bool
+	if err := db.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", table).Scan(&exists); err != nil {
+		t.Fatalf("precondition: %v", err)
+	}
+	if exists {
+		t.Fatalf("precondition: table %s must be absent before start", table)
+	}
 
 	var pub outboxkit.Publisher
 	var jobs []timerkit.Job
 	app := fxtest.New(t,
-		fx.Supply(db, pgstore.Config{RetentionMonths: 3, RequireTx: true}),
+		fx.Supply(
+			db,
+			pgstore.Config{RetentionMonths: 3, RequireTx: true},
+			pgkit.PoolConfig{DSN: fix.DSN},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+		),
 		fx.Provide(
 			func() natskit.StreamBus { return &noopStreamBus{} },
 			func() pgkit.Transactor { return tr },
@@ -188,6 +201,7 @@ func TestFactoryModule_InstanceOnCustomTable(t *testing.T) {
 			},
 		),
 		scheduler(),
+		pgkit.MigrateModule,
 		pgstore.FactoryModule,
 		outboxkit.Instance("orders", table),
 		fx.Invoke(fx.Annotate(func(p outboxkit.Publisher) { pub = p }, fx.ParamTags(`name:"orders"`))),
