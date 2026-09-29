@@ -57,7 +57,8 @@ blocked-by: —
 - [x] **AC11** — `bruteforcekit`: subject нормализуется (trim, нижний регистр), IPv6 по умолчанию сворачивается до /64, `Guard.Attempt` атомарен: из N параллельных попыток пары проходят не больше `MaxFailures`. Проверка: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS
   - Подтверждено: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS (из 50 попыток проходят ровно `MaxFailures` = 5; `-count=3` стабилен); мутанты «upsert без `WHERE`» и «попытка сверх бюджета проходит» краснеют
 - [ ] **AC12** — `natskit.SubscribeOnStart` подписывает в OnStart, дренит в OnStop; ошибка подписки (включая `ErrJetStreamDisabled`) валит старт. Проверка: `go test -short -race -run TestSubscribeOnStart ./natskit/` → PASS
-- [ ] **AC13** — `Argon2idHasher` считает одновременно не больше `max(1, GOMAXPROCS/Threads)` хэшей; ожидание очереди прерывается ctx. Проверка: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS
+- [x] **AC13** — `Argon2idHasher` считает одновременно не больше `max(1, GOMAXPROCS/Threads)` хэшей; ожидание очереди прерывается ctx. Проверка: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS
+  - Подтверждено: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS (из 3×предела одновременных `Hash` считается ровно предел; отмена ctx прерывает ожидание `Hash`/`Verify`/`VerifyDummy`); мутанты «без семафора» и «ожидание без ctx» краснеют
 - [ ] **AC14** — README и доки затронутых китов описывают текущее поведение, `make gate-clean` и `make test-full` зелёные, аннотированный тег `v1.2.0` с разделами `Breaking`/`Поведение`/`Изменения`/`Гейт` в origin вместе с `main`. Проверка: `make gate-clean` → зелёный; `git tag -l --format='%(contents)' v1.2.0` → четыре раздела; `git ls-remote --tags origin v1.2.0` → есть; `git status -sb` → синхронно с origin
 
 ## Шаги
@@ -83,8 +84,9 @@ blocked-by: —
 - [x] **S7** — `bruteforcekit`: атомарный `Guard.Attempt` вместо `Check`+`RecordFailure`; фейки `bruteforcetest`
   - Проверка: `go test -race ./bruteforcekit/... ./testkit/bruteforcetest/` (Docker) → PASS · Закрывает: AC11 · Зависит от: S6
   - Сделано: `feat(bruteforcekit)!` — `go test -race ./bruteforcekit/... ./testkit/bruteforcetest/` (Docker) → PASS, `make check` зелёный; в `make test-full` bruteforcekit PASS, красный только флак `outboxkit/pgstore` `TestModule_EnsuresPartitionsOnStart` (гонка создания партиции, чинится отдельным `fix(outboxkit)`)
-- [ ] **S8** — `authnkit`: предел параллельности Argon2id
+- [x] **S8** — `authnkit`: предел параллельности Argon2id
   - Проверка: `go test -short -race ./authnkit/` → PASS · Закрывает: AC13
+  - Сделано: `feat(authnkit)` — `go test -short -race ./authnkit/` → PASS, `make check` зелёный
 - [ ] **S9** — `natskit.SubscribeOnStart`
   - Проверка: `go test -short -race ./natskit/` → PASS · Закрывает: AC12
 ### httpkit
@@ -192,6 +194,12 @@ blocked-by: —
   реплик, стартующих вместе. `duplicate_table`/`unique_violation` после `IF NOT EXISTS` значат
   «партиция уже есть»; регрессия детерминирована: открытая транзакция создаёт ту же партицию.
   После фикса `make test-full` зелёный целиком.
+- S8: слоты — буферизованный канал ёмкостью `max(1, GOMAXPROCS/Threads)` (GOMAXPROCS на момент
+  конструктора); `Hash`, `Verify` и `VerifyDummy` делят их — dummy ждёт ту же очередь, иначе
+  время ответа снова различало бы пути. Отмена ctx в очереди: `Hash`/`Verify` — ошибка с
+  `ctx.Err()`, `VerifyDummy` пропускает вычисление (ошибки в сигнатуре нет). Гистограммы
+  длительности включают ожидание слота — очередь видна без новой метрики. Шов теста —
+  неэкспортируемое поле `derive` (`argon2.IDKey`): иначе предел проверялся бы таймингами.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -216,10 +224,11 @@ blocked-by: —
   S5 (`73900ca`, `feat(logkit)`) — redact по умолчанию, значение под ключом-секретом, hex ≥32;
   S6 (`2d0aeaf`, `feat(bruteforcekit)`) — subject в нижнем регистре без пробелов, IPv6 /64;
   S7 (`2b8e39a`, `feat(bruteforcekit)!`) — `Guard.Attempt` до проверки секрета + `RecordSuccess`;
-  `fix(outboxkit)` — `EnsurePartitions` рядом с параллельным создателем партиции.
-- Осталось: S8–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — S8: `authnkit` — семафор `max(1, GOMAXPROCS/Threads)` на Argon2id (хэш и
-  проверка), ожидание очереди прерывается ctx; `TestArgon2id_Concurrency` (AC13).
+  `fix(outboxkit)` (`dd6eed6`) — `EnsurePartitions` рядом с параллельным создателем партиции;
+  S8 (`feat(authnkit)`) — Argon2id в слотах `max(1, GOMAXPROCS/Threads)`, ожидание по ctx.
+- Осталось: S9–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
+- Следующий шаг — S9: `natskit.SubscribeOnStart(lc, subscribe)` — подписка в OnStart, drain в
+  OnStop; ошибка подписки (включая `ErrJetStreamDisabled`) валит старт (AC12, COD-06).
 - Для аннотации тега копить по шагам:
   - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
     интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
@@ -233,6 +242,8 @@ blocked-by: —
     `Attempts()`/`Successes()` (S7).
   - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2);
     `EnsurePartitions` не валит старт, когда ту же партицию создаёт другой процесс (fix);
+    `Argon2idHasher` считает не больше `max(1, GOMAXPROCS/Threads)` хэшей одновременно, лишние
+    ждут; отмена ctx в очереди — ошибка `Hash`/`Verify` с `ctx.Err()` (S8);
     `LOG_REDACT_ENABLED` по умолчанию `true`, значение под ключом-секретом (token, password,
     secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 — маской; выключить —
     `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его (S5);

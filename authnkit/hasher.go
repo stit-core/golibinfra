@@ -7,6 +7,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -110,9 +111,13 @@ func (p Argon2idParams) check() error {
 }
 
 // Argon2idHasher — Hasher поверх argon2.IDKey с самоописывающей PHC-строкой.
+// Одновременно считает не больше max(1, GOMAXPROCS/Threads) хэшей (каждый
+// держит Memory КиБ); ожидание слота прерывает ctx.
 type Argon2idHasher struct {
-	p     Argon2idParams
-	instr *hashInstruments
+	p      Argon2idParams
+	instr  *hashInstruments
+	slots  chan struct{}
+	derive func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
 }
 
 // NewArgon2idHasher — хэшер с параметрами p; параметры вне окна → ErrConfig.
@@ -120,10 +125,16 @@ func NewArgon2idHasher(p Argon2idParams) (*Argon2idHasher, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
-	return &Argon2idHasher{p: p, instr: newHashInstruments()}, nil
+	return &Argon2idHasher{
+		p:      p,
+		instr:  newHashInstruments(),
+		slots:  make(chan struct{}, max(1, runtime.GOMAXPROCS(0)/int(p.Threads))),
+		derive: argon2.IDKey,
+	}, nil
 }
 
-// Hash считает Argon2id со случайной солью и кодирует результат в PHC-строку.
+// Hash считает Argon2id со случайной солью и кодирует результат в PHC-строку;
+// отмена ctx в очереди вычислений — ошибка с ctx.Err().
 func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error) {
 	start := time.Now()
 	defer func() {
@@ -134,7 +145,10 @@ func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("authnkit: salt: %w", err)
 	}
-	key := argon2.IDKey([]byte(plain), salt, h.p.Time, h.p.Memory, h.p.Threads, h.p.KeyLen)
+	key, err := h.idKey(ctx, []byte(plain), salt, h.p)
+	if err != nil {
+		return "", err
+	}
 	return fmt.Sprintf(
 		"$argon2id$v=%d$m=%d,t=%d,p=%d$%s$%s",
 		argon2.Version,
@@ -145,7 +159,8 @@ func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error)
 }
 
 // Verify сверяет plain с PHC-строкой encoded: (false, ErrInvalidHash) — encoded
-// битый или вне окна параметров; (false, nil) — пароль не совпал.
+// битый или вне окна параметров; (false, nil) — пароль не совпал; отмена ctx в
+// очереди вычислений — ошибка с ctx.Err().
 func (h *Argon2idHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) {
 	start := time.Now()
 	defer func() {
@@ -156,7 +171,10 @@ func (h *Argon2idHasher) Verify(ctx context.Context, plain, encoded string) (boo
 	if err != nil {
 		return false, err
 	}
-	got := argon2.IDKey([]byte(plain), ph.salt, ph.params.Time, ph.params.Memory, ph.params.Threads, ph.params.KeyLen)
+	got, err := h.idKey(ctx, []byte(plain), ph.salt, ph.params)
+	if err != nil {
+		return false, err
+	}
 	return subtle.ConstantTimeCompare(got, ph.hash) == 1, nil
 }
 
@@ -167,15 +185,27 @@ var (
 	dummySalt     = []byte("authnkit-dummy-salt-do-not-store-it-anywhere-0123456789abcdefghij")
 )
 
-// VerifyDummy тратит столько же CPU, сколько Verify: вызывай на пути
-// «пользователь не найден», иначе время ответа выдаёт наличие учётной записи.
+// VerifyDummy тратит столько же CPU, сколько Verify, и ждёт ту же очередь
+// вычислений: вызывай на пути «пользователь не найден», иначе время ответа
+// выдаёт наличие учётной записи. Отмена ctx в очереди пропускает вычисление.
 func (h *Argon2idHasher) VerifyDummy(ctx context.Context) {
 	start := time.Now()
 	defer func() {
 		h.instr.verifyDuration.Record(ctx, time.Since(start).Seconds())
 	}()
 
-	_ = argon2.IDKey(dummyPassword, dummySalt[:h.p.SaltLen], h.p.Time, h.p.Memory, h.p.Threads, h.p.KeyLen)
+	_, _ = h.idKey(ctx, dummyPassword, dummySalt[:h.p.SaltLen], h.p)
+}
+
+// idKey считает Argon2id в одном из слотов хэшера.
+func (h *Argon2idHasher) idKey(ctx context.Context, password, salt []byte, p Argon2idParams) ([]byte, error) {
+	select {
+	case h.slots <- struct{}{}:
+	case <-ctx.Done():
+		return nil, fmt.Errorf("authnkit: argon2id: waiting for a slot: %w", ctx.Err())
+	}
+	defer func() { <-h.slots }()
+	return h.derive(password, salt, p.Time, p.Memory, p.Threads, p.KeyLen), nil
 }
 
 // NeedsRehash — параметры encoded отличаются от параметров хэшера (или строка

@@ -1,9 +1,13 @@
 package authnkit
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -342,3 +346,81 @@ func TestVerifyDummy(t *testing.T) {
 }
 
 var _ Hasher = (*Argon2idHasher)(nil)
+
+// Регрессия SEC-09: каждый Argon2id держит Memory КиБ, а логин анонимен —
+// одновременно считается не больше max(1, GOMAXPROCS/Threads) хэшей, лишние
+// ждут слот, и ожидание прерывает ctx.
+func TestArgon2id_Concurrency(t *testing.T) {
+	for _, threads := range []uint8{1, 2, MaxThreads} {
+		h := newHasherOrFail(t, Argon2idParams{Time: 1, Memory: MinMemoryKiB, Threads: threads, KeyLen: 32, SaltLen: 16})
+		if want := max(1, runtime.GOMAXPROCS(0)/int(threads)); cap(h.slots) != want {
+			t.Fatalf("threads=%d: slots = %d, want max(1, GOMAXPROCS/threads) = %d", threads, cap(h.slots), want)
+		}
+	}
+
+	h := newHasherOrFail(t, Argon2idParams{Time: 1, Memory: MinMemoryKiB, Threads: 2, KeyLen: 32, SaltLen: 16})
+	encoded, err := h.Hash(t.Context(), "p")
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	limit := cap(h.slots)
+
+	var inFlight, peak atomic.Int64
+	release := make(chan struct{})
+	h.derive = func(_, _ []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+		n := inFlight.Add(1)
+		for {
+			if p := peak.Load(); n <= p || peak.CompareAndSwap(p, n) {
+				break
+			}
+		}
+		<-release
+		inFlight.Add(-1)
+		return make([]byte, keyLen)
+	}
+
+	var wg sync.WaitGroup
+	for range 3 * limit {
+		wg.Go(func() {
+			if _, err := h.Hash(context.Background(), "p"); err != nil {
+				t.Errorf("queued Hash: %v", err)
+			}
+		})
+	}
+	for deadline := time.Now().Add(5 * time.Second); inFlight.Load() < int64(limit); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("in flight = %d, want %d", inFlight.Load(), limit)
+		}
+	}
+	// Слоты заняты: лишние вызовы ждут, а отмена ctx прерывает ожидание.
+	time.Sleep(50 * time.Millisecond)
+	if got := peak.Load(); got > int64(limit) {
+		close(release)
+		t.Fatalf("peak concurrent argon2id = %d, want %d", got, limit)
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), 20*time.Millisecond)
+	defer cancel()
+	waitCanceled := func(name string, call func() error) {
+		t.Helper()
+		errc := make(chan error, 1)
+		go func() { errc <- call() }()
+		select {
+		case err := <-errc:
+			if !errors.Is(err, context.DeadlineExceeded) {
+				t.Errorf("%s while slots are busy = %v, want DeadlineExceeded", name, err)
+			}
+		case <-time.After(5 * time.Second):
+			close(release)
+			t.Fatalf("%s ignores ctx while waiting for a slot", name)
+		}
+	}
+	waitCanceled("Hash", func() error { _, err := h.Hash(ctx, "p"); return err })
+	waitCanceled("Verify", func() error { _, err := h.Verify(ctx, "p", encoded); return err })
+	waitCanceled("VerifyDummy", func() error { h.VerifyDummy(ctx); return ctx.Err() })
+
+	close(release)
+	wg.Wait()
+	if got := peak.Load(); got != int64(limit) {
+		t.Fatalf("peak concurrent argon2id = %d, want %d", got, limit)
+	}
+}
