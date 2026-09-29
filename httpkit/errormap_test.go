@@ -257,6 +257,26 @@ func TestErrorMap_DeclareSecured401(t *testing.T) {
 	}
 }
 
+// Security, выставленный хуком OnAddOperation потребителя, тоже объявляет 401: описание
+// ошибок — последний хук сервера.
+func TestErrorMap_DeclareSecured401FromConsumerHook(t *testing.T) {
+	secureAdmin := httpkit.WithHumaConfig(func(c *huma.Config) {
+		c.OnAddOperation = append(c.OnAddOperation, func(_ *huma.OpenAPI, op *huma.Operation) {
+			if strings.HasPrefix(op.Path, "/admin/") {
+				op.Security = []map[string][]string{{"Bearer": {}}}
+			}
+		})
+	})
+	cfg := httpkit.Config{APITitle: "test", APIVersion: "0.0.1", MaxBody: httpkit.MaxBodyConfig{MaxBytes: 1 << 20}}
+	api := httpkit.NewServer(cfg, secureAdmin).BindAPI()
+	huma.Get(api, "/admin/users", func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+
+	resp := api.OpenAPI().Paths["/admin/users"].Get.Responses["401"]
+	if resp == nil || resp.Description != "Unauthorized: UNAUTHORIZED" {
+		t.Fatalf("401 = %+v, want %q", resp, "Unauthorized: UNAUTHORIZED")
+	}
+}
+
 func TestErrorMap_InvalidRulePanics(t *testing.T) {
 	sentinel := errors.New("x")
 	specific := fmt.Errorf("%w: reused", sentinel)

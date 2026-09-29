@@ -150,7 +150,9 @@ blocked-by: —
   коды — в `op.Metadata`, описание ответа — `Conflict: CODE_A, CODE_B`. N7 валидатора: тот же
   хук объявляет 401 `UNAUTHORIZED` у операции с `Security` — его отдаёт `HumaAuth`, а не
   хендлер, поэтому `Declare` домена его не несёт; 503 `AUTH_UNAVAILABLE` не объявляется —
-  его отдаёт только extractor, который оборачивает `ErrAuthUnavailable`.
+  его отдаёт только extractor, который оборачивает `ErrAuthUnavailable`. Хук описания ошибок —
+  последний, после правок потребителя: `Security` из их `OnAddOperation` тоже объявляет 401
+  (остаток перепроверки 49e0ed3), а `openapi.json` из `make gen` потребителя идёт без старта.
 - FX-04 обобщён: маркер требует `timerkit.Provide`, поэтому job без запускающего модуля
   невозможна у любого кита (outboxkit, bruteforcekit/pgstore, hubkit/sync).
 - FX-12 (outbox): `RepositoryFactory` — интерфейс со схемой таблицы: `outboxkit` не может
@@ -378,6 +380,6 @@ blocked-by: —
       (и `ErrJetStreamDisabled`) валит старт.
     - httpkit (S14): `ErrorMap.Declare` — статусы и коды ошибок операции в `openapi.json`;
       `Retry-After` — из `RetryAfter()` доменной ошибки.
-    - httpkit (N7): операция с `Security` объявляет `401 UNAUTHORIZED` в `openapi.json` сама —
-      спецификацию перегенерировать.
+    - httpkit (N7): операция с `Security` (и выставленным хуком `OnAddOperation` потребителя)
+      объявляет `401 UNAUTHORIZED` в `openapi.json` сама — спецификацию перегенерировать.
 - Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).

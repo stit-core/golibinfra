@@ -119,7 +119,8 @@ func WithMiddleware(mw ...func(http.Handler) http.Handler) ServerOption {
 }
 
 // WithHumaConfig правит huma.Config перед созданием API: DocsRenderer,
-// Servers, Transformers, дополнительные OnAddOperation.
+// Servers, Transformers, дополнительные OnAddOperation. Правки идут после кита,
+// но до хука описания ошибок, который видит их Security.
 func WithHumaConfig(fn func(*huma.Config)) ServerOption {
 	return func(o *serverOptions) { o.humaConfig = append(o.humaConfig, fn) }
 }
@@ -188,12 +189,13 @@ func (s *Server) BindAPI() huma.API {
 	}
 	maxBody := s.cfg.MaxBody.MaxBytes
 	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation,
-		func(_ *huma.OpenAPI, op *huma.Operation) { op.MaxBodyBytes = maxBody },
-		describeErrors)
+		func(_ *huma.OpenAPI, op *huma.Operation) { op.MaxBodyBytes = maxBody })
 	humaConfig.Transformers = append(humaConfig.Transformers, s.transformError)
 	for _, fn := range s.opts.humaConfig {
 		fn(&humaConfig)
 	}
+	// Описание ошибок — после хуков потребителя: их Security тоже объявляет 401.
+	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors)
 	s.api = humachi.New(s.router, humaConfig)
 	return s.api
 }
