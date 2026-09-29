@@ -21,12 +21,10 @@ var (
 
 func TestPermissive_NoLock(t *testing.T) {
 	t.Parallel()
-	st, err := bruteforcetest.Permissive{}.Check(t.Context(), "u1", "1.1.1.1")
-	if err != nil || st != nil {
-		t.Fatalf("Check = %v, %v, want nil, nil", st, err)
-	}
-	if st, err := (bruteforcetest.Permissive{}).RecordFailure(t.Context(), "u1", "1.1.1.1"); st != nil || err != nil {
-		t.Fatalf("RecordFailure = %v, %v, want nil, nil", st, err)
+	for range 10 {
+		if st, err := (bruteforcetest.Permissive{}).Attempt(t.Context(), "u1", "1.1.1.1"); err != nil || st != nil {
+			t.Fatalf("Attempt = %v, %v, want nil, nil", st, err)
+		}
 	}
 	if err := (bruteforcetest.Permissive{}).RecordSuccess(t.Context(), "u1", "1.1.1.1"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
@@ -37,13 +35,9 @@ func TestLocked_ReturnsState(t *testing.T) {
 	t.Parallel()
 	until := time.Now().Add(15 * time.Minute)
 	g := bruteforcetest.Locked{Until: until}
-	st, err := g.Check(t.Context(), "u1", "1.1.1.1")
+	st, err := g.Attempt(t.Context(), "u1", "1.1.1.1")
 	if err != nil || st == nil || !st.Until.Equal(until) {
-		t.Fatalf("Check = %v, %v", st, err)
-	}
-	st, err = g.RecordFailure(t.Context(), "u1", "1.1.1.1")
-	if err != nil || st == nil || !st.Until.Equal(until) {
-		t.Fatalf("RecordFailure = %v, %v", st, err)
+		t.Fatalf("Attempt = %v, %v", st, err)
 	}
 	if err := g.RecordSuccess(t.Context(), "u1", "1.1.1.1"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
@@ -54,29 +48,22 @@ func TestRecorder_TracksSubjectAndIP(t *testing.T) {
 	t.Parallel()
 	r := &bruteforcetest.Recorder{}
 	ctx := t.Context()
-	if _, err := r.RecordFailure(ctx, "u1", "203.0.113.7"); err != nil {
-		t.Fatalf("RecordFailure: %v", err)
-	}
-	if _, err := r.RecordFailure(ctx, "u2", "203.0.113.8"); err != nil {
-		t.Fatalf("RecordFailure: %v", err)
+	for _, k := range []bruteforcetest.Attempt{{Subject: "u1", IP: "203.0.113.7"}, {Subject: "u2", IP: "203.0.113.8"}} {
+		if st, err := r.Attempt(ctx, k.Subject, k.IP); err != nil || st != nil {
+			t.Fatalf("Attempt = %v, %v, want allowed", st, err)
+		}
 	}
 	if err := r.RecordSuccess(ctx, "u1", "203.0.113.7"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
 	}
 
-	if got := r.Failures(); len(got) != 2 || got[0] != "u1" || got[1] != "u2" {
-		t.Fatalf("Failures=%v", got)
-	}
-	if got := r.Successes(); len(got) != 1 || got[0] != "u1" {
-		t.Fatalf("Successes=%v", got)
-	}
 	want := []bruteforcetest.Attempt{{Subject: "u1", IP: "203.0.113.7"}, {Subject: "u2", IP: "203.0.113.8"}}
 	got := r.Attempts()
 	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
 		t.Fatalf("Attempts=%v, want %v", got, want)
 	}
-	if succ := r.SuccessAttempts(); len(succ) != 1 || succ[0] != want[0] {
-		t.Fatalf("SuccessAttempts=%v", succ)
+	if succ := r.Successes(); len(succ) != 1 || succ[0] != want[0] {
+		t.Fatalf("Successes=%v", succ)
 	}
 
 	got[0].IP = "tampered"
@@ -90,13 +77,19 @@ func TestRecorder_TracksSubjectAndIP(t *testing.T) {
 func TestFakesRejectInvalidKeyLikePgstore(t *testing.T) {
 	t.Parallel()
 
+	counting, err := bruteforcetest.NewCounting(countingConfig(), nil)
+	if err != nil {
+		t.Fatalf("NewCounting: %v", err)
+	}
 	guards := map[string]bruteforcekit.Guard{
 		"Permissive": bruteforcetest.Permissive{},
 		"Locked":     bruteforcetest.Locked{Until: time.Now().Add(time.Minute)},
 		"Recorder":   &bruteforcetest.Recorder{},
+		"Counting":   counting,
 	}
 	keys := []struct{ subject, ip string }{
 		{"", "203.0.113.7"},
+		{"  ", "203.0.113.7"},
 		{"u1", ""},
 		{"u1", "203.0.113.7:443"},
 		{"u1", "not-an-ip"},
@@ -104,11 +97,8 @@ func TestFakesRejectInvalidKeyLikePgstore(t *testing.T) {
 	}
 	for name, g := range guards {
 		for _, k := range keys {
-			if _, err := g.Check(t.Context(), k.subject, k.ip); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-				t.Errorf("%s.Check(%q, %q) = %v, want ErrInvalidKey", name, k.subject, k.ip, err)
-			}
-			if _, err := g.RecordFailure(t.Context(), k.subject, k.ip); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-				t.Errorf("%s.RecordFailure(%q, %q) = %v, want ErrInvalidKey", name, k.subject, k.ip, err)
+			if _, err := g.Attempt(t.Context(), k.subject, k.ip); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
+				t.Errorf("%s.Attempt(%q, %q) = %v, want ErrInvalidKey", name, k.subject, k.ip, err)
 			}
 			if err := g.RecordSuccess(t.Context(), k.subject, k.ip); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
 				t.Errorf("%s.RecordSuccess(%q, %q) = %v, want ErrInvalidKey", name, k.subject, k.ip, err)
@@ -118,38 +108,24 @@ func TestFakesRejectInvalidKeyLikePgstore(t *testing.T) {
 
 	// Невалидный вызов не попадает в историю Recorder.
 	r := &bruteforcetest.Recorder{}
-	_, _ = r.RecordFailure(t.Context(), "u1", "")
+	_, _ = r.Attempt(t.Context(), "u1", "")
 	_ = r.RecordSuccess(t.Context(), "u1", "")
-	if len(r.Attempts()) != 0 || len(r.SuccessAttempts()) != 0 {
-		t.Errorf("Attempts=%v SuccessAttempts=%v, want empty", r.Attempts(), r.SuccessAttempts())
+	if len(r.Attempts()) != 0 || len(r.Successes()) != 0 {
+		t.Errorf("Attempts=%v Successes=%v, want empty", r.Attempts(), r.Successes())
 	}
 }
 
-// IPv6 фейки не сворачивают: агрегация — свойство конфига, который есть только
-// у Counting, поэтому полный адрес обязан проходить как есть.
-func TestFakesAcceptCanonicalIPv6(t *testing.T) {
+// Ключ Recorder хранит как передан: агрегация — свойство конфига, который есть
+// только у Counting, и тест сервиса смотрит, что передал сервис.
+func TestRecorder_KeepsKeyAsPassed(t *testing.T) {
 	t.Parallel()
 
 	r := &bruteforcetest.Recorder{}
-	if _, err := r.RecordFailure(t.Context(), "u1", "2001:db8::1"); err != nil {
-		t.Fatalf("RecordFailure: %v", err)
+	if _, err := r.Attempt(t.Context(), "User@Example.com", "2001:db8::1"); err != nil {
+		t.Fatalf("Attempt: %v", err)
 	}
-	if got := r.Attempts(); len(got) != 1 || got[0].IP != "2001:db8::1" {
-		t.Fatalf("Attempts=%v, want the address as passed", got)
-	}
-}
-
-func TestRecorder_CheckNeverLocks(t *testing.T) {
-	t.Parallel()
-	r := &bruteforcetest.Recorder{}
-	for range 5 {
-		if _, err := r.RecordFailure(t.Context(), "u1", "203.0.113.7"); err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-	}
-	st, err := r.Check(t.Context(), "u1", "203.0.113.7")
-	if st != nil || err != nil {
-		t.Fatalf("Check = %v, %v, want nil, nil even after failures", st, err)
+	if got := r.Attempts(); len(got) != 1 || got[0] != (bruteforcetest.Attempt{Subject: "User@Example.com", IP: "2001:db8::1"}) {
+		t.Fatalf("Attempts=%v, want the key as passed", got)
 	}
 }
 
@@ -170,7 +146,7 @@ func TestCounting_RejectsInvalidConfig(t *testing.T) {
 	}
 }
 
-func TestCounting_LocksAfterMaxFailures(t *testing.T) {
+func TestCounting_LocksAfterMaxAttempts(t *testing.T) {
 	t.Parallel()
 	clock := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
 	cfg := countingConfig()
@@ -180,43 +156,48 @@ func TestCounting_LocksAfterMaxFailures(t *testing.T) {
 	}
 	ctx := t.Context()
 
-	for i := range cfg.MaxFailures - 1 {
-		st, err := g.RecordFailure(ctx, "u1", "203.0.113.7")
-		if err != nil || st != nil {
-			t.Fatalf("RecordFailure %d = %v, %v, want nil", i, st, err)
+	for i := range cfg.MaxFailures {
+		if st, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil || st != nil {
+			t.Fatalf("Attempt %d = %v, %v, want allowed", i+1, st, err)
 		}
 	}
-	st, err := g.RecordFailure(ctx, "u1", "203.0.113.7")
+	st, err := g.Attempt(ctx, "u1", "203.0.113.7")
 	if err != nil || st == nil {
-		t.Fatalf("RecordFailure at threshold = %v, %v, want lock", st, err)
+		t.Fatalf("Attempt over budget = %v, %v, want lock", st, err)
 	}
 	if st.FailedCount != cfg.MaxFailures {
 		t.Fatalf("FailedCount = %d, want %d", st.FailedCount, cfg.MaxFailures)
 	}
-	if st.Until != clock.Now().Add(cfg.LockDuration) {
-		t.Fatalf("Until = %v, want %v", st.Until, clock.Now().Add(cfg.LockDuration))
+	if want := clock.Now().Add(cfg.LockDuration); !st.Until.Equal(want) {
+		t.Fatalf("Until = %v, want %v", st.Until, want)
+	}
+
+	// Попытка под блокировкой её не продлевает и счётчик не меняет.
+	clock.Advance(time.Minute)
+	again, err := g.Attempt(ctx, "u1", "203.0.113.7")
+	if err != nil || again == nil || !again.Until.Equal(st.Until) || again.FailedCount != st.FailedCount {
+		t.Fatalf("Attempt under lock = %+v, %v, want the same lock %+v", again, err, st)
 	}
 
 	// Другая пара (subject, ip) не задета.
-	if st, err := g.Check(ctx, "u1", "203.0.113.8"); err != nil || st != nil {
-		t.Fatalf("other ip Check = %v, %v, want nil", st, err)
+	if st, err := g.Attempt(ctx, "u1", "203.0.113.8"); err != nil || st != nil {
+		t.Fatalf("other ip Attempt = %v, %v, want allowed", st, err)
 	}
 
 	// Истечение блокировки начинает новое окно, как в pgstore.
-	clock.Advance(cfg.LockDuration + time.Second)
-	if st, err := g.Check(ctx, "u1", "203.0.113.7"); err != nil || st != nil {
-		t.Fatalf("Check after expiry = %v, %v, want nil", st, err)
-	}
-	st, err = g.RecordFailure(ctx, "u1", "203.0.113.7")
-	if err != nil || st != nil {
-		t.Fatalf("first failure of new window = %v, %v, want nil", st, err)
+	clock.Advance(cfg.LockDuration)
+	for i := range cfg.MaxFailures {
+		if st, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil || st != nil {
+			t.Fatalf("new window Attempt %d = %v, %v, want allowed", i+1, st, err)
+		}
 	}
 
+	// Успех снимает и блокировку, выставленную последней попыткой окна.
 	if err := g.RecordSuccess(ctx, "u1", "203.0.113.7"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
 	}
-	if st, err := g.Check(ctx, "u1", "203.0.113.7"); err != nil || st != nil {
-		t.Fatalf("Check after success = %v, %v, want nil", st, err)
+	if st, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil || st != nil {
+		t.Fatalf("Attempt after success = %v, %v, want allowed", st, err)
 	}
 }
 
@@ -225,6 +206,7 @@ func TestCounting_LocksAfterMaxFailures(t *testing.T) {
 func TestCounting_NormalizesKeyLikePgstore(t *testing.T) {
 	t.Parallel()
 	cfg := countingConfig()
+	cfg.MaxFailures = 2
 	cfg.IPv6Prefix = 64
 	g, err := bruteforcetest.NewCounting(cfg, nil)
 	if err != nil {
@@ -232,31 +214,13 @@ func TestCounting_NormalizesKeyLikePgstore(t *testing.T) {
 	}
 	ctx := t.Context()
 	for _, k := range [][2]string{{"User@Example.com", "2001:db8:0:1::1"}, {" user@example.com ", "2001:db8:0:1::2"}} {
-		if _, err := g.RecordFailure(ctx, k[0], k[1]); err != nil {
-			t.Fatalf("RecordFailure(%q, %q): %v", k[0], k[1], err)
+		if st, err := g.Attempt(ctx, k[0], k[1]); err != nil || st != nil {
+			t.Fatalf("Attempt(%q, %q) = %v, %v, want allowed", k[0], k[1], st, err)
 		}
 	}
-	st, err := g.RecordFailure(ctx, "USER@EXAMPLE.COM", "2001:db8:0:1:ffff::9")
+	st, err := g.Attempt(ctx, "USER@EXAMPLE.COM", "2001:db8:0:1:ffff::9")
 	if err != nil || st == nil {
-		t.Fatalf("third failure of one normalized key = %v, %v, want lock", st, err)
-	}
-}
-
-func TestCounting_ValidatesKey(t *testing.T) {
-	t.Parallel()
-	g, err := bruteforcetest.NewCounting(countingConfig(), nil)
-	if err != nil {
-		t.Fatalf("NewCounting: %v", err)
-	}
-	ctx := t.Context()
-	if _, err := g.Check(ctx, "", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-		t.Fatalf("Check with empty subject = %v, want ErrInvalidKey", err)
-	}
-	if _, err := g.RecordFailure(ctx, "u1", "not-an-ip"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-		t.Fatalf("RecordFailure with bad ip = %v, want ErrInvalidKey", err)
-	}
-	if err := g.RecordSuccess(ctx, "u1", ""); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-		t.Fatalf("RecordSuccess with empty ip = %v, want ErrInvalidKey", err)
+		t.Fatalf("third attempt of one normalized key = %v, %v, want lock", st, err)
 	}
 }
 
@@ -270,27 +234,25 @@ func TestCounting_CleanupKeepsActiveLocks(t *testing.T) {
 	}
 	ctx := t.Context()
 
-	if _, err := g.RecordFailure(ctx, "fresh", "203.0.113.7"); err != nil {
-		t.Fatalf("RecordFailure: %v", err)
+	if _, err := g.Attempt(ctx, "fresh", "203.0.113.7"); err != nil {
+		t.Fatalf("Attempt: %v", err)
 	}
 	for range cfg.MaxFailures {
-		if _, err := g.RecordFailure(ctx, "locked", "203.0.113.8"); err != nil {
-			t.Fatalf("RecordFailure: %v", err)
+		if _, err := g.Attempt(ctx, "locked", "203.0.113.8"); err != nil {
+			t.Fatalf("Attempt: %v", err)
 		}
 	}
 
 	if err := g.Cleanup(ctx); err != nil {
 		t.Fatalf("Cleanup: %v", err)
 	}
-	if st, err := g.Check(ctx, "locked", "203.0.113.8"); err != nil || st == nil {
+	if st, err := g.Attempt(ctx, "locked", "203.0.113.8"); err != nil || st == nil {
 		t.Fatalf("locked pair must survive Cleanup: %v, %v", st, err)
 	}
-	// Строка без блокировки удалена: следующая неудача начинает счёт заново.
-	st, err := g.RecordFailure(ctx, "fresh", "203.0.113.7")
-	if err != nil {
-		t.Fatalf("RecordFailure: %v", err)
-	}
-	if st != nil {
-		t.Fatalf("RecordFailure = %v, want nil", st)
+	// Строка без блокировки удалена: счёт начинается заново, окно снова целое.
+	for i := range cfg.MaxFailures {
+		if st, err := g.Attempt(ctx, "fresh", "203.0.113.7"); err != nil || st != nil {
+			t.Fatalf("Attempt %d after Cleanup = %v, %v, want allowed", i+1, st, err)
+		}
 	}
 }

@@ -25,14 +25,8 @@ func validateKey(subject, ip string) error {
 // проверяется как в pgstore.
 type Permissive struct{}
 
-// Check разрешает попытку; невалидный ключ — bruteforcekit.ErrInvalidKey.
-func (Permissive) Check(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	return nil, validateKey(subject, ip)
-}
-
-// RecordFailure ничего не делает и блокировки не выставляет; невалидный ключ —
-// bruteforcekit.ErrInvalidKey.
-func (Permissive) RecordFailure(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+// Attempt разрешает попытку; невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (Permissive) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	return nil, validateKey(subject, ip)
 }
 
@@ -44,21 +38,12 @@ func (Permissive) RecordSuccess(_ context.Context, subject, ip string) error {
 // Locked — bruteforcekit.Guard, заблокированный до Until. Ключ проверяется как
 // в pgstore.
 type Locked struct {
-	// Until — момент снятия блокировки, который отдают Check и RecordFailure.
+	// Until — момент снятия блокировки, который отдаёт Attempt.
 	Until time.Time
 }
 
-// Check отдаёт блокировку до Until; невалидный ключ — bruteforcekit.ErrInvalidKey.
-func (l Locked) Check(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	if err := validateKey(subject, ip); err != nil {
-		return nil, err
-	}
-	return &bruteforcekit.LockState{Until: l.Until}, nil
-}
-
-// RecordFailure отдаёт ту же блокировку, что и Check; невалидный ключ —
-// bruteforcekit.ErrInvalidKey.
-func (l Locked) RecordFailure(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+// Attempt отдаёт блокировку до Until; невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (l Locked) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	if err := validateKey(subject, ip); err != nil {
 		return nil, err
 	}
@@ -70,7 +55,7 @@ func (Locked) RecordSuccess(_ context.Context, subject, ip string) error {
 	return validateKey(subject, ip)
 }
 
-// Attempt — одна зарегистрированная попытка: с каким ключом её позвал сервис.
+// Attempt — один вызов guard'а: с каким ключом его позвал сервис.
 type Attempt struct {
 	// Subject — subject, переданный guard'у.
 	Subject string
@@ -82,24 +67,19 @@ type Attempt struct {
 // проверяется как в pgstore, поэтому невалидная пара в историю не попадает.
 type Recorder struct {
 	mu        sync.Mutex
-	failures  []Attempt
+	attempts  []Attempt
 	successes []Attempt
 }
 
-// Check разрешает попытку; невалидный ключ — bruteforcekit.ErrInvalidKey.
-func (r *Recorder) Check(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	return nil, validateKey(subject, ip)
-}
-
-// RecordFailure запоминает пару (subject, ip); невалидный ключ —
+// Attempt запоминает пару (subject, ip) и разрешает попытку; невалидный ключ —
 // bruteforcekit.ErrInvalidKey.
-func (r *Recorder) RecordFailure(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+func (r *Recorder) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	if err := validateKey(subject, ip); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.failures = append(r.failures, Attempt{Subject: subject, IP: ip})
+	r.attempts = append(r.attempts, Attempt{Subject: subject, IP: ip})
 	return nil, nil
 }
 
@@ -115,38 +95,26 @@ func (r *Recorder) RecordSuccess(_ context.Context, subject, ip string) error {
 	return nil
 }
 
-// Failures — копия subject'ов неудачных попыток в порядке записи.
-func (r *Recorder) Failures() []string { return subjects(r.Attempts()) }
-
-// Successes — копия subject'ов успешных попыток в порядке записи.
-func (r *Recorder) Successes() []string { return subjects(r.SuccessAttempts()) }
-
-// Attempts — копия неудачных попыток с ip: проверить, что сервис передал
-// guard'у именно адрес клиента, по одному subject нельзя.
+// Attempts — копия вызовов Attempt в порядке записи: по ней тест сервиса
+// видит, что попытка учтена до проверки секрета и с адресом клиента.
 func (r *Recorder) Attempts() []Attempt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	return append([]Attempt(nil), r.failures...)
+	return append([]Attempt(nil), r.attempts...)
 }
 
-// SuccessAttempts — копия успешных попыток с ip.
-func (r *Recorder) SuccessAttempts() []Attempt {
+// Successes — копия вызовов RecordSuccess в порядке записи.
+func (r *Recorder) Successes() []Attempt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return append([]Attempt(nil), r.successes...)
 }
 
-func subjects(as []Attempt) []string {
-	out := make([]string, len(as))
-	for i, a := range as {
-		out[i] = a.Subject
-	}
-	return out
-}
-
-// Counting — bruteforcekit.Guard в памяти с политикой pgstore: блокировка после
-// MaxFailures неудач, истечение блокировки начинает новое окно, RecordSuccess
-// стирает историю. Сценарий «N неудач → lock» проверяется без Postgres.
+// Counting — bruteforcekit.Guard в памяти с политикой pgstore: попытка
+// учитывается до проверки секрета, пройти в окне успевают MaxFailures попыток,
+// попытка под блокировкой счётчик не меняет, истечение блокировки начинает
+// новое окно, RecordSuccess стирает историю. Сценарий «N попыток → lock»
+// проверяется без Postgres.
 type Counting struct {
 	cfg   bruteforcekit.Config
 	clock clockkit.Clock
@@ -172,25 +140,9 @@ func NewCounting(cfg bruteforcekit.Config, clock clockkit.Clock) (*Counting, err
 	return &Counting{cfg: cfg, clock: clock, rows: map[Attempt]*countingRow{}}, nil
 }
 
-// Check отдаёт активную блокировку пары (subject, ip) либо nil.
-func (c *Counting) Check(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	key, err := c.key(subject, ip)
-	if err != nil {
-		return nil, err
-	}
-
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	row, ok := c.rows[key]
-	if !ok || !row.lockedUntil.After(c.clock.Now()) {
-		return nil, nil
-	}
-	return &bruteforcekit.LockState{Until: row.lockedUntil, FailedCount: row.failedCount}, nil
-}
-
-// RecordFailure инкрементит счётчик окна и возвращает блокировку, если она
-// активна после этой попытки.
-func (c *Counting) RecordFailure(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+// Attempt учитывает попытку пары (subject, ip): nil — попытка разрешена,
+// *LockState — пара заблокирована.
+func (c *Counting) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	key, err := c.key(subject, ip)
 	if err != nil {
 		return nil, err
@@ -201,11 +153,12 @@ func (c *Counting) RecordFailure(_ context.Context, subject, ip string) (*brutef
 	now := c.clock.Now()
 	row, ok := c.rows[key]
 	switch {
+	case ok && row.lockedUntil.After(now):
+		return &bruteforcekit.LockState{Until: row.lockedUntil, FailedCount: row.failedCount}, nil
 	case !ok:
-		row = &countingRow{}
+		row = &countingRow{failedCount: 1}
 		c.rows[key] = row
-		row.failedCount = 1
-	case !row.lockedUntil.IsZero() && !row.lockedUntil.After(now):
+	case !row.lockedUntil.IsZero():
 		row.failedCount = 1
 		row.lockedUntil = time.Time{}
 	default:
@@ -214,11 +167,7 @@ func (c *Counting) RecordFailure(_ context.Context, subject, ip string) (*brutef
 	if row.failedCount >= c.cfg.MaxFailures {
 		row.lockedUntil = now.Add(c.cfg.LockDuration)
 	}
-
-	if !row.lockedUntil.After(now) {
-		return nil, nil
-	}
-	return &bruteforcekit.LockState{Until: row.lockedUntil, FailedCount: row.failedCount}, nil
+	return nil, nil
 }
 
 // RecordSuccess стирает историю попыток пары (subject, ip).

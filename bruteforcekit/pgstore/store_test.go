@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -60,49 +61,40 @@ func TestStore_InvalidKey(t *testing.T) {
 	ctx := t.Context()
 
 	// Запрос не уходит в базу (db == nil): ключ проверяется до него.
-	if _, err := s.Check(ctx, "", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-		t.Fatalf("Check(empty subject) = %v, want ErrInvalidKey", err)
+	if _, err := s.Attempt(ctx, "", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
+		t.Fatalf("Attempt(empty subject) = %v, want ErrInvalidKey", err)
 	}
-	if _, err := s.RecordFailure(ctx, "u", "not-an-ip"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-		t.Fatalf("RecordFailure(bad ip) = %v, want ErrInvalidKey", err)
+	if _, err := s.Attempt(ctx, "u", "not-an-ip"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
+		t.Fatalf("Attempt(bad ip) = %v, want ErrInvalidKey", err)
 	}
 	if err := s.RecordSuccess(ctx, strings.Repeat("s", bruteforcekit.MaxSubjectLen+1), "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
 		t.Fatalf("RecordSuccess(long subject) = %v, want ErrInvalidKey", err)
 	}
 }
 
+// attempts делает n попыток пары и требует, чтобы все прошли.
+func attempts(t *testing.T, ctx context.Context, s *pgstore.Store, subject, ip string, n int) {
+	t.Helper()
+	for i := range n {
+		if st, err := s.Attempt(ctx, subject, ip); err != nil || st != nil {
+			t.Fatalf("Attempt %d of %q/%q = %v, %v, want allowed", i+1, subject, ip, st, err)
+		}
+	}
+}
+
 func TestStore_Guard(t *testing.T) {
 	db, ctx := startDB(t)
 
-	t.Run("locks after max failures", func(t *testing.T) {
+	t.Run("locks after max attempts", func(t *testing.T) {
 		cfg := config()
 		s := newStore(t, db, cfg)
 		const subject, ip = "user@example.com", "10.0.0.1"
 
-		if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
-			t.Fatalf("initial Check: st=%v err=%v", st, err)
-		}
-
-		for i := range cfg.MaxFailures - 1 {
-			st, err := s.RecordFailure(ctx, subject, ip)
-			if err != nil {
-				t.Fatalf("RecordFailure %d: %v", i, err)
-			}
-			if st != nil {
-				t.Fatalf("RecordFailure %d returned lock %v before threshold", i, st)
-			}
-		}
-		if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
-			t.Fatalf("Check below threshold: st=%v err=%v", st, err)
-		}
-
 		before := time.Now()
-		st, err := s.RecordFailure(ctx, subject, ip)
-		if err != nil {
-			t.Fatalf("RecordFailure threshold: %v", err)
-		}
-		if st == nil {
-			t.Fatal("RecordFailure at threshold must return lock state")
+		attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+		st, err := s.Attempt(ctx, subject, ip)
+		if err != nil || st == nil {
+			t.Fatalf("Attempt over budget = %v, %v, want lock", st, err)
 		}
 		if st.FailedCount != cfg.MaxFailures {
 			t.Fatalf("FailedCount = %d, want %d", st.FailedCount, cfg.MaxFailures)
@@ -113,55 +105,50 @@ func TestStore_Guard(t *testing.T) {
 			t.Fatalf("Until out of range: got %v, want in [%v, %v]", st.Until, minUntil, maxUntil)
 		}
 
-		checked, err := s.Check(ctx, subject, ip)
-		if err != nil || checked == nil {
-			t.Fatalf("Check after lock: st=%v err=%v", checked, err)
+		// Попытка под блокировкой строку не пишет: ни счётчик, ни срок не растут.
+		again, err := s.Attempt(ctx, subject, ip)
+		if err != nil || again == nil {
+			t.Fatalf("Attempt under lock = %v, %v, want lock", again, err)
 		}
-		if !checked.Until.Equal(st.Until) || checked.FailedCount != st.FailedCount {
-			t.Fatalf("Check = %+v, RecordFailure = %+v", checked, st)
+		if !again.Until.Equal(st.Until) || again.FailedCount != st.FailedCount {
+			t.Fatalf("attempt under lock changed the row: %+v, was %+v", again, st)
 		}
 
 		// Бакеты (subject, ip) независимы.
-		if st, err := s.Check(ctx, subject, "10.0.0.99"); err != nil || st != nil {
-			t.Fatalf("other ip must not be locked: st=%v err=%v", st, err)
-		}
+		attempts(t, ctx, s, subject, "10.0.0.99", 1)
 	})
 
-	t.Run("locks on first failure when MaxFailures is 1", func(t *testing.T) {
+	t.Run("locks after the only attempt when MaxFailures is 1", func(t *testing.T) {
 		cfg := config()
 		cfg.MaxFailures = 1
 		cfg.LockDuration = 90 * time.Second
 		s := newStore(t, db, cfg)
 
-		st, err := s.RecordFailure(ctx, "one@example.com", "10.0.0.9")
-		if err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-		if st == nil || st.FailedCount != 1 {
-			t.Fatalf("RecordFailure = %+v, want lock with FailedCount 1", st)
+		attempts(t, ctx, s, "one@example.com", "10.0.0.9", 1)
+		st, err := s.Attempt(ctx, "one@example.com", "10.0.0.9")
+		if err != nil || st == nil || st.FailedCount != 1 {
+			t.Fatalf("second Attempt = %+v, %v, want lock with FailedCount 1", st, err)
 		}
 		if remaining := time.Until(st.Until); remaining < 60*time.Second || remaining > 2*time.Minute {
 			t.Fatalf("Until = %v (remaining %v), want ~90s", st.Until, remaining)
 		}
 	})
 
-	// Check решает по часам базы: истёкший locked_until — не блокировка.
-	t.Run("check uses database clock", func(t *testing.T) {
+	// Блокировку решают часы базы: истёкший locked_until — новое окно.
+	t.Run("lock uses database clock", func(t *testing.T) {
 		s := newStore(t, db, config())
 		const subject, ip = "clock@example.com", "10.0.0.3"
 		if _, err := db.Exec(ctx, `INSERT INTO bruteforce_attempts (subject, ip, failed_count, locked_until)
-			VALUES ($1, $2, 1, NOW() - interval '1 second')`, subject, ip); err != nil {
-			t.Fatalf("insert expired: %v", err)
+			VALUES ($1, $2, 3, NOW() + interval '1 hour')`, subject, ip); err != nil {
+			t.Fatalf("insert locked: %v", err)
 		}
-		if st, err := s.Check(ctx, subject, ip); err != nil || st != nil {
-			t.Fatalf("expired lock reported: st=%v err=%v", st, err)
-		}
-		if _, err := db.Exec(ctx, `UPDATE bruteforce_attempts SET locked_until = NOW() + interval '1 hour'
-			WHERE subject = $1 AND ip = $2`, subject, ip); err != nil {
-			t.Fatalf("update future: %v", err)
-		}
-		if st, err := s.Check(ctx, subject, ip); err != nil || st == nil {
+		if st, err := s.Attempt(ctx, subject, ip); err != nil || st == nil {
 			t.Fatalf("active lock missed: st=%v err=%v", st, err)
+		}
+		expireLock(t, ctx, db, subject, ip)
+		attempts(t, ctx, s, subject, ip, 1)
+		if n := failedCount(t, ctx, db, subject, ip); n != 1 {
+			t.Fatalf("failed_count after expiry = %d, want 1 (new window)", n)
 		}
 	})
 
@@ -169,61 +156,46 @@ func TestStore_Guard(t *testing.T) {
 		s := newStore(t, db, config())
 		const subject, ip = "phone:+15555550123", "10.0.0.2"
 
-		for i := range 2 {
-			if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-				t.Fatalf("RecordFailure %d: %v", i, err)
-			}
-		}
+		attempts(t, ctx, s, subject, ip, 2)
 		if err := s.RecordSuccess(ctx, subject, ip); err != nil {
 			t.Fatalf("RecordSuccess: %v", err)
 		}
 		if n := failedCount(t, ctx, db, subject, ip); n != -1 {
 			t.Fatalf("row survived RecordSuccess with failed_count %d", n)
 		}
-		if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-			t.Fatalf("RecordFailure after reset: %v", err)
-		}
+		attempts(t, ctx, s, subject, ip, 1)
 		if n := failedCount(t, ctx, db, subject, ip); n != 1 {
 			t.Fatalf("failed_count after reset = %d, want 1", n)
 		}
 	})
 
-	// Истечение блокировки начинает новое окно: первая неудача после него
+	// Успех на последней попытке окна снимает блокировку, которую она выставила.
+	t.Run("success on the last attempt lifts the lock", func(t *testing.T) {
+		cfg := config()
+		s := newStore(t, db, cfg)
+		const subject, ip = "last@example.com", "10.0.0.12"
+
+		attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+		if err := s.RecordSuccess(ctx, subject, ip); err != nil {
+			t.Fatalf("RecordSuccess: %v", err)
+		}
+		attempts(t, ctx, s, subject, ip, 1)
+	})
+
+	// Истечение блокировки начинает новое окно: первая попытка после него
 	// считается первой, а не N+1-й.
 	t.Run("new window after lock expiry", func(t *testing.T) {
 		cfg := config()
 		s := newStore(t, db, cfg)
 		const subject, ip = "window@example.com", "10.0.0.4"
 
-		for range cfg.MaxFailures {
-			if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-				t.Fatalf("RecordFailure: %v", err)
-			}
-		}
+		attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
 		expireLock(t, ctx, db, subject, ip)
 
-		st, err := s.RecordFailure(ctx, subject, ip)
-		if err != nil {
-			t.Fatalf("RecordFailure after expiry: %v", err)
-		}
-		if st != nil {
-			t.Fatalf("failure after expiry locked again: %+v", st)
-		}
-		if n := failedCount(t, ctx, db, subject, ip); n != 1 {
-			t.Fatalf("failed_count after expiry = %d, want 1 (new window)", n)
-		}
-
-		for range cfg.MaxFailures - 2 {
-			if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-				t.Fatalf("RecordFailure: %v", err)
-			}
-		}
-		st, err = s.RecordFailure(ctx, subject, ip)
-		if err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-		if st == nil || st.FailedCount != cfg.MaxFailures {
-			t.Fatalf("second window lock = %+v, want FailedCount %d", st, cfg.MaxFailures)
+		attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+		st, err := s.Attempt(ctx, subject, ip)
+		if err != nil || st == nil || st.FailedCount != cfg.MaxFailures {
+			t.Fatalf("second window lock = %+v, %v, want FailedCount %d", st, err, cfg.MaxFailures)
 		}
 	})
 
@@ -232,51 +204,32 @@ func TestStore_Guard(t *testing.T) {
 		cfg := config()
 		cfg.MaxFailures = 2
 		const subject, ip = "threshold@example.com", "10.0.0.5"
-		s := newStore(t, db, cfg)
-		for range cfg.MaxFailures {
-			if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-				t.Fatalf("RecordFailure: %v", err)
-			}
-		}
+		attempts(t, ctx, newStore(t, db, cfg), subject, ip, cfg.MaxFailures)
 
 		raised := cfg
 		raised.MaxFailures = 5
-		s = newStore(t, db, raised)
-		st, err := s.RecordFailure(ctx, subject, ip)
-		if err != nil {
-			t.Fatalf("RecordFailure after raise: %v", err)
-		}
-		if st == nil {
-			t.Fatal("raising BRUTEFORCE_MAX_FAILURES must not lift an active lock")
-		}
-		if st, err := s.Check(ctx, subject, ip); err != nil || st == nil {
-			t.Fatalf("Check after raise: st=%v err=%v", st, err)
+		if st, err := newStore(t, db, raised).Attempt(ctx, subject, ip); err != nil || st == nil {
+			t.Fatalf("Attempt after raise = %v, %v: raising BRUTEFORCE_MAX_FAILURES must not lift an active lock", st, err)
 		}
 	})
 
 	// Регрессия NF7: счётчик блокировок считает переход «блокировки не было →
-	// есть». При равенстве failed_count порогу понижение BRUTEFORCE_MAX_FAILURES
-	// между деплоями теряло бы security-сигнал: строка со счётчиком 4 при новом
-	// пороге 3 блокируется на пятой неудаче, а 5 != 3.
-	t.Run("lowering threshold still counts the lock", func(t *testing.T) {
+	// есть», а не равенство порогу: после понижения BRUTEFORCE_MAX_FAILURES
+	// строка со счётчиком 4 при пороге 3 блокируется на пятой попытке.
+	t.Run("lowering threshold locks and counts the lock", func(t *testing.T) {
 		cfg := config()
 		cfg.MaxFailures = 5
 		const subject, ip = "lowered@example.com", "10.0.0.6"
-		s := newStore(t, db, cfg)
-		for range 4 {
-			if st, err := s.RecordFailure(ctx, subject, ip); err != nil || st != nil {
-				t.Fatalf("RecordFailure below threshold: st=%v err=%v", st, err)
-			}
-		}
+		attempts(t, ctx, newStore(t, db, cfg), subject, ip, 4)
 
 		lowered := cfg
 		lowered.MaxFailures = 3
-		s = newStore(t, db, lowered)
+		s := newStore(t, db, lowered)
 
 		before := snapshot(t)
-		st, err := s.RecordFailure(ctx, subject, ip)
+		st, err := s.Attempt(ctx, subject, ip)
 		if err != nil || st == nil {
-			t.Fatalf("RecordFailure after lowering: st=%v err=%v", st, err)
+			t.Fatalf("Attempt after lowering = %v, %v: budget of the window is spent", st, err)
 		}
 		if st.FailedCount != 5 {
 			t.Fatalf("FailedCount = %d, want 5", st.FailedCount)
@@ -285,10 +238,9 @@ func TestStore_Guard(t *testing.T) {
 			t.Fatalf("bruteforce_locks_total delta = %d, want 1", got)
 		}
 
-		// Неудача поверх активной блокировки продлевает её, но перехода нет.
 		before = snapshot(t)
-		if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-			t.Fatalf("RecordFailure over lock: %v", err)
+		if _, err := s.Attempt(ctx, subject, ip); err != nil {
+			t.Fatalf("Attempt over lock: %v", err)
 		}
 		if got := snapshot(t).locks - before.locks; got != 0 {
 			t.Fatalf("bruteforce_locks_total delta over an active lock = %d, want 0", got)
@@ -302,15 +254,10 @@ func TestStore_Guard(t *testing.T) {
 		s := newStore(t, db, cfg)
 		const subject = "canon@example.com"
 
-		if _, err := s.RecordFailure(ctx, subject, "203.0.113.7"); err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-		st, err := s.RecordFailure(ctx, subject, "::ffff:203.0.113.7")
-		if err != nil {
-			t.Fatalf("RecordFailure mapped: %v", err)
-		}
-		if st == nil {
-			t.Fatal("IPv4-mapped IPv6 must share the bucket of the plain IPv4 address")
+		attempts(t, ctx, s, subject, "203.0.113.7", 1)
+		attempts(t, ctx, s, subject, "::ffff:203.0.113.7", 1)
+		if st, err := s.Attempt(ctx, subject, "203.0.113.7"); err != nil || st == nil {
+			t.Fatalf("Attempt = %v, %v: IPv4-mapped IPv6 must share the bucket of the plain IPv4 address", st, err)
 		}
 		if n := failedCount(t, ctx, db, subject, "203.0.113.7"); n != 2 {
 			t.Fatalf("failed_count = %d, want 2", n)
@@ -325,15 +272,10 @@ func TestStore_Guard(t *testing.T) {
 		s := newStore(t, db, cfg)
 		const ip = "203.0.113.9"
 
-		if _, err := s.RecordFailure(ctx, "Case@Example.com", ip); err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-		st, err := s.RecordFailure(ctx, " case@example.COM ", ip)
-		if err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-		if st == nil {
-			t.Fatal("case and surrounding spaces of subject must not open a new bucket")
+		attempts(t, ctx, s, "Case@Example.com", ip, 1)
+		attempts(t, ctx, s, " case@example.COM ", ip, 1)
+		if st, err := s.Attempt(ctx, "CASE@EXAMPLE.COM", ip); err != nil || st == nil {
+			t.Fatalf("Attempt = %v, %v: case and surrounding spaces of subject must not open a new bucket", st, err)
 		}
 		if n := failedCount(t, ctx, db, "case@example.com", ip); n != 2 {
 			t.Fatalf("failed_count = %d, want 2", n)
@@ -347,15 +289,10 @@ func TestStore_Guard(t *testing.T) {
 		s := newStore(t, db, cfg)
 		const subject = "v6@example.com"
 
-		if _, err := s.RecordFailure(ctx, subject, "2001:db8:0:1::1"); err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-		st, err := s.RecordFailure(ctx, subject, "2001:db8:0:1:ffff::9")
-		if err != nil {
-			t.Fatalf("RecordFailure: %v", err)
-		}
-		if st == nil {
-			t.Fatal("addresses of one /64 must share a bucket at BRUTEFORCE_IPV6_PREFIX=64")
+		attempts(t, ctx, s, subject, "2001:db8:0:1::1", 1)
+		attempts(t, ctx, s, subject, "2001:db8:0:1:ffff::9", 1)
+		if st, err := s.Attempt(ctx, subject, "2001:db8:0:1:abcd::1"); err != nil || st == nil {
+			t.Fatalf("Attempt = %v, %v: addresses of one /64 must share a bucket at BRUTEFORCE_IPV6_PREFIX=64", st, err)
 		}
 		if n := failedCount(t, ctx, db, subject, "2001:db8:0:1::"); n != 2 {
 			t.Fatalf("failed_count of /64 bucket = %d, want 2", n)
@@ -367,11 +304,8 @@ func TestStore_Guard(t *testing.T) {
 		canceled, cancel := context.WithCancel(ctx)
 		cancel()
 
-		if _, err := s.Check(canceled, "u", "10.0.0.7"); !hasKitPrefix(err) {
-			t.Fatalf("Check = %v, want bruteforcekit: prefix", err)
-		}
-		if _, err := s.RecordFailure(canceled, "u", "10.0.0.7"); !hasKitPrefix(err) {
-			t.Fatalf("RecordFailure = %v, want bruteforcekit: prefix", err)
+		if _, err := s.Attempt(canceled, "u", "10.0.0.7"); !hasKitPrefix(err) {
+			t.Fatalf("Attempt = %v, want bruteforcekit: prefix", err)
 		}
 		if err := s.RecordSuccess(canceled, "u", "10.0.0.7"); !hasKitPrefix(err) {
 			t.Fatalf("RecordSuccess = %v, want bruteforcekit: prefix", err)
@@ -382,34 +316,48 @@ func TestStore_Guard(t *testing.T) {
 	})
 }
 
-// Счётчик атомарен: конкурентные неудачи не теряются в read-modify-write.
-func TestStore_ConcurrentRecordFailure(t *testing.T) {
+// Регрессия SEC-05: попытка учитывается атомарно до проверки секрета, поэтому
+// из N одновременных попыток пары проходят ровно MaxFailures, а не все N, как
+// при «прочитал блокировку, потом записал неудачу».
+func TestStore_ConcurrentAttempts(t *testing.T) {
 	db, ctx := startDB(t)
 	cfg := config()
-	cfg.MaxFailures = 1000
+	cfg.MaxFailures = 5
 	s := newStore(t, db, cfg)
 
 	const (
 		subject, ip = "concurrent@example.com", "10.0.0.8"
-		attempts    = 50
+		n           = 50
 	)
-	var wg sync.WaitGroup
-	errs := make(chan error, attempts)
-	for range attempts {
+	var (
+		wg              sync.WaitGroup
+		allowed, locked atomic.Int64
+	)
+	errs := make(chan error, n)
+	for range n {
 		wg.Go(func() {
-			if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
+			st, err := s.Attempt(ctx, subject, ip)
+			switch {
+			case err != nil:
 				errs <- err
+			case st == nil:
+				allowed.Add(1)
+			default:
+				locked.Add(1)
 			}
 		})
 	}
 	wg.Wait()
 	close(errs)
 	for err := range errs {
-		t.Fatalf("RecordFailure: %v", err)
+		t.Fatalf("Attempt: %v", err)
 	}
 
-	if n := failedCount(t, ctx, db, subject, ip); n != attempts {
-		t.Fatalf("failed_count = %d, want %d", n, attempts)
+	if got := allowed.Load(); got != int64(cfg.MaxFailures) {
+		t.Fatalf("allowed attempts = %d, want %d (locked %d)", got, cfg.MaxFailures, locked.Load())
+	}
+	if n := failedCount(t, ctx, db, subject, ip); n != cfg.MaxFailures {
+		t.Fatalf("failed_count = %d, want %d", n, cfg.MaxFailures)
 	}
 }
 
@@ -421,14 +369,8 @@ func TestStore_Cleanup(t *testing.T) {
 		cfg.CleanupRetention = time.Hour
 		s := newStore(t, db, cfg)
 
-		if _, err := s.RecordFailure(ctx, "fresh@example.com", "1.1.1.1"); err != nil {
-			t.Fatalf("RecordFailure fresh: %v", err)
-		}
-		for range cfg.MaxFailures {
-			if _, err := s.RecordFailure(ctx, "locked@example.com", "2.2.2.2"); err != nil {
-				t.Fatalf("RecordFailure locked: %v", err)
-			}
-		}
+		attempts(t, ctx, s, "fresh@example.com", "1.1.1.1", 1)
+		attempts(t, ctx, s, "locked@example.com", "2.2.2.2", cfg.MaxFailures)
 		// Заблокированная строка старше retention — переживает Cleanup.
 		if _, err := db.Exec(ctx, `UPDATE bruteforce_attempts SET last_attempt = NOW() - interval '2 hours'
 			WHERE subject = 'locked@example.com'`); err != nil {

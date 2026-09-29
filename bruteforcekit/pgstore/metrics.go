@@ -15,7 +15,7 @@ const (
 var (
 	checks = otelkit.Must(otelkit.Meter("bruteforcekit").Int64Counter(
 		"bruteforce_checks_total",
-		metric.WithDescription("Guard checks by result (allowed|locked)"),
+		metric.WithDescription("Guard attempts by result (allowed|locked)"),
 	))
 	locks = otelkit.Must(otelkit.Meter("bruteforcekit").Int64Counter(
 		"bruteforce_locks_total",

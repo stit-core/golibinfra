@@ -1,7 +1,7 @@
 // Package bruteforcekit — guard против brute-force на login-эндпойнты:
-// считает неудачные попытки по паре (subject — логин/email, ip), при
-// достижении порога блокирует пару на LockDuration. Core-абстракции
-// (Guard, Cleaner) отделены от pgstore-реализации.
+// учитывает попытки по паре (subject — логин/email, ip) до проверки секрета и
+// после MaxFailures попыток без успеха блокирует пару на LockDuration.
+// Core-абстракции (Guard, Cleaner) отделены от pgstore-реализации.
 package bruteforcekit
 
 import (
@@ -13,22 +13,20 @@ import (
 type LockState struct {
 	// Until — момент снятия блокировки по часам хранилища.
 	Until time.Time
-	// FailedCount — счётчик неудач текущего окна на момент ответа.
+	// FailedCount — попытки текущего окна без успешного входа на момент ответа.
 	FailedCount int
 }
 
-// Guard — request-path guard'а: проверка блокировки и учёт исхода попытки.
-// Реализация в библиотеке — bruteforcekit/pgstore.
+// Guard — request-path guard'а: попытка учитывается до проверки секрета, успех
+// снимает историю. Реализация в библиотеке — bruteforcekit/pgstore.
 type Guard interface {
-	// Check возвращает nil, если пара не заблокирована, и *LockState, пока
-	// блокировка активна. Счётчик не меняет.
-	Check(ctx context.Context, subject, ip string) (*LockState, error)
+	// Attempt атомарно учитывает попытку пары (subject, ip) до проверки секрета:
+	// nil — попытка разрешена (одна из MaxFailures в окне), *LockState — пара
+	// заблокирована, секрет не проверять. Попытка под блокировкой счётчик не
+	// меняет.
+	Attempt(ctx context.Context, subject, ip string) (*LockState, error)
 
-	// RecordFailure учитывает неудачную попытку и возвращает *LockState, если
-	// после неё блокировка активна (nil — попытки ещё есть).
-	RecordFailure(ctx context.Context, subject, ip string) (*LockState, error)
-
-	// RecordSuccess снимает историю попыток пары.
+	// RecordSuccess снимает историю попыток пары: успех сбрасывает окно.
 	RecordSuccess(ctx context.Context, subject, ip string) error
 }
 

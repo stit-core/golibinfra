@@ -1,5 +1,5 @@
 // Package pgstore — реализация bruteforcekit.Guard и bruteforcekit.Cleaner
-// поверх Postgres (pgkit): счётчик неудач в таблице bruteforce_attempts,
+// поверх Postgres (pgkit): счётчик попыток в таблице bruteforce_attempts,
 // миграции кита, cleanup-job и fx-проводка.
 package pgstore
 
@@ -32,93 +32,79 @@ func NewStore(db *pgkit.DB, cfg bruteforcekit.Config) (*Store, error) {
 	return &Store{db: db, cfg: cfg}, nil
 }
 
-// Сравнение с NOW() базы, а не с часами процесса: locked_until выставляет база.
-const checkSQL = `
+// Upsert учитывает попытку, только пока активной блокировки нет: WHERE не
+// пишет строку под блокировкой, и N одновременных попыток сериализуются на
+// строке — пройти успевают не больше MaxFailures. Истёкшая блокировка начинает
+// новое окно (failed_count = 1); блокировка ставится попыткой, на которой
+// счётчик достигает порога. Всё время — NOW() базы.
+const attemptSQL = `
+INSERT INTO bruteforce_attempts AS a (subject, ip, failed_count, last_attempt, locked_until)
+VALUES ($1, $2, 1, NOW(), CASE WHEN 1 >= $3 THEN NOW() + make_interval(secs => $4) END)
+ON CONFLICT (subject, ip) DO UPDATE
+SET failed_count = CASE WHEN a.locked_until IS NULL THEN a.failed_count + 1 ELSE 1 END,
+    last_attempt = NOW(),
+    locked_until = CASE
+        WHEN CASE WHEN a.locked_until IS NULL THEN a.failed_count + 1 ELSE 1 END >= $3
+        THEN NOW() + make_interval(secs => $4)
+    END
+WHERE a.locked_until IS NULL OR a.locked_until <= NOW()
+RETURNING failed_count, locked_until
+`
+
+const activeLockSQL = `
 SELECT failed_count, locked_until
 FROM bruteforce_attempts
 WHERE subject = $1 AND ip = $2 AND locked_until > NOW()
 `
 
-// Check возвращает активную блокировку пары (subject, ip) либо nil. Счётчик не
-// трогает; невалидный ключ — bruteforcekit.ErrInvalidKey.
-func (s *Store) Check(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+// attemptRounds — сколько раз Attempt переучитывает попытку, если блокировка,
+// не пустившая upsert, снялась до её чтения (успех параллельного входа,
+// истечение).
+const attemptRounds = 3
+
+// Attempt учитывает попытку пары (subject, ip) до проверки секрета: nil —
+// попытка разрешена, *LockState — пара заблокирована. Невалидный ключ —
+// bruteforcekit.ErrInvalidKey.
+func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	subject, ip, err := s.cfg.NormalizeKey(subject, ip)
 	if err != nil {
 		return nil, err
 	}
+	for range attemptRounds {
+		var (
+			failedCount int
+			lockedUntil *time.Time
+		)
+		err := s.db.QueryRow(ctx, attemptSQL, subject, ip, s.cfg.MaxFailures, s.cfg.LockDuration.Seconds()).
+			Scan(&failedCount, &lockedUntil)
+		if err == nil {
+			// WHERE пускает upsert только без активной блокировки: locked_until здесь — переход.
+			if lockedUntil != nil {
+				locks.Add(ctx, 1)
+			}
+			// Счётчик выше порога бывает после понижения MaxFailures: бюджет окна исчерпан.
+			if lockedUntil != nil && failedCount > s.cfg.MaxFailures {
+				checks.Add(ctx, 1, resultAttr(resultLocked))
+				return &bruteforcekit.LockState{Until: *lockedUntil, FailedCount: failedCount}, nil
+			}
+			checks.Add(ctx, 1, resultAttr(resultAllowed))
+			return nil, nil
+		}
+		if !pgkit.IsNoRows(err) {
+			return nil, fmt.Errorf("bruteforcekit: attempt: %w", err)
+		}
 
-	var (
-		failedCount int
-		lockedUntil time.Time
-	)
-	err = s.db.QueryRow(ctx, checkSQL, subject, ip).Scan(&failedCount, &lockedUntil)
-	if pgkit.IsNoRows(err) {
-		checks.Add(ctx, 1, resultAttr(resultAllowed))
-		return nil, nil
+		var st bruteforcekit.LockState
+		err = s.db.QueryRow(ctx, activeLockSQL, subject, ip).Scan(&st.FailedCount, &st.Until)
+		if err == nil {
+			checks.Add(ctx, 1, resultAttr(resultLocked))
+			return &st, nil
+		}
+		if !pgkit.IsNoRows(err) {
+			return nil, fmt.Errorf("bruteforcekit: attempt: read lock: %w", err)
+		}
 	}
-	if err != nil {
-		return nil, fmt.Errorf("bruteforcekit: check: %w", err)
-	}
-	checks.Add(ctx, 1, resultAttr(resultLocked))
-	return &bruteforcekit.LockState{Until: lockedUntil, FailedCount: failedCount}, nil
-}
-
-// Истёкшая блокировка начинает новое окно (failed_count = 1), а активная
-// переживает поднятие MaxFailures — политика описана в README § Инварианты.
-// prev — состояние строки до апсерта: по нему считается переход в блокировку.
-const recordFailureSQL = `
-WITH prev AS (
-    SELECT locked_until FROM bruteforce_attempts WHERE subject = $1 AND ip = $2
-)
-INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt, locked_until)
-VALUES ($1, $2, 1, NOW(), CASE WHEN 1 >= $3 THEN NOW() + make_interval(secs => $4) END)
-ON CONFLICT (subject, ip) DO UPDATE
-SET failed_count = CASE
-        WHEN bruteforce_attempts.locked_until <= NOW() THEN 1
-        ELSE bruteforce_attempts.failed_count + 1
-    END,
-    last_attempt = NOW(),
-    locked_until = CASE
-        WHEN CASE
-            WHEN bruteforce_attempts.locked_until <= NOW() THEN 1
-            ELSE bruteforce_attempts.failed_count + 1
-        END >= $3 THEN NOW() + make_interval(secs => $4)
-        WHEN bruteforce_attempts.locked_until > NOW() THEN bruteforce_attempts.locked_until
-    END
-RETURNING failed_count,
-          CASE WHEN locked_until > NOW() THEN locked_until END,
-          COALESCE((SELECT p.locked_until > NOW() FROM prev p), false)
-`
-
-// RecordFailure учитывает неудачную попытку и возвращает блокировку, если после
-// этой попытки она активна; nil — попытки в окне ещё остались.
-func (s *Store) RecordFailure(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	subject, ip, err := s.cfg.NormalizeKey(subject, ip)
-	if err != nil {
-		return nil, err
-	}
-
-	var (
-		failedCount int
-		lockedUntil *time.Time
-		wasLocked   bool
-	)
-	err = s.db.QueryRow(ctx, recordFailureSQL, subject, ip, s.cfg.MaxFailures, s.cfg.LockDuration.Seconds()).
-		Scan(&failedCount, &lockedUntil, &wasLocked)
-	if err != nil {
-		return nil, fmt.Errorf("bruteforcekit: record failure: %w", err)
-	}
-
-	// Считается переход «активной блокировки не было → есть», а не равенство
-	// счётчика порогу: понижение MaxFailures между деплоями блокирует строку
-	// со счётчиком выше порога, и равенство такой lock не заметило бы.
-	if lockedUntil != nil && !wasLocked {
-		locks.Add(ctx, 1)
-	}
-	if lockedUntil == nil {
-		return nil, nil
-	}
-	return &bruteforcekit.LockState{Until: *lockedUntil, FailedCount: failedCount}, nil
+	return nil, fmt.Errorf("bruteforcekit: attempt: lock changed %d times during one attempt", attemptRounds)
 }
 
 const recordSuccessSQL = `

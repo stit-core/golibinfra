@@ -54,7 +54,8 @@ blocked-by: —
   - Подтверждено: `go test -short -race -run TestFxLogger ./logkit/` → PASS (конструктор, `OnStart`, паника под `fx.RecoverFromPanics` — ERROR с причиной; рутина — DEBUG, при `info` лог пуст); мутанты «рутина на INFO» и `fx.NopLogger` краснеют
 - [x] **AC10** — `NewRedactConfig` без env включает маскирование; значения под ключами `token`/`password`/`secret`/`authorization`/`cookie`/… и hex-цепочки ≥32 символов маскируются, числа не трогаются. Проверка: `go test -short -race -run 'TestRedact' ./logkit/` → PASS; `make envdoc-check` → OK
   - Подтверждено: `go test -short -race -run 'TestRedact' ./logkit/` → PASS (`TestRedact_EnabledByDefault`, `…SecretKeysMaskWholeValue`, `…NonSecretKeysStay`, `…SecretKeyValueKinds`, `…HexChains`); `make envdoc-check` → OK; мутанты «pre-filter без hex» и `minRedactHex=33` краснеют
-- [ ] **AC11** — `bruteforcekit`: subject нормализуется (trim, нижний регистр), IPv6 по умолчанию сворачивается до /64, `Guard.Attempt` атомарен: из N параллельных попыток пары проходят не больше `MaxFailures`. Проверка: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS
+- [x] **AC11** — `bruteforcekit`: subject нормализуется (trim, нижний регистр), IPv6 по умолчанию сворачивается до /64, `Guard.Attempt` атомарен: из N параллельных попыток пары проходят не больше `MaxFailures`. Проверка: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS
+  - Подтверждено: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS (из 50 попыток проходят ровно `MaxFailures` = 5; `-count=3` стабилен); мутанты «upsert без `WHERE`» и «попытка сверх бюджета проходит» краснеют
 - [ ] **AC12** — `natskit.SubscribeOnStart` подписывает в OnStart, дренит в OnStop; ошибка подписки (включая `ErrJetStreamDisabled`) валит старт. Проверка: `go test -short -race -run TestSubscribeOnStart ./natskit/` → PASS
 - [ ] **AC13** — `Argon2idHasher` считает одновременно не больше `max(1, GOMAXPROCS/Threads)` хэшей; ожидание очереди прерывается ctx. Проверка: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS
 - [ ] **AC14** — README и доки затронутых китов описывают текущее поведение, `make gate-clean` и `make test-full` зелёные, аннотированный тег `v1.2.0` с разделами `Breaking`/`Поведение`/`Изменения`/`Гейт` в origin вместе с `main`. Проверка: `make gate-clean` → зелёный; `git tag -l --format='%(contents)' v1.2.0` → четыре раздела; `git ls-remote --tags origin v1.2.0` → есть; `git status -sb` → синхронно с origin
@@ -79,8 +80,9 @@ blocked-by: —
 - [x] **S6** — `bruteforcekit`: нормализация subject, IPv6 /64 по умолчанию
   - Проверка: `go test -short -race ./bruteforcekit/...` → PASS · Закрывает: AC11
   - Сделано: `feat(bruteforcekit)` — `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS, `make test-full PKGS='./bruteforcekit/... ./testkit/bruteforcetest/'` → PASS, `make check` зелёный
-- [ ] **S7** — `bruteforcekit`: атомарный `Guard.Attempt` вместо `Check`+`RecordFailure`; фейки `bruteforcetest`
+- [x] **S7** — `bruteforcekit`: атомарный `Guard.Attempt` вместо `Check`+`RecordFailure`; фейки `bruteforcetest`
   - Проверка: `go test -race ./bruteforcekit/... ./testkit/bruteforcetest/` (Docker) → PASS · Закрывает: AC11 · Зависит от: S6
+  - Сделано: `feat(bruteforcekit)!` — `go test -race ./bruteforcekit/... ./testkit/bruteforcetest/` (Docker) → PASS, `make check` зелёный; в `make test-full` bruteforcekit PASS, красный только флак `outboxkit/pgstore` `TestModule_EnsuresPartitionsOnStart` (гонка создания партиции, чинится отдельным `fix(outboxkit)`)
 - [ ] **S8** — `authnkit`: предел параллельности Argon2id
   - Проверка: `go test -short -race ./authnkit/` → PASS · Закрывает: AC13
 - [ ] **S9** — `natskit.SubscribeOnStart`
@@ -172,6 +174,17 @@ blocked-by: —
 - S6: строки со старым ключом (регистр subject'а, полный IPv6) после обновления по новому ключу
   не находятся — блокировка теряется не дольше `LockDuration`; данные не мигрируем: таблица —
   эфемерные счётчики, их чистит `Cleanup`.
+- S7: `Guard` — `Attempt` + `RecordSuccess`, `Check`/`RecordFailure` удалены (один способ).
+  Попытка, на которой счётчик достигает порога, проходит и сама ставит блокировку — успех на
+  ней её снимает; попытка под блокировкой строку не пишет (`WHERE`); счётчик выше порога
+  (после понижения `MaxFailures`) блокируется сразу.
+- S7: upsert под блокировкой строки не возвращает — блокировка читается вторым запросом; если
+  она снялась между ними (успех параллельного входа, истечение), попытка переучитывается, не
+  больше `attemptRounds` = 3 раз. Эту ветку тест детерминированно не воспроизводит: нужна гонка
+  между двумя запросами.
+- S7: метрика `bruteforce_checks_total{result}` сохраняет имя (дашборды) и считает исходы
+  `Attempt`; `bruteforcetest.Recorder` — `Attempts()`/`Successes()` (оба `[]Attempt`),
+  `Failures()`/`SuccessAttempts()` удалены: потребителей фейка в шаблонах нет.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -194,11 +207,14 @@ blocked-by: —
   S3 (`16949a0`, `feat(outboxtest)!`) — `Recorder.Publish` вне `pgkit.InTx` → `outboxkit.ErrNoTx`;
   S4 (`5333bee`, `feat(logkit)`) — `logkit.FxLogger`: события fx через `*slog.Logger` графа;
   S5 (`73900ca`, `feat(logkit)`) — redact по умолчанию, значение под ключом-секретом, hex ≥32;
-  S6 (`feat(bruteforcekit)`) — subject в нижнем регистре без пробелов, IPv6 по умолчанию /64.
-- Осталось: S7–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — S7: `Guard.Attempt` (атомарный учёт попытки до проверки секрета, `WHERE` не
-  пишет строку под активной блокировкой) вместо `Check`+`RecordFailure`, `RecordSuccess`
-  остаётся; фейки `bruteforcetest`; integration `TestStore_ConcurrentAttempts` (AC11).
+  S6 (`2d0aeaf`, `feat(bruteforcekit)`) — subject в нижнем регистре без пробелов, IPv6 /64;
+  S7 (`feat(bruteforcekit)!`) — `Guard.Attempt` до проверки секрета + `RecordSuccess`.
+- Осталось: S8–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
+- Следующий шаг — `fix(outboxkit)`: `EnsurePartitions` падает `42P07`, когда партицию
+  параллельно создаёт другой процесс (keeper-job с `RunOnStart` рядом с хуком `pgstore.Module`,
+  вторая реплика) — флак `TestModule_EnsuresPartitionsOnStart`, воспроизводится
+  детерминированно открытой транзакцией с той же партицией. Затем S8: `authnkit` — семафор
+  `max(1, GOMAXPROCS/Threads)` на Argon2id, ожидание прерывается ctx (AC13).
 - Для аннотации тега копить по шагам:
   - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
     интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
@@ -206,7 +222,10 @@ blocked-by: —
     `pgkit.ProvideMigrations(pgstore.TableMigrations(t))` рядом с ним убрать, иначе
     `MigrateModule` падает `duplicate source name` (S2); `outboxtest.Recorder.Publish` вне
     транзакции → `outboxkit.ErrNoTx`: usecase в тесте — с фейком `pgtest.Identity`/`Recorder`
-    или ctx под `pgkit.WithTestTx` (S3).
+    или ctx под `pgkit.WithTestTx` (S3); `bruteforcekit.Guard` — `Attempt` + `RecordSuccess`,
+    `Check`/`RecordFailure` удалены: `Attempt` до проверки пароля, `*LockState` → отказ,
+    неудача ничего не требует, успех — `RecordSuccess`; `bruteforcetest.Recorder` —
+    `Attempts()`/`Successes()` (S7).
   - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2);
     `LOG_REDACT_ENABLED` по умолчанию `true`, значение под ключом-секретом (token, password,
     secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 — маской; выключить —

@@ -18,20 +18,12 @@ func TestStore_Metrics(t *testing.T) {
 	const subject, ip = "metrics@example.com", "10.0.0.10"
 	before := snapshot(t)
 
-	if _, err := s.Check(ctx, subject, ip); err != nil {
-		t.Fatalf("Check: %v", err)
-	}
-	for range cfg.MaxFailures {
-		if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-			t.Fatalf("RecordFailure: %v", err)
+	attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+	// Попытки под активной блокировкой — locked, но не новый lock.
+	for range 2 {
+		if st, err := s.Attempt(ctx, subject, ip); err != nil || st == nil {
+			t.Fatalf("Attempt under lock = %v, %v, want lock", st, err)
 		}
-	}
-	// Неудача поверх активной блокировки только продлевает её — не новый lock.
-	if _, err := s.RecordFailure(ctx, subject, ip); err != nil {
-		t.Fatalf("RecordFailure over lock: %v", err)
-	}
-	if _, err := s.Check(ctx, subject, ip); err != nil {
-		t.Fatalf("Check locked: %v", err)
 	}
 
 	if _, err := db.Exec(ctx, `INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt)
@@ -50,8 +42,8 @@ func TestStore_Metrics(t *testing.T) {
 		"bruteforce_cleanup_deleted_total":        after.cleanupDeleted - before.cleanupDeleted,
 	}
 	for name, want := range map[string]int64{
-		"bruteforce_checks_total{result=allowed}": 1,
-		"bruteforce_checks_total{result=locked}":  1,
+		"bruteforce_checks_total{result=allowed}": 2,
+		"bruteforce_checks_total{result=locked}":  2,
 		"bruteforce_locks_total":                  1,
 		"bruteforce_cleanup_deleted_total":        1,
 	} {
