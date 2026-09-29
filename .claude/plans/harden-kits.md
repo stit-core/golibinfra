@@ -11,13 +11,15 @@ blocked-by: —
 жизненный цикл и fail-closed в `httpkit`, общий контракт ошибок API, явная обязательность
 `timerkit`, миграции outbox-инстансов в графе, строгий `outboxtest`, `logkit.FxLogger` и
 маскирование по умолчанию, атомарный `bruteforcekit`, помощник подписки `natskit`, предел
-параллельности Argon2id. Итог — локальный аннотированный тег `v1.2.0` без push.
+параллельности Argon2id. Итог — аннотированный тег `v1.2.0` в origin вместе с `main`.
 
 ## Контекст
-- Аудит шаблона (`…/scratchpad/audit-report.html`: SEC-02, SEC-05, SEC-09, TST-01, COD-05,
-  COD-06, дневник догфудера D02) и fx-аудит (`…/scratchpad/fx-audit.md`: FX-01, FX-03, FX-04,
-  FX-05, FX-12; прототип P1 — `…/scratchpad/fxexp/zz_httpfix_proto.go.txt`); `…` —
-  `/home/mm/.cache/tmp/claude-1000/-home-mm-git-stit-core-go-backend-template/62f196b7-5be8-49bb-ba1f-05d2c3d76bb0`.
+- Аудит шаблона (`M/audit-report.html`: SEC-02, SEC-05, SEC-09, TST-01, COD-05, COD-06, дневник
+  догфудера D02) и fx-аудит (`M/fx-audit.md`: FX-01, FX-03, FX-04, FX-05, FX-12; прототип P1 —
+  `M/fxexp/zz_httpfix_proto.go.txt`); `M` — материалы программы `/home/mm/.cache/stit-audit-program/`.
+- Программа, метод (исполнитель этапа → независимый валидатор) и политика push —
+  `go-backend-template/.claude/plans/audit-program.md`: push `main` и тега — после PASS
+  валидатора партии и `make gate-clean`.
 - Объём — только киты, которые импортирует шаблон (logkit, pgkit, httpkit, clockkit, authnkit,
   testkit/{pgtest,handlertest,authntest,audittest,outboxtest}, outboxkit(+pgstore),
   auditkit(+pgstore), natskit, config, bizmetric, bruteforcekit(+pgstore), timerkit, healthkit,
@@ -35,7 +37,6 @@ blocked-by: —
 ## Не входит
 - Правки в `go-backend-template` и шаблонах-шлюзах: миграция — по аннотации тега.
 - Перенос I/O конструкторов `pgkit`/`natskit` в OnStart — см. «Решения».
-- Push ветки и тега: делает человек после OK владельца.
 
 ## Критерии приёмки
 - [ ] **AC1** — HTTP-сервер `httpkit.Module` начинает слушать после OnStart всех fx-модулей и гасится до их OnStop при любом месте `httpkit.Module` среди опций `fx.New`; запрос в полёте на остановке завершается при живых ресурсах. Проверка: `go test -short -race -run 'TestModule_Lifecycle' ./httpkit/` → PASS
@@ -52,7 +53,7 @@ blocked-by: —
 - [ ] **AC11** — `bruteforcekit`: subject нормализуется (trim, нижний регистр), IPv6 по умолчанию сворачивается до /64, `Guard.Attempt` атомарен: из N параллельных попыток пары проходят не больше `MaxFailures`. Проверка: `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make test-full` → `TestStore_ConcurrentAttempts` PASS
 - [ ] **AC12** — `natskit.SubscribeOnStart` подписывает в OnStart, дренит в OnStop; ошибка подписки (включая `ErrJetStreamDisabled`) валит старт. Проверка: `go test -short -race -run TestSubscribeOnStart ./natskit/` → PASS
 - [ ] **AC13** — `Argon2idHasher` считает одновременно не больше `max(1, GOMAXPROCS/Threads)` хэшей; ожидание очереди прерывается ctx. Проверка: `go test -short -race -run TestArgon2id_Concurrency ./authnkit/` → PASS
-- [ ] **AC14** — README и доки затронутых китов описывают текущее поведение, `make gate-clean` и `make test-full` зелёные, локальный аннотированный тег `v1.2.0` с разделами `Breaking`/`Поведение`/`Изменения`/`Гейт`; push не сделан. Проверка: `make gate-clean` → зелёный; `git tag -l --format='%(contents)' v1.2.0` → четыре раздела; `git status -sb` → ветка впереди origin
+- [ ] **AC14** — README и доки затронутых китов описывают текущее поведение, `make gate-clean` и `make test-full` зелёные, аннотированный тег `v1.2.0` с разделами `Breaking`/`Поведение`/`Изменения`/`Гейт` в origin вместе с `main`. Проверка: `make gate-clean` → зелёный; `git tag -l --format='%(contents)' v1.2.0` → четыре раздела; `git ls-remote --tags origin v1.2.0` → есть; `git status -sb` → синхронно с origin
 
 ## Шаги
 ### Инфраструктурные киты
@@ -87,7 +88,7 @@ blocked-by: —
 - [ ] **S14** — `ErrorMap` (`Map`/`Unmapped`/`Declare`) вместо `MapErr`/`MapIs`/`MapAs`, коды в OpenAPI
   - Проверка: `go test -short -race ./httpkit/` → PASS · Закрывает: AC5 · Зависит от: S13
 ### Релиз
-- [ ] **S15** — Корневой README/CLAUDE.md сверены, `make test-full`, `make gate-clean`, тег `v1.2.0` локально
+- [ ] **S15** — Корневой README/CLAUDE.md сверены, `make test-full`, `make gate-clean`, тег `v1.2.0` локально; push `main` и тега — после PASS валидатора партии
   - Проверка: `make gate-clean` → зелёный, `make test-full` → PASS · Закрывает: AC14 · Зависит от: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S13, S14
 
 ## Решения
