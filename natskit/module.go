@@ -80,7 +80,8 @@ func HealthProbe(name string) fx.Option {
 // OnStart — после старта зависимостей, объявленных раньше, — с ctx хука (он
 // ограничивает только сам вызов); ошибка подписки, включая ErrJetStreamDisabled,
 // валит старт. OnStop дренит подписку в пределах своего ctx — до остановки
-// этих зависимостей.
+// этих зависимостей. Вызывается из fx.Invoke или конструктора: хук, добавленный
+// из чужого OnStart, fx не запускает.
 func SubscribeOnStart(lc fx.Lifecycle, subscribe func(ctx context.Context) (Subscription, error)) {
 	var sub Subscription
 	lc.Append(fx.Hook{

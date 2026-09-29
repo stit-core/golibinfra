@@ -131,9 +131,11 @@ func (s drainSub) Drain(context.Context) error {
 	return nil
 }
 
+type startCtxKey struct{}
+
 // Регрессия COD-06: жизненный цикл подписки — одна строка. Подписка идёт в
-// OnStart после старта зависимостей, объявленных раньше, и дренится в OnStop
-// до их остановки.
+// OnStart с ctx хука после старта зависимостей, объявленных раньше, и дренится
+// в OnStop до их остановки.
 func TestSubscribeOnStart_SubscribesOnStartDrainsOnStop(t *testing.T) {
 	var events []string
 	record := func(e string) func() { return func() { events = append(events, e) } }
@@ -143,8 +145,8 @@ func TestSubscribeOnStart_SubscribesOnStartDrainsOnStop(t *testing.T) {
 		}),
 		fx.Invoke(func(lc fx.Lifecycle) {
 			natskit.SubscribeOnStart(lc, func(ctx context.Context) (natskit.Subscription, error) {
-				if ctx == nil {
-					t.Error("subscribe got a nil ctx")
+				if ctx.Value(startCtxKey{}) != "start" {
+					t.Error("subscribe must get the ctx of the OnStart hook")
 				}
 				record("subscribed")()
 				return drainSub{onDrain: record("drained")}, nil
@@ -154,7 +156,9 @@ func TestSubscribeOnStart_SubscribesOnStartDrainsOnStop(t *testing.T) {
 	if len(events) != 0 {
 		t.Fatalf("events before start: %v", events)
 	}
-	app.RequireStart()
+	if err := app.Start(context.WithValue(t.Context(), startCtxKey{}, "start")); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 	app.RequireStop()
 
 	want := []string{"dependency started", "subscribed", "drained", "dependency stopped"}
