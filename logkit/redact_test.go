@@ -722,9 +722,9 @@ func TestRedact_CyclicMap(t *testing.T) {
 }
 
 // Ключи map проверяются и там, где секрет лежит только во вложенной map, в
-// срезе или массиве map и под указателем на map; прочие значения не трогаются.
+// срезе, подсрезе или массиве map; прочие значения не трогаются.
 func TestRedact_MapKeysInContainers(t *testing.T) {
-	ptr := map[string]any{"password": "opaque-ptr"}
+	base := []any{map[string]any{"n": 1}, map[string]any{"password": "opaque-sub"}}
 	var nilMap map[string]any
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -734,13 +734,13 @@ func TestRedact_MapKeysInContainers(t *testing.T) {
 		"list", []map[string]any{{"password": "opaque-list", "n": 1}},
 		"anys", []any{"x", map[string]any{"secret": "opaque-any"}},
 		"array", [1]map[string]string{{"pwd": "opaque-array"}},
-		"ptr", &ptr,
+		"subs", []any{base[:1], base},
 		"nils", map[string]any{"token": "opaque-nils", "m": nilMap, "p": (*int)(nil)},
 		"words", []string{"password", "token"},
 	)
 
 	out := buf.String()
-	for _, secret := range []string{"opaque-typed", "opaque-nested", "opaque-list", "opaque-any", "opaque-array", "opaque-ptr", "opaque-nils"} {
+	for _, secret := range []string{"opaque-typed", "opaque-nested", "opaque-list", "opaque-any", "opaque-array", "opaque-sub", "opaque-nils"} {
 		if strings.Contains(out, secret) {
 			t.Fatalf("secret %q leaked: %s", secret, out)
 		}
@@ -760,13 +760,70 @@ func TestRedact_MapKeysInContainers(t *testing.T) {
 	if anys, _ := m["anys"].([]any); len(anys) != 2 || anys[0] != "x" {
 		t.Errorf("anys = %v", m["anys"])
 	}
-	if p, _ := m["ptr"].(map[string]any); p["password"] != "[REDACTED]" {
-		t.Errorf("ptr = %v", m["ptr"])
-	}
 	if nils, _ := m["nils"].(map[string]any); nils["m"] != nil || nils["p"] != nil {
 		t.Errorf("nil values must stay null: %v", m["nils"])
 	}
 	if words, _ := m["words"].([]any); len(words) != 2 || words[0] != "password" {
 		t.Errorf("a slice of strings is not a map: %v", m["words"])
+	}
+}
+
+// hiddenCreds прячет пароль в MarshalJSON на указателе — тип сам решает, что показать.
+type hiddenCreds struct{ User, Pass string }
+
+func (c *hiddenCreds) MarshalJSON() ([]byte, error) { return []byte(`{"user":"` + c.User + `"}`), nil }
+
+type account struct{ Creds hiddenCreds }
+
+// ownJSON и ownJSONPtr кодируются своим MarshalJSON — на значении и на указателе.
+type ownJSON map[string]string
+
+func (ownJSON) MarshalJSON() ([]byte, error) { return []byte(`"own"`), nil }
+
+type ownJSONPtr map[string]string
+
+func (*ownJSONPtr) MarshalJSON() ([]byte, error) { return []byte(`"own-ptr"`), nil }
+
+// Регрессия R2: копия с маскированием кодируется в тот же JSON, что оригинал.
+// Указатель не разыменовывается — MarshalJSON на указателе у поля зовётся, как
+// без маскирования; типы со своим MarshalJSON не разбираются.
+func TestRedact_MapKeysKeepTypeEncoding(t *testing.T) {
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	l.Info(context.Background(), "types",
+		"doc", map[string]any{
+			"token": "opaque-token",
+			"acct":  &account{Creds: hiddenCreds{User: "u", Pass: "hidden-pass"}},
+			"own":   ownJSON{"password": "own-secret"},
+		},
+		"list", []ownJSONPtr{{"password": "own-ptr-secret"}},
+	)
+
+	out := buf.String()
+	for _, leaked := range []string{"opaque-token", "hidden-pass"} {
+		if strings.Contains(out, leaked) {
+			t.Fatalf("%q leaked: %s", leaked, out)
+		}
+	}
+	m := decodeLine(t, buf.Bytes())
+	doc, _ := m["doc"].(map[string]any)
+	acct, _ := doc["acct"].(map[string]any)
+	if creds, _ := acct["Creds"].(map[string]any); creds["user"] != "u" || doc["own"] != "own" {
+		t.Errorf("doc = %v, want the types' own encoding", m["doc"])
+	}
+	if list, _ := m["list"].([]any); len(list) != 1 || list[0] != "own-ptr" {
+		t.Errorf("list = %v, want MarshalJSON of addressable elements", m["list"])
+	}
+}
+
+// Регрессия R2: копия, которую JSON не кодирует, уходит в запасной путь сама —
+// text-обработчик печатает её, а не исходник с секретом.
+func TestRedact_FallbackKeepsMasking(t *testing.T) {
+	var buf bytes.Buffer
+	l := mustLogger(t, Config{Level: "debug", Format: "text"}, &buf, WithRedact(RedactConfig{Enabled: true}))
+	l.Info(context.Background(), "unencodable", "doc", map[string]any{"password": "opaque-fallback", "ch": make(chan int)})
+
+	if out := buf.String(); strings.Contains(out, "opaque-fallback") || !strings.Contains(out, "[REDACTED]") {
+		t.Fatalf("fallback must keep the masked copy: %s", out)
 	}
 }

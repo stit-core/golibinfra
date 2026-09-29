@@ -3,6 +3,7 @@ package logkit
 import (
 	"bytes"
 	"context"
+	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -403,108 +404,130 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 			return slog.String(key, h.text(t.Error()))
 		}
 	}
-	b, err := marshalJSON(h.maskKeys(x))
+	// Запасной путь — тоже маскированная копия: исходник под ключом-секретом не пишется никогда.
+	mx := h.maskKeys(x)
+	b, err := marshalJSON(mx)
 	if err != nil {
-		return slog.Any(key, x)
+		return slog.Any(key, mx)
 	}
 	return h.jsonAttr(key, b)
 }
 
 // maskKeys прячет значения под ключами-секретами у map со строковыми ключами
-// (http.Header, url.Values, map[string]any) — в том числе вложенных, в срезах и
-// под указателем; без таких ключей отдаёт x как есть, не копируя. Поля
-// структур не разбираются.
+// (http.Header, url.Values, map[string]any) — на любой глубине map, срезов и
+// массивов, в том числе за interface; без таких ключей отдаёт x как есть, не
+// копируя. Копия кодируется в тот же JSON, что оригинал, поэтому указатели не
+// разыменовываются, а типы со своим MarshalJSON или MarshalText не разбираются.
 func (h *redactHandler) maskKeys(x any) any {
-	v := reflect.ValueOf(x)
-	if !secretsIn(v, map[visit]bool{}) {
+	v := container(reflect.ValueOf(x))
+	var w walk
+	if !v.IsValid() || !w.secretsIn(v) {
 		return x
 	}
 	return h.masked(v, map[visit]any{})
 }
 
-var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
-
-// visit — пройденный контейнер: цикл (m["self"] = m) и общее поддерево
-// обходятся один раз.
-type visit struct {
-	kind reflect.Kind
-	ptr  uintptr
-	len  int
-}
+var (
+	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
+	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
+)
 
 // container — v (сквозь interface), если в нём могут быть ключи map: map со
-// строковыми ключами, срез или массив, чьи элементы могут быть map, указатель;
-// иначе невалидный Value. Тип со своим MarshalJSON не разбирается.
+// строковыми ключами, срез или массив, в элементах которого бывают такие map;
+// иначе невалидный Value.
 func container(v reflect.Value) reflect.Value {
 	if v.Kind() == reflect.Interface {
 		v = v.Elem()
 	}
-	if !v.IsValid() || v.Type().Implements(jsonMarshalerType) {
-		return reflect.Value{}
-	}
 	switch v.Kind() {
-	case reflect.Pointer:
-		return v
 	case reflect.Map:
-		if v.Type().Key().Kind() == reflect.String {
+		if v.Type().Key().Kind() == reflect.String && !selfEncoding(v.Type()) {
 			return v
 		}
 	case reflect.Slice, reflect.Array:
-		if mayContain(v.Type().Elem().Kind()) {
+		// Элементы среза адресуемы: MarshalJSON на указателе у них зовётся, у копии — нет.
+		if elem := v.Type().Elem(); holdsMaps(elem) && !selfEncoding(v.Type()) && !selfEncoding(elem) {
 			return v
 		}
 	}
 	return reflect.Value{}
 }
 
-func mayContain(k reflect.Kind) bool {
-	switch k {
-	case reflect.Map, reflect.Interface, reflect.Pointer, reflect.Slice, reflect.Array:
-		return true
-	default:
-		return false
+// holdsMaps — в значении типа t может оказаться map со строковыми ключами;
+// рекурсивный тип после нескольких уровней считается «может».
+func holdsMaps(t reflect.Type) bool {
+	for range 8 {
+		switch t.Kind() {
+		case reflect.Interface:
+			return true
+		case reflect.Map:
+			return t.Key().Kind() == reflect.String
+		case reflect.Slice, reflect.Array:
+			t = t.Elem()
+		default:
+			return false
+		}
 	}
+	return true
 }
 
-// identity — ключ контейнера для visit; ok=false — массив, у него нет адреса.
+// selfEncoding — тип или указатель на него сам решает, как выглядеть в JSON.
+func selfEncoding(t reflect.Type) bool {
+	p := reflect.PointerTo(t)
+	return t.Implements(jsonMarshalerType) || t.Implements(textMarshalerType) ||
+		p.Implements(jsonMarshalerType) || p.Implements(textMarshalerType)
+}
+
+// visit — пройденный контейнер: цикл (m["self"] = m) и общее поддерево
+// обходятся один раз; у массива адреса нет, он не отмечается.
+type visit struct {
+	typ reflect.Type
+	ptr uintptr
+	len int
+}
+
 func identity(v reflect.Value) (visit, bool) {
 	switch v.Kind() {
-	case reflect.Map, reflect.Pointer:
-		return visit{kind: v.Kind(), ptr: v.Pointer()}, true
+	case reflect.Map:
+		return visit{typ: v.Type(), ptr: v.Pointer()}, true
 	case reflect.Slice:
-		return visit{kind: v.Kind(), ptr: v.Pointer(), len: v.Len()}, true
+		return visit{typ: v.Type(), ptr: v.Pointer(), len: v.Len()}, true
 	default:
 		return visit{}, false
 	}
 }
 
-// secretsIn: есть ли секрет в контейнере v или в его вложенных контейнерах;
-// seen — уже просмотренные.
-func secretsIn(v reflect.Value, seen map[visit]bool) bool {
+// walk — состояние поиска секрета: пройденные контейнеры.
+type walk struct {
+	seen map[visit]bool
+}
+
+// secretsIn: есть ли секрет в контейнере v или во вложенных.
+func (w *walk) secretsIn(v reflect.Value) bool {
 	v = container(v)
 	if !v.IsValid() || v.Kind() != reflect.Array && v.IsNil() {
 		return false
 	}
-	if id, ok := identity(v); ok {
-		if seen[id] {
+	// Значения map смотрятся, только если ключ-секрет или в них может быть map;
+	// map без таких значений в цикл не входит и не отмечается.
+	nested := v.Kind() != reflect.Map || holdsMaps(v.Type().Elem())
+	if id, ok := identity(v); ok && nested {
+		if w.seen[id] {
 			return false
 		}
-		seen[id] = true
+		if w.seen == nil {
+			w.seen = map[visit]bool{}
+		}
+		w.seen[id] = true
 	}
-	switch v.Kind() {
-	case reflect.Pointer:
-		return secretsIn(v.Elem(), seen)
-	case reflect.Slice, reflect.Array:
+	if v.Kind() != reflect.Map {
 		for i := range v.Len() {
-			if secretsIn(v.Index(i), seen) {
+			if w.secretsIn(v.Index(i)) {
 				return true
 			}
 		}
 		return false
 	}
-	// Значение смотрится, только если ключ-секрет или внутри может быть
-	// контейнер: иначе обход не аллоцирует на каждую пару.
-	nested := mayContain(v.Type().Elem().Kind())
 	key, val := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
 	for it := v.MapRange(); it.Next(); {
 		key.SetIterKey(it)
@@ -516,18 +539,17 @@ func secretsIn(v reflect.Value, seen map[visit]bool) bool {
 		if class != keyPlain && maskable(slog.AnyValue(val.Interface()), class) {
 			return true
 		}
-		if nested && secretsIn(val, seen) {
+		if nested && w.secretsIn(val) {
 			return true
 		}
 	}
 	return false
 }
 
-// masked — копия v с заменой значений под ключами-секретами: map — как
-// map[string]any, срезы и массивы — как []any, указатель — как его значение
-// (JSON тот же). memo — копии пройденных контейнеров: рекурсия по циклу
-// конечна, а сам цикл остаётся циклом, и его, как без маскирования, отвергает
-// JSON.
+// masked — копия контейнера v с заменой значений под ключами-секретами: map —
+// map[string]any, срез и массив — []any, JSON тот же. memo — копии пройденных
+// контейнеров: рекурсия по циклу конечна, а сам цикл остаётся циклом, и его,
+// как без маскирования, отвергает JSON.
 func (h *redactHandler) masked(v reflect.Value, memo map[visit]any) any {
 	c := container(v)
 	if !c.IsValid() || c.Kind() != reflect.Array && c.IsNil() {
@@ -537,14 +559,7 @@ func (h *redactHandler) masked(v reflect.Value, memo map[visit]any) any {
 	if done, ok := memo[id]; tracked && ok {
 		return done
 	}
-	switch c.Kind() {
-	case reflect.Pointer:
-		// nil в memo, пока указатель в работе: цикл из одних указателей даёт null.
-		memo[id] = nil
-		out := h.masked(c.Elem(), memo)
-		memo[id] = out
-		return out
-	case reflect.Slice, reflect.Array:
+	if c.Kind() != reflect.Map {
 		out := make([]any, c.Len())
 		if tracked {
 			memo[id] = out
