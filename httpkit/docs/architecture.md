@@ -65,9 +65,11 @@ fx выполняет `OnStart` в порядке добавления хуко�
 
 - `WithSecuritySchemes(entries...)` / fx-группа `httpkit.security_scheme` —
   `components.securitySchemes`; дефолтных схем httpkit не выставляет.
-- `WithMiddleware(mw...)` / fx-группа `httpkit.middleware` — chi-middleware
-  потребителя; в `Module` они встают **внутрь** цепочки кита, поэтому их panic
-  ловит `Recovery`, а их ответы попадают в метрики и access-log.
+- `WithMiddleware(mw...)` / значение `httpkit.Middlewares` в графе — chi-middleware
+  потребителя в порядке слайса (первый — внешний); в `Module` они встают
+  **внутрь** цепочки кита, поэтому их panic ловит `Recovery`, а их ответы попадают
+  в метрики и access-log. Значение одно на граф: зависимые middleware (tenant после
+  client-IP) упорядочивает приложение, а не порядок сборки графа.
 - `WithHumaConfig(fn)` / fx-группа `httpkit.huma_config` — правка `huma.Config`
   до создания API (`Servers`, `DocsRenderer`, `Transformers`, свои
   `OnAddOperation`). Хуки потребителя применяются после кита.
@@ -90,7 +92,7 @@ chi применяет middleware в порядке регистрации: пе
 | 8 | `RateLimit` | если `RateLimit.RPS > 0` | per-IP bucket; дешёвый отказ до тяжёлой работы |
 | 9 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом |
 | 10 | `Idempotency` | если в DI есть `IdempotencyStore` | дедуп write-запросов по `Idempotency-Key` |
-| 11 | middleware потребителя | группа `httpkit.middleware` | ближе всего к handler'у |
+| 11 | middleware потребителя | значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 
 `HumaAuth` — отдельный слой на `huma.API`.
 
@@ -112,7 +114,7 @@ preflight, лимитер, лимит тела, идемпотентность.
   операции есть `Security`, — старт падает с `ErrAuthNotConfigured` и именами
   операций.
 - `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI.
-- `[]func(http.Handler) http.Handler` (группа `httpkit.middleware`) → цепочка.
+- `Middlewares` (`optional`) → цепочка в порядке слайса.
 - `[]func(*huma.Config)` (группа `httpkit.huma_config`) → huma.
 - `[]healthkit.Probe` (группа `healthkit.probes`) → `/ready`. Тип именованный:
   `httpkit.Probe` — alias `healthkit.Probe`, а `pgkit.Probe`, `natskit.Probe`,

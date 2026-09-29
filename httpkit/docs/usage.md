@@ -225,11 +225,14 @@ fx.Provide(fx.Annotate(
 
 ## Свои middleware и настройка huma
 
+Middleware потребителя — одно значение `httpkit.Middlewares` на граф, в порядке
+слайса (первый — внешний); его провайдит приложение, поэтому порядок зависимых
+middleware явный:
+
 ```go
-fx.Provide(fx.Annotate(
-    func(m *tenantMiddleware) func(http.Handler) http.Handler { return m.Handle },
-    fx.ResultTags(`group:"httpkit.middleware"`),
-))
+fx.Provide(func(cfg httpkit.Config, t *tenantMiddleware) httpkit.Middlewares {
+    return httpkit.Middlewares{clientIP(cfg.RateLimit.TrustProxy), t.Handle} // tenant — после client-IP
+})
 
 fx.Provide(fx.Annotate(
     func() func(*huma.Config) {

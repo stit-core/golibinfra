@@ -43,7 +43,8 @@ blocked-by: —
   - Подтверждено: `go test -short -race -run 'TestModule_Lifecycle' ./httpkit/` → PASS (`Module` первым, в середине и последним: хук сервера — последний в OnStart и первый в OnStop, запрос в полёте на остановке — 204 при открытом ресурсе); на прежнем коде (хук в конструкторе) краснеют «первым» и «в середине»
 - [x] **AC2** — Операция с `Security` без `httpkit.AuthExtractor` в графе — ошибка старта с именами операций; `HumaAuth` без extractor'а отвечает на защищённую операцию `500 AUTH_NOT_CONFIGURED`, а не пропускает. Проверка: `go test -short -race -run 'TestModule_Auth|TestHumaAuth' ./httpkit/` → PASS
   - Подтверждено: `go test -short -race -run 'TestModule_Auth|TestHumaAuth' ./httpkit/` → PASS (старт — `ErrAuthNotConfigured` с именами защищённых операций, публичные не названы; с extractor'ом граф стартует и отвечает 401; скрытая защищённая операция и `HumaAuth(log, nil)` — `500 AUTH_NOT_CONFIGURED`); мутанты «nil → пропуск» и «без проверки старта» краснеют
-- [ ] **AC3** — Порядок middleware потребителя задаёт приложение одним значением `httpkit.Middlewares`; value group с перемешиваемым порядком нет. Проверка: `go test -short -race -run TestModule_Middlewares ./httpkit/` → PASS; `grep -rn MiddlewareGroup --include=*.go .` → пусто
+- [x] **AC3** — Порядок middleware потребителя задаёт приложение одним значением `httpkit.Middlewares`; value group с перемешиваемым порядком нет. Проверка: `go test -short -race -run TestModule_Middlewares ./httpkit/` → PASS; `grep -rn MiddlewareGroup --include=*.go .` → пусто
+  - Подтверждено: `go test -short -race -run TestModule_Middlewares ./httpkit/` → PASS (пять middleware в порядке слайса на каждом запросе, внутри цепочки кита: request-id в ctx, panic ловит `Recovery`); `grep -rn MiddlewareGroup --include=*.go .` → пусто
 - [ ] **AC4** — Любой ответ-ошибка сервера `httpkit` (сопоставленная и несопоставленная ошибка хендлера, валидация, auth, неизвестный маршрут, метод, лимит, panic) — `application/problem+json` с `code` и `request_id`, равным `X-Request-ID` и полю лога; 422 несёт `errors[]{location,code,message}`; 5xx без текста причины; 429 с `Retry-After`. Проверка: `go test -short -race -run TestErrorContract ./httpkit/` → PASS
 - [ ] **AC5** — `httpkit.ErrorMap` сопоставляет доменную ошибку (`errors.Is` или предикат) со статусом, `code`, опц. полем и `Retry-After` из `RetryAfter()`; `Unmapped` перечисляет несопоставленные; несопоставленная даёт 500 и строку `handler error` с `operation` в логе; `Declare` кладёт статусы и коды в `openapi.json`. Проверка: `go test -short -race -run 'TestErrorMap' ./httpkit/` → PASS
 - [x] **AC6** — `timerkit.Provide` без `timerkit.Module` в графе — ошибка сборки (`fx.ValidateApp`), в том числе у `outboxkit.Module`/`Instance` и `bruteforcekit/pgstore.Module`. Проверка: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS
@@ -100,8 +101,9 @@ blocked-by: —
 - [x] **S11** — Fail-closed auth: ошибка старта и `HumaAuth` без extractor'а
   - Проверка: `go test -short -race ./httpkit/ ./oidckit/ ./hubkit/...` → PASS · Закрывает: AC2 · Зависит от: S10
   - Сделано: `feat(httpkit)!` — `go test -short -race ./httpkit/ ./oidckit/ ./hubkit/...` → PASS, `make check` зелёный
-- [ ] **S12** — `httpkit.Middlewares` вместо группы `httpkit.middleware`
+- [x] **S12** — `httpkit.Middlewares` вместо группы `httpkit.middleware`
   - Проверка: `go test -short -race ./httpkit/` → PASS · Закрывает: AC3 · Зависит от: S10
+  - Сделано: `feat(httpkit)!` — `go test -short -race ./httpkit/` → PASS, `make check` зелёный
 - [ ] **S13** — Контракт ошибок: problem+json с `code`/`request_id`/`errors[]`, `Retry-After`, 404/405 маршрутизатора; `handlertest`
   - Проверка: `go test -short -race ./httpkit/ ./testkit/handlertest/ ./oidckit/ ./cachekit/` → PASS · Закрывает: AC4 · Зависит от: S11
 - [ ] **S14** — `ErrorMap` (`Map`/`Unmapped`/`Declare`) вместо `MapErr`/`MapIs`/`MapAs`, коды в OpenAPI
@@ -123,7 +125,8 @@ blocked-by: —
   из `OpenAPI().Paths` — тот же набор в итоговом виде после хуков потребителя, `Server` не копит
   состояние; ответ — 500 без detail и строка `auth not configured`.
 - FX-12 (middleware): одно необязательное значение `httpkit.Middlewares` в порядке слайса вместо
-  группы — порядок явный по построению, сортировка и номера не нужны; группа удаляется.
+  группы — порядок явный по построению, сортировка и номера не нужны; группа удаляется. Страж
+  старой группы не нужен: её берёт только шаблон, через константу — bump падает при компиляции.
 - Контракт ошибок: `huma.NewError`/`NewErrorWithContext` подменяются в `init()` пакета — форма
   ошибок одна во всём процессе, включая `humatest` в тестах потребителя; `request_id` и лог
   причины 5xx — Transformer сервера (логгер сервера, без глобального указателя); поле ошибки из
@@ -243,8 +246,8 @@ blocked-by: —
 - Сделано: план (`bc726e3`); этап «Инфраструктурные киты» — S1 `a4030bf`, S2 `887527a`,
   S3 `16949a0`, S4 `5333bee`, S5 `73900ca`, S6 `2d0aeaf`, S7 `2b8e39a`, S8 `a42b333`, S9 `37da068`
   (содержание — «Шаги») и `fix(outboxkit)` `dd6eed6`; этап httpkit — S10 `832904e`, S11
-  (`feat(httpkit)!`).
-- Осталось: S12–S15 по «Шагам», дизайн каждого — в «Решениях»; дальше — S12. Тега нет; ветка
+  `5c3646e`, S12 (`feat(httpkit)!`).
+- Осталось: S13–S15 по «Шагам», дизайн каждого — в «Решениях»; дальше — S13. Тега нет; ветка
   не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
   замечаний — `cb32246`…`08b1db1` (`fix(...)`, по находке на коммит). Круг по неблокирующим
@@ -252,10 +255,12 @@ blocked-by: —
   тесты защит обхода; `d62b2e6`: бэклог logkit) проверит валидатор этапа httpkit.
 - Для аннотации тега копить по шагам:
   - Breaking:
-    - httpkit (S11): операция с `Security` без `httpkit.AuthExtractor` в графе — ошибка старта
-      `httpkit.ErrAuthNotConfigured` с именами операций, `HumaAuth(log, nil)` отвечает на
-      защищённую операцию `500 AUTH_NOT_CONFIGURED` вместо пропуска → провайдите
-      `httpkit.AuthExtractor` или объявите публичную операцию пустым `Security: []map[string][]string{}`.
+    - httpkit (S11): `Security` без `httpkit.AuthExtractor` в графе — ошибка старта `ErrAuthNotConfigured`
+      с именами операций, `HumaAuth(log, nil)` — `500 AUTH_NOT_CONFIGURED` → провайдите extractor
+      или объявите публичную операцию пустым `Security: []map[string][]string{}`.
+    - httpkit (S12): группа `httpkit.middleware` и `MiddlewareGroup` удалены → одно значение
+      `httpkit.Middlewares` (порядок слайса, первый — внешний) провайдит приложение; значение с
+      тегом старой группы никто не читает — middleware молча выпадет из цепочки.
     - timerkit (S1): `timerkit.Provide` и киты с job'ами (outboxkit `Module`/`Instance`,
       `outboxkit/pgstore`, `bruteforcekit/pgstore`, `hubkit/sync`) требуют в графе
       `timerkit.Module` и `logkit.Logger` — добавьте их, в том числе в тестовые графы
@@ -274,9 +279,8 @@ blocked-by: —
       `RecordSuccess` (можно в транзакции); `LockState.FailedCount` — попытки окна без успеха;
       `bruteforcetest.Recorder` — `Attempts()`/`Successes()`.
   - Поведение:
-    - httpkit (S10): HTTP начинает слушать после OnStart всех `fx.Module` и гасится до их OnStop,
-      где бы ни стоял `httpkit.Module`; `httpkit.Module` — на верхнем уровне `fx.New`, корневой
-      `fx.Invoke`, который первым строит зависимость с хуками, — до него (иначе её хук встанет после HTTP).
+    - httpkit (S10): HTTP слушает после OnStart всех `fx.Module` и гасится до их OnStop; `Module` —
+      на верхнем уровне `fx.New`, корневой Invoke с хуками — до него (иначе хук встанет после HTTP).
     - timerkit (S1): повторный `timerkit.Module` — ошибка старта `already provided`.
     - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами.
     - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт

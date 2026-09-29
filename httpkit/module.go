@@ -18,9 +18,6 @@ import (
 // SecuritySchemeGroup — fx-группа схем безопасности OpenAPI (SecuritySchemeEntry).
 const SecuritySchemeGroup = "httpkit.security_scheme"
 
-// MiddlewareGroup — fx-группа middleware потребителя; они идут внутри цепочки кита.
-const MiddlewareGroup = "httpkit.middleware"
-
 // HumaConfigGroup — fx-группа правок huma.Config перед созданием API.
 const HumaConfigGroup = "httpkit.huma_config"
 
@@ -45,6 +42,10 @@ var Module = fx.Options(
 	fx.Invoke(serve),
 )
 
+// Middlewares — net/http-middleware потребителя в порядке слайса (первый — внешний)
+// внутри цепочки кита. Одно значение на граф: порядок задаёт приложение.
+type Middlewares []func(http.Handler) http.Handler
+
 // NewConfig читает HTTP_* из ENV и валидирует конфиг: невалидный — ошибка старта.
 func NewConfig() (Config, error) {
 	var c Config
@@ -60,11 +61,11 @@ type serverIn struct {
 	Config Config
 	Log    logkit.Logger
 
-	Extract    AuthExtractor                     `optional:"true"`
-	Store      IdempotencyStore                  `optional:"true"`
-	Schemes    []SecuritySchemeEntry             `group:"httpkit.security_scheme"`
-	Middleware []func(http.Handler) http.Handler `group:"httpkit.middleware"`
-	HumaConfig []func(*huma.Config)              `group:"httpkit.huma_config"`
+	Extract     AuthExtractor         `optional:"true"`
+	Store       IdempotencyStore      `optional:"true"`
+	Middlewares Middlewares           `optional:"true"`
+	Schemes     []SecuritySchemeEntry `group:"httpkit.security_scheme"`
+	HumaConfig  []func(*huma.Config)  `group:"httpkit.huma_config"`
 }
 
 func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe) {
@@ -99,7 +100,7 @@ func newServer(in serverIn) (*Server, error) {
 		}
 		mws = append(mws, Idempotency(cfg.Idempotency, in.Store, opts...))
 	}
-	mws = append(mws, in.Middleware...)
+	mws = append(mws, in.Middlewares...)
 
 	opts := []ServerOption{
 		WithLogger(in.Log),

@@ -8,7 +8,9 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -296,5 +298,58 @@ func TestModule_IdempotencyStoreWiring(t *testing.T) {
 	}
 	if calls != 1 {
 		t.Fatalf("handler calls = %d, want 1", calls)
+	}
+}
+
+// TestModule_Middlewares: middleware потребителя идут в порядке слайса httpkit.Middlewares
+// (первый — внешний) внутри цепочки кита — с request-id в ctx и под Recovery.
+func TestModule_Middlewares(t *testing.T) {
+	var (
+		mu   sync.Mutex
+		seen []string
+	)
+	mw := func(name string) func(http.Handler) http.Handler {
+		return func(next http.Handler) http.Handler {
+			return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if httpkit.RequestIDFrom(r.Context()) == "" {
+					t.Errorf("middleware %s runs outside the kit chain: no request id", name)
+				}
+				if r.URL.Path == "/panic" && name == "last" {
+					panic("consumer middleware")
+				}
+				mu.Lock()
+				seen = append(seen, name)
+				mu.Unlock()
+				next.ServeHTTP(w, r)
+			})
+		}
+	}
+	order := []string{"first", "second", "third", "fourth", "last"}
+	srv := startApp(t, fx.Provide(func() httpkit.Middlewares {
+		mws := make(httpkit.Middlewares, 0, len(order))
+		for _, name := range order {
+			mws = append(mws, mw(name))
+		}
+		return mws
+	}))
+
+	for range 5 {
+		mu.Lock()
+		seen = nil
+		mu.Unlock()
+		if resp := get(t, srv, "/health"); resp.StatusCode != http.StatusOK {
+			t.Fatalf("/health: %d", resp.StatusCode)
+		}
+		mu.Lock()
+		got := slices.Clone(seen)
+		mu.Unlock()
+		if !slices.Equal(got, order) {
+			t.Fatalf("middleware order = %v, want %v", got, order)
+		}
+	}
+
+	resp := get(t, srv, "/panic")
+	if resp.StatusCode != http.StatusInternalServerError || resp.Header.Get("Content-Type") != httpkit.ProblemContentType {
+		t.Fatalf("panic in a consumer middleware must be recovered by the kit: %d %v", resp.StatusCode, resp.Header)
 	}
 }

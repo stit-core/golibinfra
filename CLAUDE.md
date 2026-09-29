@@ -105,7 +105,7 @@ make coverage     # покрытие -short + сводка; ещё есть benc
   `healthkit.Group` = `healthkit.probes`).
 - Имя fx-группы кита — `<kit>.<thing>` и всегда экспортируемая константа
   (`healthkit.Group`, `timerkit.Group`, `grpckit.ServicesGroup`,
-  `pgkit.MigrationsGroup`, `httpkit.MiddlewareGroup`, …); имя `fx.Module` —
+  `pgkit.MigrationsGroup`, `httpkit.SecuritySchemeGroup`, …); имя `fx.Module` —
   `<kit>` или `<kit>/<sub>` (у параметризованных модулей — `<kit>:<instance>`).
 
 ## Стиль (инварианты)
