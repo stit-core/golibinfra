@@ -43,7 +43,8 @@ blocked-by: —
 - [ ] **AC3** — Порядок middleware потребителя задаёт приложение одним значением `httpkit.Middlewares`; value group с перемешиваемым порядком нет. Проверка: `go test -short -race -run TestModule_Middlewares ./httpkit/` → PASS; `grep -rn MiddlewareGroup --include=*.go .` → пусто
 - [ ] **AC4** — Любой ответ-ошибка сервера `httpkit` (сопоставленная и несопоставленная ошибка хендлера, валидация, auth, неизвестный маршрут, метод, лимит, panic) — `application/problem+json` с `code` и `request_id`, равным `X-Request-ID` и полю лога; 422 несёт `errors[]{location,code,message}`; 5xx без текста причины; 429 с `Retry-After`. Проверка: `go test -short -race -run TestErrorContract ./httpkit/` → PASS
 - [ ] **AC5** — `httpkit.ErrorMap` сопоставляет доменную ошибку (`errors.Is` или предикат) со статусом, `code`, опц. полем и `Retry-After` из `RetryAfter()`; `Unmapped` перечисляет несопоставленные; несопоставленная даёт 500 и строку `handler error` с `operation` в логе; `Declare` кладёт статусы и коды в `openapi.json`. Проверка: `go test -short -race -run 'TestErrorMap' ./httpkit/` → PASS
-- [ ] **AC6** — `timerkit.Provide` без `timerkit.Module` в графе — ошибка сборки (`fx.ValidateApp`), в том числе у `outboxkit.Module`/`Instance` и `bruteforcekit/pgstore.Module`. Проверка: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS
+- [x] **AC6** — `timerkit.Provide` без `timerkit.Module` в графе — ошибка сборки (`fx.ValidateApp`), в том числе у `outboxkit.Module`/`Instance` и `bruteforcekit/pgstore.Module`. Проверка: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS
+  - Подтверждено: `go test -short -race -run 'RequiresTimerkit|RequiresModule' ./timerkit/ ./outboxkit/... ./bruteforcekit/...` → PASS на `a4030bf`
 - [ ] **AC7** — `outboxkit.Instance(name, table)` кладёт схему таблицы в группу `pgkit.migrations`: `pgkit.MigrateModule` накатывает её без ручного списка. Проверка: `go test -short -race -run TestInstance_ProvidesMigrations ./outboxkit/` → PASS; `make test-full` (pgstore) → PASS
 - [ ] **AC8** — `outboxtest.Recorder.Publish` вне транзакции возвращает `outboxkit.ErrNoTx` и событие не копит (мутант D02 «Publish вне транзакции» краснеет). Проверка: `go test -short -race ./testkit/outboxtest/` → PASS
 - [ ] **AC9** — `logkit.FxLogger` пишет события fx в структурный лог: причина падения старта — JSON-строка уровня ERROR, рутина — DEBUG. Проверка: `go test -short -race -run TestFxLogger ./logkit/` → PASS
@@ -55,8 +56,9 @@ blocked-by: —
 
 ## Шаги
 ### Инфраструктурные киты
-- [ ] **S1** — `timerkit.Provide` требует `timerkit.Module` (маркер `timerkit.Scheduler`); fx-тесты и доки зависимых китов
+- [x] **S1** — `timerkit.Provide` требует `timerkit.Module` (маркер `timerkit.Scheduler`); fx-тесты и доки зависимых китов
   - Проверка: `go test -short -race ./timerkit/ ./outboxkit/... ./bruteforcekit/... ./hubkit/...` → PASS · Закрывает: AC6
+  - Сделано: `a4030bf` (`make check` зелёный)
 - [ ] **S2** — `outboxkit.RepositoryFactory` — интерфейс `Repository`+`Migrations`; `Instance` кладёт миграции в `pgkit.migrations`
   - Проверка: `go test -short -race ./outboxkit/...` → PASS · Закрывает: AC7 · Зависит от: S1
 - [ ] **S3** — `outboxtest.Recorder` требует транзакцию (`pgkit.InTx`)
@@ -144,4 +146,16 @@ blocked-by: —
 - Шлюзы (`v0.39.0`): цепочка аннотаций тегов до `v1.2.0`.
 
 ## Где мы сейчас
-План заведён. Следующий шаг — S1.
+- Сделано: план (`bc726e3`), S1 (`a4030bf`, `feat(timerkit)!`) — маркер `timerkit.Scheduler`
+  (имя `Runner` занято неэкспортируемым `runner` кита); графы тестов outboxkit(+pgstore),
+  bruteforcekit/pgstore и hubkit/sync собираются с `timerkit.Module` + `logkit.Nop`
+  (хелпер `scheduler()` в тестах), `hubkit/sync` — `HUB_SYNC_RUN_ON_START=false`.
+- Осталось: S2–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
+- Следующий шаг — S2: `RepositoryFactory` → интерфейс (`Repository(table)`,
+  `Migrations(table) pgkit.Source`), реализация в `outboxkit/pgstore` (`NewRepositoryFactory`),
+  `Instance` провайдит `pgkit.Source` в группу `pgkit.MigrationsGroup`; из рецепта
+  `TestInstanceRecipeValidates` и `outboxkit/docs/usage.md` убрать ручной
+  `pgkit.ProvideMigrations(pgstore.TableMigrations(...))` (сначала проверить, как
+  `pgkit.MigrateUpAll` ведёт себя на двух источниках с одним именем).
+- Для аннотации тега копить по шагам: Breaking — `timerkit.Provide` требует `timerkit.Module`
+  (S1). Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).
