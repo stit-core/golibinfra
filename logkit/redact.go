@@ -427,12 +427,12 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 			return slog.String(key, h.text(t.Error()))
 		}
 	}
-	// Копия с маскированием — до кодирования: запасной путь пишет её же, исходник
-	// под ключом-секретом — никогда.
 	x = h.maskKeys(x)
 	b, err := marshalJSON(x)
 	if err != nil {
-		return slog.Any(key, x)
+		// Без JSON-формы text и OTel печатали бы значение через %+v целиком (заголовки
+		// *http.Request, поля структур): во все sink'и уходит только ошибка кодирования.
+		return slog.String(key, h.text("!ERROR:"+err.Error()))
 	}
 	return h.jsonAttr(key, b)
 }

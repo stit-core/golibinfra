@@ -11,6 +11,7 @@ import (
 	"math"
 	"math/rand/v2"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
@@ -887,15 +888,42 @@ func TestRedact_MapKeysAliasedSlicesKeepShape(t *testing.T) {
 	}
 }
 
-// Регрессия R2: копия, которую JSON не кодирует, уходит в запасной путь сама —
-// text-обработчик печатает её, а не исходник с секретом.
-func TestRedact_FallbackKeepsMasking(t *testing.T) {
-	var buf bytes.Buffer
-	l := mustLogger(t, Config{Level: "debug", Format: "text"}, &buf, WithRedact(RedactConfig{}))
-	l.Info(context.Background(), "unencodable", "doc", map[string]any{"password": "opaque-fallback", "ch": make(chan int)})
+// withFunc — структура, которую JSON не кодирует (поле-функция), как *http.Request.
+type withFunc struct {
+	User     string
+	Password string
+	Hook     func()
+}
 
-	if out := buf.String(); strings.Contains(out, "opaque-fallback") || !strings.Contains(out, "[REDACTED]") {
-		t.Fatalf("fallback must keep the masked copy: %s", out)
+// KSEC-02 (эксперимент E02 базового аудита): значение без JSON-формы text и OTel
+// печатали бы через %+v с заголовками и полями-секретами. Во всех sink'ах — только
+// ошибка кодирования.
+func TestRedact_UnencodableValueNeverPrinted(t *testing.T) {
+	const secret = "S3cretPWzzcs"
+	req := httptest.NewRequest(http.MethodGet, "https://api.example.com/v1/items", nil)
+	req.Header.Set("Cookie", "session="+secret)
+	req.Header.Set("X-Api-Key", secret)
+	values := map[string]any{
+		"http.Request": req,
+		"struct+func":  withFunc{User: "bob", Password: secret, Hook: func() {}},
+		"map+chan":     map[string]any{"password": secret, "ch": make(chan int)},
+	}
+	for name, v := range values {
+		for _, format := range []string{"json", "text"} {
+			t.Run(name+"/"+format, func(t *testing.T) {
+				var buf bytes.Buffer
+				exp, lp := newExporter(t)
+				l := mustLogger(t, Config{Level: "info", Format: format}, &buf, WithOTel(lp))
+				l.Error(context.Background(), "request failed", "req", v)
+
+				if out := buf.String(); strings.Contains(out, secret) || !strings.Contains(out, "!ERROR:") {
+					t.Fatalf("%s sink: %s", format, out)
+				}
+				if got := attrsOf(exp.only(t))["req"].String(); strings.Contains(got, secret) || !strings.HasPrefix(got, "!ERROR:") {
+					t.Fatalf("otel sink: req = %s", got)
+				}
+			})
+		}
 	}
 }
 

@@ -2,7 +2,10 @@ package logkit
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"os"
+	"strings"
 	"testing"
 
 	"go.opentelemetry.io/otel/log"
@@ -50,30 +53,58 @@ func TestModule_PicksOptionalProviderAndRedact(t *testing.T) {
 	}
 }
 
-// KDOC-01: граф без RedactConfig маскирует дефолтным набором — умолчание держит
-// код, а не провайдер, которого в графе может не быть.
+// KDOC-01, KSEC-01 (эксперимент E01 базового аудита): граф из одного
+// logkit.NewConfig без RedactConfig при пустом окружении маскирует оба sink'а —
+// умолчание держит код, а не провайдер, которого в графе может не быть.
 func TestModule_MasksWithoutRedactConfig(t *testing.T) {
-	exp := &memExporter{}
-	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exp)))
-	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
+	const secret = "S3cretPWzzcs"
+	clearEnv(t, "LOG_LEVEL", "LOG_FORMAT", "LOG_SOURCE", "LOG_SILENT", "LOG_REDACT_DISABLED", "LOG_REDACT_PATTERNS", "LOG_REDACT_REPLACE_WITH")
+	exp, lp := newExporter(t)
 
 	var got Logger
-	app := fx.New(
-		fx.NopLogger,
-		fx.Supply(Config{Level: "info", Silent: true}),
-		fx.Provide(func() log.LoggerProvider { return lp }),
-		Module,
-		fx.Populate(&got),
-	)
-	if err := app.Err(); err != nil {
-		t.Fatalf("fx: %v", err)
-	}
-	got.Info(context.Background(), "login", "password", "hunter2", "authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.e30.c2ln")
+	stdout := captureStdout(t, func() {
+		app := fx.New(
+			fx.NopLogger,
+			fx.Provide(NewConfig),
+			fx.Provide(func() log.LoggerProvider { return lp }),
+			Module,
+			fx.Populate(&got),
+		)
+		if err := app.Err(); err != nil {
+			t.Fatalf("fx: %v", err)
+		}
+		got.Info(context.Background(), "login", "password", secret, "authorization", "Bearer "+secret)
+	})
 
+	if strings.Contains(stdout, secret) || !strings.Contains(stdout, "[REDACTED]") {
+		t.Fatalf("stdout of a graph without RedactConfig must be masked: %s", stdout)
+	}
 	a := attrsOf(exp.only(t))
 	if a["password"].AsString() != "[REDACTED]" || a["authorization"].AsString() != "[REDACTED]" {
-		t.Fatalf("a graph without RedactConfig must mask: %v", a)
+		t.Fatalf("otel sink of a graph without RedactConfig must be masked: %v", a)
 	}
+}
+
+// captureStdout подменяет os.Stdout на время fn: без WithWriter логгер пишет в
+// os.Stdout, прочитанный при сборке.
+func captureStdout(t *testing.T, fn func()) string {
+	t.Helper()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	orig := os.Stdout
+	os.Stdout = w
+	func() {
+		defer func() { os.Stdout = orig }()
+		fn()
+	}()
+	_ = w.Close()
+	out, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stdout: %v", err)
+	}
+	return string(out)
 }
 
 func TestModule_ProvidesSlogAndLoggerFromOneChain(t *testing.T) {

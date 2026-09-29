@@ -105,29 +105,35 @@ func TestModule_InitsSDKWithoutProvidersConsumer(t *testing.T) {
 
 // Регрессия: логгер ошибок экспорта строится внутри Module и остаётся
 // единственным каналом логов, который redact обходил бы стороной. В текст
-// ошибки попадают URL коллектора и атрибуты сообщений SDK.
+// ошибки попадают URL коллектора и атрибуты сообщений SDK. Маскирует и граф без
+// logkit.RedactConfig (KSEC-01 базового аудита).
 func TestModule_RedactsErrorLogger(t *testing.T) {
-	restoreGlobals(t)
-
-	stdout := captureStdout(t)
-	app := fxtest.New(t,
-		fx.Supply(
-			Config{Disabled: true},
-			logkit.Config{Level: "info"},
-			logkit.RedactConfig{},
-		),
-		Module,
-	)
-	app.RequireStart()
-	otel.Handle(errors.New(`Post "https://collector/v1/traces": user john@example.com rejected`))
-	app.RequireStop()
-
-	got := stdout()
-	if strings.Contains(got, "john@example.com") {
-		t.Fatalf("PII survived in the export-error log: %s", got)
+	graphs := map[string]fx.Option{
+		"с RedactConfig":   fx.Supply(logkit.RedactConfig{}),
+		"без RedactConfig": fx.Options(),
 	}
-	if !strings.Contains(got, "[REDACTED]") {
-		t.Fatalf("export-error log went out unredacted: %s", got)
+	for name, redact := range graphs {
+		t.Run(name, func(t *testing.T) {
+			restoreGlobals(t)
+
+			stdout := captureStdout(t)
+			app := fxtest.New(t,
+				fx.Supply(Config{Disabled: true}, logkit.Config{Level: "info"}),
+				redact,
+				Module,
+			)
+			app.RequireStart()
+			otel.Handle(errors.New(`Post "https://collector/v1/traces": user john@example.com rejected`))
+			app.RequireStop()
+
+			got := stdout()
+			if strings.Contains(got, "john@example.com") {
+				t.Fatalf("PII survived in the export-error log: %s", got)
+			}
+			if !strings.Contains(got, "[REDACTED]") {
+				t.Fatalf("export-error log went out unredacted: %s", got)
+			}
+		})
 	}
 }
 
