@@ -256,20 +256,18 @@ fx.Provide(fx.Annotate(
 ## Свои middleware и настройка huma
 
 Middleware потребителя — одно значение `httpkit.Middlewares` на граф, в порядке
-слайса (первый — внешний); его провайдит приложение, поэтому порядок зависимых
-middleware явный:
+слайса (первый — внешний), правки `huma.Config` — одно значение
+`httpkit.HumaConfigs`; их провайдит приложение, поэтому порядок зависимых правок
+явный:
 
 ```go
 fx.Provide(func(cfg httpkit.Config, t *tenantMiddleware) httpkit.Middlewares {
     return httpkit.Middlewares{clientIP(cfg.RateLimit.TrustProxy), t.Handle} // tenant — после client-IP
 })
 
-fx.Provide(fx.Annotate(
-    func() func(*huma.Config) {
-        return func(c *huma.Config) { c.Servers = []*huma.Server{{URL: "https://api.example.com"}} }
-    },
-    fx.ResultTags(`group:"httpkit.huma_config"`),
-))
+fx.Supply(httpkit.HumaConfigs{ // правки huma.Config — в порядке слайса, после кита
+    func(c *huma.Config) { c.Servers = []*huma.Server{{URL: "https://api.example.com"}} },
+})
 ```
 
 ## Readiness-probes

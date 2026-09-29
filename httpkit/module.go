@@ -18,9 +18,6 @@ import (
 // SecuritySchemeGroup — fx-группа схем безопасности OpenAPI (SecuritySchemeEntry).
 const SecuritySchemeGroup = "httpkit.security_scheme"
 
-// HumaConfigGroup — fx-группа правок huma.Config перед созданием API.
-const HumaConfigGroup = "httpkit.huma_config"
-
 // Module — сервер, huma.API и /health + /ready; Config регистрирует caller
 // (`fx.Provide(httpkit.NewConfig)` или из App-структуры). HTTP слушает после
 // OnStart всех fx.Module графа и гасится до их OnStop: хук сервера вешает Invoke
@@ -46,6 +43,10 @@ var Module = fx.Options(
 // внутри цепочки кита. Одно значение на граф: порядок задаёт приложение.
 type Middlewares []func(http.Handler) http.Handler
 
+// HumaConfigs — правки huma.Config потребителя в порядке слайса, после правок кита.
+// Одно значение на граф: порядок задаёт приложение.
+type HumaConfigs []func(*huma.Config)
+
 // NewConfig читает HTTP_* из ENV и валидирует конфиг: невалидный — ошибка старта.
 func NewConfig() (Config, error) {
 	var c Config
@@ -64,8 +65,8 @@ type serverIn struct {
 	Extract     AuthExtractor         `optional:"true"`
 	Store       IdempotencyStore      `optional:"true"`
 	Middlewares Middlewares           `optional:"true"`
+	HumaConfigs HumaConfigs           `optional:"true"`
 	Schemes     []SecuritySchemeEntry `group:"httpkit.security_scheme"`
-	HumaConfig  []func(*huma.Config)  `group:"httpkit.huma_config"`
 }
 
 func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe) {
@@ -107,7 +108,7 @@ func newServer(in serverIn) (*Server, error) {
 		WithSecuritySchemes(in.Schemes...),
 		WithMiddleware(mws...),
 	}
-	for _, fn := range in.HumaConfig {
+	for _, fn := range in.HumaConfigs {
 		opts = append(opts, WithHumaConfig(fn))
 	}
 	s := NewServer(cfg, opts...)

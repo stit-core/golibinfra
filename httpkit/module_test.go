@@ -353,3 +353,34 @@ func TestModule_Middlewares(t *testing.T) {
 		t.Fatalf("panic in a consumer middleware must be recovered by the kit: %d %v", resp.StatusCode, resp.Header)
 	}
 }
+
+// N6 валидатора: правки huma.Config потребителя идут в порядке слайса
+// httpkit.HumaConfigs и после правок кита — хук потребителя видит лимит тела.
+func TestModule_HumaConfigs(t *testing.T) {
+	t.Setenv("HTTP_MAX_BODY_BYTES", "4096")
+	var seenMaxBody int64
+	edit := func(mark string) func(*huma.Config) {
+		return func(c *huma.Config) { c.Info.Description += mark }
+	}
+	var api huma.API
+	startApp(t,
+		fx.Supply(httpkit.HumaConfigs{
+			edit("a"), edit("b"),
+			func(c *huma.Config) {
+				c.OnAddOperation = append(c.OnAddOperation, func(_ *huma.OpenAPI, op *huma.Operation) {
+					if op.OperationID == "get-health" {
+						seenMaxBody = op.MaxBodyBytes
+					}
+				})
+			},
+			edit("c"),
+		}),
+		fx.Populate(&api),
+	)
+	if got := api.OpenAPI().Info.Description; got != "abc" {
+		t.Fatalf("huma config edits applied as %q, want abc (slice order)", got)
+	}
+	if seenMaxBody != 4096 {
+		t.Fatalf("a consumer OnAddOperation runs after the kit's: MaxBodyBytes = %d, want 4096", seenMaxBody)
+	}
+}

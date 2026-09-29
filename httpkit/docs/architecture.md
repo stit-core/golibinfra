@@ -70,9 +70,10 @@ fx выполняет `OnStart` в порядке добавления хуко�
   **внутрь** цепочки кита, поэтому их panic ловит `Recovery`, а их ответы попадают
   в метрики и access-log. Значение одно на граф: зависимые middleware (tenant после
   client-IP) упорядочивает приложение, а не порядок сборки графа.
-- `WithHumaConfig(fn)` / fx-группа `httpkit.huma_config` — правка `huma.Config`
-  до создания API (`Servers`, `DocsRenderer`, `Transformers`, свои
-  `OnAddOperation`). Хуки потребителя применяются после кита.
+- `WithHumaConfig(fn)` / значение `httpkit.HumaConfigs` в графе — правки
+  `huma.Config` до создания API (`Servers`, `DocsRenderer`, `Transformers`, свои
+  `OnAddOperation`) в порядке слайса, после правок кита: хук потребителя видит
+  операцию, которую кит уже поправил.
 - `HTTP_DOCS_ENABLED=false` — сервис без `/docs` и `/openapi.*`.
 
 ## Конвейер middleware и порядок
@@ -115,7 +116,7 @@ preflight, лимитер, лимит тела, идемпотентность.
   операций.
 - `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI.
 - `Middlewares` (`optional`) → цепочка в порядке слайса.
-- `[]func(*huma.Config)` (группа `httpkit.huma_config`) → huma.
+- `HumaConfigs` (`optional`) → правки huma в порядке слайса.
 - `[]healthkit.Probe` (группа `healthkit.probes`) → `/ready`. Тип именованный:
   `httpkit.Probe` — alias `healthkit.Probe`, а `pgkit.Probe`, `natskit.Probe`,
   `cachekit.Probe` возвращают его же. Регистрация — `healthkit.Provide(ctor)`.

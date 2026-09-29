@@ -131,6 +131,8 @@ blocked-by: —
 - FX-12 (middleware): одно необязательное значение `httpkit.Middlewares` в порядке слайса вместо
   группы — порядок явный по построению, сортировка и номера не нужны; группа удаляется. Страж
   старой группы не нужен: её берёт только шаблон, через константу — bump падает при компиляции.
+  N6 валидатора: тем же приёмом — правки `huma.Config` (`HumaConfigs` вместо группы
+  `httpkit.huma_config`): зависимые правки (`OnAddOperation`, `Transformers`) без порядка — FX-12.
 - Контракт ошибок: `huma.NewError`/`NewErrorWithContext` подменяются в `init()` пакета — форма
   ошибок одна во всём процессе, включая `humatest` в тестах потребителя; `request_id` и лог
   причины 5xx — Transformer сервера (логгер сервера, без глобального указателя); поле ошибки из
@@ -273,8 +275,8 @@ blocked-by: —
   `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 `007d79a`. Этап httpkit закрыт: валидатор —
   PASS (`M/validation-harden-kits-B.md`); его неблокирующие и KDOC-01/06 базового аудита китов
   закрываются до тега отдельными `fix(...)`: KDOC-01 — `80fb648`, N2–N5 — `ac12cfa`, KSEC-01
-  (регрессии) и KSEC-02 — `fix(logkit)`.
-- Осталось: N6–N8, N1/N11, KDOC-06, N9 в бэклог; затем S15 —
+  (регрессии) и KSEC-02 — `bb5966a`, N6 — `fix(httpkit)!`.
+- Осталось: N7, N8, N1/N11, KDOC-06, N9 в бэклог; затем S15 —
   корневые README/CLAUDE.md, `make test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка
   не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
@@ -292,6 +294,9 @@ blocked-by: —
     - httpkit (S12): группа `httpkit.middleware` и `MiddlewareGroup` удалены → одно значение
       `httpkit.Middlewares` (порядок слайса, первый — внешний) провайдит приложение; значение с
       тегом старой группы никто не читает — middleware молча выпадет из цепочки.
+    - httpkit (N6): группа `httpkit.huma_config` и `HumaConfigGroup` удалены → одно значение
+      `httpkit.HumaConfigs` (правки в порядке слайса, после кита):
+      `fx.Supply(fx.Annotated{Group: httpkit.HumaConfigGroup, Target: f})` → `fx.Supply(httpkit.HumaConfigs{f})`.
     - httpkit (S13): `APIError` — без `type`/`instance`, с `request_id` и `errors[]`
       (`FieldError{Location, Code, Message}`); ошибки huma (валидация, `huma.Error4xx/5xx`, 5xx
       хендлера) во всём процессе — `APIError`, `huma.ErrorModel` и эхо `value` клиент не получает
