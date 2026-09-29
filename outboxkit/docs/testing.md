@@ -8,7 +8,9 @@
 `OUTBOX_REQUIRE_TX=true`, `Recorder` публикует только в транзакции
 (`pgkit.InTx`): вне неё `Publish` отвечает `outboxkit.ErrNoTx` и событие не
 копит, поэтому транзактор домена в тесте — фейк `testkit/pgtest`, он помечает
-`ctx` транзакцией.
+`ctx` транзакцией. Сам `ctx` usecase'а тест не помечает (`pgkit.WithTestTx`):
+тогда публикация мимо `Transactor.WithTx` тоже проходит, и тест не видит
+ошибку; `pgkit.WithTestTx` — только для прямого вызова `Publish` в тесте.
 
 ## Core: fake Repository / Transport
 

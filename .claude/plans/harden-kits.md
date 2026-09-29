@@ -211,6 +211,11 @@ blocked-by: —
   на неверном пароле снимал учёт, и перебор шёл без предела. `RecordSuccess` в транзакции
   допустим — откат оставляет счётчик (fail-closed). Сентинел — в core-пакете: хранилище и фейки
   отдают одну ошибку.
+- Фикс B2: в заготовке аннотации у S1 — шаг миграции и повторный `timerkit.Module`, у S3 —
+  только фейк Transactor. Закрыть лазейку `pgkit.WithTestTx` в самом `outboxtest` дёшево нельзя:
+  `Recorder` не отличает пометку фейка Transactor от ручной (один маркер pgkit), а различение
+  связало бы outboxtest с pgtest и отвергло бы настоящий `PoolTransactor`; контракт — в
+  `outboxkit/docs/testing.md`. Критерий разделов аннотации — в README § Версионирование.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -240,32 +245,45 @@ blocked-by: —
   ctx; S9 (`feat(natskit)`) — `natskit.SubscribeOnStart`. Этап «Инфраструктурные киты» закрыт.
 - Осталось: S10–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — FAIL: B1, B2 и неблокирующие.
-  Фиксы — отдельными `fix(...)`: B1 (`fix(bruteforcekit)`: `ErrInTx`) сделан; дальше B2
-  (аннотация S1/S3), маскирование по ключу, маркер timerkit, natskit, outboxkit (партиции, тест
+  Фиксы — отдельными `fix(...)`: B1 (`cb32246`, `ErrInTx`) и B2 (`fix(plan)`, аннотация S1/S3)
+  сделаны; дальше маскирование по ключу, маркер timerkit, natskit, outboxkit (партиции, тест
   `Module`+`FactoryModule`); затем перепроверка валидатором, потом S10 (AC1).
 - Для аннотации тега копить по шагам:
-  - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
-    интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
-    метода; `Instance` сам регистрирует схему таблицы — ручной
-    `pgkit.ProvideMigrations(pgstore.TableMigrations(t))` рядом с ним убрать, иначе
-    `MigrateModule` падает `duplicate source name` (S2); `outboxtest.Recorder.Publish` вне
-    транзакции → `outboxkit.ErrNoTx`: usecase в тесте — с фейком `pgtest.Identity`/`Recorder`
-    или ctx под `pgkit.WithTestTx` (S3); `bruteforcekit.Guard` — `Attempt` + `RecordSuccess`,
-    `Check`/`RecordFailure` удалены: `Attempt` до проверки пароля и вне транзакции (в
-    `Transactor.WithTx` — `bruteforcekit.ErrInTx`), `*LockState` → отказ, неудача ничего не
-    требует, успех — `RecordSuccess` (можно в транзакции); `LockState.FailedCount` — попытки
-    окна без успеха; `bruteforcetest.Recorder` — `Attempts()`/`Successes()` (S7).
-  - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2);
-    `EnsurePartitions` не валит старт, когда ту же партицию создаёт другой процесс (fix);
-    `Argon2idHasher` считает не больше `max(1, GOMAXPROCS/Threads)` хэшей одновременно, лишние
-    ждут; отмена ctx в очереди — ошибка `Hash`/`Verify` с `ctx.Err()` (S8);
-    `LOG_REDACT_ENABLED` по умолчанию `true`, значение под ключом-секретом (token, password,
-    secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 — маской; выключить —
-    `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его (S5);
-    guard приводит subject к нижнему регистру без пробелов по краям, `BRUTEFORCE_IPV6_PREFIX` по
-    умолчанию `64` (полный адрес — `128`); блокировки строк со старым ключом теряются не дольше
-    `BRUTEFORCE_LOCK_DURATION` (S6).
-  - Изменения — `pgstore.Module` и `FactoryModule` сочетаются в одном графе (доки, S2);
-    `logkit.FxLogger` — события fx в структурный лог (S4); `natskit.SubscribeOnStart` — подписка
-    в `OnStart`, drain в `OnStop`, ошибка подписки (и `ErrJetStreamDisabled`) валит старт (S9).
+  - Breaking:
+    - timerkit (S1): `timerkit.Provide` и киты с job'ами (outboxkit `Module`/`Instance`,
+      `outboxkit/pgstore`, `bruteforcekit/pgstore`, `hubkit/sync`) требуют в графе
+      `timerkit.Module` и `logkit.Logger` — добавьте их, в том числе в тестовые графы
+      (`fx.ValidateApp`/`fxtest`).
+    - outboxkit (S2): `RepositoryFactory` — интерфейс `Repository(table)`/`Migrations(table)`
+      вместо func-типа, своя фабрика реализует оба метода; `Instance` сам регистрирует схему
+      таблицы — ручной `pgkit.ProvideMigrations(pgstore.TableMigrations(t))` рядом с ним убрать,
+      иначе `MigrateModule` падает `duplicate source name`.
+    - testkit/outboxtest (S3): `Recorder.Publish` вне транзакции → `outboxkit.ErrNoTx`; usecase
+      в тесте — только через фейк Transactor (`pgtest.Identity`/`pgtest.Recorder`);
+      `pgkit.WithTestTx` — лишь для прямого вызова `Publish`, не для ctx usecase'а, иначе
+      публикация мимо транзакции снова проходит.
+    - bruteforcekit (S7): `Guard` — `Attempt` + `RecordSuccess`, `Check`/`RecordFailure`
+      удалены: `Attempt` до проверки пароля и вне транзакции (в `Transactor.WithTx` —
+      `bruteforcekit.ErrInTx`), `*LockState` → отказ, неудача ничего не требует, успех —
+      `RecordSuccess` (можно в транзакции); `LockState.FailedCount` — попытки окна без успеха;
+      `bruteforcetest.Recorder` — `Attempts()`/`Successes()`.
+  - Поведение:
+    - timerkit (S1): повторный `timerkit.Module` — ошибка старта `already provided`.
+    - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами.
+    - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт
+      другой процесс.
+    - logkit (S5): `LOG_REDACT_ENABLED` по умолчанию `true`; значение под ключом-секретом
+      (token, password, secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 —
+      маской; выключить — `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не
+      маскирует — добавьте его.
+    - bruteforcekit (S6): subject — в нижнем регистре без пробелов по краям,
+      `BRUTEFORCE_IPV6_PREFIX` по умолчанию `64` (полный адрес — `128`); блокировки строк со
+      старым ключом теряются не дольше `BRUTEFORCE_LOCK_DURATION`.
+    - authnkit (S8): `Argon2idHasher` считает не больше `max(1, GOMAXPROCS/Threads)` хэшей
+      одновременно, лишние ждут; отмена ctx в очереди — ошибка `Hash`/`Verify` с `ctx.Err()`.
+  - Изменения:
+    - outboxkit (S2): `pgstore.Module` и `FactoryModule` сочетаются в одном графе.
+    - logkit (S4): `logkit.FxLogger` — события fx в структурный лог.
+    - natskit (S9): `SubscribeOnStart` — подписка в `OnStart`, drain в `OnStop`, ошибка подписки
+      (и `ErrJetStreamDisabled`) валит старт.
 - Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).
