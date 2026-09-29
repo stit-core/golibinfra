@@ -20,7 +20,7 @@ import (
 func TestReadmeFlagshipExample(t *testing.T) {
 	app := fx.ValidateApp(
 		fx.Provide(
-			telemetry.NewConfig, logkit.NewConfig, httpkit.NewConfig,
+			telemetry.NewConfig, logkit.NewConfig, logkit.NewRedactConfig, httpkit.NewConfig,
 			pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, natskit.NewConfig,
 			cachekit.NewConfig, outboxkit.NewConfig, pgstore.NewConfig,
 		),

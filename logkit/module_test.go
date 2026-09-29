@@ -35,7 +35,7 @@ func TestModule_PicksOptionalProviderAndRedact(t *testing.T) {
 	var got Logger
 	app := fx.New(
 		fx.NopLogger,
-		fx.Supply(Config{Level: "info", Silent: true}, RedactConfig{Enabled: true}),
+		fx.Supply(Config{Level: "info", Silent: true}, RedactConfig{}),
 		fx.Provide(func() log.LoggerProvider { return lp }),
 		Module,
 		fx.Populate(&got),
@@ -47,6 +47,32 @@ func TestModule_PicksOptionalProviderAndRedact(t *testing.T) {
 
 	if a := attrsOf(exp.only(t)); a["email"].AsString() != "[REDACTED]" {
 		t.Errorf("redact not applied via module: %v", a)
+	}
+}
+
+// KDOC-01: граф без RedactConfig маскирует дефолтным набором — умолчание держит
+// код, а не провайдер, которого в графе может не быть.
+func TestModule_MasksWithoutRedactConfig(t *testing.T) {
+	exp := &memExporter{}
+	lp := sdklog.NewLoggerProvider(sdklog.WithProcessor(sdklog.NewSimpleProcessor(exp)))
+	t.Cleanup(func() { _ = lp.Shutdown(context.Background()) })
+
+	var got Logger
+	app := fx.New(
+		fx.NopLogger,
+		fx.Supply(Config{Level: "info", Silent: true}),
+		fx.Provide(func() log.LoggerProvider { return lp }),
+		Module,
+		fx.Populate(&got),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("fx: %v", err)
+	}
+	got.Info(context.Background(), "login", "password", "hunter2", "authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.e30.c2ln")
+
+	a := attrsOf(exp.only(t))
+	if a["password"].AsString() != "[REDACTED]" || a["authorization"].AsString() != "[REDACTED]" {
+		t.Fatalf("a graph without RedactConfig must mask: %v", a)
 	}
 }
 
@@ -75,7 +101,7 @@ func TestModule_ProvidesSlogAndLoggerFromOneChain(t *testing.T) {
 func TestModule_InvalidRedactConfigFailsGraph(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
-		fx.Supply(Config{Level: "info", Silent: true}, RedactConfig{Enabled: true, Patterns: Patterns{`(`}}),
+		fx.Supply(Config{Level: "info", Silent: true}, RedactConfig{Patterns: Patterns{`(`}}),
 		Module,
 		fx.Invoke(func(Logger) {}),
 	)

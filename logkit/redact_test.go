@@ -24,7 +24,6 @@ const maxRedactOverhead = 3.0
 
 func newRedacted(t *testing.T, buf *bytes.Buffer, cfg RedactConfig) Logger {
 	t.Helper()
-	cfg.Enabled = true
 	return mustLogger(t, Config{Level: "debug"}, buf, WithRedact(cfg))
 }
 
@@ -185,7 +184,7 @@ func (emailValuer) LogValue() slog.Value { return slog.StringValue("valuer@examp
 
 func TestRedact_SlogGroupChainAndError(t *testing.T) {
 	var buf bytes.Buffer
-	sl := mustSlog(t, Config{Level: "debug"}, &buf, WithRedact(RedactConfig{Enabled: true}))
+	sl := mustSlog(t, Config{Level: "debug"}, &buf, WithRedact(RedactConfig{}))
 	sl.WithGroup("req").With("user", "u@example.com").Info(
 		"done",
 		"err", errors.New("mail to x@example.com failed"),
@@ -318,9 +317,21 @@ func TestRedact_CustomPatternsAndReplacement(t *testing.T) {
 	}
 }
 
+// KDOC-01: логгер без WithRedact маскирует дефолтным набором — пароль и Bearer-токен
+// не уходят в лог открытым текстом, даже если конфиг маскирования забыли.
+func TestRedact_MasksWithoutOption(t *testing.T) {
+	var buf bytes.Buffer
+	l := mustLogger(t, Config{Level: "debug"}, &buf)
+	l.Info(context.Background(), "login", "password", "hunter2", "authorization", "Bearer eyJhbGciOiJIUzI1NiJ9.e30.c2lnbmF0dXJl")
+
+	if out := buf.String(); strings.Contains(out, "hunter2") || strings.Contains(out, "eyJhbGci") {
+		t.Fatalf("a logger without WithRedact must mask: %s", out)
+	}
+}
+
 func TestRedact_Disabled(t *testing.T) {
 	var buf bytes.Buffer
-	l := mustLogger(t, Config{Level: "debug"}, &buf, WithRedact(RedactConfig{Enabled: false}))
+	l := mustLogger(t, Config{Level: "debug"}, &buf, WithRedact(RedactConfig{Disabled: true}))
 	l.Info(context.Background(), "user login", "email", "john.doe@example.com")
 
 	if m := decodeLine(t, buf.Bytes()); m["email"] != "john.doe@example.com" {
@@ -330,8 +341,8 @@ func TestRedact_Disabled(t *testing.T) {
 
 func TestRedact_InvalidConfigIsError(t *testing.T) {
 	cases := map[string]RedactConfig{
-		"pattern":     {Enabled: true, Patterns: Patterns{`(`}},
-		"replacement": {Enabled: true, ReplaceWith: `"`},
+		"pattern":     {Patterns: Patterns{`(`}},
+		"replacement": {ReplaceWith: `"`},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -343,7 +354,7 @@ func TestRedact_InvalidConfigIsError(t *testing.T) {
 }
 
 func TestNewRedactHandler_NilInner(t *testing.T) {
-	if _, err := NewRedactHandler(nil, RedactConfig{Enabled: true}); err == nil {
+	if _, err := NewRedactHandler(nil, RedactConfig{}); err == nil {
 		t.Fatal("nil inner handler must be rejected")
 	}
 }
@@ -482,7 +493,7 @@ func TestRedact_CostOfRecordWithoutSecrets(t *testing.T) {
 		}
 		return l
 	}
-	plainLog, redactLog := newLogger(), newLogger(WithRedact(RedactConfig{Enabled: true}))
+	plainLog, redactLog := newLogger(WithRedact(RedactConfig{Disabled: true})), newLogger()
 	ctx := context.Background()
 	for name, kv := range records {
 		cost := func(l Logger) time.Duration {
@@ -522,13 +533,13 @@ func TestRedact_PhonePatternIgnoresPlainNumbers(t *testing.T) {
 // SEC-02 аудита шаблона: без env маскирование включено — mailer, пишущий токен
 // сброса пароля ключом token и ссылкой с hex-токеном, в лог его не отдаёт.
 func TestRedact_EnabledByDefault(t *testing.T) {
-	clearEnv(t, "LOG_REDACT_ENABLED", "LOG_REDACT_PATTERNS", "LOG_REDACT_REPLACE_WITH")
+	clearEnv(t, "LOG_REDACT_DISABLED", "LOG_REDACT_PATTERNS", "LOG_REDACT_REPLACE_WITH")
 	cfg, err := NewRedactConfig()
 	if err != nil {
 		t.Fatalf("NewRedactConfig: %v", err)
 	}
-	if !cfg.Enabled {
-		t.Fatal("LOG_REDACT_ENABLED must default to true")
+	if cfg.Disabled {
+		t.Fatal("LOG_REDACT_DISABLED must default to false")
 	}
 
 	const token = "9f86d081884c7d659a2feaa0c55ad0159f86d081884c7d659a2feaa0c55ad015"
@@ -820,32 +831,36 @@ func (*ownJSONPtr) MarshalJSON() ([]byte, error) { return []byte(`"own-ptr"`), n
 // без маскирования; типы со своим MarshalJSON не разбираются. Срез рядом с
 // ключом-секретом попадает в копию: элементы копии не адресуемы, и MarshalJSON
 // на указателе у них не позвался бы.
+// Запись логируется дважды: второй раз selfEncoding отвечает из кэша по типу, и
+// кэш обязан помнить «кодирует себя сам», а не только первый ответ.
 func TestRedact_MapKeysKeepTypeEncoding(t *testing.T) {
-	var buf bytes.Buffer
-	l := newRedacted(t, &buf, RedactConfig{})
-	l.Info(context.Background(), "types",
-		"doc", map[string]any{
-			"token": "opaque-token",
-			"acct":  &account{Creds: hiddenCreds{User: "u", Pass: "hidden-pass"}},
-			"own":   ownJSON{"password": "own-secret"},
-			"list":  []ownJSONPtr{{"password": "own-ptr-secret"}},
-		},
-	)
+	for i := range 2 {
+		var buf bytes.Buffer
+		l := newRedacted(t, &buf, RedactConfig{})
+		l.Info(context.Background(), "types",
+			"doc", map[string]any{
+				"token": "opaque-token",
+				"acct":  &account{Creds: hiddenCreds{User: "u", Pass: "hidden-pass"}},
+				"own":   ownJSON{"password": "own-secret"},
+				"list":  []ownJSONPtr{{"password": "own-ptr-secret"}},
+			},
+		)
 
-	out := buf.String()
-	for _, leaked := range []string{"opaque-token", "hidden-pass", "own-ptr-secret"} {
-		if strings.Contains(out, leaked) {
-			t.Fatalf("%q leaked: %s", leaked, out)
+		out := buf.String()
+		for _, leaked := range []string{"opaque-token", "hidden-pass", "own-ptr-secret"} {
+			if strings.Contains(out, leaked) {
+				t.Fatalf("record %d: %q leaked: %s", i, leaked, out)
+			}
 		}
-	}
-	m := decodeLine(t, buf.Bytes())
-	doc, _ := m["doc"].(map[string]any)
-	acct, _ := doc["acct"].(map[string]any)
-	if creds, _ := acct["Creds"].(map[string]any); creds["user"] != "u" || doc["own"] != "own" {
-		t.Errorf("doc = %v, want the types' own encoding", m["doc"])
-	}
-	if list, _ := doc["list"].([]any); len(list) != 1 || list[0] != "own-ptr" {
-		t.Errorf("list = %v, want MarshalJSON of addressable elements", doc["list"])
+		m := decodeLine(t, buf.Bytes())
+		doc, _ := m["doc"].(map[string]any)
+		acct, _ := doc["acct"].(map[string]any)
+		if creds, _ := acct["Creds"].(map[string]any); creds["user"] != "u" || doc["own"] != "own" {
+			t.Errorf("record %d: doc = %v, want the types' own encoding", i, m["doc"])
+		}
+		if list, _ := doc["list"].([]any); len(list) != 1 || list[0] != "own-ptr" {
+			t.Errorf("record %d: list = %v, want MarshalJSON of addressable elements", i, doc["list"])
+		}
 	}
 }
 
@@ -876,7 +891,7 @@ func TestRedact_MapKeysAliasedSlicesKeepShape(t *testing.T) {
 // text-обработчик печатает её, а не исходник с секретом.
 func TestRedact_FallbackKeepsMasking(t *testing.T) {
 	var buf bytes.Buffer
-	l := mustLogger(t, Config{Level: "debug", Format: "text"}, &buf, WithRedact(RedactConfig{Enabled: true}))
+	l := mustLogger(t, Config{Level: "debug", Format: "text"}, &buf, WithRedact(RedactConfig{}))
 	l.Info(context.Background(), "unencodable", "doc", map[string]any{"password": "opaque-fallback", "ch": make(chan int)})
 
 	if out := buf.String(); strings.Contains(out, "opaque-fallback") || !strings.Contains(out, "[REDACTED]") {

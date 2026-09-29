@@ -114,7 +114,7 @@ func TestModule_RedactsErrorLogger(t *testing.T) {
 		fx.Supply(
 			Config{Disabled: true},
 			logkit.Config{Level: "info"},
-			logkit.RedactConfig{Enabled: true},
+			logkit.RedactConfig{},
 		),
 		Module,
 	)

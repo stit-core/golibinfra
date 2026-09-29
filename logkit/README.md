@@ -23,8 +23,9 @@
 - **`RegisterAttr`** — глобально регистрируемые поля из `ctx` (так `httpkit`
   пробрасывает `request_id`); попадают в оба sink'а. Регистрация ключевая:
   повторный вызов с тем же ключом заменяет экстрактор, а не добавляет второй.
-- **PII-redact** — `WithRedact` + `RedactConfig`, включён по умолчанию
-  (`LOG_REDACT_ENABLED=true`): regex-маски применяются к `msg` и строковым
+- **PII-redact** — включён всегда, пока его не выключат явно
+  (`LOG_REDACT_DISABLED=true`); `WithRedact` + `RedactConfig` задают свои маски
+  и замену: regex-маски применяются к `msg` и строковым
   значениям атрибутов, включая `With()`-attrs, группы, `error` и
   JSON-представление `Any`-значений, а значение под ключом-секретом (`token`,
   `password`, `secret`, `authorization`, `cookie`, …) заменяется целиком; числа
@@ -54,14 +55,15 @@ import "git.stit.tech/stit-core/golibinfra/logkit"
 
 `Module` provide'ит `logkit.Logger` и `*slog.Logger`, но **не** конфиги — их
 регистрирует caller. `RedactConfig` и `log.LoggerProvider` — опциональные
-зависимости: нет в графе → redact выключен, OTel-sink не добавляется; поэтому
-`NewRedactConfig` в граф добавляют всегда — он включает маскирование.
+зависимости: без `RedactConfig` маскирует дефолтный набор, без `LoggerProvider`
+OTel-sink не добавляется. `NewRedactConfig` добавляют в граф, чтобы маскирование
+настраивали `LOG_REDACT_*`.
 
 ```go
 fx.New(
 	fx.Provide(telemetry.NewConfig),     // нужен telemetry.Module (OTEL_*)
 	fx.Provide(logkit.NewConfig),        // Config из ENV (LOG_*)
-	fx.Provide(logkit.NewRedactConfig),  // RedactConfig из ENV: маскирование включено
+	fx.Provide(logkit.NewRedactConfig),  // RedactConfig из ENV (LOG_REDACT_*)
 	telemetry.Module,                    // опционально: даёт log.LoggerProvider → OTLP-sink
 	logkit.Module,                       // → logkit.Logger, *slog.Logger
 	logkit.FxLogger,                     // события fx — в тот же лог
@@ -91,7 +93,7 @@ fx.New(
 
 ```go
 cfg, err := logkit.NewConfig() // или logkit.Config{Level: "debug"}
-log, err := logkit.New(cfg)    // Logger в stdout
+log, err := logkit.New(cfg)    // Logger в stdout, маскирование — дефолтным набором
 sl, err := logkit.NewSlog(cfg) // *slog.Logger той же цепочки
 ```
 
@@ -100,7 +102,7 @@ sl, err := logkit.NewSlog(cfg) // *slog.Logger той же цепочки
 ```go
 log, err := logkit.New(cfg,
 	logkit.WithWriter(w),            // writer вместо stdout
-	logkit.WithRedact(redactCfg),    // PII-маски
+	logkit.WithRedact(redactCfg),    // свои PII-маски и замена; Disabled выключает
 	logkit.WithOTel(loggerProvider), // второй sink; WithoutOTel() отменяет заданный ранее
 	logkit.WithService(svcCfg),      // service/env/version в каждой записи
 )
@@ -156,7 +158,7 @@ logkit.RegisterAttr("request_id", func(ctx context.Context) (slog.Value, bool) {
 ### Redact
 
 ```go
-log, err := logkit.New(cfg, logkit.WithRedact(logkit.RedactConfig{Enabled: true}))
+log, err := logkit.New(cfg) // маскирует без опций; logkit.WithRedact — свои маски
 log.With("owner", "owner@example.com").Info(ctx, "login john@example.com", "phone", "+79161234567", "elapsed", 1500*time.Millisecond)
 // → "msg":"login [REDACTED]", "owner":"[REDACTED]", "phone":"[REDACTED]", "elapsed":1500000000
 ```
@@ -185,7 +187,7 @@ Zero-value валиден: `info`, JSON, stdout, без `source`.
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `LOG_REDACT_ENABLED` | `Enabled` | `bool` | `true` | Включает redact-слой. Нулевой `RedactConfig{}` (и граф без `RedactConfig`) — без маскирования. |
+| `LOG_REDACT_DISABLED` | `Disabled` | `bool` | `false` | `true` выключает redact-слой. Нулевой `RedactConfig{}`, граф без `RedactConfig` и логгер без `WithRedact` маскируют дефолтным набором. |
 | `LOG_REDACT_PATTERNS` | `Patterns` | `Patterns` (`[]string`) | *(пусто → дефолтные)* | Regex-фильтры; в ENV разделитель `;` (запятая встречается в квантификаторах `{10,15}`), литеральная `;` внутри паттерна пишется как `\;`. Невалидный regex → `ErrConfig`. Паттерн, совпадающий с пустой строкой (`a*`, `x?`, пустой элемент), тоже → `ErrConfig`: он вставляет замену между каждой парой символов записи. |
 | `LOG_REDACT_REPLACE_WITH` | `ReplaceWith` | `string` | `[REDACTED]` | Строка-замена, подставляется литерально (`$1` не раскрывается). `"`, `\` и control-символы отвергаются (`ErrConfig`): они ломают JSON-представление структурных значений. |
 
@@ -298,7 +300,7 @@ func FromSlog(l *slog.Logger) Logger            // nil → Nop()
 func Nop() Logger
 
 func WithWriter(w io.Writer) Option             // приоритетнее Config.Silent
-func WithRedact(cfg RedactConfig) Option
+func WithRedact(cfg RedactConfig) Option       // без опции — дефолтный набор
 func WithOTel(lp log.LoggerProvider) Option     // nil → sink не добавляется
 func WithoutOTel() Option
 func WithService(cfg ServiceConfig) Option
@@ -353,7 +355,7 @@ OTel-sink проверяется через `sdklog.NewLoggerProvider` с `Simpl
 - **`RegisterAttr`-значения и `trace_id`/`span_id` идут мимо redact:** они
   добавляются после redact-слоя. Экстрактор, отдающий PII (например `user_id`
   = email-subject), маскировать нужно на своей стороне.
-- **Redact включён по умолчанию** (`NewRedactConfig`) и применяется до
+- **Redact включён всегда**, пока его не выключит `RedactConfig.Disabled`, и применяется до
   fan-out: маскируются оба sink'а. Маска работает по строкам — `msg`,
   строковые атрибуты (в т.ч. из `With()` и групп), текст `error`,
   JSON-представление структур (`Any`), содержимое `[]byte`; значение под

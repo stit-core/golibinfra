@@ -8,8 +8,9 @@ import (
 )
 
 // Module не provide'ит конфиги — caller регистрирует их сам (fx.Provide(
-// logkit.NewConfig) и опц. NewRedactConfig). OTel-sink включается, если в
-// графе есть log.LoggerProvider (его отдаёт telemetry.Module).
+// logkit.NewConfig) и опц. NewRedactConfig: без него маскирует дефолтный набор).
+// OTel-sink включается, если в графе есть log.LoggerProvider (его отдаёт
+// telemetry.Module).
 var Module = fx.Module(
 	"logkit",
 	fx.Provide(

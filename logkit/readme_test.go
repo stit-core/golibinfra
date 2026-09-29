@@ -52,7 +52,7 @@ func TestReadme_QuickStartWithFxNeedsTelemetryConfig(t *testing.T) {
 // Сниппет README § Быстрый старт → «Без fx» компилируется и работает как есть.
 func TestReadme_QuickStartWithoutFx(t *testing.T) {
 	var w bytes.Buffer
-	redactCfg := logkit.RedactConfig{Enabled: true}
+	redactCfg := logkit.RedactConfig{}
 	svcCfg := logkit.ServiceConfig{Service: "api", Env: "dev", Version: "v1.2.3"}
 
 	ctx := context.Background()

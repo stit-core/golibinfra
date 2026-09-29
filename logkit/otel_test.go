@@ -382,7 +382,7 @@ func TestWithoutOTel_DropsSink(t *testing.T) {
 
 func TestOTel_RedactAppliesToBothSinks(t *testing.T) {
 	var buf bytes.Buffer
-	l, exp := newOTelLogger(t, &buf, WithRedact(RedactConfig{Enabled: true}))
+	l, exp := newOTelLogger(t, &buf, WithRedact(RedactConfig{}))
 	l.Info(context.Background(), "mail to a@b.io", "email", "a@b.io")
 
 	if m := decodeLine(t, buf.Bytes()); m["email"] != "[REDACTED]" || m["msg"] != "mail to [REDACTED]" {

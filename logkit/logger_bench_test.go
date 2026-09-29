@@ -52,7 +52,7 @@ func BenchmarkLoggerDebugFiltered(b *testing.B) {
 }
 
 func BenchmarkLoggerInfoRedact(b *testing.B) {
-	lg := benchLogger(b, Config{Level: "info"}, WithRedact(RedactConfig{Enabled: true}))
+	lg := benchLogger(b, Config{Level: "info"}, WithRedact(RedactConfig{}))
 	ctx := context.Background()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
@@ -71,7 +71,7 @@ func BenchmarkLoggerInfoStruct(b *testing.B) {
 }
 
 func BenchmarkLoggerInfoRedactStruct(b *testing.B) {
-	lg := benchLogger(b, Config{Level: "info"}, WithRedact(RedactConfig{Enabled: true}))
+	lg := benchLogger(b, Config{Level: "info"}, WithRedact(RedactConfig{}))
 	ctx := context.Background()
 	doc := map[string]any{"id": "ORD-42", "items": []string{"a", "b"}, "total": 1500}
 	b.ResetTimer()
@@ -83,7 +83,7 @@ func BenchmarkLoggerInfoRedactStruct(b *testing.B) {
 // Свой набор идёт мимо pre-filter'а — цена узкой маски против дефолтной.
 func BenchmarkLoggerInfoRedactStructNarrowSet(b *testing.B) {
 	lg := benchLogger(b, Config{Level: "info"},
-		WithRedact(RedactConfig{Enabled: true, Patterns: Patterns{`\bsk-ant-[A-Za-z0-9_-]{16,}`}}))
+		WithRedact(RedactConfig{Patterns: Patterns{`\bsk-ant-[A-Za-z0-9_-]{16,}`}}))
 	ctx := context.Background()
 	doc := map[string]any{"id": "ORD-42", "items": []string{"a", "b"}, "total": 1500}
 	b.ResetTimer()

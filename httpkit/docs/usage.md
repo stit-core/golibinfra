@@ -25,7 +25,7 @@
 ```go
 app := fx.New(
     logkit.Module,
-    fx.Provide(logkit.NewConfig, httpkit.NewConfig),
+    fx.Provide(logkit.NewConfig, logkit.NewRedactConfig, httpkit.NewConfig),
     fx.Invoke(registerRoutes), // корневой Invoke с зависимостями — до httpkit.Module
     httpkit.Module,
 )
@@ -312,6 +312,7 @@ s := httpkit.NewServer(cfg, httpkit.WithLogger(log))
 s.Router().Use(httpkit.RequestID(), httpkit.OTel(cfg.QuietPaths...),
     httpkit.AccessLog(log, cfg.QuietPaths...), httpkit.Metrics(), httpkit.Recovery(log))
 api := s.BindAPI() // после Use
+api.UseMiddleware(httpkit.HumaAuth(log, extract)) // до регистрации: без него Security не проверяется
 httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout)
 huma.Get(api, "/ping", pingHandler)
 if err := s.Listen(); err != nil { /* порт занят */ }

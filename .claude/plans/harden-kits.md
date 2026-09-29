@@ -152,8 +152,8 @@ blocked-by: —
   импортировать `pgstore` (цикл), а фабрика знает и хранилище, и его миграции.
 - `outboxtest.Recorder` всегда требует транзакцию — как дефолт `OUTBOX_REQUIRE_TX=true`; фейк
   без переключателя.
-- SEC-02: redact включается дефолтом `LOG_REDACT_ENABLED=true` (нулевой `RedactConfig{}` —
-  выключен, как и был); ключи сравниваются по словам (`input_tokens` — не секрет), маскируются
+- SEC-02: redact включён всегда (KDOC-01: нулевой `RedactConfig{}`, граф без него и `New` без
+  `WithRedact` маскируют, выключатель — `LOG_REDACT_DISABLED`); ключи сравниваются по словам (`input_tokens` — не секрет), маскируются
   строки, группы и структуры под ключом, числа нет; hex-цепочка ≥32 (токены, SHA-1/256).
 - SEC-05: попытка учитывается до проверки секрета (`Attempt`), успех сбрасывает окно — гонка
   «прочитал, потом записал» и забытый `RecordFailure` невозможны; upsert с `WHERE` не пишет
@@ -181,8 +181,8 @@ blocked-by: —
   целиком или его окончание (`accesstoken`), `api`/`private` + `key`; коды — слово `pin`,
   `pincode` или на `otp`, прячется и число; те же правила — у ключей `map` со строковыми ключами
   (`http.Header`, `url.Values`, `map[string]any`, вложенные; копия — только при секрете). Поля
-  структур не разбираются (путь — `LogValuer`-группа). Граф без `RedactConfig` не маскирует
-  (`Module` ENV не читает). Цена без маркеров — около ×2 (потолок теста ×3). Остальные пропуски
+  структур не разбираются (путь — `LogValuer`-группа). Граф без `RedactConfig` маскирует
+  дефолтным набором (`Module` ENV не читает). Цена без маркеров — около ×2 (потолок теста ×3). Остальные пропуски
   (`pass`, `sid`, `code`, base64url, DSN, JSON в `RawMessage`/`[]byte`, `otpauth`) — в бэклоге.
 - S6: `NormalizeKey` — `ToLower(TrimSpace)` до проверок пустоты и длины; фейки кроме `Counting`
   ключ только проверяют. Строки со старым ключом новым не находятся — блокировка теряется не
@@ -237,6 +237,11 @@ blocked-by: —
   на `otp` где угодно в ключе прячет значение любого вида, и число тоже; счётчик рядом с кодом
   (`otp_attempts`) прячется вместе с ним — правило не угадывает смысл соседних слов, это в
   README; коды вне словаря — в бэклоге. Варианты «последнее слово», «`code` после кода» сняты.
+- KDOC-01 (после валидатора этапа httpkit): умолчание — в коде, а не в провайдере. Выключатель
+  стал `Disabled` (`LOG_REDACT_DISABLED`): у `bool` безопасен только нулевой `false`, поэтому
+  `Enabled` с нулём «выключено» делал опасным и граф без `RedactConfig`, и `New` без опции.
+  `RedactConfig` остаётся необязательным: его отсутствие — нулевое значение, и оно маскирует;
+  прежний `LOG_REDACT_ENABLED=false` теперь игнорируется — ошибка в безопасную сторону.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -257,15 +262,21 @@ blocked-by: —
 - Сделано: план (`bc726e3`); этап «Инфраструктурные киты» — S1 `a4030bf`, S2 `887527a`,
   S3 `16949a0`, S4 `5333bee`, S5 `73900ca`, S6 `2d0aeaf`, S7 `2b8e39a`, S8 `a42b333`, S9 `37da068`
   (содержание — «Шаги») и `fix(outboxkit)` `dd6eed6`; этап httpkit — S10 `832904e`, S11
-  `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 (`feat(httpkit)!`). Этап httpkit закрыт.
-- Осталось: валидатор этапа httpkit (S10–S14), затем S15 — корневые README/CLAUDE.md, `make
-  test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка не запушена.
+  `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 `007d79a`. Этап httpkit закрыт: валидатор —
+  PASS (`M/validation-harden-kits-B.md`); его неблокирующие и KDOC-01/06 базового аудита китов
+  закрываются до тега отдельными `fix(...)`: KDOC-01 — `fix(logkit)!`.
+- Осталось: остальные фиксы по валидатору (N2–N8, N1/N11, KDOC-06, N9 в бэклог), затем S15 —
+  корневые README/CLAUDE.md, `make test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка
+  не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
   замечаний — `cb32246`…`08b1db1` (`fix(...)`, по находке на коммит). Круг по неблокирующим
   последней перепроверки (`0f7b32a`: обход ключей без pre-filter, кэш `selfEncoding`; `4b99bf9`:
   тесты защит обхода; `d62b2e6`: бэклог logkit) проверит валидатор этапа httpkit.
 - Для аннотации тега копить по шагам:
   - Breaking:
+    - logkit (KDOC-01): `RedactConfig.Enabled` и `LOG_REDACT_ENABLED` удалены → выключатель
+      `Disabled` / `LOG_REDACT_DISABLED=true`; `RedactConfig{Enabled: true}` → `RedactConfig{}`; тест,
+      сверяющий сырые значения в логе `logkit.New`, передаёт `WithRedact(logkit.RedactConfig{Disabled: true})`.
     - httpkit (S11): `Security` без `httpkit.AuthExtractor` в графе — ошибка старта `ErrAuthNotConfigured`
       с именами операций, `HumaAuth(log, nil)` — `500 AUTH_NOT_CONFIGURED` → провайдите extractor
       или объявите публичную операцию пустым `Security: []map[string][]string{}`.
@@ -309,11 +320,11 @@ blocked-by: —
     - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами.
     - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт
       другой процесс.
-    - logkit (S5): `LOG_REDACT_ENABLED` по умолчанию `true`; значение под ключом-секретом
-      (token, password, secret, authorization, cookie, …; и по окончанию слова — `accesstoken`),
-      в том числе у ключей `map` (`http.Header`, `url.Values`, `map[string]any`), маскируется
-      целиком, ключ со словом `pin`/`pincode`/`…otp` — и числом, hex-цепочки ≥32 — маской; выключить —
-      `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его.
+    - logkit (S5, KDOC-01): маскирование включено всегда — и в графе без `NewRedactConfig`, и у
+      `logkit.New` без `WithRedact`; значение под ключом-секретом (token, password, secret,
+      authorization, cookie, …; и по окончанию слова — `accesstoken`), в том числе у ключей `map`
+      (`http.Header`, `url.Values`, `map[string]any`), маскируется целиком, ключ со словом
+      `pin`/`pincode`/`…otp` — и числом, hex-цепочки ≥32 — маской; выключить — `LOG_REDACT_DISABLED=true`.
     - bruteforcekit (S6): subject — в нижнем регистре без пробелов по краям,
       `BRUTEFORCE_IPV6_PREFIX` по умолчанию `64` (полный адрес — `128`); блокировки строк со
       старым ключом теряются не дольше `BRUTEFORCE_LOCK_DURATION`.

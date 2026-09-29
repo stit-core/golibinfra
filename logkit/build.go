@@ -21,7 +21,8 @@ type options struct {
 	writer  io.Writer
 }
 
-// WithRedact включает PII-redact по RedactConfig (при cfg.Enabled).
+// WithRedact настраивает маскирование: свои маски, замена или выключение
+// (Disabled). Без опции логгер маскирует дефолтным набором.
 func WithRedact(cfg RedactConfig) Option {
 	return func(o *options) { o.redact = cfg }
 }
@@ -124,7 +125,7 @@ func buildHandler(cfg Config, opts []Option) (slog.Handler, error) {
 	}
 	h = newCtxHandler(h, registeredCtxAttrs)
 	h = &metricHandler{Handler: h}
-	if o.redact.Enabled {
+	if !o.redact.Disabled {
 		if h, err = NewRedactHandler(h, o.redact); err != nil {
 			return nil, err
 		}

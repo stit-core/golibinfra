@@ -113,7 +113,7 @@ go mod tidy
 | [`flagkit`](flagkit/) | Feature flags из ENV (`FEATURE_FLAGS=foo=true,bar=baz`), мусор в переменной валит старт; `Store.Bool/String/Names` |
 | [`timerkit`](timerkit/) | Periodic jobs через fx-группу `timerkit.Group` (регистрация — `timerkit.Provide`): валидация на старте, ожидание джобов на стопе, `Timeout`/`Jitter`/`RunOnStart`, часы из `clockkit`; спан `timerkit.job <name>`, `timer_job_*` |
 | [`telemetry`](telemetry/) | Opt-in bootstrap OTel SDK: tracer/meter/logger providers + OTLP HTTP-экспортёры (`OTEL_EXPORTER_OTLP_ENDPOINT` — URL по спецификации, `OTEL_SDK_DISABLED` — общий выключатель); `log.LoggerProvider` для `logkit`, ошибки экспорта — в `logkit`. Без него kit-инструментация no-op |
-| [`logkit`](logkit/) | `Logger` поверх slog: JSON или text (`LOG_FORMAT`) в stdout (`LOG_SILENT`) + OTel log-bridge, redact PII на уровне атрибутов (`WithRedact`, включён по умолчанию; дефолты знают Bearer/Basic/JWT/API-ключи и hex-токены, значение под ключом-секретом — целиком), `trace_id`/`request_id` из ctx, `RegisterAttr(key, fn)`, позиция вызывающего (`LOG_SOURCE`); события fx в тот же лог — `FxLogger`; `log_messages_total`; capture-логгер `testkit/logtest` |
+| [`logkit`](logkit/) | `Logger` поверх slog: JSON или text (`LOG_FORMAT`) в stdout (`LOG_SILENT`) + OTel log-bridge, redact PII на уровне атрибутов (включён всегда, выключатель `LOG_REDACT_DISABLED`; дефолты знают Bearer/Basic/JWT/API-ключи и hex-токены, значение под ключом-секретом — целиком), `trace_id`/`request_id` из ctx, `RegisterAttr(key, fn)`, позиция вызывающего (`LOG_SOURCE`); события fx в тот же лог — `FxLogger`; `log_messages_total`; capture-логгер `testkit/logtest` |
 | [`authnkit`](authnkit/) | `Hasher` (Argon2id, строгий PHC, `NeedsRehash`, `VerifyDummy`); HS256 JWT на go-jose с типом токена (`SignAccess`/`SignRefresh`/`ParseAccess`/`ParseRefresh`, `JWT_LEEWAY`); `TOTP` с защитой от replay (`VerifyOnce`, `TOTP_SKEW`); RBAC `Registry`; `authn_*` |
 | [`oidckit`](oidckit/) | OIDC BFF (Authorization Code + PKCE S256): `Verifier` (discovery, JWKS-кэш, iss/aud/azp/exp/nonce, `OIDC_LEEWAY`), роуты login/callback/me/logout, cookie-сессия HS256 (`__Host-`-имена, `Secure` по умолчанию), `Extractor` → `httpkit.AuthExtractor`, `StateStore` (Redis, атомарный `GetDel`), health-проба; требует `*httpclient.Client` в графе; `oidc_*`; stub IdP — `testkit/oidctest` |
 | [`hubkit`](hubkit/) | SDK хаба stit: `sso` (verify hub-session двух контуров, обязательный `aud`, JWKS-кэш с grace, `Identity` в ctx, гейты), `issuer` (ES256, три слота ключей и JWKS-handler, rotating-refresh с reuse-detection поверх `cachekit`), `client` (типизированный hub API поверх `httpclient`), `sync` (pull-синк проекций в job'ы `timerkit`), `projection` (готовый `pgkit.Source` — `projection.Migrations`), `hubclaims` (имена claim'ов и контуры hub-session JWT — общий контракт `sso` и `issuer`, без зависимостей); `testkit/hubtest` |
@@ -208,12 +208,12 @@ go mod tidy
 ```go
 fx.New(
   fx.Provide(
-    telemetry.NewConfig, logkit.NewConfig, httpkit.NewConfig,
+    telemetry.NewConfig, logkit.NewConfig, logkit.NewRedactConfig, httpkit.NewConfig,
     pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, natskit.NewConfig,
     cachekit.NewConfig, outboxkit.NewConfig, pgstore.NewConfig,
   ),
   telemetry.Module,     // OTLP-экспортёры; без него всё ниже — no-op
-  logkit.Module,        // log_messages_total{level}, slog с trace_id в stdout + OTLP
+  logkit.Module,        // log_messages_total{level}, slog с trace_id в stdout + OTLP, маскирование секретов
   logkit.FxLogger,      // события fx — в тот же лог: ошибки ERROR, рутина DEBUG
   httpkit.Module,       // http_requests_total, http_request_duration_seconds, server-span
   pgkit.Module,         // pg_pool_*{role}, pg traces

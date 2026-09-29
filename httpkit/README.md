@@ -36,7 +36,7 @@ var userErrors = httpkit.NewErrorMap(
 
 app := fx.New(
     logkit.Module,                                  // logkit.Logger
-    fx.Provide(logkit.NewConfig, httpkit.NewConfig), // LOG_*/HTTP_* из ENV + Validate
+    fx.Provide(logkit.NewConfig, logkit.NewRedactConfig, httpkit.NewConfig), // LOG_*/HTTP_* из ENV
     healthkit.Provide(pgkit.Probe),                 // проба в /ready
     fx.Invoke(func(api huma.API) {                  // корневой Invoke — до httpkit.Module
         huma.Register(api, userErrors.Declare(huma.Operation{ // коды — в openapi.json
@@ -54,7 +54,9 @@ app := fx.New(
 app.Run()
 ```
 
-Без fx (caller сам ставит middleware и вызывает `BindAPI` после `Use`):
+Без fx (caller сам ставит middleware и вызывает `BindAPI` после `Use`; операции с
+`Security` проверяет только `api.UseMiddleware(httpkit.HumaAuth(log, extract))`,
+поставленный до их регистрации):
 
 ```go
 s := httpkit.NewServer(cfg, httpkit.WithLogger(log))

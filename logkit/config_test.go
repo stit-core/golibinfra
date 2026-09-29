@@ -89,7 +89,7 @@ func TestNewConfig_RejectsInvalidLevelAndFormat(t *testing.T) {
 }
 
 func TestNewRedactConfig_FromEnv(t *testing.T) {
-	t.Setenv("LOG_REDACT_ENABLED", "true")
+	t.Setenv("LOG_REDACT_DISABLED", "true")
 	t.Setenv("LOG_REDACT_PATTERNS", `\d{10,15}; secret-\w+ ;`)
 	t.Setenv("LOG_REDACT_REPLACE_WITH", "***")
 
@@ -97,7 +97,7 @@ func TestNewRedactConfig_FromEnv(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Enabled || cfg.ReplaceWith != "***" {
+	if !cfg.Disabled || cfg.ReplaceWith != "***" {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 	want := Patterns{`\d{10,15}`, `secret-\w+`}
@@ -107,13 +107,13 @@ func TestNewRedactConfig_FromEnv(t *testing.T) {
 }
 
 func TestNewRedactConfig_Defaults(t *testing.T) {
-	clearEnv(t, "LOG_REDACT_ENABLED", "LOG_REDACT_PATTERNS", "LOG_REDACT_REPLACE_WITH")
+	clearEnv(t, "LOG_REDACT_DISABLED", "LOG_REDACT_PATTERNS", "LOG_REDACT_REPLACE_WITH")
 
 	cfg, err := NewRedactConfig()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !cfg.Enabled || cfg.ReplaceWith != "[REDACTED]" || len(cfg.Patterns) != 0 {
+	if cfg.Disabled || cfg.ReplaceWith != "[REDACTED]" || len(cfg.Patterns) != 0 {
 		t.Fatalf("cfg = %+v", cfg)
 	}
 }
@@ -138,9 +138,9 @@ func TestNewConfig_ReportsEnvconfigError(t *testing.T) {
 	if _, err := NewConfig(); err == nil {
 		t.Fatal("NewConfig must fail on a non-boolean LOG_SILENT")
 	}
-	t.Setenv("LOG_REDACT_ENABLED", "maybe")
+	t.Setenv("LOG_REDACT_DISABLED", "maybe")
 	if _, err := NewRedactConfig(); err == nil {
-		t.Fatal("NewRedactConfig must fail on a non-boolean LOG_REDACT_ENABLED")
+		t.Fatal("NewRedactConfig must fail on a non-boolean LOG_REDACT_DISABLED")
 	}
 }
 
