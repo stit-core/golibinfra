@@ -172,6 +172,9 @@ type AuthExtractor func(r *http.Request) (context.Context, error)
 // разлогинивал пользователя по 401.
 var ErrAuthUnavailable = errors.New("httpkit: auth backend unavailable")
 
+// codeUnauthorized — code 401 HumaAuth: его же операция с Security объявляет в OpenAPI.
+const codeUnauthorized = "UNAUTHORIZED"
+
 // ErrAuthNotConfigured — у операции с Security нет AuthExtractor: Module не
 // стартует, HumaAuth(log, nil) отвечает на такую операцию 500 AUTH_NOT_CONFIGURED.
 var ErrAuthNotConfigured = errors.New("httpkit: auth not configured")
@@ -212,7 +215,7 @@ func authError(ctx context.Context, log logkit.Logger, err error) *APIError {
 		return apiErr
 	default:
 		log.Debug(ctx, "auth rejected", "err", err)
-		return Unauthorized("UNAUTHORIZED", "unauthorized")
+		return Unauthorized(codeUnauthorized, "unauthorized")
 	}
 }
 

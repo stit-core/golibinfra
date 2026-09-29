@@ -221,6 +221,42 @@ func TestErrorMap_Declare(t *testing.T) {
 	}
 }
 
+// N7 валидатора: операция с Security объявляет 401 HumaAuth в OpenAPI сама, коды
+// Declare для 401 — рядом; у публичной операции 401 нет.
+func TestErrorMap_DeclareSecured401(t *testing.T) {
+	authErrors := httpkit.NewErrorMap(
+		httpkit.ErrorRule{Err: errLocked, Status: http.StatusUnauthorized, Code: "AUTH_TOKEN_EXPIRED"},
+	)
+	secured := []map[string][]string{{"Bearer": {}}}
+	noBody := func(context.Context, *struct{}) (*struct{}, error) { return nil, nil } //nolint:nilnil // тело ответа не нужно
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		huma.Register(api, huma.Operation{OperationID: "getMe", Method: http.MethodGet, Path: "/me", Security: secured}, noBody)
+		huma.Register(api, authErrors.Declare(huma.Operation{OperationID: "refresh", Method: http.MethodPost, Path: "/refresh", Security: secured}), noBody)
+		huma.Register(api, huma.Operation{OperationID: "status", Method: http.MethodGet, Path: "/status", Security: []map[string][]string{}}, noBody)
+	})
+
+	for path, want := range map[string]string{
+		"/me":      "Unauthorized: UNAUTHORIZED",
+		"/refresh": "Unauthorized: AUTH_TOKEN_EXPIRED, UNAUTHORIZED",
+	} {
+		item := api.OpenAPI().Paths[path]
+		op := item.Get
+		if op == nil {
+			op = item.Post
+		}
+		resp := op.Responses["401"]
+		if resp == nil || resp.Description != want {
+			t.Fatalf("%s: 401 = %+v, want %q", path, resp, want)
+		}
+		if ref := resp.Content[httpkit.ProblemContentType].Schema.Ref; !strings.HasSuffix(ref, "/APIError") {
+			t.Errorf("%s: 401 schema = %q, want APIError", path, ref)
+		}
+	}
+	if resp := api.OpenAPI().Paths["/status"].Get.Responses["401"]; resp != nil {
+		t.Fatalf("a public operation must not declare 401: %+v", resp)
+	}
+}
+
 func TestErrorMap_InvalidRulePanics(t *testing.T) {
 	sentinel := errors.New("x")
 	specific := fmt.Errorf("%w: reused", sentinel)

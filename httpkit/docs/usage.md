@@ -93,7 +93,9 @@ var userErrors = httpkit.NewErrorMap(
   `nil` → `nil`.
 - `Declare(op)` — при регистрации: статусы правил попадают в `op.Errors` (huma
   добавляет к ним 422 и 500), коды — в описание ответа своего статуса в
-  `openapi.json` (`Conflict: USER_CONCURRENT_UPDATE`).
+  `openapi.json` (`Conflict: USER_CONCURRENT_UPDATE`). Операция с `Security`
+  объявляет `401` сама (`Unauthorized: UNAUTHORIZED`, коды 401 из `Declare` —
+  рядом).
 - `Unmapped(errs...)` — в тесте полноты: sentinel'ы домена, которых таблица не
   ловит (ждём пусто).
 

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"maps"
 	"net/http"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
@@ -129,10 +130,26 @@ func (m ErrorMap) Declare(op huma.Operation) huma.Operation {
 	return op
 }
 
-// describeErrorCodes — OnAddOperation сервера: коды Declare — в описание ответа
-// своего статуса. huma создаёт эти ответы раньше хука, поэтому они уже есть.
-func describeErrorCodes(_ *huma.OpenAPI, op *huma.Operation) {
-	codes, _ := op.Metadata[errorCodesKey].(map[int][]string)
+// describeErrors — OnAddOperation сервера: коды Declare — в описание ответа своего
+// статуса (huma создаёт эти ответы раньше хука), а операция с Security объявляет
+// 401 HumaAuth сама.
+func describeErrors(oapi *huma.OpenAPI, op *huma.Operation) {
+	declared, _ := op.Metadata[errorCodesKey].(map[int][]string)
+	codes := maps.Clone(declared)
+	if len(op.Security) > 0 {
+		if codes == nil {
+			codes = map[int][]string{}
+		}
+		if !slices.Contains(codes[http.StatusUnauthorized], codeUnauthorized) {
+			codes[http.StatusUnauthorized] = append(slices.Clone(codes[http.StatusUnauthorized]), codeUnauthorized)
+		}
+		if op.Responses[strconv.Itoa(http.StatusUnauthorized)] == nil {
+			schema := oapi.Components.Schemas.Schema(reflect.TypeFor[APIError](), true, "APIError")
+			op.Responses[strconv.Itoa(http.StatusUnauthorized)] = &huma.Response{
+				Content: map[string]*huma.MediaType{ProblemContentType: {Schema: schema}},
+			}
+		}
+	}
 	for status, list := range codes {
 		if resp := op.Responses[strconv.Itoa(status)]; resp != nil {
 			resp.Description = http.StatusText(status) + ": " + strings.Join(list, ", ")

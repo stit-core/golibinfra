@@ -147,7 +147,10 @@ blocked-by: —
   `MapErr`/`MapIs`/`MapAs` удалены — один канонический способ. S14: таблицу строит только
   `NewErrorMap` — сломанное правило (не ровно одно из `Err`/`Match`, без `Code`, статус вне
   4xx–5xx, `Err`, который ловит правило выше) падает panic при сборке, а не молча не срабатывает;
-  коды — в `op.Metadata`, описание ответа — `Conflict: CODE_A, CODE_B`.
+  коды — в `op.Metadata`, описание ответа — `Conflict: CODE_A, CODE_B`. N7 валидатора: тот же
+  хук объявляет 401 `UNAUTHORIZED` у операции с `Security` — его отдаёт `HumaAuth`, а не
+  хендлер, поэтому `Declare` домена его не несёт; 503 `AUTH_UNAVAILABLE` не объявляется —
+  его отдаёт только extractor, который оборачивает `ErrAuthUnavailable`.
 - FX-04 обобщён: маркер требует `timerkit.Provide`, поэтому job без запускающего модуля
   невозможна у любого кита (outboxkit, bruteforcekit/pgstore, hubkit/sync).
 - FX-12 (outbox): `RepositoryFactory` — интерфейс со схемой таблицы: `outboxkit` не может
@@ -275,8 +278,8 @@ blocked-by: —
   `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 `007d79a`. Этап httpkit закрыт: валидатор —
   PASS (`M/validation-harden-kits-B.md`); его неблокирующие и KDOC-01/06 базового аудита китов
   закрываются до тега отдельными `fix(...)`: KDOC-01 — `80fb648`, N2–N5 — `ac12cfa`, KSEC-01
-  (регрессии) и KSEC-02 — `bb5966a`, N6 — `fix(httpkit)!`.
-- Осталось: N7, N8, N1/N11, KDOC-06, N9 в бэклог; затем S15 —
+  (регрессии) и KSEC-02 — `bb5966a`, N6 — `711bb2e`, N7 — `fix(httpkit)`.
+- Осталось: N8, N1/N11, KDOC-06, N9 в бэклог; затем S15 —
   корневые README/CLAUDE.md, `make test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка
   не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
@@ -354,4 +357,6 @@ blocked-by: —
       (и `ErrJetStreamDisabled`) валит старт.
     - httpkit (S14): `ErrorMap.Declare` — статусы и коды ошибок операции в `openapi.json`;
       `Retry-After` — из `RetryAfter()` доменной ошибки.
+    - httpkit (N7): операция с `Security` объявляет `401 UNAUTHORIZED` в `openapi.json` сама —
+      спецификацию перегенерировать.
 - Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).
