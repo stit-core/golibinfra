@@ -106,7 +106,7 @@ type contractCase struct {
 	status                   int
 	code                     string
 	retryAfter               string // "" — заголовка нет
-	logged                   bool   // строка handler error / panic recovered с тем же request_id
+	logged                   bool   // строка причины (не access-log) с тем же request_id
 	check                    func(t *testing.T, resp *http.Response, e contractBody)
 }
 
@@ -120,8 +120,8 @@ type contractBody struct {
 }
 
 // TestErrorContract: любой ответ-ошибка сервера — problem+json с code и request_id, равным
-// X-Request-ID и полю лога; 422 перечисляет поля без эха значения; 5xx без текста причины;
-// 429 и ошибка с RetryAfter() в причине несут Retry-After.
+// X-Request-ID и полю лога; 422 перечисляет поля без эха значения; 5xx без текста причины,
+// а причина — строкой в логгере графа; 429 и ошибка с RetryAfter() в причине несут Retry-After.
 func TestErrorContract(t *testing.T) {
 	logs := &syncBuffer{}
 	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(logs), logkit.WithoutOTel())
@@ -188,13 +188,13 @@ func TestErrorContract(t *testing.T) {
 		{name: "auth", method: http.MethodGet, path: "/me", status: http.StatusUnauthorized, code: "UNAUTHORIZED"},
 		{
 			name: "auth backend недоступен", method: http.MethodGet, path: "/me", headers: []string{"Authorization: Bearer backend-down"},
-			status: http.StatusServiceUnavailable, code: "AUTH_UNAVAILABLE", check: noDetail,
+			status: http.StatusServiceUnavailable, code: "AUTH_UNAVAILABLE", logged: true, check: noDetail,
 		},
 		{
 			name: "store идемпотентности недоступен", method: http.MethodPost, path: "/signup",
 			body:    `{"email":"a@b.co","password":"long-enough-password"}`,
 			headers: []string{"Authorization: Bearer ok", "Idempotency-Key: k-1"},
-			status:  http.StatusServiceUnavailable, code: "IDEMPOTENCY_UNAVAILABLE", check: noDetail,
+			status:  http.StatusServiceUnavailable, code: "IDEMPOTENCY_UNAVAILABLE", logged: true, check: noDetail,
 		},
 		{name: "неизвестный маршрут", method: http.MethodGet, path: "/nowhere", status: http.StatusNotFound, code: "NOT_FOUND"},
 		{
@@ -264,10 +264,9 @@ func assertProblem(t *testing.T, resp *http.Response, c contractCase, logs *sync
 		if rec["request_id"] != id {
 			continue
 		}
-		switch rec["msg"] {
-		case "http":
+		if rec["msg"] == "http" {
 			access = true
-		case "handler error", "panic recovered":
+		} else {
 			cause = true
 		}
 	}
