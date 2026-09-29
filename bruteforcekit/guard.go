@@ -6,8 +6,13 @@ package bruteforcekit
 
 import (
 	"context"
+	"errors"
 	"time"
 )
+
+// ErrInTx — Attempt вызван внутри транзакции вызывающего: её откат на неверном
+// пароле снял бы учёт попытки, и перебор шёл бы без предела.
+var ErrInTx = errors.New("bruteforcekit: Attempt must run outside a transaction")
 
 // LockState — активная блокировка пары (subject, ip).
 type LockState struct {
@@ -23,10 +28,11 @@ type Guard interface {
 	// Attempt атомарно учитывает попытку пары (subject, ip) до проверки секрета:
 	// nil — попытка разрешена (одна из MaxFailures в окне), *LockState — пара
 	// заблокирована, секрет не проверять. Попытка под блокировкой счётчик не
-	// меняет.
+	// меняет. Вызывается вне транзакции (pgkit.InTx), иначе — ErrInTx.
 	Attempt(ctx context.Context, subject, ip string) (*LockState, error)
 
-	// RecordSuccess снимает историю попыток пары: успех сбрасывает окно.
+	// RecordSuccess снимает историю попыток пары: успех сбрасывает окно. В
+	// транзакции допустим — её откат оставляет счётчик.
 	RecordSuccess(ctx context.Context, subject, ip string) error
 }
 

@@ -206,6 +206,11 @@ blocked-by: —
   (обработчики живут на ctx соединения), поэтому своего `context.Background()` и `cancel` не
   нужно; `OnStop` только дренит — отмену зависших обработчиков по бюджету делает `Close` модуля.
   Быстрый старт README и рецепт fx в `usage.md` — на `SubscribeOnStart` (один способ).
+- Фикс B1 валидатора этапа: `Attempt` в транзакции вызывающего — `bruteforcekit.ErrInTx`
+  (pgstore и все фейки `bruteforcetest` по `pgkit.InTx`, как `DropOldPartitions`): откат логина
+  на неверном пароле снимал учёт, и перебор шёл без предела. `RecordSuccess` в транзакции
+  допустим — откат оставляет счётчик (fail-closed). Сентинел — в core-пакете: хранилище и фейки
+  отдают одну ошибку.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -234,8 +239,10 @@ blocked-by: —
   S8 (`a42b333`, `feat(authnkit)`) — Argon2id в слотах `max(1, GOMAXPROCS/Threads)`, ожидание по
   ctx; S9 (`feat(natskit)`) — `natskit.SubscribeOnStart`. Этап «Инфраструктурные киты» закрыт.
 - Осталось: S10–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — валидация этапа S2–S9 (агент-валидатор), затем S10: хук HTTP-сервера в Invoke
-  уровня `httpkit.Module` — старт последним, остановка первой (AC1).
+- Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — FAIL: B1, B2 и неблокирующие.
+  Фиксы — отдельными `fix(...)`: B1 (`fix(bruteforcekit)`: `ErrInTx`) сделан; дальше B2
+  (аннотация S1/S3), маскирование по ключу, маркер timerkit, natskit, outboxkit (партиции, тест
+  `Module`+`FactoryModule`); затем перепроверка валидатором, потом S10 (AC1).
 - Для аннотации тега копить по шагам:
   - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
     интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
@@ -244,9 +251,10 @@ blocked-by: —
     `MigrateModule` падает `duplicate source name` (S2); `outboxtest.Recorder.Publish` вне
     транзакции → `outboxkit.ErrNoTx`: usecase в тесте — с фейком `pgtest.Identity`/`Recorder`
     или ctx под `pgkit.WithTestTx` (S3); `bruteforcekit.Guard` — `Attempt` + `RecordSuccess`,
-    `Check`/`RecordFailure` удалены: `Attempt` до проверки пароля, `*LockState` → отказ,
-    неудача ничего не требует, успех — `RecordSuccess`; `bruteforcetest.Recorder` —
-    `Attempts()`/`Successes()` (S7).
+    `Check`/`RecordFailure` удалены: `Attempt` до проверки пароля и вне транзакции (в
+    `Transactor.WithTx` — `bruteforcekit.ErrInTx`), `*LockState` → отказ, неудача ничего не
+    требует, успех — `RecordSuccess` (можно в транзакции); `LockState.FailedCount` — попытки
+    окна без успеха; `bruteforcetest.Recorder` — `Attempts()`/`Successes()` (S7).
   - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2);
     `EnsurePartitions` не валит старт, когда ту же партицию создаёт другой процесс (fix);
     `Argon2idHasher` считает не больше `max(1, GOMAXPROCS/Threads)` хэшей одновременно, лишние

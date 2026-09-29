@@ -9,6 +9,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
 	"git.stit.tech/stit-core/golibinfra/clockkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
 // validateKey — контракт ключа pgstore без агрегации IPv6: пустой или слишком
@@ -21,13 +22,24 @@ func validateKey(subject, ip string) error {
 	return err
 }
 
+// validateAttempt — контракт Attempt pgstore: вне транзакции (иначе
+// bruteforcekit.ErrInTx) и с валидным ключом. Сервис, зовущий Attempt внутри
+// Transactor.WithTx, краснеет в юнит-тесте с фейком pgtest, а не теряет учёт в проде.
+func validateAttempt(ctx context.Context, subject, ip string) error {
+	if pgkit.InTx(ctx) {
+		return bruteforcekit.ErrInTx
+	}
+	return validateKey(subject, ip)
+}
+
 // Permissive — bruteforcekit.Guard, который никогда не блокирует. Ключ
 // проверяется как в pgstore.
 type Permissive struct{}
 
-// Attempt разрешает попытку; невалидный ключ — bruteforcekit.ErrInvalidKey.
-func (Permissive) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	return nil, validateKey(subject, ip)
+// Attempt разрешает попытку; в транзакции — bruteforcekit.ErrInTx, невалидный
+// ключ — bruteforcekit.ErrInvalidKey.
+func (Permissive) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+	return nil, validateAttempt(ctx, subject, ip)
 }
 
 // RecordSuccess ничего не делает; невалидный ключ — bruteforcekit.ErrInvalidKey.
@@ -42,9 +54,10 @@ type Locked struct {
 	Until time.Time
 }
 
-// Attempt отдаёт блокировку до Until; невалидный ключ — bruteforcekit.ErrInvalidKey.
-func (l Locked) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	if err := validateKey(subject, ip); err != nil {
+// Attempt отдаёт блокировку до Until; в транзакции — bruteforcekit.ErrInTx,
+// невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (l Locked) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+	if err := validateAttempt(ctx, subject, ip); err != nil {
 		return nil, err
 	}
 	return &bruteforcekit.LockState{Until: l.Until}, nil
@@ -71,10 +84,10 @@ type Recorder struct {
 	successes []Attempt
 }
 
-// Attempt запоминает пару (subject, ip) и разрешает попытку; невалидный ключ —
-// bruteforcekit.ErrInvalidKey.
-func (r *Recorder) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
-	if err := validateKey(subject, ip); err != nil {
+// Attempt запоминает пару (subject, ip) и разрешает попытку; в транзакции —
+// bruteforcekit.ErrInTx, невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (r *Recorder) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+	if err := validateAttempt(ctx, subject, ip); err != nil {
 		return nil, err
 	}
 	r.mu.Lock()
@@ -96,7 +109,7 @@ func (r *Recorder) RecordSuccess(_ context.Context, subject, ip string) error {
 }
 
 // Attempts — копия вызовов Attempt в порядке записи: по ней тест сервиса
-// видит, что попытка учтена до проверки секрета и с адресом клиента.
+// видит, что попытка учтена и с каким ключом (адрес клиента).
 func (r *Recorder) Attempts() []Attempt {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -141,8 +154,11 @@ func NewCounting(cfg bruteforcekit.Config, clock clockkit.Clock) (*Counting, err
 }
 
 // Attempt учитывает попытку пары (subject, ip): nil — попытка разрешена,
-// *LockState — пара заблокирована.
-func (c *Counting) Attempt(_ context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+// *LockState — пара заблокирована; в транзакции — bruteforcekit.ErrInTx.
+func (c *Counting) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+	if pgkit.InTx(ctx) {
+		return nil, bruteforcekit.ErrInTx
+	}
 	key, err := c.key(subject, ip)
 	if err != nil {
 		return nil, err

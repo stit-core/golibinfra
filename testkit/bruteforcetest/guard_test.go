@@ -8,6 +8,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
 	"git.stit.tech/stit-core/golibinfra/clockkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/bruteforcetest"
 )
 
@@ -112,6 +113,37 @@ func TestFakesRejectInvalidKeyLikePgstore(t *testing.T) {
 	_ = r.RecordSuccess(t.Context(), "u1", "")
 	if len(r.Attempts()) != 0 || len(r.Successes()) != 0 {
 		t.Errorf("Attempts=%v Successes=%v, want empty", r.Attempts(), r.Successes())
+	}
+}
+
+// Как pgstore, фейки отвергают Attempt внутри транзакции: сервис, учитывающий
+// попытку в Transactor.WithTx, краснеет в юнит-тесте с фейком pgtest — в проде
+// откат на неверном пароле снимал бы учёт. RecordSuccess в транзакции допустим.
+func TestFakesRejectAttemptInTransaction(t *testing.T) {
+	t.Parallel()
+
+	counting, err := bruteforcetest.NewCounting(countingConfig(), nil)
+	if err != nil {
+		t.Fatalf("NewCounting: %v", err)
+	}
+	recorder := &bruteforcetest.Recorder{}
+	guards := map[string]bruteforcekit.Guard{
+		"Permissive": bruteforcetest.Permissive{},
+		"Locked":     bruteforcetest.Locked{Until: time.Now().Add(time.Minute)},
+		"Recorder":   recorder,
+		"Counting":   counting,
+	}
+	inTx := pgkit.WithTestTx(t.Context())
+	for name, g := range guards {
+		if st, err := g.Attempt(inTx, "u1", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInTx) || st != nil {
+			t.Errorf("%s.Attempt in a transaction = %v, %v, want ErrInTx", name, st, err)
+		}
+		if err := g.RecordSuccess(inTx, "u1", "203.0.113.7"); err != nil {
+			t.Errorf("%s.RecordSuccess in a transaction: %v", name, err)
+		}
+	}
+	if got := recorder.Attempts(); len(got) != 0 {
+		t.Errorf("Attempts=%v, want the rejected call unrecorded", got)
 	}
 }
 

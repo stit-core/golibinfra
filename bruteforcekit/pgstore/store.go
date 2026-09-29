@@ -63,9 +63,12 @@ WHERE subject = $1 AND ip = $2 AND locked_until > NOW()
 const attemptRounds = 3
 
 // Attempt учитывает попытку пары (subject, ip) до проверки секрета: nil —
-// попытка разрешена, *LockState — пара заблокирована. Невалидный ключ —
-// bruteforcekit.ErrInvalidKey.
+// попытка разрешена, *LockState — пара заблокирована. Внутри транзакции —
+// bruteforcekit.ErrInTx, невалидный ключ — bruteforcekit.ErrInvalidKey.
 func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
+	if pgkit.InTx(ctx) {
+		return nil, bruteforcekit.ErrInTx
+	}
 	subject, ip, err := s.cfg.NormalizeKey(subject, ip)
 	if err != nil {
 		return nil, err

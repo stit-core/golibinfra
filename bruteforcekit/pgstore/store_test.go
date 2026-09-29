@@ -70,6 +70,63 @@ func TestStore_InvalidKey(t *testing.T) {
 	if err := s.RecordSuccess(ctx, strings.Repeat("s", bruteforcekit.MaxSubjectLen+1), "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
 		t.Fatalf("RecordSuccess(long subject) = %v, want ErrInvalidKey", err)
 	}
+	if _, err := s.Attempt(pgkit.WithTestTx(ctx), "u", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInTx) {
+		t.Fatalf("Attempt(in tx) = %v, want ErrInTx", err)
+	}
+}
+
+// Регрессия: логин в Transactor.WithTx откатывает транзакцию на неверном
+// пароле — учтённая в ней попытка исчезла бы, и перебор шёл бы без предела.
+// Attempt внутри транзакции — ErrInTx и строки нет; вне неё счёт идёт как обычно.
+func TestStore_AttemptOutsideTransaction(t *testing.T) {
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, tr := pg.DB(t), pg.Transactor(t)
+	cfg := config()
+	s := newStore(t, db, cfg)
+	const subject, ip = "victim@example.com", "203.0.113.7"
+	errBadPassword := errors.New("invalid credentials")
+
+	for range 2 * cfg.MaxFailures {
+		err := tr.WithTx(ctx, func(ctx context.Context) error {
+			if _, err := s.Attempt(ctx, subject, ip); err != nil {
+				return err
+			}
+			return errBadPassword
+		})
+		if !errors.Is(err, bruteforcekit.ErrInTx) {
+			t.Fatalf("Attempt inside WithTx = %v, want ErrInTx", err)
+		}
+	}
+	if n := failedCount(t, ctx, db, subject, ip); n != -1 {
+		t.Fatalf("row written by a rejected in-tx attempt: failed_count = %d", n)
+	}
+
+	for range cfg.MaxFailures {
+		if st, err := s.Attempt(ctx, subject, ip); err != nil || st != nil {
+			t.Fatalf("Attempt outside tx = %v, %v, want allowed", st, err)
+		}
+		if err := tr.WithTx(ctx, func(context.Context) error { return errBadPassword }); !errors.Is(err, errBadPassword) {
+			t.Fatalf("WithTx: %v", err)
+		}
+	}
+	if st, err := s.Attempt(ctx, subject, ip); err != nil || st == nil {
+		t.Fatalf("Attempt after %d failures = %v, %v, want lock", cfg.MaxFailures, st, err)
+	}
+
+	// Откат успеха оставляет счётчик: fail-closed.
+	if err := tr.WithTx(ctx, func(ctx context.Context) error {
+		if err := s.RecordSuccess(ctx, subject, ip); err != nil {
+			return err
+		}
+		return errBadPassword
+	}); !errors.Is(err, errBadPassword) {
+		t.Fatalf("RecordSuccess inside WithTx: %v", err)
+	}
+	if n := failedCount(t, ctx, db, subject, ip); n != cfg.MaxFailures {
+		t.Fatalf("failed_count after rolled-back success = %d, want %d", n, cfg.MaxFailures)
+	}
 }
 
 // attempts делает n попыток пары и требует, чтобы все прошли.

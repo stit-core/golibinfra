@@ -13,7 +13,7 @@ import (
 // Module — fx-вход кита: *Store как bruteforcekit.Guard и bruteforcekit.Cleaner,
 // миграции в группе pgkit.MigrateModule и cleanup-job в группе timerkit.Group.
 // Нужны *pgkit.DB (pgkit.Module), bruteforcekit.Config (fx.Provide(bruteforcekit.NewConfig))
-// и timerkit.Module — иначе job'ы группы никто не запускает и таблица не чистится.
+// и timerkit.Module — без него граф не собирается.
 var Module = fx.Module(
 	"bruteforcekit/pgstore",
 	fx.Provide(
