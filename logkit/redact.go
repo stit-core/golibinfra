@@ -384,82 +384,158 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 }
 
 // maskKeys прячет значения под ключами-секретами у map со строковыми ключами
-// (http.Header, url.Values, map[string]any), в том числе вложенных; без таких
-// ключей отдаёт x как есть, не копируя. Поля структур не разбираются.
+// (http.Header, url.Values, map[string]any) — в том числе вложенных, в срезах и
+// под указателем; без таких ключей отдаёт x как есть, не копируя. Поля
+// структур не разбираются.
 func (h *redactHandler) maskKeys(x any) any {
 	v := reflect.ValueOf(x)
-	if !secretKeysIn(v, map[uintptr]bool{}) {
+	if !secretsIn(v, map[visit]bool{}) {
 		return x
 	}
-	return h.maskedMap(stringMap(v), map[uintptr]map[string]any{})
+	return h.masked(v, map[visit]any{})
 }
 
 var jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
 
-// stringMap — v (сквозь interface) как map со строковыми ключами либо
-// невалидный Value; map со своим MarshalJSON не разбирается.
-func stringMap(v reflect.Value) reflect.Value {
+// visit — пройденный контейнер: цикл (m["self"] = m) и общее поддерево
+// обходятся один раз.
+type visit struct {
+	kind reflect.Kind
+	ptr  uintptr
+	len  int
+}
+
+// container — v (сквозь interface), если в нём могут быть ключи map: map со
+// строковыми ключами, срез или массив, чьи элементы могут быть map, указатель;
+// иначе невалидный Value. Тип со своим MarshalJSON не разбирается.
+func container(v reflect.Value) reflect.Value {
 	if v.Kind() == reflect.Interface {
 		v = v.Elem()
 	}
-	if v.Kind() != reflect.Map || v.Type().Key().Kind() != reflect.String || v.Type().Implements(jsonMarshalerType) {
+	if !v.IsValid() || v.Type().Implements(jsonMarshalerType) {
 		return reflect.Value{}
 	}
-	return v
+	switch v.Kind() {
+	case reflect.Pointer:
+		return v
+	case reflect.Map:
+		if v.Type().Key().Kind() == reflect.String {
+			return v
+		}
+	case reflect.Slice, reflect.Array:
+		if mayContain(v.Type().Elem().Kind()) {
+			return v
+		}
+	}
+	return reflect.Value{}
 }
 
-// secretKeysIn: есть ли секрет в map или во вложенных map. seen — уже
-// просмотренные map: цикл (m["self"] = m) смотрится один раз, а не бесконечно.
-func secretKeysIn(v reflect.Value, seen map[uintptr]bool) bool {
-	v = stringMap(v)
-	if !v.IsValid() || v.Len() == 0 || seen[v.Pointer()] {
+func mayContain(k reflect.Kind) bool {
+	switch k {
+	case reflect.Map, reflect.Interface, reflect.Pointer, reflect.Slice, reflect.Array:
+		return true
+	default:
 		return false
 	}
-	seen[v.Pointer()] = true
-	// Значение смотрится, только если ключ-секрет или внутри может быть map:
-	// иначе обход не аллоцирует на каждую пару.
-	elem := v.Type().Elem().Kind()
-	nestable := elem == reflect.Map || elem == reflect.Interface
+}
+
+// identity — ключ контейнера для visit; ok=false — массив, у него нет адреса.
+func identity(v reflect.Value) (visit, bool) {
+	switch v.Kind() {
+	case reflect.Map, reflect.Pointer:
+		return visit{kind: v.Kind(), ptr: v.Pointer()}, true
+	case reflect.Slice:
+		return visit{kind: v.Kind(), ptr: v.Pointer(), len: v.Len()}, true
+	default:
+		return visit{}, false
+	}
+}
+
+// secretsIn: есть ли секрет в контейнере v или в его вложенных контейнерах;
+// seen — уже просмотренные.
+func secretsIn(v reflect.Value, seen map[visit]bool) bool {
+	v = container(v)
+	if !v.IsValid() || v.Kind() != reflect.Array && v.IsNil() {
+		return false
+	}
+	if id, ok := identity(v); ok {
+		if seen[id] {
+			return false
+		}
+		seen[id] = true
+	}
+	switch v.Kind() {
+	case reflect.Pointer:
+		return secretsIn(v.Elem(), seen)
+	case reflect.Slice, reflect.Array:
+		for i := range v.Len() {
+			if secretsIn(v.Index(i), seen) {
+				return true
+			}
+		}
+		return false
+	}
+	// Значение смотрится, только если ключ-секрет или внутри может быть
+	// контейнер: иначе обход не аллоцирует на каждую пару.
+	nested := mayContain(v.Type().Elem().Kind())
 	key, val := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
 	for it := v.MapRange(); it.Next(); {
 		key.SetIterKey(it)
 		class := classifyKey(key.String())
-		if class == keyPlain && !nestable {
+		if class == keyPlain && !nested {
 			continue
 		}
 		val.SetIterValue(it)
 		if class != keyPlain && maskable(slog.AnyValue(val.Interface()), class) {
 			return true
 		}
-		if nestable && secretKeysIn(val, seen) {
+		if nested && secretsIn(val, seen) {
 			return true
 		}
 	}
 	return false
 }
 
-// maskedMap копирует map с заменой значений под ключами-секретами, вложенные
-// map — так же. memo — копии пройденных map: рекурсия по циклу конечна, а сам
-// цикл остаётся циклом, и его отвергает JSON, как без маскирования.
-func (h *redactHandler) maskedMap(v reflect.Value, memo map[uintptr]map[string]any) map[string]any {
-	if v.IsNil() {
-		return nil
+// masked — копия v с заменой значений под ключами-секретами: map — как
+// map[string]any, срезы и массивы — как []any, указатель — как его значение
+// (JSON тот же). memo — копии пройденных контейнеров: рекурсия по циклу
+// конечна, а сам цикл остаётся циклом, и его, как без маскирования, отвергает
+// JSON.
+func (h *redactHandler) masked(v reflect.Value, memo map[visit]any) any {
+	c := container(v)
+	if !c.IsValid() || c.Kind() != reflect.Array && c.IsNil() {
+		return v.Interface()
 	}
-	if out, ok := memo[v.Pointer()]; ok {
+	id, tracked := identity(c)
+	if done, ok := memo[id]; tracked && ok {
+		return done
+	}
+	switch c.Kind() {
+	case reflect.Pointer:
+		// nil в memo, пока указатель в работе: цикл из одних указателей даёт null.
+		memo[id] = nil
+		out := h.masked(c.Elem(), memo)
+		memo[id] = out
+		return out
+	case reflect.Slice, reflect.Array:
+		out := make([]any, c.Len())
+		if tracked {
+			memo[id] = out
+		}
+		for i := range out {
+			out[i] = h.masked(c.Index(i), memo)
+		}
 		return out
 	}
-	out := make(map[string]any, v.Len())
-	memo[v.Pointer()] = out
-	for it := v.MapRange(); it.Next(); {
+	out := make(map[string]any, c.Len())
+	memo[id] = out
+	for it := c.MapRange(); it.Next(); {
 		k, val := it.Key().String(), it.Value()
-		switch nested := stringMap(val); {
-		case maskable(slog.AnyValue(val.Interface()), classifyKey(k)):
+		if maskable(slog.AnyValue(val.Interface()), classifyKey(k)) {
 			out[k] = h.with
-		case nested.IsValid():
-			out[k] = h.maskedMap(nested, memo)
-		default:
-			out[k] = val.Interface()
+			continue
 		}
+		out[k] = h.masked(val, memo)
 	}
 	return out
 }

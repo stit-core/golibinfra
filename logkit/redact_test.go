@@ -685,8 +685,10 @@ func TestRedact_CyclicMap(t *testing.T) {
 	plain["self"] = plain
 	secret := map[string]any{"password": "opaque-password"}
 	secret["self"] = secret
+	slice := []any{nil, map[string]any{"password": "opaque-password"}}
+	slice[0] = slice
 
-	for name, doc := range map[string]map[string]any{"plain": plain, "secret": secret} {
+	for name, doc := range map[string]any{"plain": plain, "secret": secret, "slice": slice} {
 		t.Run(name, func(t *testing.T) {
 			var buf bytes.Buffer
 			l := newRedacted(t, &buf, RedactConfig{})
@@ -703,5 +705,55 @@ func TestRedact_CyclicMap(t *testing.T) {
 				t.Errorf("record broken by a cyclic map: %v", m)
 			}
 		})
+	}
+}
+
+// Ключи map проверяются и там, где секрет лежит только во вложенной map, в
+// срезе или массиве map и под указателем на map; прочие значения не трогаются.
+func TestRedact_MapKeysInContainers(t *testing.T) {
+	ptr := map[string]any{"password": "opaque-ptr"}
+	var nilMap map[string]any
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	l.Info(context.Background(), "containers",
+		"typed", map[string]map[string]string{"db": {"passwd": "opaque-typed", "host": "db1"}},
+		"nested", map[string]any{"cfg": map[string]any{"token": "opaque-nested"}, "name": "svc"},
+		"list", []map[string]any{{"password": "opaque-list", "n": 1}},
+		"anys", []any{"x", map[string]any{"secret": "opaque-any"}},
+		"array", [1]map[string]string{{"pwd": "opaque-array"}},
+		"ptr", &ptr,
+		"nils", map[string]any{"token": "opaque-nils", "m": nilMap, "p": (*int)(nil)},
+		"words", []string{"password", "token"},
+	)
+
+	out := buf.String()
+	for _, secret := range []string{"opaque-typed", "opaque-nested", "opaque-list", "opaque-any", "opaque-array", "opaque-ptr", "opaque-nils"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("secret %q leaked: %s", secret, out)
+		}
+	}
+	m := decodeLine(t, buf.Bytes())
+	typed, _ := m["typed"].(map[string]any)
+	if db, _ := typed["db"].(map[string]any); db["passwd"] != "[REDACTED]" || db["host"] != "db1" {
+		t.Errorf("typed = %v", m["typed"])
+	}
+	nested, _ := m["nested"].(map[string]any)
+	if cfg, _ := nested["cfg"].(map[string]any); cfg["token"] != "[REDACTED]" || nested["name"] != "svc" {
+		t.Errorf("nested = %v", m["nested"])
+	}
+	if list, _ := m["list"].([]any); len(list) != 1 || list[0].(map[string]any)["n"] != float64(1) {
+		t.Errorf("list = %v", m["list"])
+	}
+	if anys, _ := m["anys"].([]any); len(anys) != 2 || anys[0] != "x" {
+		t.Errorf("anys = %v", m["anys"])
+	}
+	if p, _ := m["ptr"].(map[string]any); p["password"] != "[REDACTED]" {
+		t.Errorf("ptr = %v", m["ptr"])
+	}
+	if nils, _ := m["nils"].(map[string]any); nils["m"] != nil || nils["p"] != nil {
+		t.Errorf("nil values must stay null: %v", m["nils"])
+	}
+	if words, _ := m["words"].([]any); len(words) != 2 || words[0] != "password" {
+		t.Errorf("a slice of strings is not a map: %v", m["words"])
 	}
 }
