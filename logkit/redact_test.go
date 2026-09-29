@@ -583,6 +583,12 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 		"user", credsValuer{},
 		"otp", 123456,
 		"pin", uint64(4321),
+		"totp", 111111,
+		"totp_code", 222222,
+		"pincode", 3333,
+		"otp_attempts", 3,
+		"pin_length", 4,
+		"otp_ttl_seconds", 300,
 	)
 
 	m := decodeLine(t, buf.Bytes())
@@ -598,8 +604,15 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 	if m["token_count"] != float64(42) || m["password_set"] != true || m["secret"] != nil {
 		t.Errorf("numbers, bool and nil must stay: %v / %v / %v", m["token_count"], m["password_set"], m["secret"])
 	}
-	if m["otp"] != "[REDACTED]" || m["pin"] != "[REDACTED]" {
-		t.Errorf("a code under otp/pin is a secret even as a number: otp=%v pin=%v", m["otp"], m["pin"])
+	for _, k := range []string{"otp", "pin", "totp", "totp_code", "pincode"} {
+		if m[k] != "[REDACTED]" {
+			t.Errorf("%s = %v: a code is a secret even as a number", k, m[k])
+		}
+	}
+	for k, want := range map[string]float64{"otp_attempts": 3, "pin_length": 4, "otp_ttl_seconds": 300} {
+		if m[k] != want {
+			t.Errorf("%s = %v, want the counter %v", k, m[k], want)
+		}
 	}
 	user, _ := m["user"].(map[string]any)
 	if user["login"] != "u1" || user["password"] != "[REDACTED]" {

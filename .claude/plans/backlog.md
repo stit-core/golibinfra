@@ -6,5 +6,6 @@
   `make check` (нет точки `status="200/sse"`): `SSEStream.read` пишет метрику в `record()` после
   `close(events)`, а тест читает её сразу после `range`. Триггер: партия 2 (аудит httpclient).
 - **logkit-redact-gaps** — маскирование пропускает двусмысленные короткие ключи (`pass`, `sid`,
-  `code`, `signature`), поля структур в `Any`, base64url-токены и пароль в DSN (эксперимент
-  валидатора `M/val-kits-A/experiments/logkit_zz_val_exp_test.go`). Триггер: партия 2 (аудит logkit).
+  `code`, `signature`, `refresh`), список под `tokens` (слово не секрет — это счётчики LLM), поля
+  структур в `Any`, base64url-токены и пароль в DSN (эксперимент валидатора
+  `M/val-kits-A/experiments/logkit_zz_val_exp_test.go`). Триггер: партия 2 (аудит logkit).
