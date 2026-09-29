@@ -1,30 +1,64 @@
 package httpkit
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"reflect"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/danielgtaylor/huma/v2"
 )
 
-// APIError — RFC 9457-совместимая ошибка API; huma сериализует её со статусом
-// Status и content-type ProblemContentType.
+// Форма ошибки одна на процесс: ошибки самой huma (валидация, 5xx хендлера,
+// huma.Error4xx/5xx) — тоже APIError, в том числе в humatest тестов потребителя.
+func init() {
+	huma.NewError = newError
+	huma.NewErrorWithContext = func(_ huma.Context, status int, msg string, errs ...error) huma.StatusError {
+		return newError(status, msg, errs...)
+	}
+}
+
+// APIError — ошибка API в форме RFC 9457 (application/problem+json) с машинным
+// `code` и `request_id`. 5xx, собранная китом, не несёт текста причины: причина
+// остаётся в логе сервера.
 type APIError struct {
-	Type     string `json:"type,omitempty"`
-	Title    string `json:"title,omitempty"`
-	Status   int    `json:"status,omitempty"`
-	Detail   string `json:"detail,omitempty"`
-	Instance string `json:"instance,omitempty"`
-	Code     string `json:"code,omitempty"`
+	Title     string       `json:"title" doc:"HTTP status text"`
+	Status    int          `json:"status" doc:"HTTP status code"`
+	Detail    string       `json:"detail,omitempty" doc:"Human-readable explanation; absent in 5xx responses"`
+	Code      string       `json:"code" doc:"Stable machine-readable error code: operation codes are listed in the response description; generic ones are VALIDATION_FAILED, BAD_REQUEST, UNAUTHORIZED, NOT_FOUND, METHOD_NOT_ALLOWED, BODY_TOO_LARGE, RATE_LIMITED, INTERNAL, UNAVAILABLE"`
+	RequestID string       `json:"request_id,omitempty" doc:"Request ID (X-Request-ID); the server logs carry the same ID"`
+	Errors    []FieldError `json:"errors,omitempty" doc:"What is wrong in the request, field by field"`
+
+	cause error
+}
+
+// FieldError — ошибка одного места запроса: location (`body.email`, `path.id`,
+// `query.limit`, `header.<name>`), машинный code и message. Ошибки валидации
+// huma получают code INVALID; значение поля клиенту не возвращается.
+type FieldError struct {
+	Location string `json:"location" doc:"Where in the request: body.<field>, path.<name>, query.<name>, header.<name>"`
+	Code     string `json:"code" doc:"Machine-readable code of this field error"`
+	Message  string `json:"message" doc:"Human-readable message"`
 }
 
 // ProblemContentType — content-type ошибок кита (RFC 9457).
 const ProblemContentType = "application/problem+json"
 
+// codeInvalid — code ошибки поля из валидации huma.
+const codeInvalid = "INVALID"
+
 // Error возвращает `<code>: <detail>`; APIError реализует error.
 func (e *APIError) Error() string {
-	return fmt.Sprintf("%s: %s", e.Code, e.Detail)
+	if e.Detail == "" {
+		return e.Code
+	}
+	return e.Code + ": " + e.Detail
 }
 
 // GetStatus реализует huma.StatusError: статус ответа берётся из ошибки.
@@ -39,6 +73,31 @@ func (e *APIError) ContentType(ct string) string {
 		return ProblemContentType
 	}
 	return ct
+}
+
+// retryAfterer — причина, которая знает, когда повторить запрос.
+type retryAfterer interface{ RetryAfter() time.Duration }
+
+// retryAfter — значение заголовка Retry-After в секундах (вверх): RetryAfter()
+// из цепочки причины, у 429 — не меньше секунды; "" — заголовка нет.
+func (e *APIError) retryAfter() string {
+	var d time.Duration
+	var ra retryAfterer
+	if errors.As(e.cause, &ra) {
+		d = ra.RetryAfter()
+	}
+	if d <= 0 && e.Status != http.StatusTooManyRequests {
+		return ""
+	}
+	return strconv.FormatInt(max(1, int64(math.Ceil(d.Seconds()))), 10)
+}
+
+// forRequest — копия для ответа с request_id запроса: общий APIError (package-level
+// значение) не мутируется конкурентными запросами.
+func (e *APIError) forRequest(ctx context.Context) *APIError {
+	out := *e
+	out.RequestID = RequestIDFrom(ctx)
+	return &out
 }
 
 // Error собирает APIError с указанным кодом и статусом.
@@ -86,26 +145,67 @@ func Unavailable(code, detail string) *APIError {
 	return Error(code, http.StatusServiceUnavailable, detail)
 }
 
-func codeForStatus(status int) string {
-	switch status {
-	case http.StatusNotImplemented:
-		return "NOT_IMPLEMENTED"
-	case http.StatusBadGateway:
-		return "BAD_GATEWAY"
-	case http.StatusServiceUnavailable:
-		return "UNAVAILABLE"
-	case http.StatusGatewayTimeout:
-		return "GATEWAY_TIMEOUT"
-	default:
-		return "INTERNAL"
-	}
+// neutral — 5xx без текста причины: клиенту — статус и код, cause — в лог сервера.
+func neutral(status int, cause error) *APIError {
+	return &APIError{Title: http.StatusText(status), Status: status, Code: codeForStatus(status), cause: cause}
 }
 
-// writeAPIError — ответ из chi-middleware, где huma ещё недоступна.
-func writeAPIError(w http.ResponseWriter, e *APIError) {
+// newError — huma.NewError кита: 5xx нейтральна, 4xx несёт msg и ошибки полей
+// без эха значения (в нём бывает пароль).
+func newError(status int, msg string, errs ...error) huma.StatusError {
+	cause := errors.Join(errs...)
+	if status >= http.StatusInternalServerError {
+		if cause == nil {
+			return neutral(status, errors.New(msg))
+		}
+		return neutral(status, fmt.Errorf("%s: %w", msg, cause))
+	}
+	e := Error(codeForStatus(status), status, msg)
+	e.cause = cause
+	for _, err := range errs {
+		if err == nil {
+			continue
+		}
+		fe := FieldError{Code: codeInvalid, Message: err.Error()}
+		var d huma.ErrorDetailer
+		if errors.As(err, &d) {
+			detail := d.ErrorDetail()
+			fe.Location, fe.Message = detail.Location, detail.Message
+		}
+		e.Errors = append(e.Errors, fe)
+	}
+	return e
+}
+
+// codeForStatus — code ошибки, собранной по статусу: свои имена кита или текст статуса.
+func codeForStatus(status int) string {
+	switch status {
+	case http.StatusRequestEntityTooLarge:
+		return "BODY_TOO_LARGE"
+	case http.StatusUnprocessableEntity:
+		return "VALIDATION_FAILED"
+	case http.StatusTooManyRequests:
+		return "RATE_LIMITED"
+	case http.StatusInternalServerError:
+		return "INTERNAL"
+	case http.StatusServiceUnavailable:
+		return "UNAVAILABLE"
+	}
+	if text := http.StatusText(status); text != "" {
+		return strings.ToUpper(strings.NewReplacer(" ", "_", "-", "_", "'", "").Replace(text))
+	}
+	return "ERROR"
+}
+
+// writeAPIError — ответ-ошибка вне huma: chi-middleware и маршрутизатор.
+func writeAPIError(ctx context.Context, w http.ResponseWriter, e *APIError) {
+	body := e.forRequest(ctx)
+	if ra := body.retryAfter(); ra != "" {
+		w.Header().Set("Retry-After", ra)
+	}
 	w.Header().Set("Content-Type", ProblemContentType)
-	w.WriteHeader(e.Status)
-	_ = json.NewEncoder(w).Encode(e)
+	w.WriteHeader(body.Status)
+	_ = json.NewEncoder(w).Encode(body)
 }
 
 // ErrorMapping — одно правило MapErr: предикат по ошибке и результирующий APIError.
@@ -117,7 +217,7 @@ type ErrorMapping struct {
 }
 
 // MapErr переводит ошибку в APIError по первому совпавшему правилу; остальные
-// возвращает как есть (их подхватит error-hook кита: нейтральный 500 + лог).
+// возвращает как есть (кит ответит на них нейтральным 500 и строкой лога).
 func MapErr(err error, mappings ...ErrorMapping) error {
 	if err == nil {
 		return nil

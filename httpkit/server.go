@@ -1,7 +1,7 @@
 // Package httpkit — HTTP-сервер на huma/v2 + chi с готовой middleware-цепочкой
 // (RequestID, OTel, AccessLog, Metrics, Recovery, SecurityHeaders, CORS,
-// RateLimit, MaxBody, опц. Idempotency), health/readiness и error-моделью
-// APIError. Эмитит http_requests_total, http_request_duration_seconds,
+// RateLimit, MaxBody, опц. Idempotency), health/readiness и контрактом ошибок
+// APIError (problem+json). Эмитит http_requests_total, http_request_duration_seconds,
 // http_panics_total, http_max_body_rejections_total, http_idempotency_total,
 // http_rate_limited_total.
 package httpkit
@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -102,8 +101,8 @@ type serverOptions struct {
 }
 
 // WithLogger отдаёт серверу логгер: ошибки net/http (`http.Server.ErrorLog`) и
-// текст незамапленных ошибок хендлеров уходят в него. Без опции логгер —
-// logkit.Nop(): 5xx клиенту нейтрализуются всё равно, но причина теряется.
+// причины 5xx хендлеров уходят в него. Без опции логгер — logkit.Nop(): 5xx
+// клиенту нейтральны всё равно, но причина теряется.
 func WithLogger(log logkit.Logger) ServerOption {
 	return func(o *serverOptions) { o.log = log }
 }
@@ -155,9 +154,6 @@ func NewServer(cfg Config, opts ...ServerOption) *Server {
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
 	}
-	// Нейтрализация 5xx — свойство сервера, а не опции: без хука незамапленная
-	// ошибка хендлера уходит клиенту текстом (DSN, пароли).
-	installErrorHook(o.log)
 	if o.log == nil {
 		o.log = logkit.Nop()
 	}
@@ -165,6 +161,10 @@ func NewServer(cfg Config, opts ...ServerOption) *Server {
 	if len(o.middleware) > 0 {
 		r.Use(o.middleware...)
 	}
+	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
+		writeAPIError(req.Context(), w, Error("NOT_FOUND", http.StatusNotFound, "route not found"))
+	})
+	r.MethodNotAllowed(methodNotAllowed(r))
 	// huma.API создаётся лениво в BindAPI(): humachi.New регистрирует
 	// /openapi.json и /docs, после чего chi запрещает router.Use(...).
 	return &Server{cfg: cfg, opts: o, router: r, srv: srv}
@@ -189,6 +189,7 @@ func (s *Server) BindAPI() huma.API {
 	maxBody := s.cfg.MaxBody.MaxBytes
 	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation,
 		func(_ *huma.OpenAPI, op *huma.Operation) { op.MaxBodyBytes = maxBody })
+	humaConfig.Transformers = append(humaConfig.Transformers, s.transformError)
 	for _, fn := range s.opts.humaConfig {
 		fn(&humaConfig)
 	}
@@ -247,35 +248,45 @@ func (s *Server) Stop(ctx context.Context) error {
 	return s.srv.Shutdown(ctx)
 }
 
-var (
-	errorHookOnce sync.Once
-	errorHookLog  atomic.Pointer[logkit.Logger]
-)
-
-// installErrorHook подменяет huma.NewErrorWithContext — process-global
-// переменная huma: 5xx уходит клиенту нейтральным, а текст ошибки — в лог.
-// Логгер берётся из последнего Server, которому его дали: сервер без
-// WithLogger нейтрализацию включает, но чужой sink не затирает.
-func installErrorHook(log logkit.Logger) {
-	if log != nil {
-		errorHookLog.Store(&log)
+// transformError дополняет ответ-ошибку huma перед записью статуса: request_id
+// запроса, Retry-After и строка handler error с причиной 5xx в логе сервера.
+func (s *Server) transformError(hc huma.Context, _ string, v any) (any, error) {
+	e, ok := v.(*APIError)
+	if !ok {
+		return v, nil
 	}
-	errorHookOnce.Do(func() {
-		prev := huma.NewErrorWithContext
-		huma.NewErrorWithContext = func(hc huma.Context, status int, msg string, errs ...error) huma.StatusError {
-			if status < http.StatusInternalServerError {
-				return prev(hc, status, msg, errs...)
-			}
-			ctx := context.Background()
-			if hc != nil {
-				ctx = hc.Context()
-			}
-			if l := errorHookLog.Load(); l != nil {
-				(*l).Error(ctx, "handler error", "status", status, "msg", msg, "err", errors.Join(errs...))
-			}
-			return Error(codeForStatus(status), status, "internal error")
+	ctx := hc.Context()
+	if e.Status >= http.StatusInternalServerError {
+		kv := []any{"status", e.Status, "code", e.Code}
+		if op := hc.Operation(); op != nil {
+			kv = append(kv, "operation", op.OperationID)
 		}
-	})
+		if e.cause != nil {
+			kv = append(kv, "err", e.cause)
+		}
+		s.opts.log.Error(ctx, "handler error", kv...)
+	}
+	if ra := e.retryAfter(); ra != "" {
+		hc.SetHeader("Retry-After", ra)
+	}
+	return e.forRequest(ctx), nil
+}
+
+// methodNotAllowed — 405 маршрутизатора с problem+json и Allow: свой обработчик
+// chi не выставляет Allow сам, поэтому методы маршрута ищутся заново.
+func methodNotAllowed(router chi.Routes) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.RawPath
+		if path == "" {
+			path = r.URL.Path
+		}
+		for _, m := range knownMethods {
+			if router.Match(chi.NewRouteContext(), m, path) {
+				w.Header().Add("Allow", m)
+			}
+		}
+		writeAPIError(r.Context(), w, Error("METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed, "method not allowed"))
+	}
 }
 
 // logkitHandler — мост stdlib log → logkit: net/http пишет ошибки соединений

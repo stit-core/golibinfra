@@ -211,7 +211,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 		if !cfg.FailClosed {
 			return false
 		}
-		writeAPIError(w, Unavailable("IDEMPOTENCY_UNAVAILABLE", "idempotency store is unavailable"))
+		writeAPIError(ctx, w, Unavailable("IDEMPOTENCY_UNAVAILABLE", "idempotency store is unavailable"))
 		return true
 	}
 
@@ -244,10 +244,10 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 			body, tooBig, err := bufferBody(r, cfg.MaxBodyBytes)
 			if err != nil {
 				if IsMaxBodyError(err) {
-					writeAPIError(w, Error("BODY_TOO_LARGE", http.StatusRequestEntityTooLarge, "request body too large"))
+					writeAPIError(ctx, w, Error("BODY_TOO_LARGE", http.StatusRequestEntityTooLarge, "request body too large"))
 					return
 				}
-				writeAPIError(w, BadRequest("BAD_BODY", "cannot read request body"))
+				writeAPIError(ctx, w, BadRequest("BAD_BODY", "cannot read request body"))
 				return
 			}
 			if tooBig {
@@ -292,7 +292,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 					return
 				}
 				outcome(ctx, "in_progress")
-				writeAPIError(w, Error("IDEMPOTENCY_IN_PROGRESS", http.StatusConflict,
+				writeAPIError(ctx, w, Error("IDEMPOTENCY_IN_PROGRESS", http.StatusConflict,
 					"a request with this "+cfg.Header+" is still being processed"))
 				return
 			}
@@ -344,8 +344,9 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 func replay(ctx context.Context, w http.ResponseWriter, rec idempotencyRecord, fp, header string, outcome func(context.Context, string)) {
 	if rec.Fingerprint != fp {
 		outcome(ctx, "conflict")
-		writeAPIError(w, Error("IDEMPOTENCY_KEY_REUSED", http.StatusUnprocessableEntity,
-			header+" was already used with a different request"))
+		e := Error("IDEMPOTENCY_KEY_REUSED", http.StatusUnprocessableEntity, header+" was already used with a different request")
+		e.Errors = []FieldError{{Location: "header." + header, Code: e.Code, Message: e.Detail}}
+		writeAPIError(ctx, w, e)
 		return
 	}
 	maps.Copy(w.Header(), rec.Header)

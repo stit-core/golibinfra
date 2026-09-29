@@ -1,14 +1,16 @@
 # httpkit
 
 HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) поверх
-[chi](https://github.com/go-chi/chi) с готовой middleware-цепочкой и единой
-error-моделью. Один `Server` несёт `*chi.Mux` (транспорт) и `huma.API`
+[chi](https://github.com/go-chi/chi) с готовой middleware-цепочкой и единым
+контрактом ошибок. Один `Server` несёт `*chi.Mux` (транспорт) и `huma.API`
 (типобезопасные операции + OpenAPI). Из коробки: `RequestID`, `OTel`,
 `AccessLog`, `Metrics`, `Recovery`, `SecurityHeaders`, `CORS`, `RateLimit`,
-`MaxBody`, опц. `Idempotency`, `HumaAuth`; ошибки — `APIError`
-(`{code,status,title,detail}`, `application/problem+json`), незамапленная ошибка
-handler'а уходит в лог, а клиенту — нейтральный 500. `/health` и `/ready`
-(по пробам из fx-группы `healthkit.probes`) регистрируются автоматически. RED-метрики и
+`MaxBody`, опц. `Idempotency`, `HumaAuth`. Любой ответ-ошибка — `APIError`
+(`application/problem+json`: `title`, `status`, `detail`, машинный `code`,
+`request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный маршрут и
+метод, лимиты, panic; 5xx — без текста причины (она в логе с тем же
+`request_id`), 429 — с `Retry-After`. `/health` и `/ready` (по пробам из
+fx-группы `healthkit.probes`) регистрируются автоматически. RED-метрики и
 server-span — by default.
 
 ## Импорт
@@ -61,7 +63,7 @@ _ = s.Serve()
 
 - [docs/architecture.md](docs/architecture.md) — huma + chi, ленивый `BindAPI`,
   точки расширения, порядок middleware и почему он такой, wrapper ответа
-  (`Flush`/`Hijack`), error-модель, auth, идемпотентность, health.
+  (`Flush`/`Hijack`), контракт ошибок, auth, идемпотентность, health.
 - [docs/configuration.md](docs/configuration.md) — справочник ENV: `Config`,
   `CORSConfig`, `RateLimitConfig`, `MaxBodyConfig`, `SecurityHeadersConfig`,
   `IdempotencyConfig`, правила `Validate`.

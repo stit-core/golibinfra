@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
+	"strings"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -45,8 +47,9 @@ func newAPI(t *testing.T) handlertest.API {
 	})
 }
 
-// Плоское тело httpkit.APIError: code/status/title/detail доходят до теста.
-func TestDecodeAPIError_FlatProblem(t *testing.T) {
+// Тело httpkit.APIError доходит до теста целиком: code/status/title/detail и
+// request_id из X-Request-ID ответа.
+func TestDecodeAPIError_Problem(t *testing.T) {
 	resp := newAPI(t).Get("/users/42")
 
 	got := handlertest.DecodeAPIError(t, resp)
@@ -62,31 +65,41 @@ func TestDecodeAPIError_FlatProblem(t *testing.T) {
 	if got.Title != http.StatusText(http.StatusNotFound) {
 		t.Errorf("Title = %q", got.Title)
 	}
+	if got.RequestID == "" || got.RequestID != resp.Header().Get(httpkit.HeaderRequestID) {
+		t.Errorf("RequestID = %q, want X-Request-ID %q", got.RequestID, resp.Header().Get(httpkit.HeaderRequestID))
+	}
 	if len(got.Errors) != 0 {
 		t.Errorf("Errors = %+v, want empty", got.Errors)
 	}
 }
 
-// huma.ErrorModel на 422: top-level поля не теряются, errors[] доступен.
+// Валидация huma — тот же APIError: 422 VALIDATION_FAILED, поля в errors[] с
+// кодом INVALID и без эха значения.
 func TestDecodeAPIError_HumaValidation(t *testing.T) {
 	resp := newAPI(t).Post("/users", map[string]any{"name": "ab"})
-	handlertest.AssertStatus(t, resp, http.StatusUnprocessableEntity)
+	handlertest.AssertAPIError(t, resp, http.StatusUnprocessableEntity, "VALIDATION_FAILED")
 
 	got := handlertest.DecodeAPIError(t, resp)
-	if got.Status != http.StatusUnprocessableEntity {
-		t.Errorf("Status = %d, want %d", got.Status, http.StatusUnprocessableEntity)
-	}
 	if got.Title == "" || got.Detail == "" {
 		t.Errorf("top-level fields lost: %+v", got)
 	}
-	if got.Code != "" {
-		t.Errorf("Code = %q, want empty for huma validation errors", got.Code)
+	want := httpkit.FieldError{Location: "body.name", Code: "INVALID", Message: "expected length >= 3"}
+	if len(got.Errors) != 1 || got.Errors[0] != want {
+		t.Fatalf("Errors = %+v, want [%+v]", got.Errors, want)
 	}
-	if len(got.Errors) == 0 {
-		t.Fatalf("Errors is empty: %+v", got)
+	if strings.Contains(resp.Body.String(), `"ab"`) {
+		t.Errorf("the field value must not be echoed: %s", resp.Body.String())
 	}
-	if got.Errors[0].Message == "" || got.Errors[0].Location == "" {
-		t.Errorf("errors[0] = %+v, want message and location", got.Errors[0])
+}
+
+// Неизвестный маршрут и метод — тоже контракт ошибок, как у сервера.
+func TestNewAPI_RouterErrors(t *testing.T) {
+	api := newAPI(t)
+	handlertest.AssertAPIError(t, api.Get("/nowhere"), http.StatusNotFound, "NOT_FOUND")
+	resp := api.Delete("/users/42")
+	handlertest.AssertAPIError(t, resp, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
+	if allow := resp.Header().Values("Allow"); len(allow) != 1 || allow[0] != http.MethodGet {
+		t.Errorf("Allow = %v, want [GET]", allow)
 	}
 }
 
@@ -98,6 +111,25 @@ func TestAssertAPIError(t *testing.T) {
 func TestAssertStatus_Success(t *testing.T) {
 	resp := newAPI(t).Post("/users", map[string]any{"name": "alice"})
 	handlertest.AssertStatus(t, resp, http.StatusNoContent)
+}
+
+// AssertAPIError держит контракт: ответ не problem+json или без request_id — провал.
+func TestAssertAPIError_Contract(t *testing.T) {
+	cases := map[string]func(*httptest.ResponseRecorder){
+		"не problem+json":  func(r *httptest.ResponseRecorder) { r.Header().Set("Content-Type", "application/json") },
+		"чужой request_id": func(r *httptest.ResponseRecorder) { r.Header().Set(httpkit.HeaderRequestID, "other") },
+	}
+	for name, spoil := range cases {
+		t.Run(name, func(t *testing.T) {
+			tb := &recordTB{}
+			resp := newAPI(t).Get("/users/42")
+			spoil(resp)
+			handlertest.AssertAPIError(tb, resp, http.StatusNotFound, "USER_NOT_FOUND")
+			if tb.fatals == 0 {
+				t.Fatal("AssertAPIError must fail")
+			}
+		})
+	}
 }
 
 func TestDecodeAPIError_NonJSONBodyFails(t *testing.T) {

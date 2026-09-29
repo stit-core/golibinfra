@@ -43,8 +43,8 @@ No-op при пустом `Origins`. Конкретный origin эхается 
 
 ## RateLimitConfig
 
-Token-bucket на IP клиента (`golang.org/x/time/rate`). Превышение → `429` с
-`Retry-After: 1` и `application/problem+json`. Простаивающие bucket'ы
+Token-bucket на IP клиента (`golang.org/x/time/rate`). Превышение → `429
+RATE_LIMITED` с `Retry-After: 1` и `application/problem+json`. Простаивающие bucket'ы
 выметаются (5 минут без запросов), память ограничена активными клиентами.
 
 | Env | Поле | Тип | Default | Назначение |
@@ -66,7 +66,7 @@ nginx/traefik дописывают реальный IP в конец `X-Forwarde
 ## MaxBodyConfig
 
 Оборачивает `r.Body` в `http.MaxBytesReader`. Превышение при чтении даёт
-`*http.MaxBytesError` (`IsMaxBodyError`), ответ `413` считается в
+`*http.MaxBytesError` (`IsMaxBodyError`), ответ `413 BODY_TOO_LARGE` считается в
 `http_max_body_rejections_total`.
 
 | Env | Поле | Тип | Default | Назначение |

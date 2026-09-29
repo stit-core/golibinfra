@@ -9,7 +9,7 @@
   `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
   `AccessLog(log, quietPaths...)`, `Metrics()`,
   `Idempotency(cfg, store, opts...)`. huma-уровень: `HumaAuth(log, extract)`.
-- **Ошибки**: `APIError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
+- **Ошибки**: `APIError`, `FieldError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
   Conflict/Internal/Unavailable`, `MapErr`, `MapIs`, `MapAs[T]`,
   `ProblemContentType`.
 - **Auth**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
@@ -79,16 +79,20 @@ err = httpkit.MapAs[*ValidationError](err, "VALIDATION", http.StatusUnprocessabl
 ```
 
 Незамапленная ошибка клиенту не показывается: он получает `500
-{"code":"INTERNAL","detail":"internal error"}`, а полный текст уходит в лог
-строкой `handler error` с `request_id`. `nil` → `nil`. `MapAs[error]` паникует:
-такой маппинг превратил бы любую ошибку, включая упавшую БД, в выбранный статус.
+{"title":"Internal Server Error","status":500,"code":"INTERNAL","request_id":"…"}`,
+а полный текст уходит в лог строкой `handler error` с тем же `request_id`. `nil` →
+`nil`. `MapAs[error]` паникует: такой маппинг превратил бы любую ошибку, включая
+упавшую БД, в выбранный статус. Когда повторить запрос, ответ говорит
+заголовком `Retry-After`: его значение — метод `RetryAfter() time.Duration`
+ошибки в цепочке причины (у 429 — не меньше секунды). Полная форма —
+[architecture.md § Контракт ошибок](architecture.md#контракт-ошибок).
 
 ## Идемпотентность
 
 `POST`/`PUT`/`PATCH` с заголовком `Idempotency-Key` выполняются один раз, повтор
 получает сохранённый ответ (`Idempotent-Replayed: true`, воспроизводятся
 `Content-Type`, `Location`, `ETag`, `Content-Language`, `Content-Disposition`,
-`Cache-Control`). Тот же ключ с другим методом, путём, query или телом → `422
+`Cache-Control`; тело ошибки — с `request_id` исходного запроса). Тот же ключ с другим методом, путём, query или телом → `422
 IDEMPOTENCY_KEY_REUSED`; параллельный повтор, пока первый выполняется → `409
 IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` не сохраняются, запрос или ответ больше
 `MaxBodyBytes` идёт без идемпотентности, ошибка store — fail-open (метрика

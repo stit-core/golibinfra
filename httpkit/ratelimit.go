@@ -116,8 +116,7 @@ func rateLimitWith(l *rateLimiter, instr *instruments) func(http.Handler) http.H
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if !l.allow(ClientIP(r, l.cfg.TrustProxy)) {
 				instr.rateLimited.Add(r.Context(), 1)
-				w.Header().Set("Retry-After", "1")
-				writeAPIError(w, Error("RATE_LIMITED", http.StatusTooManyRequests, "rate limit exceeded"))
+				writeAPIError(r.Context(), w, Error("RATE_LIMITED", http.StatusTooManyRequests, "rate limit exceeded"))
 				return
 			}
 			next.ServeHTTP(w, r)

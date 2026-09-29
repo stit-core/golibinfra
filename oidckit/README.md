@@ -238,8 +238,8 @@ middleware `httpkit`. `Extractor` пробрасывает `user_id` в кажд
   default 10s); жёстко 10s — только у собственного клиента, который кит заводит
   при `Doer = nil`. Одна попытка discovery+JWKS ограничена 10s и дедлайном
   вызывающего: на старте это `fx.StartTimeout` (default 15s), в `/ready` —
-  `HTTP_READY_PROBE_TIMEOUT`. Ошибки discovery и state-store уходят в лог, в
-  тело 502 попадает только общий текст без URL и адресов.
+  `HTTP_READY_PROBE_TIMEOUT`. Ошибки discovery и state-store уходят в лог, тело
+  502 — только статус и код (`502 BAD_GATEWAY`, контракт ошибок `httpkit`), без URL и адресов.
 - `GET <p>/login` — неаутентифицированный: каждый запрос кладёт запись в
   `StateStore` на 10m. Публичному сервису стоит навесить на него rate-limit
   (`httpkit.RateLimit`).

@@ -54,8 +54,8 @@ server-span и извлекает входящий `traceparent`, а все по
 Остальные строки кита:
 
 - `panic recovered` (Error) со `stack` — `Recovery`.
-- `handler error` (Error) со `status` и полным текстом ошибки — error-hook huma;
-  клиенту при этом уходит нейтральный 500.
+- `handler error` (Error) с `operation`, `status`, `code` и причиной `err` — любой
+  5xx из huma (Transformer сервера); клиенту уходит только статус, код и `request_id`.
 - `auth rejected` (Debug) / `auth backend unavailable` (Warn) / `auth not configured`
   (Error, с `operation`) — `HumaAuth`.
 - `readiness probe failed` (Warn) с `probe` и `err` — `/ready`; текст ошибки

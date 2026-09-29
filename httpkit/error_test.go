@@ -1,6 +1,7 @@
 package httpkit_test
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -8,7 +9,10 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 )
 
 var errSentinel = errors.New("sentinel")
@@ -28,10 +32,66 @@ func TestAPIError_JSON(t *testing.T) {
 			t.Errorf("json %s lacks %s", s, want)
 		}
 	}
-	for _, absent := range []string{`"type"`, `"instance"`} {
+	for _, absent := range []string{`"request_id"`, `"errors"`} {
 		if strings.Contains(s, absent) {
 			t.Errorf("json %s must omit empty %s", s, absent)
 		}
+	}
+}
+
+// Ошибки самой huma — APIError кита: процесс, импортировавший httpkit, отдаёт одну форму.
+func TestHumaErrors_AreAPIErrors(t *testing.T) {
+	var apiErr *httpkit.APIError
+	if !errors.As(huma.Error404NotFound("no such thing"), &apiErr) || apiErr.Code != "NOT_FOUND" || apiErr.Detail != "no such thing" {
+		t.Fatalf("huma.Error404NotFound: %#v", apiErr)
+	}
+
+	validation := huma.NewError(http.StatusUnprocessableEntity, "validation failed",
+		&huma.ErrorDetail{Location: "body.password", Message: "expected length >= 12", Value: "hunter2"},
+		errors.New("end must follow start"),
+	)
+	if !errors.As(validation, &apiErr) || apiErr.Code != "VALIDATION_FAILED" {
+		t.Fatalf("validation: %#v", validation)
+	}
+	want := []httpkit.FieldError{
+		{Location: "body.password", Code: "INVALID", Message: "expected length >= 12"},
+		{Code: "INVALID", Message: "end must follow start"},
+	}
+	if len(apiErr.Errors) != len(want) || apiErr.Errors[0] != want[0] || apiErr.Errors[1] != want[1] {
+		t.Fatalf("Errors = %+v, want %+v", apiErr.Errors, want)
+	}
+	if raw, _ := json.Marshal(apiErr); strings.Contains(string(raw), "hunter2") {
+		t.Fatalf("the field value must not be echoed: %s", raw)
+	}
+
+	internal := huma.NewErrorWithContext(nil, http.StatusInternalServerError, "unexpected error occurred", errors.New("pq: password=s3cret"))
+	if !errors.As(internal, &apiErr) || apiErr.Code != "INTERNAL" || apiErr.Detail != "" || len(apiErr.Errors) != 0 {
+		t.Fatalf("5xx must be neutral: %#v", internal)
+	}
+	if raw, _ := json.Marshal(apiErr); strings.Contains(string(raw), "s3cret") || strings.Contains(string(raw), "unexpected") {
+		t.Fatalf("5xx body must not carry the cause: %s", raw)
+	}
+
+	// defineErrors берёт схему из NewError(0, ""), а Status304NotModified — не ошибка.
+	if e := huma.NewError(0, ""); e == nil {
+		t.Fatal("NewError(0) must build the schema example")
+	}
+	if got := huma.Status304NotModified().GetStatus(); got != http.StatusNotModified {
+		t.Fatalf("304 status = %d", got)
+	}
+}
+
+// huma.ErrorWithHeaders дописывает заголовки к APIError, а не теряет их.
+func TestAPIError_WithHumaHeaders(t *testing.T) {
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		huma.Get(api, "/doc", func(context.Context, *struct{}) (*struct{}, error) {
+			return nil, huma.ErrorWithHeaders(httpkit.Conflict("DOC_CHANGED", "document changed"), http.Header{"ETag": {`"v2"`}})
+		})
+	})
+	resp := api.Get("/doc")
+	handlertest.AssertAPIError(t, resp, http.StatusConflict, "DOC_CHANGED")
+	if got := resp.Header().Get("ETag"); got != `"v2"` {
+		t.Fatalf("ETag = %q", got)
 	}
 }
 

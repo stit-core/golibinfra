@@ -4,40 +4,19 @@ import (
 	"context"
 	"errors"
 	"net/http"
-	"os"
-	"os/exec"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/humatest"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 )
 
-const bareServerEnv = "HTTPKIT_TEST_BARE_SERVER"
-
-// Регрессия (NF1): нейтрализация 5xx — свойство NewServer, а не опции WithLogger;
-// документированный путь «Без fx» не должен отдавать клиенту текст ошибки с DSN.
-// Хук huma ставится один раз на процесс, поэтому сценарий гоняется в чистом
-// процессе: дочерний прогон этого же теста собирает только голый сервер.
+// Регрессия (NF1): нейтрализация 5xx — свойство пакета, а не опции WithLogger:
+// документированный путь «Без fx» не отдаёт клиенту текст ошибки с DSN.
 func TestServer_NeutralizesUnmappedErrorWithoutLogger(t *testing.T) {
-	if os.Getenv(bareServerEnv) == "1" {
-		bareServerScenario(t)
-		return
-	}
-
-	ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
-	defer cancel()
-	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^"+t.Name()+"$", "-test.v")
-	cmd.Env = append(os.Environ(), bareServerEnv+"=1")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Fatalf("bare NewServer(cfg) scenario failed: %v\n%s", err, out)
-	}
-}
-
-func bareServerScenario(t *testing.T) {
-	t.Helper()
 	// Ровно проводка из docs/usage.md § Прямой запуск без fx, но без WithLogger.
 	s := httpkit.NewServer(testConfig(t, "127.0.0.1:0"))
 	huma.Get(s.BindAPI(), "/boom", func(context.Context, *struct{}) (*struct{}, error) {
@@ -63,5 +42,20 @@ func bareServerScenario(t *testing.T) {
 	}
 	if !strings.Contains(body, `"code":"INTERNAL"`) {
 		t.Fatalf("500 body must carry a code: %s", body)
+	}
+}
+
+// humatest в тестах потребителя — та же форма ошибок: ошибки huma подменяет импорт httpkit.
+func TestHumatest_NeutralizesUnmappedError(t *testing.T) {
+	_, api := humatest.New(t, huma.DefaultConfig("t", "0"))
+	huma.Get(api, "/boom", func(context.Context, *struct{}) (*struct{}, error) {
+		return nil, errors.New("pq: password=s3cret")
+	})
+	resp := api.Get("/boom")
+	if resp.Code != http.StatusInternalServerError || resp.Header().Get("Content-Type") != httpkit.ProblemContentType {
+		t.Fatalf("want 500 problem+json, got %d %v", resp.Code, resp.Header())
+	}
+	if body := resp.Body.String(); strings.Contains(body, "s3cret") || !strings.Contains(body, `"code":"INTERNAL"`) {
+		t.Fatalf("humatest must get the kit's neutral 500: %s", body)
 	}
 }

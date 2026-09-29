@@ -3,6 +3,7 @@ package httpkit
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -83,15 +84,48 @@ func TestServer_ErrorLogGoesToLogkit(t *testing.T) {
 
 func TestCodeForStatus(t *testing.T) {
 	cases := map[int]string{
-		http.StatusInternalServerError: "INTERNAL",
-		http.StatusNotImplemented:      "NOT_IMPLEMENTED",
-		http.StatusBadGateway:          "BAD_GATEWAY",
-		http.StatusServiceUnavailable:  "UNAVAILABLE",
-		http.StatusGatewayTimeout:      "GATEWAY_TIMEOUT",
+		http.StatusBadRequest:            "BAD_REQUEST",
+		http.StatusNotFound:              "NOT_FOUND",
+		http.StatusMethodNotAllowed:      "METHOD_NOT_ALLOWED",
+		http.StatusRequestEntityTooLarge: "BODY_TOO_LARGE",
+		http.StatusTeapot:                "IM_A_TEAPOT",
+		http.StatusUnprocessableEntity:   "VALIDATION_FAILED",
+		http.StatusTooManyRequests:       "RATE_LIMITED",
+		http.StatusInternalServerError:   "INTERNAL",
+		http.StatusNotImplemented:        "NOT_IMPLEMENTED",
+		http.StatusBadGateway:            "BAD_GATEWAY",
+		http.StatusServiceUnavailable:    "UNAVAILABLE",
+		http.StatusGatewayTimeout:        "GATEWAY_TIMEOUT",
+		0:                                "ERROR",
 	}
 	for status, want := range cases {
 		if got := codeForStatus(status); got != want {
 			t.Errorf("codeForStatus(%d) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+type retryError time.Duration
+
+func (r retryError) Error() string             { return "locked" }
+func (r retryError) RetryAfter() time.Duration { return time.Duration(r) }
+
+func TestAPIError_RetryAfter(t *testing.T) {
+	cases := []struct {
+		name string
+		e    *APIError
+		want string
+	}{
+		{"429 без причины — секунда", Error("RATE_LIMITED", http.StatusTooManyRequests, ""), "1"},
+		{"секунды вверх", &APIError{Status: http.StatusTooManyRequests, cause: retryError(2100 * time.Millisecond)}, "3"},
+		{"меньше секунды — секунда", &APIError{Status: http.StatusTooManyRequests, cause: retryError(time.Millisecond)}, "1"},
+		{"в глубине цепочки", &APIError{Status: http.StatusServiceUnavailable, cause: fmt.Errorf("db: %w", retryError(time.Minute))}, "60"},
+		{"503 без причины — без заголовка", Unavailable("UNAVAILABLE", ""), ""},
+		{"срок истёк — без заголовка", &APIError{Status: http.StatusServiceUnavailable, cause: retryError(-time.Second)}, ""},
+	}
+	for _, c := range cases {
+		if got := c.e.retryAfter(); got != c.want {
+			t.Errorf("%s: retryAfter = %q, want %q", c.name, got, c.want)
 		}
 	}
 }

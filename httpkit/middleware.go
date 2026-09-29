@@ -106,7 +106,7 @@ func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
 					attribute.String("path", routeLabel(r)),
 				))
 				if !ww.wroteHeader {
-					writeAPIError(ww, Internal("INTERNAL", "internal server error"))
+					writeAPIError(r.Context(), ww, neutral(http.StatusInternalServerError, nil))
 				}
 			}()
 			next.ServeHTTP(ww, r)
@@ -217,9 +217,13 @@ func authError(ctx context.Context, log logkit.Logger, err error) *APIError {
 }
 
 func writeHumaAPIError(ctx huma.Context, e *APIError) {
+	body := e.forRequest(ctx.Context())
+	if ra := body.retryAfter(); ra != "" {
+		ctx.SetHeader("Retry-After", ra)
+	}
 	ctx.SetHeader("Content-Type", ProblemContentType)
-	ctx.SetStatus(e.Status)
-	_ = json.NewEncoder(ctx.BodyWriter()).Encode(e)
+	ctx.SetStatus(body.Status)
+	_ = json.NewEncoder(ctx.BodyWriter()).Encode(body)
 }
 
 // requestFrom достаёт *http.Request адаптера (humachi в проде, humaflow в

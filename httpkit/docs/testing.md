@@ -2,8 +2,10 @@
 
 ## Handler'ы через testkit/handlertest
 
-`testkit/handlertest` поднимает huma-API на `humatest` без реального
-`*http.Server`:
+`testkit/handlertest` поднимает huma-API сервера `httpkit` (`NewServer` +
+`BindAPI`, из цепочки — только `RequestID`) под `humatest` без реального
+`*http.Server`: ответы-ошибки те же, что в проде — `request_id`, `Retry-After`,
+404/405 маршрутизатора:
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/testkit/handlertest"
@@ -21,11 +23,10 @@ func TestGetUser(t *testing.T) {
 }
 ```
 
-Хелперы: `NewAPI`, `AssertStatus`, `DecodeAPIError`, `AssertAPIError`.
-`handlertest.APIError` — локальная структура для декода, не `httpkit.APIError`:
-она покрывает оба тела сразу — плоский problem+json `httpkit.Error(...)` (`code`,
-`status`, `title`, `detail`) и `huma.ErrorModel` валидации 422, где список
-проблем приходит в `Errors []APIErrorLocation{Message, Location, Value}`.
+Хелперы: `NewAPI`, `AssertStatus`, `DecodeAPIError` (тело → `httpkit.APIError`:
+у валидации 422 поля — в `Errors []httpkit.FieldError{Location, Code, Message}`) и
+`AssertAPIError` — статус, `application/problem+json`, `code` и `request_id`,
+равный `X-Request-ID` ответа.
 
 `HumaAuth` работает на любом huma-адаптере, поэтому auth-гейт тестируется прямо
 на `handlertest.NewAPI`:
@@ -102,12 +103,12 @@ _ = app.Start(ctx)
 resp, _ := http.Get("http://" + srv.Addr().String() + "/ready") // 503
 ```
 
-## Инвариант error-hook'а
+## Контракт ошибок в тестах
 
-Нейтрализация 5xx (`handler error` в лог, `{"code":"INTERNAL"}` клиенту) живёт в
-process-global переменной huma (`huma.NewErrorWithContext`) и ставится **любым**
-`NewServer`, с `WithLogger` и без: опция определяет только, куда уходит текст
-ошибки. В тесте на голом `handlertest.NewAPI`, где `Server` в процессе не
-создавался, действует дефолт huma. Проверяйте отсутствие утечки на fx-проводке
-целиком; сценарий «без fx» проверяется в отдельном процессе, иначе хук ставит
-любой другой тест того же пакета.
+Форма ошибок — свойство импорта: `init()` пакета подменяет `huma.NewError` и
+`huma.NewErrorWithContext`, поэтому в любом тесте, который импортирует `httpkit`
+(в том числе через `handlertest`), валидация и 5xx — `APIError`, и 5xx без текста
+причины даже на голом `humatest`. `request_id`, `Retry-After` и строку
+`handler error` в логе ставит Transformer сервера: их видит API из
+`handlertest.NewAPI` или `Module`, а не голый `humatest.New`. Строку лога с
+причиной проверяйте на `Module` с логгером в буфер (`TestErrorContract`).

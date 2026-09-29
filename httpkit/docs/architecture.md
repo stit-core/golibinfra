@@ -107,7 +107,7 @@ preflight, лимитер, лимит тела, идемпотентность.
 ### Зависимости через fx
 
 - `logkit.Logger` — обязателен (`Recovery`, `AccessLog`, `HumaAuth`, `/ready`,
-  error-hook, `ErrorLog`).
+  причины 5xx, `ErrorLog`).
 - `IdempotencyStore` (`optional`) — есть в графе → `Idempotency` с
   `Config.Idempotency` (`HTTP_IDEMPOTENCY_*`).
 - `AuthExtractor` (`optional`) → `HumaAuth` и scope идемпотентности; нет, а у
@@ -136,26 +136,59 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 `init()` регистрирует `logkit.RegisterAttr`: любой ctx-scoped лог-вызов получает
 `request_id` автоматически.
 
-## Error-модель
+## Контракт ошибок
 
-`APIError` — problem-объект `{type, title, status, detail, instance, code}`
-(`omitempty`), реализует `error`, `huma.StatusError` и `huma.ContentTypeFilter`,
-поэтому из любого слоя уходит с `Content-Type: application/problem+json`.
+Любой ответ-ошибка сервера — `APIError` с `Content-Type: application/problem+json`
+(RFC 9457):
 
-- `Error(code, status, detail)`, хелперы `BadRequest`…`Internal`, `Unavailable`.
+```json
+{"title":"Unprocessable Entity","status":422,"detail":"validation failed",
+ "code":"VALIDATION_FAILED","request_id":"01a0…","errors":[
+   {"location":"body.password","code":"INVALID","message":"expected length >= 12"}]}
+```
+
+- `code` — стабильный машинный код: свой у операции (`404 USER_NOT_FOUND`) или
+  общий кита по статусу — `400 BAD_REQUEST`, `401 UNAUTHORIZED`, `404 NOT_FOUND`,
+  `405 METHOD_NOT_ALLOWED`, `413 BODY_TOO_LARGE`, `422 VALIDATION_FAILED`,
+  `429 RATE_LIMITED`, `500 INTERNAL`, `503 UNAVAILABLE` (прочие статусы — текст
+  статуса: `502 BAD_GATEWAY`).
+- `request_id` равен `X-Request-ID` ответа и полю `request_id` строк лога запроса.
+- `errors[]` — ошибки мест запроса `{location, code, message}`: у валидации huma
+  (`code` — `INVALID`) и у `422 IDEMPOTENCY_KEY_REUSED` (`header.Idempotency-Key`).
+  Значение поля клиенту не возвращается: в нём бывает пароль.
+- 5xx, собранная китом, — только `title`, `status`, `code` и `request_id`: текст
+  причины и `detail` уходят в лог строкой `handler error` (`operation`, `status`,
+  `code`, `err`).
+- `Retry-After` в секундах (вверх) — из метода `RetryAfter() time.Duration` в
+  цепочке причины; у 429 — не меньше секунды, даже без такой причины.
+
+Откуда берётся форма:
+
+- **Ошибки huma.** Импорт `httpkit` в `init()` подменяет `huma.NewError` и
+  `huma.NewErrorWithContext`: валидация, 5xx хендлера и `huma.Error4xx/5xx` —
+  тоже `APIError`, во всём процессе, включая `humatest` в тестах потребителя.
+  Нейтрализация 5xx не зависит от `Server` и опций.
+- **Ответы huma.** Transformer сервера (`BindAPI`) видит каждое тело до записи
+  статуса: ставит `request_id` и `Retry-After` в копию ошибки (общий
+  package-level `APIError` не мутируется) и пишет причину 5xx в логгер
+  `WithLogger` (без него — `logkit.Nop()`, причина теряется).
+- **Ответы мимо huma** — `Recovery` (500), `RateLimit` (429), `Idempotency`,
+  `HumaAuth` и маршрутизатор: неизвестный путь — `404 NOT_FOUND`, метод —
+  `405 METHOD_NOT_ALLOWED` с `Allow`. Их пишет кит сам той же формой.
+
+`APIError` реализует `error`, `huma.StatusError` и `huma.ContentTypeFilter`;
+`huma.ErrorWithHeaders` дописывает к нему заголовки. Конструкторы —
+`Error(code, status, detail)` и хелперы `BadRequest`…`Internal`, `Unavailable`.
+Маппинг доменных ошибок:
+
 - `MapErr(err, mappings...)` — таблица `ErrorMapping{Match, Code, Status, Detail}`.
 - `MapIs(err, target, code, status, detail)` — `errors.Is`.
 - `MapAs[T](err, code, status, detail)` — `errors.As` по конкретному типу;
   `T = error` запрещён (паника), потому что совпал бы с любой ошибкой.
 
-Незамапленная ошибка handler'а **не** уходит клиенту: любой `NewServer` один раз
-подменяет `huma.NewErrorWithContext`, и на 5xx клиент получает нейтральное
-`{"code":"INTERNAL","detail":"internal error"}`, а полный текст ошибки пишется в
-лог (`handler error`) вместе с `request_id`. Ошибки валидации huma (4xx) хук не
-трогает — их `errors[]` доходит до клиента как есть. Нейтрализация не зависит от
-опций: `WithLogger` решает только, куда уходит текст (без него — `logkit.Nop()`,
-причина 500 теряется). Хук — process-global переменная huma: логгером владеет
-последний `Server`, которому его дали.
+Вне контракта — ответы самого `net/http` на битый протокол (400, 431): их пишет
+`http.Server` до цепочки. Повтор с `Idempotency-Key` воспроизводит тело оригинала
+целиком, с его `request_id`: строки лога ответа — у исходного запроса.
 
 ## Аутентификация
 
