@@ -27,9 +27,10 @@ type Config struct {
 	CleanupRetention time.Duration `envconfig:"BRUTEFORCE_CLEANUP_RETENTION" default:"24h"`
 	// CleanupInterval — период job'а Cleanup, который регистрирует pgstore.Module.
 	CleanupInterval time.Duration `envconfig:"BRUTEFORCE_CLEANUP_INTERVAL" default:"5m"`
-	// IPv6Prefix — длина префикса, до которой агрегируются IPv6-адреса
-	// (64 — /64-подсеть); FullIPv6Prefix — без агрегации. На IPv4 не влияет.
-	IPv6Prefix int `envconfig:"BRUTEFORCE_IPV6_PREFIX" default:"128"`
+	// IPv6Prefix — длина префикса, до которой агрегируются IPv6-адреса: 64 —
+	// /64-подсеть, которую провайдер выдаёт клиенту целиком; FullIPv6Prefix —
+	// без агрегации. На IPv4 не влияет.
+	IPv6Prefix int `envconfig:"BRUTEFORCE_IPV6_PREFIX" default:"64"`
 }
 
 // NewConfig читает Config из ENV и валидирует его.

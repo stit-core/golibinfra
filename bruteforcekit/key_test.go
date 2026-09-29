@@ -22,13 +22,16 @@ func testConfig(ipv6Prefix int) bruteforcekit.Config {
 func TestConfig_NormalizeKey(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
-		name       string
-		ipv6Prefix int
-		subject    string
-		ip         string
-		wantIP     string
+		name        string
+		ipv6Prefix  int
+		subject     string
+		ip          string
+		wantSubject string
+		wantIP      string
 	}{
 		{name: "ipv4", ipv6Prefix: 128, subject: "u@example.com", ip: "203.0.113.7", wantIP: "203.0.113.7"},
+		{name: "subject case and spaces", ipv6Prefix: 128, subject: " User@Example.COM\t", ip: "203.0.113.7", wantSubject: "user@example.com", wantIP: "203.0.113.7"},
+		{name: "subject unicode case", ipv6Prefix: 128, subject: "Пользователь", ip: "203.0.113.7", wantSubject: "пользователь", wantIP: "203.0.113.7"},
 		{name: "ipv4 mapped", ipv6Prefix: 128, subject: "u", ip: "::ffff:203.0.113.7", wantIP: "203.0.113.7"},
 		{name: "ipv6 expanded", ipv6Prefix: 128, subject: "u", ip: "0:0:0:0:0:0:0:1", wantIP: "::1"},
 		{name: "ipv6 zone", ipv6Prefix: 128, subject: "u", ip: "fe80::1%eth0", wantIP: "fe80::1"},
@@ -44,8 +47,12 @@ func TestConfig_NormalizeKey(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NormalizeKey: %v", err)
 			}
-			if subject != tt.subject {
-				t.Fatalf("subject = %q, want %q", subject, tt.subject)
+			want := tt.wantSubject
+			if want == "" {
+				want = tt.subject
+			}
+			if subject != want {
+				t.Fatalf("subject = %q, want %q", subject, want)
 			}
 			if ip != tt.wantIP {
 				t.Fatalf("ip = %q, want %q", ip, tt.wantIP)
@@ -87,6 +94,7 @@ func TestConfig_NormalizeKey_Invalid(t *testing.T) {
 		ip      string
 	}{
 		{name: "empty subject", subject: "", ip: "203.0.113.7"},
+		{name: "blank subject", subject: " \t ", ip: "203.0.113.7"},
 		{name: "long subject", subject: strings.Repeat("s", bruteforcekit.MaxSubjectLen+1), ip: "203.0.113.7"},
 		{name: "empty ip", subject: "u", ip: ""},
 		{name: "not an ip", subject: "u", ip: "example.com"},

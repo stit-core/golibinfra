@@ -76,8 +76,9 @@ blocked-by: —
 - [x] **S5** — `logkit`: маскирование по ключу и hex-токенов, redact включён по умолчанию
   - Проверка: `go test -short -race ./logkit/`, `make envdoc-check` → PASS/OK · Закрывает: AC10
   - Сделано: `feat(logkit)` — `go test -short -race ./logkit/` → PASS, `make envdoc-check` → OK, `make check` зелёный
-- [ ] **S6** — `bruteforcekit`: нормализация subject, IPv6 /64 по умолчанию
+- [x] **S6** — `bruteforcekit`: нормализация subject, IPv6 /64 по умолчанию
   - Проверка: `go test -short -race ./bruteforcekit/...` → PASS · Закрывает: AC11
+  - Сделано: `feat(bruteforcekit)` — `go test -short -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS, `make test-full PKGS='./bruteforcekit/... ./testkit/bruteforcetest/'` → PASS, `make check` зелёный
 - [ ] **S7** — `bruteforcekit`: атомарный `Guard.Attempt` вместо `Check`+`RecordFailure`; фейки `bruteforcetest`
   - Проверка: `go test -race ./bruteforcekit/... ./testkit/bruteforcetest/` (Docker) → PASS · Закрывает: AC11 · Зависит от: S6
 - [ ] **S8** — `authnkit`: предел параллельности Argon2id
@@ -164,6 +165,13 @@ blocked-by: —
   стоил бы на каждой структуре; путь для структуры с секретами — `slog.LogValuer`-группа (README).
 - S5: граф без `RedactConfig` и нулевой `RedactConfig{}` — без маскирования (`Module` ENV не
   читает); README велит всегда провайдить `NewRedactConfig` — в шаблоне он есть, в шлюзах нет.
+- S6: subject нормализует `NormalizeKey` (`strings.ToLower(strings.TrimSpace)`) до проверок
+  пустоты и длины — `MaxSubjectLen` про хранимое значение; форму (`phone:+…`) канонизирует
+  caller. `Permissive`/`Locked`/`Recorder` ключ только проверяют, `Recorder` хранит пару как
+  передана: тест сервиса смотрит, что передал сервис.
+- S6: строки со старым ключом (регистр subject'а, полный IPv6) после обновления по новому ключу
+  не находятся — блокировка теряется не дольше `LockDuration`; данные не мигрируем: таблица —
+  эфемерные счётчики, их чистит `Cleanup`.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -185,10 +193,12 @@ blocked-by: —
   `Migrations`), `Instance` кладёт `pgkit.Source` таблицы в `pgkit.MigrationsGroup`;
   S3 (`16949a0`, `feat(outboxtest)!`) — `Recorder.Publish` вне `pgkit.InTx` → `outboxkit.ErrNoTx`;
   S4 (`5333bee`, `feat(logkit)`) — `logkit.FxLogger`: события fx через `*slog.Logger` графа;
-  S5 (`feat(logkit)`) — redact по умолчанию, значение под ключом-секретом целиком, hex ≥32.
-- Осталось: S6–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
-- Следующий шаг — S6: `bruteforcekit` — нормализация subject (trim + нижний регистр) и IPv6 по
-  умолчанию /64 (`Config.IPv6Prefix`); фейки `bruteforcetest` — по тому же ключу.
+  S5 (`73900ca`, `feat(logkit)`) — redact по умолчанию, значение под ключом-секретом, hex ≥32;
+  S6 (`feat(bruteforcekit)`) — subject в нижнем регистре без пробелов, IPv6 по умолчанию /64.
+- Осталось: S7–S15 по «Шагам», дизайн каждого — в «Решениях». Тега нет; ветка не запушена.
+- Следующий шаг — S7: `Guard.Attempt` (атомарный учёт попытки до проверки секрета, `WHERE` не
+  пишет строку под активной блокировкой) вместо `Check`+`RecordFailure`, `RecordSuccess`
+  остаётся; фейки `bruteforcetest`; integration `TestStore_ConcurrentAttempts` (AC11).
 - Для аннотации тега копить по шагам:
   - Breaking — `timerkit.Provide` требует `timerkit.Module` (S1); `outboxkit.RepositoryFactory` —
     интерфейс `Repository(table)`/`Migrations(table)` вместо func-типа, своя фабрика реализует оба
@@ -200,7 +210,10 @@ blocked-by: —
   - Поведение — с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами (S2);
     `LOG_REDACT_ENABLED` по умолчанию `true`, значение под ключом-секретом (token, password,
     secret, authorization, cookie, …) маскируется целиком, hex-цепочки ≥32 — маской; выключить —
-    `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его (S5).
+    `LOG_REDACT_ENABLED=false`; граф без `logkit.NewRedactConfig` не маскирует — добавьте его (S5);
+    guard приводит subject к нижнему регистру без пробелов по краям, `BRUTEFORCE_IPV6_PREFIX` по
+    умолчанию `64` (полный адрес — `128`); блокировки строк со старым ключом теряются не дольше
+    `BRUTEFORCE_LOCK_DURATION` (S6).
   - Изменения — `pgstore.Module` и `FactoryModule` сочетаются в одном графе (доки, S2);
     `logkit.FxLogger` — события fx в структурный лог (S4).
 - Перед коммитом — `make check` (govulncheck однажды завис на сети — перезапуск помог).

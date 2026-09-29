@@ -35,7 +35,7 @@ func TestNewConfig_Defaults(t *testing.T) {
 		LockDuration:     15 * time.Minute,
 		CleanupRetention: 24 * time.Hour,
 		CleanupInterval:  5 * time.Minute,
-		IPv6Prefix:       bruteforcekit.FullIPv6Prefix,
+		IPv6Prefix:       64,
 	}
 	if cfg != want {
 		t.Fatalf("NewConfig = %+v, want %+v", cfg, want)
@@ -47,7 +47,7 @@ func TestNewConfig_FromEnv(t *testing.T) {
 	t.Setenv("BRUTEFORCE_LOCK_DURATION", "90s")
 	t.Setenv("BRUTEFORCE_CLEANUP_RETENTION", "0s")
 	t.Setenv("BRUTEFORCE_CLEANUP_INTERVAL", "1m")
-	t.Setenv("BRUTEFORCE_IPV6_PREFIX", "64")
+	t.Setenv("BRUTEFORCE_IPV6_PREFIX", "128")
 
 	cfg, err := bruteforcekit.NewConfig()
 	if err != nil {
@@ -58,7 +58,7 @@ func TestNewConfig_FromEnv(t *testing.T) {
 		LockDuration:     90 * time.Second,
 		CleanupRetention: 0,
 		CleanupInterval:  time.Minute,
-		IPv6Prefix:       64,
+		IPv6Prefix:       bruteforcekit.FullIPv6Prefix,
 	}
 	if cfg != want {
 		t.Fatalf("NewConfig = %+v, want %+v", cfg, want)

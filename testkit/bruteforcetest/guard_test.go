@@ -220,6 +220,28 @@ func TestCounting_LocksAfterMaxFailures(t *testing.T) {
 	}
 }
 
+// Ключ сворачивается как в pgstore: регистр и пробелы subject'а и адреса одной
+// /64 не дают обойти блокировку.
+func TestCounting_NormalizesKeyLikePgstore(t *testing.T) {
+	t.Parallel()
+	cfg := countingConfig()
+	cfg.IPv6Prefix = 64
+	g, err := bruteforcetest.NewCounting(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewCounting: %v", err)
+	}
+	ctx := t.Context()
+	for _, k := range [][2]string{{"User@Example.com", "2001:db8:0:1::1"}, {" user@example.com ", "2001:db8:0:1::2"}} {
+		if _, err := g.RecordFailure(ctx, k[0], k[1]); err != nil {
+			t.Fatalf("RecordFailure(%q, %q): %v", k[0], k[1], err)
+		}
+	}
+	st, err := g.RecordFailure(ctx, "USER@EXAMPLE.COM", "2001:db8:0:1:ffff::9")
+	if err != nil || st == nil {
+		t.Fatalf("third failure of one normalized key = %v, %v, want lock", st, err)
+	}
+}
+
 func TestCounting_ValidatesKey(t *testing.T) {
 	t.Parallel()
 	g, err := bruteforcetest.NewCounting(countingConfig(), nil)

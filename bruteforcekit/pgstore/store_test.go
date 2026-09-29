@@ -317,6 +317,29 @@ func TestStore_Guard(t *testing.T) {
 		}
 	})
 
+	// Регистр и пробелы subject'а — один бакет: иначе каждый вариант регистра
+	// email давал бы новые попытки (SEC-05).
+	t.Run("normalized subject", func(t *testing.T) {
+		cfg := config()
+		cfg.MaxFailures = 2
+		s := newStore(t, db, cfg)
+		const ip = "203.0.113.9"
+
+		if _, err := s.RecordFailure(ctx, "Case@Example.com", ip); err != nil {
+			t.Fatalf("RecordFailure: %v", err)
+		}
+		st, err := s.RecordFailure(ctx, " case@example.COM ", ip)
+		if err != nil {
+			t.Fatalf("RecordFailure: %v", err)
+		}
+		if st == nil {
+			t.Fatal("case and surrounding spaces of subject must not open a new bucket")
+		}
+		if n := failedCount(t, ctx, db, "case@example.com", ip); n != 2 {
+			t.Fatalf("failed_count = %d, want 2", n)
+		}
+	})
+
 	t.Run("ipv6 aggregated to prefix", func(t *testing.T) {
 		cfg := config()
 		cfg.MaxFailures = 2
