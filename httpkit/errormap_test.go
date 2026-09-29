@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -159,10 +160,14 @@ func TestErrorMap_Declare(t *testing.T) {
 		httpkit.ErrorRule{Err: errLocked, Status: http.StatusTooManyRequests, Code: "AUTH_LOCKED"},
 		httpkit.ErrorRule{Err: errConflict, Status: http.StatusConflict, Code: "AUTH_SESSION_CONFLICT"},
 	)
-	base := huma.Operation{OperationID: "updateUser", Method: http.MethodPatch, Path: "/users/{id}", Errors: []int{http.StatusUnauthorized}}
+	// Запас ёмкости у Errors: append без клона писал бы статусы в массив вызывающего.
+	base := huma.Operation{
+		OperationID: "updateUser", Method: http.MethodPatch, Path: "/users/{id}",
+		Errors: append(make([]int, 0, 8), http.StatusUnauthorized),
+	}
 	op := authErrors.Declare(userErrors.Declare(base))
-	if len(base.Errors) != 1 || base.Metadata != nil {
-		t.Fatalf("Declare must not change the caller's operation: %+v", base)
+	if len(base.Errors) != 1 || base.Metadata != nil || slices.ContainsFunc(base.Errors[1:cap(base.Errors)], func(s int) bool { return s != 0 }) {
+		t.Fatalf("Declare must not change the caller's operation: %+v %v", base, base.Errors[:cap(base.Errors)])
 	}
 
 	api := handlertest.NewAPI(t, func(api huma.API) {

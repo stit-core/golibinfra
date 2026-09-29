@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -74,17 +76,95 @@ func TestHumaErrors_AreAPIErrors(t *testing.T) {
 	}
 }
 
-// huma.ErrorWithHeaders дописывает заголовки к APIError, а не теряет их.
+// huma.ErrorWithHeaders дописывает заголовки к APIError, а не теряет их; свой
+// Retry-After у 429 кит не перетирает вычисленным.
 func TestAPIError_WithHumaHeaders(t *testing.T) {
 	api := handlertest.NewAPI(t, func(api huma.API) {
 		huma.Get(api, "/doc", func(context.Context, *struct{}) (*struct{}, error) {
 			return nil, huma.ErrorWithHeaders(httpkit.Conflict("DOC_CHANGED", "document changed"), http.Header{"ETag": {`"v2"`}})
+		})
+		huma.Get(api, "/slow", func(context.Context, *struct{}) (*struct{}, error) {
+			return nil, huma.ErrorWithHeaders(huma.Error429TooManyRequests("slow down"), http.Header{"Retry-After": {"120"}})
 		})
 	})
 	resp := api.Get("/doc")
 	handlertest.AssertAPIError(t, resp, http.StatusConflict, "DOC_CHANGED")
 	if got := resp.Header().Get("ETag"); got != `"v2"` {
 		t.Fatalf("ETag = %q", got)
+	}
+
+	resp = api.Get("/slow")
+	handlertest.AssertAPIError(t, resp, http.StatusTooManyRequests, "RATE_LIMITED")
+	if got := resp.Header().Values("Retry-After"); len(got) != 1 || got[0] != "120" {
+		t.Fatalf("Retry-After = %v, want the handler's [120]", got)
+	}
+}
+
+// Сообщения форматов huma, цитирующие ввод, обрезаются до базового текста: значение
+// поля (в нём бывает пароль) клиенту не возвращается.
+func TestHumaErrors_FormatMessagesDoNotEchoInput(t *testing.T) {
+	type formats struct {
+		Body struct {
+			Email    string `json:"email" format:"email"`
+			URI      string `json:"uri" format:"uri"`
+			UUID     string `json:"uuid" format:"uuid"`
+			Regex    string `json:"regex" format:"regex"`
+			Duration string `json:"duration" format:"duration"`
+		}
+	}
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		huma.Post(api, "/formats", func(context.Context, *formats) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	})
+	resp := api.Post("/formats", map[string]any{
+		"email":    "a@b.c, S3CRETmail@x.y",
+		"uri":      "http://S3CRETuri%zz",
+		"uuid":     "S3CRETxyz" + strings.Repeat("0", 36),
+		"regex":    "(S3CRETre",
+		"duration": "S3CRETdur",
+	})
+	handlertest.AssertAPIError(t, resp, http.StatusUnprocessableEntity, "VALIDATION_FAILED")
+	if strings.Contains(resp.Body.String(), "S3CRET") {
+		t.Fatalf("the input is echoed: %s", resp.Body.String())
+	}
+	want := map[string]string{
+		"body.email":    "expected string to be RFC 5322 email",
+		"body.uri":      "expected string to be RFC 3986 uri",
+		"body.uuid":     "expected string to be RFC 4122 uuid",
+		"body.regex":    "expected string to be regex",
+		"body.duration": "expected duration",
+	}
+	got := map[string]string{}
+	for _, fe := range handlertest.DecodeAPIError(t, resp).Errors {
+		got[fe.Location] = fe.Message
+	}
+	for loc, msg := range want {
+		if got[loc] != msg {
+			t.Errorf("%s: message %q, want %q", loc, got[loc], msg)
+		}
+	}
+}
+
+var errShared = httpkit.Conflict("SHARED", "shared package-level error")
+
+// Общий package-level APIError под конкурентными запросами: каждый ответ несёт свой
+// request_id, а сам общий объект не меняется.
+func TestAPIError_SharedValueKeepsOwnRequestID(t *testing.T) {
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		huma.Get(api, "/shared", func(context.Context, *struct{}) (*struct{}, error) { return nil, errShared })
+	})
+	var wg sync.WaitGroup
+	for i := range 16 {
+		wg.Go(func() {
+			id := fmt.Sprintf("req-%d", i)
+			var got httpkit.APIError
+			if err := json.Unmarshal(api.Get("/shared", "X-Request-ID: "+id).Body.Bytes(), &got); err != nil || got.RequestID != id {
+				t.Errorf("request_id = %q (%v), want %q", got.RequestID, err, id)
+			}
+		})
+	}
+	wg.Wait()
+	if errShared.RequestID != "" {
+		t.Fatalf("the shared APIError was mutated: request_id %q", errShared.RequestID)
 	}
 }
 

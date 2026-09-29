@@ -206,7 +206,7 @@ func authError(ctx context.Context, log logkit.Logger, err error) *APIError {
 	switch {
 	case errors.Is(err, ErrAuthUnavailable):
 		log.Warn(ctx, "auth backend unavailable", "err", err)
-		return Unavailable("AUTH_UNAVAILABLE", "authentication backend is unavailable")
+		return Unavailable("AUTH_UNAVAILABLE", "")
 	case errors.As(err, &apiErr):
 		log.Debug(ctx, "auth rejected", "err", err, "code", apiErr.Code)
 		return apiErr
@@ -226,9 +226,9 @@ func writeHumaAPIError(ctx huma.Context, e *APIError) {
 	_ = json.NewEncoder(ctx.BodyWriter()).Encode(body)
 }
 
-// requestFrom достаёт *http.Request адаптера (humachi в проде, humaflow в
-// humatest); адаптеру без Unwrap запрос собирается из полей huma.Context.
-func requestFrom(hc huma.Context) *http.Request {
+// unwrapHTTP достаёт запрос и writer адаптера под huma.Context (humachi в
+// проде, humaflow в humatest); у адаптера без Unwrap — nil.
+func unwrapHTTP(hc huma.Context) (*http.Request, http.ResponseWriter) {
 	c := hc
 	for {
 		u, ok := c.(interface{ Unwrap() huma.Context })
@@ -240,9 +240,16 @@ func requestFrom(hc huma.Context) *http.Request {
 	if u, ok := c.(interface {
 		Unwrap() (*http.Request, http.ResponseWriter)
 	}); ok {
-		if r, _ := u.Unwrap(); r != nil {
-			return r.WithContext(hc.Context())
-		}
+		return u.Unwrap()
+	}
+	return nil, nil
+}
+
+// requestFrom достаёт *http.Request адаптера; адаптеру без Unwrap запрос
+// собирается из полей huma.Context.
+func requestFrom(hc huma.Context) *http.Request {
+	if r, _ := unwrapHTTP(hc); r != nil {
+		return r.WithContext(hc.Context())
 	}
 
 	u := hc.URL()

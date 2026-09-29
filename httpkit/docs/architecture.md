@@ -155,12 +155,15 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 - `request_id` равен `X-Request-ID` ответа и полю `request_id` строк лога запроса.
 - `errors[]` — ошибки мест запроса `{location, code, message}`: у валидации huma
   (`code` — `INVALID`) и у `422 IDEMPOTENCY_KEY_REUSED` (`header.Idempotency-Key`).
-  Значение поля клиенту не возвращается: в нём бывает пароль.
+  Значение поля клиенту не возвращается: в нём бывает пароль. Сообщения форматов
+  huma, которые цитируют ввод (email, uri, uuid, regex, duration), обрезаются до
+  базового текста (`expected string to be RFC 5322 email`).
 - 5xx, собранная китом, — только `title`, `status`, `code` и `request_id`: текст
   причины и `detail` уходят в лог строкой `handler error` (`operation`, `status`,
   `code`, `err`).
 - `Retry-After` в секундах (вверх) — из метода `RetryAfter() time.Duration` в
-  цепочке причины; у 429 — не меньше секунды, даже без такой причины.
+  цепочке причины; у 429 — не меньше секунды, даже без такой причины. Свой
+  `Retry-After` хендлера (`huma.ErrorWithHeaders`) кит не перетирает.
 
 Откуда берётся форма:
 

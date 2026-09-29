@@ -211,7 +211,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 		if !cfg.FailClosed {
 			return false
 		}
-		writeAPIError(ctx, w, Unavailable("IDEMPOTENCY_UNAVAILABLE", "idempotency store is unavailable"))
+		writeAPIError(ctx, w, Unavailable("IDEMPOTENCY_UNAVAILABLE", ""))
 		return true
 	}
 

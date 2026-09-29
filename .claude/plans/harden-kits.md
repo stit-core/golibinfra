@@ -242,6 +242,12 @@ blocked-by: —
   `Enabled` с нулём «выключено» делал опасным и граф без `RedactConfig`, и `New` без опции.
   `RedactConfig` остаётся необязательным: его отсутствие — нулевое значение, и оно маскирует;
   прежний `LOG_REDACT_ENABLED=false` теперь игнорируется — ошибка в безопасную сторону.
+- N2–N5 валидатора этапа httpkit: `Retry-After` из `huma.ErrorWithHeaders` точнее вычисленного —
+  Transformer читает заголовки ответа сквозь адаптер (как `requestFrom` запрос); сообщения
+  форматов huma с эхом ввода (email, uri, uuid, regex, duration — те, что с `%v`) режутся до
+  базового текста по константам `huma/validation`, а не обещание сужается; собственные 5xx кита
+  (`AUTH_UNAVAILABLE`, `IDEMPOTENCY_UNAVAILABLE`) — без `detail`, как все 5xx кита, `detail`
+  своего 5xx — выбор потребителя, схема `APIError` говорит «5xx без внутренней причины».
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -264,8 +270,9 @@ blocked-by: —
   (содержание — «Шаги») и `fix(outboxkit)` `dd6eed6`; этап httpkit — S10 `832904e`, S11
   `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 `007d79a`. Этап httpkit закрыт: валидатор —
   PASS (`M/validation-harden-kits-B.md`); его неблокирующие и KDOC-01/06 базового аудита китов
-  закрываются до тега отдельными `fix(...)`: KDOC-01 — `fix(logkit)!`.
-- Осталось: остальные фиксы по валидатору (N2–N8, N1/N11, KDOC-06, N9 в бэклог), затем S15 —
+  закрываются до тега отдельными `fix(...)`: KDOC-01 — `80fb648`, N2–N5 — `fix(httpkit)`.
+- Осталось: KSEC-01/02 базового аудита (регрессии и неJSON-значения logkit), N6–N8, N1/N11,
+  KDOC-06, N9 в бэклог; затем S15 —
   корневые README/CLAUDE.md, `make test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка
   не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
@@ -314,8 +321,10 @@ blocked-by: —
     - httpkit (S10): HTTP слушает после OnStart всех `fx.Module` и гасится до их OnStop; `Module` —
       на верхнем уровне `fx.New`, корневой Invoke с хуками — до него (иначе хук встанет после HTTP).
     - httpkit (S13): 404/405 — problem+json `NOT_FOUND`/`METHOD_NOT_ALLOWED` (с `Allow`), 422 —
-      `VALIDATION_FAILED` с полями `INVALID`, 5xx из huma — без `detail`; `Retry-After` — из
-      `RetryAfter()` причины; `handler error` — с `operation` и `code`, в логгер своего сервера.
+      `VALIDATION_FAILED` с полями `INVALID` без эха ввода (и в сообщениях форматов), 5xx кита —
+      без `detail` (500 panic, 503 `AUTH_UNAVAILABLE`, `IDEMPOTENCY_UNAVAILABLE`); `Retry-After` —
+      из `RetryAfter()` причины, свой заголовок хендлера сохраняется; `handler error` — с `operation`
+      и `code`, в логгер своего сервера.
     - timerkit (S1): повторный `timerkit.Module` — ошибка старта `already provided`.
     - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами.
     - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт

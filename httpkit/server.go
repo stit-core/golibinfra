@@ -267,10 +267,19 @@ func (s *Server) transformError(hc huma.Context, _ string, v any) (any, error) {
 		}
 		s.opts.log.Error(ctx, "handler error", kv...)
 	}
-	if ra := e.retryAfter(); ra != "" {
+	// Retry-After, выставленный хендлером (huma.ErrorWithHeaders), точнее вычисленного.
+	if ra := e.retryAfter(); ra != "" && responseHeader(hc).Get("Retry-After") == "" {
 		hc.SetHeader("Retry-After", ra)
 	}
 	return e.forRequest(ctx), nil
+}
+
+// responseHeader — заголовки ответа адаптера; nil, если writer недоступен.
+func responseHeader(hc huma.Context) http.Header {
+	if _, w := unwrapHTTP(hc); w != nil {
+		return w.Header()
+	}
+	return nil
 }
 
 // methodNotAllowed — 405 маршрутизатора с problem+json и Allow: свой обработчик

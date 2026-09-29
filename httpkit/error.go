@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/validation"
 )
 
 // Форма ошибки одна на процесс: ошибки самой huma (валидация, 5xx хендлера,
@@ -29,8 +30,8 @@ func init() {
 type APIError struct {
 	Title     string       `json:"title" doc:"HTTP status text"`
 	Status    int          `json:"status" doc:"HTTP status code"`
-	Detail    string       `json:"detail,omitempty" doc:"Human-readable explanation; absent in 5xx responses"`
-	Code      string       `json:"code" doc:"Stable machine-readable error code: operation codes are listed in the response description; generic ones are VALIDATION_FAILED, BAD_REQUEST, UNAUTHORIZED, NOT_FOUND, METHOD_NOT_ALLOWED, BODY_TOO_LARGE, RATE_LIMITED, INTERNAL, UNAVAILABLE"`
+	Detail    string       `json:"detail,omitempty" doc:"Human-readable explanation of this occurrence; may be absent, and a 5xx never carries its internal cause"`
+	Code      string       `json:"code" doc:"Stable machine-readable error code. Operation codes are listed in the response description; generic ones include VALIDATION_FAILED, BAD_REQUEST, UNAUTHORIZED, NOT_FOUND, METHOD_NOT_ALLOWED, BODY_TOO_LARGE, RATE_LIMITED, INTERNAL, UNAVAILABLE"`
 	RequestID string       `json:"request_id,omitempty" doc:"Request ID (X-Request-ID); the server logs carry the same ID"`
 	Errors    []FieldError `json:"errors,omitempty" doc:"What is wrong in the request, field by field"`
 
@@ -39,7 +40,8 @@ type APIError struct {
 
 // FieldError — ошибка одного места запроса: location (`body.email`, `path.id`,
 // `query.limit`, `header.<name>`), машинный code и message. Ошибки валидации
-// huma получают code INVALID; значение поля клиенту не возвращается.
+// huma получают code INVALID; значение поля клиенту не возвращается, в том
+// числе хвостом сообщений форматов, которые его цитируют.
 type FieldError struct {
 	Location string `json:"location" doc:"Where in the request: body.<field>, path.<name>, query.<name>, header.<name>"`
 	Code     string `json:"code" doc:"Machine-readable code of this field error"`
@@ -169,11 +171,28 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 		var d huma.ErrorDetailer
 		if errors.As(err, &d) {
 			detail := d.ErrorDetail()
-			fe.Location, fe.Message = detail.Location, detail.Message
+			fe.Location, fe.Message = detail.Location, withoutEcho(detail.Message)
 		}
 		e.Errors = append(e.Errors, fe)
 	}
 	return e
+}
+
+// echoFormats — сообщения форматов huma, которые после «: » цитируют ввод
+// (адрес, URL, префикс uuid, regex, длительность).
+var echoFormats = []string{
+	validation.MsgExpectedRFC5322Email, validation.MsgExpectedRFC3986URI,
+	validation.MsgExpectedRFC4122UUID, validation.MsgExpectedRegexp, validation.MsgExpectedDuration,
+}
+
+// withoutEcho отрезает у сообщения формата хвост с вводом: в поле бывает пароль.
+func withoutEcho(msg string) string {
+	for _, format := range echoFormats {
+		if prefix, ok := strings.CutSuffix(format, "%v"); ok && strings.HasPrefix(msg, prefix) {
+			return strings.TrimSuffix(prefix, ": ")
+		}
+	}
+	return msg
 }
 
 // codeForStatus — code ошибки, собранной по статусу: свои имена кита или текст статуса.

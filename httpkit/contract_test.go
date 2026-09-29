@@ -49,6 +49,18 @@ func (b *syncBuffer) lines(t *testing.T) []map[string]any {
 	return out
 }
 
+// downStore — IdempotencyStore, который всегда недоступен.
+type downStore struct{}
+
+var errStoreDown = errors.New("redis: connection refused")
+
+func (downStore) Reserve(context.Context, string, time.Duration) (string, bool, error) {
+	return "", false, errStoreDown
+}
+func (downStore) Get(context.Context, string) ([]byte, bool, error)        { return nil, false, errStoreDown }
+func (downStore) Set(context.Context, string, []byte, time.Duration) error { return errStoreDown }
+func (downStore) Release(context.Context, string, string) error            { return errStoreDown }
+
 // retryError — доменная ошибка, которая знает, когда повторить запрос.
 type retryError time.Duration
 
@@ -90,6 +102,7 @@ func contractRoutes(api huma.API) {
 
 type contractCase struct {
 	name, method, path, body string
+	headers                  []string
 	status                   int
 	code                     string
 	retryAfter               string // "" — заголовка нет
@@ -116,10 +129,20 @@ func TestErrorContract(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("HTTP_MAX_BODY_BYTES", "256")
-	noCredentials := func(*http.Request) (context.Context, error) { return nil, errors.New("token signature mismatch") }
+	t.Setenv("HTTP_IDEMPOTENCY_FAIL_CLOSED", "true")
+	extract := func(r *http.Request) (context.Context, error) {
+		switch r.Header.Get("Authorization") {
+		case "Bearer ok":
+			return r.Context(), nil
+		case "Bearer backend-down":
+			return nil, fmt.Errorf("jwks: %w", httpkit.ErrAuthUnavailable)
+		}
+		return nil, errors.New("token signature mismatch")
+	}
 	srv := startApp(t,
 		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
-		fx.Supply(httpkit.AuthExtractor(noCredentials)),
+		fx.Supply(httpkit.AuthExtractor(extract)),
+		fx.Provide(func() httpkit.IdempotencyStore { return downStore{} }),
 		fx.Invoke(contractRoutes),
 	)
 
@@ -163,6 +186,16 @@ func TestErrorContract(t *testing.T) {
 		},
 		{name: "лимит тела", method: http.MethodPost, path: "/signup", body: `{"email":"` + strings.Repeat("a", 300) + `"}`, status: http.StatusRequestEntityTooLarge, code: "BODY_TOO_LARGE"},
 		{name: "auth", method: http.MethodGet, path: "/me", status: http.StatusUnauthorized, code: "UNAUTHORIZED"},
+		{
+			name: "auth backend недоступен", method: http.MethodGet, path: "/me", headers: []string{"Authorization: Bearer backend-down"},
+			status: http.StatusServiceUnavailable, code: "AUTH_UNAVAILABLE", check: noDetail,
+		},
+		{
+			name: "store идемпотентности недоступен", method: http.MethodPost, path: "/signup",
+			body:    `{"email":"a@b.co","password":"long-enough-password"}`,
+			headers: []string{"Authorization: Bearer ok", "Idempotency-Key: k-1"},
+			status:  http.StatusServiceUnavailable, code: "IDEMPOTENCY_UNAVAILABLE", check: noDetail,
+		},
 		{name: "неизвестный маршрут", method: http.MethodGet, path: "/nowhere", status: http.StatusNotFound, code: "NOT_FOUND"},
 		{
 			name: "метод", method: http.MethodDelete, path: "/mapped", status: http.StatusMethodNotAllowed, code: "METHOD_NOT_ALLOWED",
@@ -176,7 +209,7 @@ func TestErrorContract(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			resp := do(t, srv, c.method, c.path, strings.NewReader(c.body), "Content-Type: application/json")
+			resp := do(t, srv, c.method, c.path, strings.NewReader(c.body), append([]string{"Content-Type: application/json"}, c.headers...)...)
 			assertProblem(t, resp, c, logs)
 		})
 	}
