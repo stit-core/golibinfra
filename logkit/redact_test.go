@@ -8,6 +8,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"math"
 	"math/rand/v2"
 	"net/http"
 	"net/url"
@@ -443,33 +444,55 @@ func TestRedact_CustomPatternsSkipTheHint(t *testing.T) {
 }
 
 // Порог цены: запись без маркеров секрета не должна стоить кратно дороже той же
-// записи без redact'а. Сравниваются два прогона в одном процессе — отношение
-// устойчиво к скорости машины, в отличие от абсолютных наносекунд.
+// записи без redact'а — и со структурой, и с http.Header, и со срезом map,
+// которые обход ключей разбирает. Отношение двух замеров в одном процессе
+// устойчиво к скорости машины, минимум чередующихся раундов — к шуму соседей.
 func TestRedact_CostOfRecordWithoutSecrets(t *testing.T) {
 	if testing.Short() {
 		t.Skip("timing comparison")
 	}
-	doc := map[string]any{"id": "ORD-42", "items": []string{"a", "b"}, "total": 1500}
-	measure := func(opts ...Option) time.Duration {
+	items := make([]map[string]any, 20)
+	for i := range items {
+		items[i] = map[string]any{"id": i, "name": "item", "price": 10}
+	}
+	header := http.Header{}
+	for _, k := range []string{
+		"Accept", "Accept-Encoding", "Accept-Language", "Cache-Control", "Connection",
+		"Host", "Pragma", "Referer", "User-Agent", "X-Request-Id",
+	} {
+		header.Set(k, "v")
+	}
+	records := map[string][]any{
+		"struct": {"doc", map[string]any{"id": "ORD-42", "items": []string{"a", "b"}, "total": 1500}},
+		"header": {"headers", header},
+		"maps":   {"items", items},
+	}
+	newLogger := func(opts ...Option) Logger {
 		l, err := New(Config{Level: "info"}, append(opts, WithWriter(io.Discard))...)
 		if err != nil {
 			t.Fatalf("New: %v", err)
 		}
-		ctx := context.Background()
-		res := testing.Benchmark(func(b *testing.B) {
-			for b.Loop() {
-				l.Info(ctx, "order processed", "doc", doc)
-			}
-		})
-		return time.Duration(res.NsPerOp())
+		return l
 	}
-
-	plain := measure()
-	redacted := measure(WithRedact(RedactConfig{Enabled: true}))
-	t.Logf("plain %s, redacted %s (%.2fx)", plain, redacted, float64(redacted)/float64(plain))
-	if ratio := float64(redacted) / float64(plain); ratio > maxRedactOverhead {
-		t.Fatalf("redact costs %.1fx the plain path (%s vs %s), want <= %.1fx",
-			ratio, redacted, plain, maxRedactOverhead)
+	plainLog, redactLog := newLogger(), newLogger(WithRedact(RedactConfig{Enabled: true}))
+	ctx := context.Background()
+	for name, kv := range records {
+		cost := func(l Logger) time.Duration {
+			start := time.Now()
+			for range 500 {
+				l.Info(ctx, "record", kv...)
+			}
+			return time.Since(start)
+		}
+		plain, redacted := time.Duration(math.MaxInt64), time.Duration(math.MaxInt64)
+		for range 7 {
+			plain, redacted = min(plain, cost(plainLog)), min(redacted, cost(redactLog))
+		}
+		ratio := float64(redacted) / float64(plain)
+		t.Logf("%s: plain %s, redacted %s (%.2fx)", name, plain/500, redacted/500, ratio)
+		if ratio > maxRedactOverhead {
+			t.Errorf("%s: redact costs %.1fx the plain path, want <= %.1fx", name, ratio, maxRedactOverhead)
+		}
 	}
 }
 
@@ -825,5 +848,28 @@ func TestRedact_FallbackKeepsMasking(t *testing.T) {
 
 	if out := buf.String(); strings.Contains(out, "opaque-fallback") || !strings.Contains(out, "[REDACTED]") {
 		t.Fatalf("fallback must keep the masked copy: %s", out)
+	}
+}
+
+// Регрессия: pre-filter ключей — необходимое условие секрета по ключу. Ключ,
+// который classifyKey считает секретом, обязан пройти keyHint, иначе обход
+// ключей пропустит его, и значение уйдёт в лог открытым.
+func TestRedact_KeyHintNeverMissesASecretKey(t *testing.T) {
+	fragments := []string{
+		"token", "Token", "TOKEN", "password", "Passwd", "pwd", "passphrase", "secret", "Secret",
+		"authorization", "cookie", "Cookies", "credential", "jwt", "otp", "TOTP", "pin", "Pin", "code",
+		"api", "API", "Api", "key", "Key", "private", "access", "new", "id", "count", "value",
+		"_", "-", ".", " ", "2", "x", "s", "e", "r", "p", "o", "t", "k", "n",
+	}
+	rnd := rand.New(rand.NewPCG(3, 4))
+	for i := range 200_000 {
+		var sb strings.Builder
+		for range 1 + rnd.IntN(5) {
+			sb.WriteString(fragments[rnd.IntN(len(fragments))])
+		}
+		key := sb.String()
+		if classifyKey(key) != keyPlain && !keyHint([]byte(key)) {
+			t.Fatalf("case %d: key %q is a secret, but keyHint skips it", i, key)
+		}
 	}
 }

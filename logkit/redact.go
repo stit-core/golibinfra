@@ -404,11 +404,17 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 			return slog.String(key, h.text(t.Error()))
 		}
 	}
-	// Запасной путь — тоже маскированная копия: исходник под ключом-секретом не пишется никогда.
-	mx := h.maskKeys(x)
-	b, err := marshalJSON(mx)
+	// Обход ключей — только если JSON допускает ключ-секрет; запасной путь пишет
+	// маскированную копию, исходник под ключом-секретом — никогда.
+	b, err := marshalJSON(x)
+	if err != nil || keyHint(b) {
+		if mx, changed := h.maskKeys(x); changed {
+			x = mx
+			b, err = marshalJSON(mx)
+		}
+	}
 	if err != nil {
-		return slog.Any(key, mx)
+		return slog.Any(key, x)
 	}
 	return h.jsonAttr(key, b)
 }
@@ -418,13 +424,46 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 // массивов, в том числе за interface; без таких ключей отдаёт x как есть, не
 // копируя. Копия кодируется в тот же JSON, что оригинал, поэтому указатели не
 // разыменовываются, а типы со своим MarshalJSON или MarshalText не разбираются.
-func (h *redactHandler) maskKeys(x any) any {
+func (h *redactHandler) maskKeys(x any) (any, bool) {
 	v := container(reflect.ValueOf(x))
 	var w walk
 	if !v.IsValid() || !w.secretsIn(v) {
-		return x
+		return x, false
 	}
-	return h.masked(v, map[visit]any{})
+	return h.masked(v, map[visit]any{}), true
+}
+
+// keyTriggers — подстроки, без которых ни один ключ не секрет: слова словаря,
+// api и private (api_key, private_key) и код pin.
+var keyTriggers = []string{
+	"api", "authorization", "cookie", "credential", "jwt", "otp", "passphrase", "passwd",
+	"password", "pin", "private", "pwd", "secret", "token",
+}
+
+// keyTriggerStart — первые буквы keyTriggers в обоих регистрах: скан не
+// сверяет слова в позициях, где ни одно не начинается.
+var keyTriggerStart = func() (t [256]bool) {
+	for _, w := range keyTriggers {
+		t[w[0]], t[w[0]-'a'+'A'] = true, true
+	}
+	return t
+}()
+
+// keyHint — необходимое условие секрета по ключу: в JSON значения есть одна из
+// keyTriggers без учёта регистра (ключ map всегда виден в JSON). Без неё обход
+// ключей не нужен.
+func keyHint(b []byte) bool {
+	for i := range b {
+		if !keyTriggerStart[b[i]] {
+			continue
+		}
+		for _, w := range keyTriggers {
+			if foldPrefix(b[i:], w) {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 var (
@@ -587,7 +626,9 @@ func (h *redactHandler) masked(v reflect.Value, memo map[visit]any) any {
 // «!ERROR».
 func (h *redactHandler) jsonAttr(key string, b []byte) slog.Attr {
 	rb := h.bytes(b)
-	if !json.Valid(rb) {
+	// Нетронутые маской байты — вывод json.Marshal, повторная проверка не нужна.
+	unchanged := len(rb) == len(b) && len(b) > 0 && &rb[0] == &b[0]
+	if !unchanged && !json.Valid(rb) {
 		return slog.String(key, string(rb))
 	}
 	return slog.Any(key, json.RawMessage(rb))
