@@ -56,8 +56,11 @@ server-span и извлекает входящий `traceparent`, а все по
 - `panic recovered` (Error) со `stack` — `Recovery`.
 - `handler error` (Error) с `operation`, `status`, `code` и причиной `err` — любой
   5xx из huma (Transformer сервера); клиенту уходит только статус, код и `request_id`.
-- `auth rejected` (Debug) / `auth backend unavailable` (Warn) / `auth not configured`
-  (Error, с `operation`) — `HumaAuth`.
+- `auth rejected` (Debug) / `auth backend unavailable` (Warn) / `auth failed` (Error, с
+  `code`: extractor вернул 5xx `APIError`) / `auth not configured` (Error, с `operation`) —
+  `HumaAuth`.
+- `idempotency store failed` (Warn) с `op` (`get`, `reserve`, `set`, `release`), `err` и
+  `fail_closed` — `Idempotency`; тот же отказ считает `http_idempotency_total{result="error"}`.
 - `readiness probe failed` (Warn) с `probe` и `err` — `/ready`; текст ошибки
   клиенту не отдаётся.
 - `http server listening` (Info) с фактическим `addr` — старт;

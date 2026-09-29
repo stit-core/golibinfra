@@ -113,6 +113,26 @@ func TestHumaAuth_ExtractorAPIErrorKeepsStatus(t *testing.T) {
 	}
 }
 
+// N8 валидатора: 5xx APIError от extractor'а — строка Error с кодом, а не Debug.
+func TestHumaAuth_ExtractorServerErrorIsLogged(t *testing.T) {
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	extract := func(*http.Request) (context.Context, error) {
+		return nil, httpkit.Internal("SESSION_STORE_DOWN", "")
+	}
+	for name, api := range authAPIs(t, log, extract) {
+		t.Run(name, func(t *testing.T) {
+			handlertest.AssertAPIError(t, api.Get("/guarded"), http.StatusInternalServerError, "SESSION_STORE_DOWN")
+		})
+	}
+	if out := buf.String(); !strings.Contains(out, `"msg":"auth failed"`) || !strings.Contains(out, `"code":"SESSION_STORE_DOWN"`) {
+		t.Fatalf("a 5xx from the extractor must be logged: %s", out)
+	}
+}
+
 func TestHumaAuth_PropagatesContextAndSeesHeaders(t *testing.T) {
 	extract := func(r *http.Request) (context.Context, error) {
 		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")

@@ -1,6 +1,7 @@
 package httpkit
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -44,7 +45,7 @@ func createdHandler(calls *atomic.Int32) http.Handler {
 
 func TestIdempotency_ReplaysSameRequest(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(createdHandler(&calls))
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 
 	first := httptest.NewRecorder()
 	h.ServeHTTP(first, postWithKey("k1", `{"a":1}`))
@@ -70,7 +71,7 @@ func TestIdempotency_ReplaysSameRequest(t *testing.T) {
 
 func TestIdempotency_DifferentBodySameKey_Conflict(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(createdHandler(&calls))
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 
 	h.ServeHTTP(httptest.NewRecorder(), postWithKey("k1", `{"a":1}`))
 	rec := httptest.NewRecorder()
@@ -86,7 +87,7 @@ func TestIdempotency_DifferentBodySameKey_Conflict(t *testing.T) {
 
 func TestIdempotency_KeyScopedToClient(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(createdHandler(&calls))
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 
 	h.ServeHTTP(httptest.NewRecorder(), postWithKey("k1", `{"a":1}`))
 	other := postWithKey("k1", `{"a":1}`)
@@ -104,7 +105,7 @@ func TestIdempotency_KeyScopedToClient(t *testing.T) {
 
 func TestIdempotency_GetSkipped(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(createdHandler(&calls))
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 	for range 3 {
 		req := httptest.NewRequest(http.MethodGet, "/orders", nil)
 		req.Header.Set("Idempotency-Key", "k-get")
@@ -117,7 +118,7 @@ func TestIdempotency_GetSkipped(t *testing.T) {
 
 func TestIdempotency_5xxNotCached(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusBadGateway)
 	}))
@@ -133,7 +134,7 @@ func TestIdempotency_OversizedBodySkipped(t *testing.T) {
 		calls atomic.Int32
 		seen  int
 	)
-	h := Idempotency(idemCfg(), NewMemoryStore())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		b, _ := io.ReadAll(r.Body)
 		seen = len(b)
@@ -164,7 +165,7 @@ func (s stubStore) Release(context.Context, string, string) error            { r
 
 func TestIdempotency_InProgress(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), stubStore{reserve: false})(createdHandler(&calls))
+	h := Idempotency(idemCfg(), stubStore{reserve: false}, logkit.Nop())(createdHandler(&calls))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postWithKey("k1", `{}`))
 	if rec.Code != http.StatusConflict {
@@ -177,11 +178,36 @@ func TestIdempotency_InProgress(t *testing.T) {
 
 func TestIdempotency_StoreErrorFailsOpen(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), stubStore{err: errors.New("redis down")})(createdHandler(&calls))
+	h := Idempotency(idemCfg(), stubStore{err: errors.New("redis down")}, logkit.Nop())(createdHandler(&calls))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postWithKey("k1", `{}`))
 	if rec.Code != http.StatusCreated || calls.Load() != 1 {
 		t.Fatalf("store error must fail open: %d calls=%d", rec.Code, calls.Load())
+	}
+}
+
+// N8 валидатора: отказ store виден в логе, а не только в метрике — и fail-open,
+// и после ответа хендлера (Set).
+func TestIdempotency_StoreErrorIsLogged(t *testing.T) {
+	stores := map[string]IdempotencyStore{
+		"get": stubStore{err: errors.New("redis down")},
+		"set": &setErrorStore{MemoryStore: NewMemoryStore()},
+	}
+	for op, store := range stores {
+		t.Run(op, func(t *testing.T) {
+			var buf bytes.Buffer
+			log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+			if err != nil {
+				t.Fatal(err)
+			}
+			var calls atomic.Int32
+			Idempotency(idemCfg(), store, log)(createdHandler(&calls)).ServeHTTP(httptest.NewRecorder(), postWithKey("k1", `{}`))
+
+			out := buf.String()
+			if !strings.Contains(out, `"msg":"idempotency store failed"`) || !strings.Contains(out, `"op":"`+op+`"`) {
+				t.Fatalf("store failure must be logged with op %s: %s", op, out)
+			}
+		})
 	}
 }
 
@@ -255,7 +281,7 @@ func (s *ctxProbeStore) Release(ctx context.Context, key, token string) error {
 func TestIdempotency_StoresResultAfterClientDisconnect(t *testing.T) {
 	store := newCtxProbeStore()
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), store)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Idempotency(idemCfg(), store, logkit.Nop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		calls.Add(1)
 		cancel, _ := r.Context().Value(cancelKey{}).(context.CancelFunc)
 		cancel()
@@ -284,7 +310,7 @@ type cancelKey struct{}
 // получать ответ реального вызова.
 func TestIdempotency_QueryIsPartOfFingerprint(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(createdHandler(&calls))
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 
 	dry := httptest.NewRequest(http.MethodPost, "/orders?dry_run=true", strings.NewReader(`{"a":1}`))
 	dry.Header.Set("Idempotency-Key", "k1")
@@ -304,7 +330,7 @@ func TestIdempotency_QueryIsPartOfFingerprint(t *testing.T) {
 
 func TestIdempotency_QueryOrderDoesNotMatter(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(createdHandler(&calls))
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 	for _, target := range []string{"/orders?b=2&a=1", "/orders?a=1&b=2"} {
 		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{}`))
 		req.Header.Set("Idempotency-Key", "k1")
@@ -324,7 +350,7 @@ func TestIdempotency_PanicReleasesReservation(t *testing.T) {
 		}
 		w.WriteHeader(http.StatusCreated)
 	})
-	h := Recovery(logkit.Nop())(Idempotency(idemCfg(), NewMemoryStore())(inner))
+	h := Recovery(logkit.Nop())(Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(inner))
 
 	first := httptest.NewRecorder()
 	h.ServeHTTP(first, postWithKey("k1", `{}`))
@@ -342,7 +368,7 @@ func TestIdempotency_FailClosed(t *testing.T) {
 	cfg := idemCfg()
 	cfg.FailClosed = true
 	var calls atomic.Int32
-	h := Idempotency(cfg, stubStore{err: errors.New("redis down")})(createdHandler(&calls))
+	h := Idempotency(cfg, stubStore{err: errors.New("redis down")}, logkit.Nop())(createdHandler(&calls))
 
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postWithKey("k1", `{}`))
@@ -362,7 +388,7 @@ func (s corruptStore) Get(context.Context, string) ([]byte, bool, error) {
 
 func TestIdempotency_CorruptRecordFailsOpen(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), corruptStore{NewMemoryStore()})(createdHandler(&calls))
+	h := Idempotency(idemCfg(), corruptStore{NewMemoryStore()}, logkit.Nop())(createdHandler(&calls))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, postWithKey("k1", `{}`))
 	if rec.Code != http.StatusCreated || calls.Load() != 1 {
@@ -387,7 +413,7 @@ func (s *setErrorStore) Release(ctx context.Context, key, token string) error {
 func TestIdempotency_SetErrorReleasesReservation(t *testing.T) {
 	store := &setErrorStore{MemoryStore: NewMemoryStore()}
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), store)(createdHandler(&calls))
+	h := Idempotency(idemCfg(), store, logkit.Nop())(createdHandler(&calls))
 
 	h.ServeHTTP(httptest.NewRecorder(), postWithKey("k1", `{}`))
 	if store.released.Load() != 1 {
@@ -402,7 +428,7 @@ func TestIdempotency_SetErrorReleasesReservation(t *testing.T) {
 
 func TestIdempotency_OversizedResponseNotStored(t *testing.T) {
 	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls.Add(1)
 		w.WriteHeader(http.StatusCreated)
 		_, _ = w.Write([]byte(strings.Repeat("x", 200)))
@@ -430,7 +456,7 @@ func TestIdempotency_WithAuth(t *testing.T) {
 		return ContextWithSubject(r.Context(), "user-1"), nil
 	}
 	store := NewMemoryStore()
-	h := Idempotency(idemCfg(), store, WithAuth(extract))(createdHandler(&calls))
+	h := Idempotency(idemCfg(), store, logkit.Nop(), WithAuth(extract))(createdHandler(&calls))
 
 	first := httptest.NewRecorder()
 	h.ServeHTTP(first, postWithKey("k1", `{"a":1}`))
@@ -463,7 +489,7 @@ func TestIdempotency_WithAuth(t *testing.T) {
 func TestIdempotency_WithAuthMarksContextAuthenticated(t *testing.T) {
 	extract := func(r *http.Request) (context.Context, error) { return r.Context(), nil }
 	var seen bool
-	h := Idempotency(idemCfg(), NewMemoryStore(), WithAuth(extract))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop(), WithAuth(extract))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		seen = authDone(r.Context())
 		w.WriteHeader(http.StatusCreated)
 	}))

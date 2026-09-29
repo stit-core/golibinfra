@@ -211,7 +211,11 @@ func authError(ctx context.Context, log logkit.Logger, err error) *APIError {
 		log.Warn(ctx, "auth backend unavailable", "err", err)
 		return Unavailable("AUTH_UNAVAILABLE", "")
 	case errors.As(err, &apiErr):
-		log.Debug(ctx, "auth rejected", "err", err, "code", apiErr.Code)
+		if apiErr.Status >= http.StatusInternalServerError {
+			log.Error(ctx, "auth failed", "err", err, "code", apiErr.Code)
+		} else {
+			log.Debug(ctx, "auth rejected", "err", err, "code", apiErr.Code)
+		}
 		return apiErr
 	default:
 		log.Debug(ctx, "auth rejected", "err", err)

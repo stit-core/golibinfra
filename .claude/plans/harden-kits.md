@@ -255,6 +255,9 @@ blocked-by: —
   базового текста по константам `huma/validation`, а не обещание сужается; собственные 5xx кита
   (`AUTH_UNAVAILABLE`, `IDEMPOTENCY_UNAVAILABLE`) — без `detail`, как все 5xx кита, `detail`
   своего 5xx — выбор потребителя, схема `APIError` говорит «5xx без внутренней причины».
+- N8 валидатора: `Idempotency` берёт логгер параметром, как `Recovery` и `AccessLog`, а не
+  опцией — забыть его нельзя; отказ store (get, reserve, set, release) — Warn с `op`.
+  5xx `APIError` от extractor'а — Error `auth failed`: 5xx не остаётся без строки причины.
 - Задеты неиспользуемые шаблоном киты: `testkit/bruteforcetest` (интерфейс `Guard`),
   тесты `hubkit/sync` (требование `timerkit.Module`), при необходимости `oidckit`/`hubkit/sso`
   (контракт ошибок `httpkit`).
@@ -278,8 +281,8 @@ blocked-by: —
   `5c3646e`, S12 `f5f4111`, S13 `c1f84e8`, S14 `007d79a`. Этап httpkit закрыт: валидатор —
   PASS (`M/validation-harden-kits-B.md`); его неблокирующие и KDOC-01/06 базового аудита китов
   закрываются до тега отдельными `fix(...)`: KDOC-01 — `80fb648`, N2–N5 — `ac12cfa`, KSEC-01
-  (регрессии) и KSEC-02 — `bb5966a`, N6 — `711bb2e`, N7 — `fix(httpkit)`.
-- Осталось: N8, N1/N11, KDOC-06, N9 в бэклог; затем S15 —
+  (регрессии) и KSEC-02 — `bb5966a`, N6 — `711bb2e`, N7 — `ea253d0`, N8 — `fix(httpkit)!`.
+- Осталось: N1/N11, KDOC-06, N9 в бэклог; затем S15 —
   корневые README/CLAUDE.md, `make test-full`, `make gate-clean`, тег `v1.2.0`. Тега нет; ветка
   не запушена.
 - Валидатор этапа S1–S9 (`M/validation-harden-kits-A.md`) — PASS после трёх перепроверок, фиксы
@@ -297,6 +300,7 @@ blocked-by: —
     - httpkit (S12): группа `httpkit.middleware` и `MiddlewareGroup` удалены → одно значение
       `httpkit.Middlewares` (порядок слайса, первый — внешний) провайдит приложение; значение с
       тегом старой группы никто не читает — middleware молча выпадет из цепочки.
+    - httpkit (N8): `Idempotency(cfg, store, opts...)` → `Idempotency(cfg, store, log, opts...)`.
     - httpkit (N6): группа `httpkit.huma_config` и `HumaConfigGroup` удалены → одно значение
       `httpkit.HumaConfigs` (правки в порядке слайса, после кита):
       `fx.Supply(fx.Annotated{Group: httpkit.HumaConfigGroup, Target: f})` → `fx.Supply(httpkit.HumaConfigs{f})`.
@@ -335,6 +339,8 @@ blocked-by: —
       без `detail` (500 panic, 503 `AUTH_UNAVAILABLE`, `IDEMPOTENCY_UNAVAILABLE`); `Retry-After` —
       из `RetryAfter()` причины, свой заголовок хендлера сохраняется; `handler error` — с `operation`
       и `code`, в логгер своего сервера.
+    - httpkit (N8): отказ store идемпотентности — Warn `idempotency store failed`, 5xx
+      `APIError` extractor'а — Error `auth failed`.
     - timerkit (S1): повторный `timerkit.Module` — ошибка старта `already provided`.
     - outboxkit (S2): с `pgkit.MigrateModule` таблицы инстансов накатываются на старте сами.
     - outboxkit/pgstore (fix): `EnsurePartitions` не валит старт, когда ту же партицию создаёт

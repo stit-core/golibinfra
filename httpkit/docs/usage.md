@@ -8,7 +8,7 @@
 - **Middleware** (net/http): `RequestID`, `OTel(quietPaths...)`, `Recovery(log)`,
   `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
   `AccessLog(log, quietPaths...)`, `Metrics()`,
-  `Idempotency(cfg, store, opts...)`. huma-уровень: `HumaAuth(log, extract)`.
+  `Idempotency(cfg, store, log, opts...)`. huma-уровень: `HumaAuth(log, extract)`.
 - **Ошибки**: `APIError`, `FieldError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
   Conflict/Internal/Unavailable`, `ErrorMap` (`NewErrorMap`, `ErrorRule`, `Map`,
   `Declare`, `Unmapped`), `ProblemContentType`.
@@ -123,8 +123,9 @@ func (e *LockedError) RetryAfter() time.Duration { return e.Wait }
 `Cache-Control`; тело ошибки — с `request_id` исходного запроса). Тот же ключ с другим методом, путём, query или телом → `422
 IDEMPOTENCY_KEY_REUSED`; параллельный повтор, пока первый выполняется → `409
 IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` не сохраняются, запрос или ответ больше
-`MaxBodyBytes` идёт без идемпотентности, ошибка store — fail-open (метрика
-`result=error`) или `503` при `HTTP_IDEMPOTENCY_FAIL_CLOSED=true`.
+`MaxBodyBytes` идёт без идемпотентности, ошибка store — строка лога
+`idempotency store failed` и fail-open (метрика `result=error`) или `503` при
+`HTTP_IDEMPOTENCY_FAIL_CLOSED=true`.
 
 Ключ привязан к клиенту: к субъекту, если extractor его положил, иначе к хешу
 `Authorization` + `Cookie`. Когда в графе есть `AuthExtractor`, replay отдаётся

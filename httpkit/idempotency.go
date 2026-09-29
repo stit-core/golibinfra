@@ -15,6 +15,8 @@ import (
 
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
+
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // IdempotencyConfig — параметры дедупликации write-запросов по ключу клиента.
@@ -195,9 +197,9 @@ func storeCtx(parent context.Context, timeout time.Duration) (context.Context, c
 // Idempotency воспроизводит ответ на повтор POST/PUT/PATCH с тем же ключом.
 // Ключ scope'ится субъектом (или Authorization и Cookie клиента); повтор с
 // другим телом, путём, query или методом — 422, параллельный повтор — 409.
-// Кэшируются только ответы < 500. Ошибка store — fail-open, если не задан
-// FailClosed.
-func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...IdempotencyOption) func(http.Handler) http.Handler {
+// Кэшируются только ответы < 500. Ошибка store — строка лога и fail-open, если
+// не задан FailClosed.
+func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger, opts ...IdempotencyOption) func(http.Handler) http.Handler {
 	var o idempotencyOptions
 	for _, opt := range opts {
 		opt(&o)
@@ -206,7 +208,11 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 	outcome := func(ctx context.Context, result string) {
 		instr.idempotency.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
 	}
-	unavailable := func(ctx context.Context, w http.ResponseWriter) bool {
+	storeFailed := func(ctx context.Context, op string, err error) {
+		log.Warn(ctx, "idempotency store failed", "op", op, "err", err, "fail_closed", cfg.FailClosed)
+	}
+	unavailable := func(ctx context.Context, w http.ResponseWriter, op string, err error) bool {
+		storeFailed(ctx, op, err)
 		outcome(ctx, "error")
 		if !cfg.FailClosed {
 			return false
@@ -263,7 +269,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 			cancelGet()
 			switch {
 			case err != nil:
-				if unavailable(ctx, w) {
+				if unavailable(ctx, w, "get", err) {
 					return
 				}
 				next.ServeHTTP(w, r)
@@ -277,7 +283,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 			token, ok, err := store.Reserve(reserveCtx, skey, cfg.ReserveTTL)
 			cancelReserve()
 			if err != nil {
-				if unavailable(ctx, w) {
+				if unavailable(ctx, w, "reserve", err) {
 					return
 				}
 				next.ServeHTTP(w, r)
@@ -300,7 +306,9 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 			release := func() {
 				relCtx, cancel := storeCtx(ctx, cfg.StoreTimeout)
 				defer cancel()
-				_ = store.Release(relCtx, skey, token)
+				if err := store.Release(relCtx, skey, token); err != nil {
+					storeFailed(ctx, "release", err)
+				}
 			}
 			settled := false
 			// panic в handler'е снимает резерв: иначе ретраи получают 409 до конца ReserveTTL.
@@ -332,6 +340,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, opts ...Idempote
 				cancelSet()
 			}
 			if err != nil {
+				storeFailed(ctx, "set", err)
 				release()
 				outcome(ctx, "error")
 				return

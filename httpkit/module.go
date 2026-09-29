@@ -99,7 +99,7 @@ func newServer(in serverIn) (*Server, error) {
 		if in.Extract != nil {
 			opts = append(opts, WithAuth(in.Extract))
 		}
-		mws = append(mws, Idempotency(cfg.Idempotency, in.Store, opts...))
+		mws = append(mws, Idempotency(cfg.Idempotency, in.Store, in.Log, opts...))
 	}
 	mws = append(mws, in.Middlewares...)
 

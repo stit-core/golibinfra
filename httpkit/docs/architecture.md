@@ -249,7 +249,8 @@ prod-адаптере chi, и на `testkit/handlertest`.
   третьему запросу параллельно со вторым. Panic в handler'е освобождает ключ
   через `defer`, иначе ретраи получали бы `409` до конца `ReserveTTL`.
 - Ответы `5xx` и ответы больше `MaxBodyBytes` не сохраняются. Ошибка store —
-  fail-open (`HTTP_IDEMPOTENCY_FAIL_CLOSED=true` → `503`).
+  строка `idempotency store failed` в логе и fail-open (`HTTP_IDEMPOTENCY_FAIL_CLOSED=true`
+  → `503`).
 
 ## Health / readiness
 
