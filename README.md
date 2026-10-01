@@ -319,6 +319,7 @@ Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-pus
 красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
 (`git push --no-verify`); из сессии Claude Code его и смену `core.hooksPath`
 блокирует `.claude/hooks/guard-bash.sh`.
+
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),
 `make test-timing` (timing-тест logkit: под нагрузкой флакает, поэтому вне гейта).

@@ -19,10 +19,6 @@ func WithImage(ref string) testkit.Option                   // другой об
 `t.Skip`, без Docker — `t.Fatalf`. Переданные источники применяются через
 `pgkit.MigrateUpAll` — так же, как это делает `MigrateModule`.
 
-Обратимость своих миграций проверяет `testkit.MigrationLadder(t, opts...)` с теми
-же опциями: каждая версия — up → down → up со сверкой схемы (down возвращает её к
-состоянию до своего up), затем down до нуля и снова up.
-
 ```go
 type PostgresFixture struct {
     DSN       string
@@ -38,6 +34,10 @@ func (f *PostgresFixture) PoolConfig() pgkit.PoolConfig
 `Pool`, `DB` и `Transactor` работают поверх одного пула фикстуры, открытого
 через `pgkit.NewPool` с prod-дефолтами (session-таймауты, otelpgx); пул
 закрывается в `t.Cleanup` теста, стартовавшего контейнер.
+
+Обратимость своих миграций проверяет `testkit.MigrationLadder(t, opts...)` с теми
+же опциями: каждая версия — up → down → up со сверкой схемы (down возвращает её к
+состоянию до своего up), затем down до нуля и снова up.
 
 ## Рецепт: пул с реальной БД
 
