@@ -47,17 +47,15 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   у `gate-clean` — свой холодный. Проверка: сценарий L3 `lint_cache_probe.sh` через `make lint` в
   двух worktree → во втором настоящее нарушение красное
   - Подтверждено: `M/hgd/lint_cache_make_probe.sh <rev>` (L3 через `make lint`) → в W2 красное
-- [x] **AC4** — Push проходит гейт: pre-push гоняет `make check` на пушимом коммите при чистом
-  дереве; неактивный pre-push роняет `make check` с подсказкой `make hooks`; обходы хуков из сессии
-  Claude заблокированы; CLAUDE.md, README, CONTRIBUTING и скиллы `/plan`, `/release` описывают этот
-  гейт. Проверка: `gate_inject.py --only G21,G31` → оба пойманы; `make check` при неактивном
-  pre-push → FAIL
+- [x] **AC4** — Push проходит гейт: pre-push гоняет `make check` на пушимом коммите при чистом дереве;
+  неактивный pre-push роняет `make check` с подсказкой `make hooks`; обходы хуков из сессии Claude
+  заблокированы; CLAUDE.md, README, CONTRIBUTING и скиллы `/plan`, `/release` описывают этот гейт.
+  Проверка: `gate_inject.py --only G21,G31` → оба пойманы; `make check` при неактивном pre-push → FAIL
   - Подтверждено: на кандидате S3 G21, G31 пойманы; `MAKEFLAGS=i git push` с падающим тестом —
     отказ; `make check` без `make hooks` → FAIL; `M/hgd/guard_cases.py` — 0 расхождений из 84
-- [x] **AC5** — Каждый kit-owned источник миграций (auditkit, bruteforcekit, outboxkit с
-  `TableMigrations`) проходит в `make check` лесенку up → down до нуля → up со сверкой схемы
-  хелпером testkit, которым потом пользуется шаблон. Проверка: `gate_inject.py --only G28` и тот же
-  битый down под `make check` → пойманы
+- [x] **AC5** — Каждый kit-owned источник миграций (auditkit, bruteforcekit, outboxkit с `TableMigrations`)
+  проходит в `make check` лесенку up → down до нуля → up со сверкой схемы хелпером testkit, которым потом
+  пользуется шаблон. Проверка: `gate_inject.py --only G28` и тот же битый down под `make check` → пойманы
   - Подтверждено: на кандидате S4 G28 и тот же битый down под `make check` пойманы; down 0002
     bruteforcekit без `locked_idx` и outboxkit без снятия колонки → `down 2 must restore …`; `M/hgd/s4/`
 - [x] **AC6** — `make envdoc-check` сверяет дефолты тегов с таблицами доков, требует строку таблицы
@@ -241,8 +239,10 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   (валидатор B) — `CheckStreams` спрашивает `AccountInfo`, транспорт на «нет ответа от стрима» — тоже;
   `WithSubjects` — старт сверяет фильтры со стримами (`natskit.StreamChecker` опционален: фейки без
   него), `Publish` вне них — ошибка; опция необязательна (шаблон — в `events.OutboxFor`), дефолт
-  `<name>.>` — магия имени. Предел тела 512 KiB: воркер публикует JSONB (до 1,5× JSON), 1 000 000 в
-  1 MiB не влезал. E17 — big в своей транзакции; zzcs, claimsB, контракт сигналов — под API (`orig/`).
+  `<name>.>` — магия имени. Предел тела 512 KiB: пробелы JSONB — до 1,5× JSON (1 000 000 в 1 MiB не
+  влезал); числа в экспоненте JSONB пишет целиком (`1e+21` ×4,4, валидатор B) — доки: строкой (мерить
+  JSONB — запрос к Postgres из `Bus` или предел в pgstore). E17 — big в своей транзакции; zzcs, claimsB,
+  контракт сигналов — под API (`orig/`).
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`: заготовка аннотации v1.3.0 из «Где мы сейчас»,
@@ -256,7 +256,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
 закрыты (N4 — S11). S6–S10 сделаны, валидатор этапа — FAIL (`M/validation-harden-gate-defaults-B.md`):
-B1, B2 и литерал в аннотации закрыты; дальше JSONB, makefile, guard, флак httpclient, перепроверка, S11.
+B1, B2, литерал в аннотации и JSONB закрыты; дальше makefile, guard, флак httpclient, перепроверка, S11.
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой

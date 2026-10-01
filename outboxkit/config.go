@@ -32,8 +32,8 @@ const DefaultTickTimeout = 30 * time.Second
 const DefaultMaxAttempts = 25
 
 // DefaultMaxPayloadBytes — предел JSON-тела события у NewBus и у New вместо невалидного
-// (`MaxPayloadBytes < 1`): половина max_payload NATS (1 MiB) — воркер публикует строку в
-// представлении хранилища (JSONB pgstore длиннее JSON до 1,5 раза), а к телу идут заголовки.
+// (`MaxPayloadBytes < 1`): половина max_payload NATS (1 MiB) — запас под заголовки и пробелы
+// представления хранилища (JSONB pgstore), но не под числа в экспоненте: их JSONB выписывает целиком.
 const DefaultMaxPayloadBytes = 512 << 10
 
 // Config — конфиг orchestration-слоя (Bus + Worker); читается из ENV

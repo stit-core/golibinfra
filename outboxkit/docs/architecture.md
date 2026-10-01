@@ -177,8 +177,9 @@ Subject'ы инстанса объявляет `outboxkit.WithSubjects` — фи
 `Bus.Publish` отвергает JSON больше `OUTBOX_MAX_PAYLOAD_BYTES`
 (`outboxkit.ErrPayloadTooLarge`) в транзакции домена: строку, которую брокер не примет
 никогда (`max_payload` NATS), воркер ретраил бы весь бюджет попыток, а в `ordered` она всё
-это время держала бы голову очереди. Дефолт оставляет запас под JSONB-представление строки
-и заголовки — [configuration.md](configuration.md) § Тюнинг payload.
+это время держала бы голову очереди. Дефолт оставляет запас под заголовки и пробелы
+JSONB-представления строки, но не под числа в экспоненте — их передают строкой
+([configuration.md](configuration.md) § Тюнинг payload).
 
 ## Lifecycle: остановка и перезапуск
 
