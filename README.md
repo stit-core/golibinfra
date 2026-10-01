@@ -313,10 +313,10 @@ make gate-clean   # make check в чистом worktree от HEAD — перед
 `go env -w`) и подменой `MAKE`/`SHELL`/`MAKEFILES` гейт не запускается. Кеш
 golangci-lint — свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
 
-Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) пускает только
-чистое дерево и пушимый коммит = HEAD (тег — тоже на HEAD) и гоняет весь
-`make check` без make-окружения вызывающего; без активного pre-push `make check`
-красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
+Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь
+`make check` на каждом пушимом коммите в свежем worktree, как `make gate-clean`, — без
+make-окружения вызывающего, незакоммиченных правок и gitignored-файлов; без активного
+pre-push `make check` красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
 (`git push --no-verify`); из сессии Claude Code его и смену `core.hooksPath`
 блокирует `.claude/hooks/guard-bash.sh`.
 

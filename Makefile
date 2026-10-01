@@ -110,7 +110,7 @@ fuzz: ## Короткий прогон каждого Fuzz-таргета (FUZZT
 gate-clean: ## `make check` в чистом worktree HEAD: без make-окружения вызывающего, с холодным кешем lint
 	scripts/gate-clean.sh
 
-hooks: ## Включить хуки scripts/git-hooks: pre-push гоняет make check на чистом HEAD
+hooks: ## Включить хуки scripts/git-hooks: pre-push гоняет make check на пушимом коммите в свежем worktree
 	git config core.hooksPath scripts/git-hooks
 
 tools: ## Установить golangci-lint и govulncheck пиненных версий

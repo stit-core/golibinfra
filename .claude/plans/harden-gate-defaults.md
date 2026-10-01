@@ -256,6 +256,9 @@ blocked-by: —
   `next_attempt_at`, снятие колонки не возвращало схему версии 1 (`down 2 must restore`); у
   зеркала без колонки откат её оставляет. hubkit/projection — тоже kit-owned источник, лесенка и
   ему (правки рядом).
+- **N1** — pre-push гоняет `scripts/gate-clean.sh <коммит>` на каждом пушимом коммите: gitignored-файл
+  рабочего дерева не прячет поломку, «чистое дерево» и «= HEAD» не нужны, удаление ref'а гейт не
+  гоняет (`M/hgd2/n1_probe.sh`); G21 `gate_inject.py` подаёт хуку stdin `git push`.
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`. Строки аннотации v1.3.0:
