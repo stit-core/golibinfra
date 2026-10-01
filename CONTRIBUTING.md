@@ -59,7 +59,8 @@ make test         # быстрый цикл: unit -short -race, без конт�
 Зелёный `make check` — gate пройден. Он гоняет и integration-тесты
 (testcontainers), поэтому нужен Docker: без него integration-тест падает, а не
 пропускается. Что именно он запускает — в `Makefile` (цели можно вызывать по
-отдельности: `make lint`, `make test-full`, …); есть ещё `make coverage`,
+отдельности: `make lint`, `make test-full`, …; подмножество пакетов для них —
+`PKGS=./<kit>/...`, `check` его не видит); есть ещё `make coverage`,
 `make bench`, `make fuzz` и `make test-timing` (timing-тест logkit, вне гейта).
 
 - Новый kit → собственный `README.md` кита (+ `docs/` у сложного), строка-индекс

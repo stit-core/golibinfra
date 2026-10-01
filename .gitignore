@@ -17,3 +17,6 @@ dist/
 # Персональные настройки Claude Code (не для общего репо)
 .claude/settings.local.json
 **/.claude/settings.local.json
+
+# Кеш golangci-lint гейта — свой у каждого checkout'а (Makefile)
+/.cache/

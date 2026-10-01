@@ -55,13 +55,22 @@ blocked-by: —
   - Подтверждено: на кандидате S1 G25 (`gate-clean`, баг audit-04), G26 (сокет Docker скрыт —
     `Docker is unavailable`, FAIL) и G30 (битый up `bruteforcekit`) — пойманы, rc=2; `make check`
     → `✓ check clean (./...)` за 1 мин 22 с; `go test -run TestRedact_Cost -v ./logkit/` → SKIP
-- [ ] **AC2** — `PKGS`, `GO`, `GOFLAGS` (и `go env -w`), `A`, флаги `-i`/`-n`/`-k`, `MAKEFLAGS=i` не
+- [x] **AC2** — `PKGS`, `GO`, `GOFLAGS` (и `go env -w`), `A`, флаги `-i`/`-n`/`-k`, `MAKEFLAGS=i` не
   сужают и не глушат гейт: `make check` отказывается запускаться или проверяет всё; `gate-clean` и
   pre-push окружение вызывающего не наследуют. Проверка:
   `gate_inject.py --only G14,G15,G16,G17,G18,G19,G20,G24` → все пойманы
-- [ ] **AC3** — Вердикт lint не зависит от чужого checkout'а: кеш golangci-lint — внутри checkout'а,
+  - Подтверждено: на кандидате S2 все восемь пойманы, rc=2 (G17–G19 — отказ guard'а до первого
+    шага, остальные — lint, test-full или plan-check на `./...`); вручную `-n`, `-q`, `-t`,
+    `--ignore-errors`, `MAKE=`, `SHELL=`, `.SHELLFLAGS=`, `MAKEFILES`, `GOFLAGS` из файла `GOENV`
+    → отказ; `make -k check` и `MAKEFLAGS=i scripts/gate-clean.sh` с нарушением → rc=2; логи —
+    `M/hgd/s2/`. pre-push — S3
+- [x] **AC3** — Вердикт lint не зависит от чужого checkout'а: кеш golangci-lint — внутри checkout'а,
   у `gate-clean` — свой холодный. Проверка: сценарий L3 `lint_cache_probe.sh` через `make lint` в
   двух worktree → во втором настоящее нарушение красное
+  - Подтверждено: `M/hgd/lint_cache_make_probe.sh fb10e60` (L3 через `make lint`, общий кеш в
+    окружении) → в W2 нарушение красное, путь своего checkout'а;
+    `GOLANGCI_DIFF_PROCESSOR_PATCH` из окружения lint не глушит; у `gate-clean` кеш — `.cache/`
+    свежего worktree
 - [ ] **AC4** — Push проходит гейт: pre-push гоняет `make check` на пушимом коммите при чистом
   дереве; неактивный pre-push роняет `make check` с подсказкой `make hooks`; обходы хуков из сессии
   Claude заблокированы; CLAUDE.md, README, CONTRIBUTING и скиллы `/plan`, `/release` описывают этот
@@ -111,10 +120,14 @@ blocked-by: —
     `TestRequireDocker_UnavailableDockerFailsOutsideShort` (RED на старом коде); `check` —
     последовательные шаги `GATE_STEPS` с `test-full`; timing-тест — `make test-timing`; тексты
     testkit, китов, CLAUDE.md, README, CONTRIBUTING, `/release`, `/add-kit`. AC1 → выполнен
-- [ ] **S2** — Гейт не зависит от окружения и чужого checkout'а: guard переменных и флагов, охват в
+- [x] **S2** — Гейт не зависит от окружения и чужого checkout'а: guard переменных и флагов, охват в
   итоговой строке, кеш golangci-lint в checkout'е, `gate-clean` в чистом окружении с холодным кешем
   (KGATE-02, KGATE-04)
   - Проверка: AC2, AC3 → выполнены · Закрывает: AC2, AC3 · Зависит от: S1
+  - Сделано: guard `gate_bad` у `check` и `gate-clean`, шаги через `GATE` с `PKGS=./... GO=go A=`,
+    итог `✓ check clean (./...)`; кеш `$(CURDIR)/.cache/golangci-lint` (`override`, `.gitignore`);
+    `gate-clean` без make-окружения вызывающего; тексты CLAUDE.md, README, CONTRIBUTING. AC2, AC3
+    → выполнены
 - [ ] **S3** — Рабочие хуки: `scripts/git-hooks/pre-push` по образцу шаблона (чистое дерево, пушимый
   коммит = HEAD, окружение гейта вычищено), `make hooks` туда, `make check` требует активный
   pre-push, `.claude/settings.json` с deny и guard обходов, тексты обвязки (KGATE-03, KGATE-05,
@@ -203,6 +216,19 @@ blocked-by: —
   именем теста.
 - **S1, `storagekit/minio`** — `minioFixture` без общего контейнера вне `-short` — `t.Fatal`, а не
   skip: иначе это вторая дорога к зелёному прогону без integration (правка рядом).
+- **S2, guard** — у `check` и `gate-clean`: `-i -n -q -t`, `MAKE`, `SHELL`, `.SHELLFLAGS`,
+  `MAKEFILES` из env или командной строки и непустой `go env GOFLAGS` — отказ до первого шага;
+  `PKGS`, `GO`, `A` и свои `GATE*` не отказывают, а не доходят до шагов (`override` и аргументы
+  под-make). `-k` пропускается: первый красный шаг всё равно останавливает `check` с кодом 2.
+- **S2, кеш lint** — `override`, а не `?=`: значение из окружения снова сделало бы кеш общим (так
+  его задаёт и `gate_inject.py`). `GOLANGCI_DIFF_PROCESSOR_PATCH` и `GOLANGCI_LINT_CACHEPROG` в
+  шаги не экспортируются: патч оставляет в отчёте только свои замечания, cache-программа — чужой
+  кеш.
+- **S2, `gate-clean`** — `env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS -u MAKEFILES`, как pre-push
+  шаблона, а не `env -i`: прогону нужны `DOCKER_HOST`, прокси и `GOPATH`, а сужающее гейт отсекает
+  guard или под-make.
+- **`gate_inject.py`** — G11 и G20 ломали удалённый `harden-kits.md`; `s_plan` берёт любой активный
+  план, смысл инъекции тот же (правка в материалах аудита).
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`. Строки аннотации v1.3.0:
@@ -221,9 +247,9 @@ blocked-by: —
   выключенный JetStream — ошибка старта; payload сверх предела — ошибка `Publish`.
 
 ## Где мы сейчас
-S1 закрыт: `make check` гоняет integration, без Docker вне `-short` тест падает. Следующий шаг — S2
-(guard окружения, кеш golangci-lint в checkout'е, чистый `gate-clean`). Гейт теперь требует
-Docker (≈1,5 мин).
+S1 и S2 закрыты: `make check` гоняет integration (Docker обязателен, ≈1,5 мин), всегда на `./...`,
+окружение его не сужает, кеш lint — в `.cache/` checkout'а. Следующий шаг — S3 (pre-push в
+`scripts/git-hooks/`, `make check` требует активный хук, `.claude/settings.json` с guard'ом).
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест

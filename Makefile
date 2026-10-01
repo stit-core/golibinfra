@@ -5,6 +5,13 @@ GOVULNCHECK_VERSION   ?= v1.8.0
 COVERPROFILE          ?= coverage.out
 FUZZTIME              ?= 10s
 
+# Кеш golangci-lint — свой у каждого checkout'а: ключ кеша — содержимое пакета, а замечание
+# хранит путь checkout'а, где его нашли первым, поэтому общий кеш судит по чужим файлам.
+override GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
+export GOLANGCI_LINT_CACHE
+# Патч из окружения оставил бы в отчёте lint только замечания по нему, cache-программа — чужой кеш.
+unexport GOLANGCI_DIFF_PROCESSOR_PATCH GOLANGCI_LINT_CACHEPROG
+
 .DEFAULT_GOAL := help
 
 .PHONY: help check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
@@ -12,12 +19,27 @@ FUZZTIME              ?= 10s
 help: ## Список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-# Шаги гейта — по очереди, каждый своим make: первый красный останавливает check.
-GATE_STEPS := fmt-check vet lint test-full build tidy-check vuln envdoc-check plan-check
+# Шаги гейта — по очереди, каждый своим make: первый красный останавливает check. PKGS, GO и A
+# шагам не доходят ни из окружения, ни из командной строки: гейт проверяет всё дерево.
+override GATE_PKGS  := ./...
+override GATE_STEPS := fmt-check vet lint test-full build tidy-check vuln envdoc-check plan-check
+override GATE       := $(MAKE) --no-print-directory PKGS=$(GATE_PKGS) GO=go A=
+
+# check и gate-clean не запускаются там, где сказали бы «clean», не проверив всё: -i глушит
+# ошибки шагов, -n/-q/-t их не выполняют, подмена MAKE, SHELL, .SHELLFLAGS и MAKEFILES меняет
+# шаги, GOFLAGS (из env или go env -w) — go test, vet и govulncheck.
+ifneq (,$(filter check gate-clean,$(MAKECMDGOALS)))
+override gate_bad := $(foreach f,i n q t,$(if $(findstring $f,$(firstword -$(MAKEFLAGS))),-$f)) \
+	$(foreach v,MAKE SHELL .SHELLFLAGS MAKEFILES,$(if $(filter command% environment%,$(origin $v)),$v=…)) \
+	$(if $(shell go env GOFLAGS),GOFLAGS=$(shell go env GOFLAGS))
+ifneq (,$(strip $(gate_bad)))
+$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с $(strip $(gate_bad)) — запусти без них)
+endif
+endif
 
 check: ## Канонический gate: fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
-	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(MAKE) --no-print-directory $$step; done
-	@echo "✓ check clean ($(PKGS))"
+	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(GATE) $$step; done
+	@echo "✓ check clean ($(GATE_PKGS))"
 
 fmt: ## Форматирование (gofumpt через golangci-lint)
 	golangci-lint fmt $(PKGS)
@@ -72,7 +94,7 @@ fuzz: ## Короткий прогон каждого Fuzz-таргета (FUZZT
 		done; \
 	done
 
-gate-clean: ## `make check` в чистом worktree HEAD (ловит gitignored-файлы)
+gate-clean: ## `make check` в чистом worktree HEAD: без make-окружения вызывающего, с холодным кешем lint
 	scripts/gate-clean.sh
 
 hooks: ## Включить .githooks (pre-push = make check)

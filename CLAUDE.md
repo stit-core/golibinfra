@@ -48,8 +48,12 @@ make coverage     # покрытие -short + сводка; ещё есть benc
 ```
 
 Зелёный `make check` = можно claim «готово»: он гоняет и integration, поэтому нужны
-Docker и сеть (govulncheck). Перед тегом — `make gate-clean`: он ловит файлы,
-которые есть локально, но не в git.
+Docker и сеть (govulncheck). Гейт всегда проверяет `./...` (последняя строка —
+`✓ check clean (./...)`): `PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-n`/`-q`/`-t`,
+`GOFLAGS` (env или `go env -w`) и подменой `MAKE`/`SHELL`/`MAKEFILES` он не запускается.
+Кеш golangci-lint — в `.cache/` checkout'а. Перед тегом — `make gate-clean`: он ловит
+файлы, которые есть локально, но не в git, и гоняет гейт без make-окружения вызывающего
+и с холодным кешем lint.
 
 ## Карта пакетов
 
