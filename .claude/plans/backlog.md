@@ -53,8 +53,6 @@
   (KCOR-06, C). Триггер: партия 3.
 - **docs-accuracy** — тексты к коду: остаток KDOC-07, числа KDOC-09 вне outbox, советы KDOC-10,
   примеры auth httpkit KDOC-11. Триггер: партия 3.
-- **httpclient-sse-metric-race** — `TestMetrics_RequestDurationLabels` изредка падает (2 из 300): `SSEStream.read` пишет
-  метрику в `record()` после `close(events)`; перенести `record()` раньше `close`. Триггер: партия 3.
 - **logkit-redact-gaps** — маскирование пропускает двусмысленные короткие ключи (`pass`, `sid`,
   `code`, `signature`, `refresh`), поля структур в `Any`, base64url-токены, пароль в DSN, коды вне
   словаря (`passcode`, `verification_code`) и прячет счётчики рядом с кодом (`otp_attempts`)

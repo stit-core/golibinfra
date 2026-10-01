@@ -56,8 +56,8 @@ type Event struct {
 }
 
 // SSEStream — активный SSE-поток. Events() закрывается при EOF/ошибке/отмене
-// ctx/Close; после закрытия Err() даёт терминальную причину (nil = чистый EOF
-// или отмена ctx).
+// ctx/Close — после записи метрики и конца спана стрима; после закрытия Err() даёт
+// терминальную причину (nil = чистый EOF или отмена ctx).
 type SSEStream struct {
 	events chan Event
 	done   chan struct{}
@@ -223,9 +223,10 @@ func (s *SSEStream) setStreamState(lastID string, retry time.Duration) {
 }
 
 func (s *SSEStream) read(record func()) {
+	// Метрика и спан — до закрытия Events(): конец стрима потребитель видит уже записанным.
+	defer close(s.events)
 	defer record()
 	defer s.cancel()
-	defer close(s.events)
 	defer s.body.Close()
 
 	sc := bufio.NewScanner(s.body)

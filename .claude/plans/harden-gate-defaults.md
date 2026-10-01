@@ -194,6 +194,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - **N3** — deny `*--no-veri*` ловит флаг в кавычках и алиасе; guard по пути `git-hooks` или `pre-push`
   пускает только чтение — readers, git без правки дерева, `sed` без `-i`, `bash -n`, запуск хука — и без
   записи перенаправлением (валидатор B: `cp`, `ln`, `truncate`, `>`, `sed -i`); `M/hgd2/fixb_guard.py`.
+- **Флак httpclient** (валидатор B, бэклог партии 3) — `record()` до `close(Events())`; тест держит `OnEnd`.
 - **B1, реестр.** API сервера — `huma.OperationDocumenter`: `DocumentOperation` видит каждую операцию,
   в том числе `Hidden` и из групп (`OnAddOperation` скрытых не видит). Проверка — экспортируемый
   `Server.CheckRoutes()` (`ErrRoutes`): `Module` — на OnStart, `handlertest` — S7, без fx —
@@ -216,9 +217,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   реестром (у обёртки `humatest` нет `OperationDocumenter`); конфиг — `httpkit.NewConfig()`, как у
   сервера. HT01: A получает опциями то, что B — из графа, T24 и T25 сравниваются.
 - **B2, доверие прокси.** `HTTP_TRUST_PROXY_HOPS` вместо `HTTP_RATE_LIMIT_TRUST_PROXY`: `0` — адрес
-  соединения, `N` — N-я справа запись всех заголовков `X-Forwarded-For`; цепочка короче `N` или не IP
-  — адрес соединения, `X-Real-IP` не читается (H12: XFF клиента побеждал `X-Real-IP` прокси). При `0`
-  и пришедшем XFF — одна строка Warn на middleware (за Traefik без настройки — один bucket на всех).
+  соединения, `N` — N-я справа запись всех заголовков `X-Forwarded-For`; цепочка короче `N` или не IP —
+  адрес соединения, `X-Real-IP` не читается (H12); при `0` и пришедшем XFF — одна строка Warn.
 - **B2, IP.** `httpkit.ClientIP(log, hops)` — после `RequestID`, до `OTel`; ключ ctx и свёртка —
   `internal/clientip` (`Canonical`, `Key`): ею ключуют лимитер (/64) и bruteforcekit, auditkit (B4)
   читает тот же ключ; `ClientIPFrom(ctx)` — для bruteforcekit и аудита; `ClientIP(r, trustProxy)` удалена.
@@ -245,8 +245,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   контракт сигналов — под API (`orig/`).
 
 ## Handoff
-При закрытии плана — в Handoff `harden-authn-release`: заготовка аннотации v1.3.0 из «Где мы сейчас»,
-строки несделанных шагов и пункты шаблону ниже.
+При закрытии плана — в Handoff `harden-authn-release`: заготовка аннотации, несделанное и пункты ниже.
 - Шаблону после bump (`fix-reference-code` S9): обход `TestDockerRequired` (`cmd/migrate/migrate_test.go`)
   лишний — testkit без Docker сам FAIL; комментарий `scripts/tools/test.sh:21-22` («testkit пропустит
   тесты без Docker») неверен; `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t,
@@ -256,7 +255,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
 закрыты (N4 — S11). S6–S10 сделаны, валидатор этапа — FAIL (`M/validation-harden-gate-defaults-B.md`):
-B1, B2, литерал в аннотации, JSONB, makefile и guard закрыты; дальше флак httpclient, перепроверка, S11.
+B1, B2 и неблокирующие (литерал, JSONB, makefile, guard, флак httpclient) закрыты; дальше перепроверка, S11.
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой
@@ -294,6 +293,7 @@ B1, B2, литерал в аннотации, JSONB, makefile и guard закр�
 - Изменения — outboxkit: `WithSubjects` (стримы — на старте), `ErrSubjectNotDeclared`,
   `ErrPayloadTooLarge`, `ErrUnavailable`, статусы `payload_too_large`, `undeclared_subject`;
   natskit: `StreamChecker` (сервер — `AccountInfo`), `ErrNoStream`, `SubjectMatches` для фильтров.
+- Поведение — httpclient: `Events()` SSE закрывается после записи метрики и конца спана стрима.
 - Изменения — testkit: `MigrationLadder(t, WithMigrations(...))` — лесенка up → down → up по
   версиям, down до нуля и up со сверкой схемы для своих источников миграций.
 - Гейт: `make check` и `make gate-clean` — unit и integration (Docker), лесенка kit-owned миграций;

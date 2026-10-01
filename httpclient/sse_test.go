@@ -12,6 +12,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 )
 
 func sseClient(t *testing.T) *Client {
@@ -465,5 +468,46 @@ func TestSSE_HeaderTimeoutRaceHasNoThirdOutcome(t *testing.T) {
 			t.Fatalf("opened stream lost its event: %+v", got)
 		}
 		_ = stream.Close()
+	}
+}
+
+// endGate держит OnEnd спана стрима до release: тест видит, что сделано до конца спана.
+type endGate struct {
+	ended, release chan struct{}
+}
+
+func (g endGate) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+
+func (g endGate) OnEnd(s sdktrace.ReadOnlySpan) {
+	if s.Name() != "httpclient.Stream GET" {
+		return
+	}
+	close(g.ended)
+	<-g.release
+}
+
+func (endGate) Shutdown(context.Context) error   { return nil }
+func (endGate) ForceFlush(context.Context) error { return nil }
+
+// Закрытый Events() — конец стрима, уже записанный в метрику и спан: потребитель, который
+// по нему снимает метрики, видит status="200/sse".
+func TestSSE_RecordedBeforeEventsClose(t *testing.T) {
+	gate := endGate{ended: make(chan struct{}), release: make(chan struct{})}
+	defer close(gate.release)
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(gate)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	stream := openStream(t, sseClient(t), sseServer(t, "data: x\n\n").URL)
+	if _, ok := <-stream.Events(); !ok {
+		t.Fatal("no event")
+	}
+	<-gate.ended
+	select {
+	case _, ok := <-stream.Events():
+		if !ok {
+			t.Fatal("Events() closed before the stream span and metrics were recorded")
+		}
+	default:
 	}
 }
