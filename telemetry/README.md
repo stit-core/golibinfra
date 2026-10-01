@@ -85,7 +85,7 @@ func (s *Service) Do(ctx context.Context) (err error) {
 | `OTEL_METRICS_INTERVAL` | `MetricInterval` | `time.Duration` | `10s` | период экспорта метрик (он же min-интервал чтения runtime memstats) |
 | `OTEL_LOGS_BATCH_DELAY` | `LogBatchDelay` | `time.Duration` | `1s` | период сброса очереди batch-processor'а логов |
 | `OTEL_TENANT` | `Tenant` | `string` | `""` | непустой выставляет resource-атрибуты `service.namespace` и `tenant` (одно значение); пусто — их нет |
-| `OTEL_EXPORTER_OTLP_HEADERS` | `OTLPHeaders` | `Headers` | `nil` | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения в percent-encoding) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `OTLPHeaders` | `Headers` | — (без заголовков) | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения в percent-encoding) |
 | `OTEL_TOKEN` | `OTLPBearerToken` | `string` | `""` | `Authorization: Bearer <token>` к каждому OTLP-запросу; переопределяет `Authorization` из `OTEL_EXPORTER_OTLP_HEADERS` |
 
 `Validate` отвергает: пустой `ServiceName` при включённой телеметрии,

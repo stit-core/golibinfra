@@ -87,8 +87,8 @@ vuln: ## govulncheck по всем пакетам
 plan-check: ## Формат планов .claude/plans/ (A=--summary — сводка активных планов)
 	bash scripts/validate-plan.sh $(A)
 
-envdoc-check: ## envconfig-теги ↔ доки китов и корневая env-таблица
-	scripts/envdoc-check.sh
+envdoc-check: ## env-переменные кода ↔ строки таблиц доков (имя и дефолт), корневая env-таблица
+	$(GO) run ./scripts/envdoc
 
 coverage: ## Покрытие -short + сводка по пакетам
 	$(GO) test -short -count=1 -coverprofile=$(COVERPROFILE) $(PKGS)

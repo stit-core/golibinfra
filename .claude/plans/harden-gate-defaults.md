@@ -23,9 +23,8 @@ blocked-by: —
   FAIL — дефект есть; тяжёлые прогоны — последовательно.
 - **Гейт.** `make check` — шаги `GATE_STEPS` с integration и guard `gate_bad` (`Makefile`),
   `scripts/gate-clean.sh`, `scripts/git-hooks/pre-push`, `.claude/settings.json` с
-  `.claude/hooks/guard-bash.sh` (S1–S3). Down-миграции китов не исполняет ни один тест (KGATE-06),
-  `scripts/envdoc-check.sh` сверяет только имена (KDOC-04). Образец — гейт шаблона (`Makefile`,
-  `scripts/git-hooks/`, `scripts/tools/`, `.claude/hooks/guard-bash.sh`).
+  `.claude/hooks/guard-bash.sh`, лесенка `testkit.MigrationLadder`, `scripts/envdoc` (S1–S5).
+  Образец — гейт шаблона (`Makefile`, `scripts/git-hooks/`, `scripts/tools/`).
 - **httpkit на v1.2.0.** Старт проверяет только `Security` без extractor'а, по `OpenAPI().Paths` —
   скрытых операций не видит (`httpkit/module.go:124-178`). `ClientIP` и
   `HTTP_RATE_LIMIT_TRUST_PROXY` служат только лимитеру (`httpkit/ratelimit.go:13-104`).
@@ -81,11 +80,14 @@ blocked-by: —
     (`TestMigrations_Ladder` bruteforcekit: `down 2: … does not exist`); down 0002 bruteforcekit
     без возврата `locked_idx` и outboxkit без снятия колонки → `down 2 must restore …`; лесенка
     зелёная у auditkit, bruteforcekit, outboxkit (оба источника), hubkit/projection; `M/hgd/s4/`
-- [ ] **AC6** — `make envdoc-check` сверяет дефолты тегов с таблицами доков, требует строку таблицы
+- [x] **AC6** — `make envdoc-check` сверяет дефолты тегов с таблицами доков, требует строку таблицы
   на каждый тег, обходит все каталоги с Go-кодом (включая `internal/` и каталоги без README); поле
   без тега в структуре с тегами — ошибка. Проверка:
   `M/kits-audit/api-docs/scripts/envdoc-inject.sh <worktree>` → 7 из 7 ожидаемо красных красные;
   `gate_inject.py --only G32` → пойман
+  - Подтверждено: на кандидате S5 `envdoc-inject.sh` — E1–E6, E8 красные, E0, E7 зелёные; G32
+    пойман; GH04 (дефолт `HTTP_DOCS_ENABLED` перевёрнут в коде) — красный; 239 переменных
+    сходятся с доками (`M/hgd/s5/`)
 - [ ] **AC7** — При схеме безопасности в графе — ошибка старта с именем операции или маршрута:
   операция без `Security` и без `httpkit.Public` (в том числе скрытая и в группе huma), дубль
   METHOD+path, сырой маршрут chi или `Adapter().Handle` мимо реестра без объявления публичным,
@@ -136,9 +138,12 @@ blocked-by: —
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: S1
   - Сделано: `testkit.MigrationLadder` с тестами отказов, `TestMigrations_Ladder` у каждого
     kit-owned источника; откат 0002 `TableMigrations` — no-op; тексты. AC5 → выполнен
-- [ ] **S5** — Строгий `envdoc-check`: дефолты, строки таблиц, все каталоги с Go-кодом, поля без
+- [x] **S5** — Строгий `envdoc-check`: дефолты, строки таблиц, все каталоги с Go-кодом, поля без
   тегов (KDOC-04, KGATE-12, дефолты из KGATE-13)
   - Проверка: AC6 → выполнен · Закрывает: AC6 · Зависит от: S1
+  - Сделано: `scripts/envdoc` (Go, `go/ast`) вместо `envdoc-check.sh`, инъекции — тест
+    `TestCheck`; ячейки дефолтов приведены к канону; natskit `Config.Instance` —
+    `ignored:"true"`; тексты. AC6 → выполнен
 
 ### httpkit и outbox: B1–B3
 - [ ] **S6** — B1: реестр всех операций huma, пометка `httpkit.Public`, проверки старта из AC7 — с
@@ -238,6 +243,13 @@ blocked-by: —
   следующий down сносит таблицу (мутация bruteforcekit 0002), а шаблон держит лесенку по версиям
   (`cmd/migrate/migrate_test.go`) — хелпер не слабее. Источники и образ — опциями `Start*`;
   расширения не сравниваются, как у шаблона.
+- **S5, `envdoc`** — Go-команда `scripts/envdoc` (`go run` в `make envdoc-check`, `go/ast`, без
+  зависимостей): вложенные конфиги и поля без тегов grep'ом не разобрать. Переменная —
+  envconfig-тег или литерал `os.Getenv`/`LookupEnv` (кроме стандартных из `allow.txt`), её строка
+  таблицы — в доках каталога пакета или выше. Ячейка дефолта — значение в бэктиках, без
+  `default`-тега — `—` с пояснением или нулевое значение (`""`, `false`, `0`); «пусто», `nil`,
+  «нет, обязательна» приведены к канону. Инъекции E0–E8, G32, G01 — тест `TestCheck` на копии
+  репо в памяти. natskit `Config.Instance` — `ignored:"true"` (дока: «из ENV не читается»).
 - **S4, `TableMigrations`** — откат 0002 стал no-op: версия 1 — уже вся `SchemaSQL` с
   `next_attempt_at`, снятие колонки не возвращало схему версии 1 (`down 2 must restore`); у
   зеркала без колонки откат её оставляет. hubkit/projection — тоже kit-owned источник, лесенка и
@@ -261,10 +273,11 @@ blocked-by: —
   выключенный JetStream — ошибка старта; payload сверх предела — ошибка `Publish`.
 
 ## Где мы сейчас
-S1–S4 закрыты: `make check` гоняет integration (Docker обязателен, ≈1,5 мин), всегда на `./...`,
-окружение его не сужает, кеш lint — в `.cache/` checkout'а; push проходит pre-push (`make hooks`);
-лесенка `testkit.MigrationLadder` держит каждый kit-owned источник миграций. Следующий шаг — S5
-(строгий `envdoc-check`).
+Этап «Гейт» (S1–S5) закрыт: `make check` гоняет integration (Docker обязателен, ≈1,5 мин), всегда
+на `./...`, окружение его не сужает, кеш lint — в `.cache/` checkout'а; push проходит pre-push
+(`make hooks`); лесенка держит kit-owned миграции; `envdoc-check` сверяет имена и дефолты. Дальше —
+валидатор этапа, затем S6 (B1: реестр операций и `httpkit.Public`). Эксперименты этапа — `M/hgd/`,
+правки `gate_inject.py` — «Решения».
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест

@@ -37,9 +37,9 @@
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `NATS_CREDS_FILE` | `CredsFile` | `string` | `` (пусто) | Путь к `.creds`-файлу (NATS JWT + nkey seed, `nats.UserCredentials`). |
-| `NATS_NKEY_SEED_FILE` | `NKeySeedFile` | `string` | `` (пусто) | Путь к файлу nkey-seed (`nats.NkeyOptionFromSeed`). |
-| `NATS_TLS_CA_FILE` | `TLSCAFile` | `string` | `` (пусто) | Корневой сертификат для TLS-подключения (`nats.RootCAs`). |
+| `NATS_CREDS_FILE` | `CredsFile` | `string` | `""` | Путь к `.creds`-файлу (NATS JWT + nkey seed, `nats.UserCredentials`). |
+| `NATS_NKEY_SEED_FILE` | `NKeySeedFile` | `string` | `""` | Путь к файлу nkey-seed (`nats.NkeyOptionFromSeed`). |
+| `NATS_TLS_CA_FILE` | `TLSCAFile` | `string` | `""` | Корневой сертификат для TLS-подключения (`nats.RootCAs`). |
 
 Заданный путь проверяется на старте (`Validate`: файла нет — `ErrConfig`).
 Простые креды (`user:password`, токен) живут в `NATS_URL`; в логи и в тексты
@@ -56,7 +56,7 @@
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `NATS_JETSTREAM_ENABLED` | `JetStream.Enabled` | `bool` | `false` | Включает `StreamBus`. При `false` — `disabledStreamBus` (все методы → `ErrJetStreamDisabled`). |
-| `NATS_JS_STREAM_NAMES` | `JetStream.StreamNames` | `[]string` | `` (пусто) | Стримы кита (через запятую). Subjects стрима — `<name>.>`. Пусто — кит стримы не декларирует и не проверяет. Имя с точкой, пробелом или wildcard — `ErrConfig`. |
+| `NATS_JS_STREAM_NAMES` | `JetStream.StreamNames` | `[]string` | — (пусто) | Стримы кита (через запятую). Subjects стрима — `<name>.>`. Пусто — кит стримы не декларирует и не проверяет. Имя с точкой, пробелом или wildcard — `ErrConfig`. |
 | `NATS_JS_STREAM_MANAGED` | `JetStream.StreamManaged` | `bool` | `true` | `true` — кит создаёт отсутствующие стримы и доливает свой subject в существующие (см. [Декларация стримов](#декларация-стримов)). `false` — кит стримы не трогает, только проверяет наличие каждого из `StreamNames` (отсутствие — ошибка старта). В структурном литерале `Config{}` поле надо выставлять явно. |
 | `NATS_JS_RETENTION` | `JetStream.Retention` | `string` | `limits` | Политика удержания создаваемого стрима: `limits` / `interest` / `workqueue` (он же `work_queue`). Иное значение — `ErrConfig`. |
 | `NATS_JS_MAX_AGE` | `JetStream.MaxAge` | `time.Duration` | `168h` | Максимальный возраст сообщения в создаваемом стриме. `0` → `168h` (7 дней), отрицательное — `ErrConfig`. |
@@ -67,7 +67,7 @@
 | `NATS_JS_PUBLISH_ASYNC_TIMEOUT` | `JetStream.PublishAsyncTimeout` | `time.Duration` | `5s` | Сколько `PublishStreamBatch` ждёт `PubAck` одного сообщения. Потерянный ack завершается `jetstream.ErrAsyncPublishTimeout` в `results[i]`, а не висит вечно. `0` → `5s`, отрицательное — `ErrConfig`. |
 | `NATS_JS_MAX_DELIVER` | `JetStream.MaxDeliver` | `int` | `10` | Потолок числа доставок одного сообщения. `0` — без лимита (бесконечный ределивери), отрицательное — `ErrConfig`. `> 0` — на исчерпании DLQ/Term. |
 | `NATS_JS_NAK_BACKOFF` | `JetStream.NakBackoff` | `time.Duration` | `1s` | Задержка перед повторной доставкой при NAK. `0` — мгновенный `Nak` (горячая петля на устойчиво падающем сообщении), `> 0` — `NakWithDelay`, отрицательное — `ErrConfig`. |
-| `NATS_JS_DLQ_SUBJECT` | `JetStream.DLQSubject` | `string` | `` (пусто) | Subject для dead-letter. Пусто — на терминальном отказе только `Term` (сообщение при этом логируется). Задан — перед `Term` сообщение republish'ится в DLQ. Значение с пробелом, пустым токеном или wildcard — `ErrConfig`. |
+| `NATS_JS_DLQ_SUBJECT` | `JetStream.DLQSubject` | `string` | `""` | Subject для dead-letter. Пусто — на терминальном отказе только `Term` (сообщение при этом логируется). Задан — перед `Term` сообщение republish'ится в DLQ. Значение с пробелом, пустым токеном или wildcard — `ErrConfig`. |
 
 ## Декларация стримов
 

@@ -70,7 +70,7 @@ type Config struct {
 	// Instance — имя инстанса шины: едет атрибутом в метрики, спаны и логи, чтобы
 	// сигналы двух шин в одном процессе не сливались. Из ENV не читается,
 	// проставляется New/Module.
-	Instance string
+	Instance string `ignored:"true"`
 }
 
 // NewConfig читает и валидирует конфиг дефолтного инстанса из `NATS_*`.

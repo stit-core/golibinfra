@@ -34,7 +34,7 @@ No-op при пустом `Origins`. Конкретный origin эхается 
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `HTTP_CORS_ORIGINS` | `Origins` | `[]string` | пусто (CORS off) | разрешённые Origin; `*` = любой |
+| `HTTP_CORS_ORIGINS` | `Origins` | `[]string` | — (CORS выключен) | разрешённые Origin; `*` = любой |
 | `HTTP_CORS_METHODS` | `Methods` | `[]string` | `GET,POST,PUT,PATCH,DELETE,OPTIONS` | `Access-Control-Allow-Methods` |
 | `HTTP_CORS_HEADERS` | `Headers` | `[]string` | `Authorization,Content-Type,X-Request-ID` | `Access-Control-Allow-Headers` |
 | `HTTP_CORS_EXPOSE_HEADERS` | `ExposeHeaders` | `[]string` | `X-Request-ID,Location,Retry-After,Idempotent-Replayed` | `Access-Control-Expose-Headers`: без него cross-origin JS не читает даже заголовки, которые ставит сам кит |
@@ -88,7 +88,7 @@ nginx/traefik дописывают реальный IP в конец `X-Forwarde
 | `HTTP_CONTENT_TYPE_OPTIONS` | `ContentTypeOptions` | `string` | `nosniff` | `X-Content-Type-Options` |
 | `HTTP_FRAME_OPTIONS` | `FrameOptions` | `string` | `DENY` | `X-Frame-Options` |
 | `HTTP_REFERRER_POLICY` | `ReferrerPolicy` | `string` | `strict-origin-when-cross-origin` | `Referrer-Policy` |
-| `HTTP_CSP` | `CSP` | `string` | пусто | `Content-Security-Policy` |
+| `HTTP_CSP` | `CSP` | `string` | `""` | `Content-Security-Policy` |
 
 ## IdempotencyConfig
 

@@ -116,7 +116,7 @@ task.Due = tzkit.DayFromPg(row.DueDate)     // pgtype.Date → Day
 
 | Поле | ENV | Дефолт | Правило `Validate` |
 | --- | --- | --- | --- |
-| `Config.TZ` | `APP_TZ` | нет, обязательна | непустое IANA-имя, которое резолвится; `"Local"` запрещена |
+| `Config.TZ` | `APP_TZ` | — (обязательна) | непустое IANA-имя, которое резолвится; `"Local"` запрещена |
 
 `NewConfig()` читает окружение и валидирует; ошибка — `ErrConfig` (плюс
 `ErrEmptyZone`/`ErrLocalZone` внутри, их видно через `errors.Is`). `Config` kit

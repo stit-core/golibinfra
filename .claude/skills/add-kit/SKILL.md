@@ -47,9 +47,11 @@ description: Завести в golibinfra новый kit по конвенция
    (sentinel `<kit>.ErrConfig`); `Validate` зовут и конструкторы `New*`, чтобы
    собранный литералом конфиг тоже проверялся. Zero-value `Config` либо безопасен
    и полезен, либо отвергается `Validate`. `Module` конфиг **не** provide'ит — его
-   даёт caller. Каждый тег описывается в README кита, endpoint-переменная
-   (`*_URL`, `*_DSN`, `*_ENDPOINT`, `*_ADDR`, `*_TARGET`) — ещё и в
-   `README.md § Per-concern endpoints` (`make envdoc-check`).
+   даёт caller. Каждый тег — строка таблицы в README кита (`| Env | Поле | Тип |
+   Default | … |`; дефолт — как в `default`-теге, без него — `—` или нулевое
+   значение), endpoint-переменная (`*_URL`, `*_DSN`, `*_ENDPOINT`, `*_ADDR`,
+   `*_TARGET`) — ещё и в `README.md § Per-concern endpoints`; поле конфига без
+   тега — только с `ignored:"true"` (`make envdoc-check`).
 4. **Логирование и observability.** Логгер — `logkit.Logger` из fx-графа.
    Метрики/спаны — через `internal/otelkit` (`otelkit.Meter("<kit>")`,
    `otelkit.Must(...)`): инертны без провайдера у потребителя. Имена —

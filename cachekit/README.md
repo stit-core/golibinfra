@@ -62,7 +62,7 @@ fx.New(
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `REDIS_URL` | `URL` | `string` | `redis://localhost:6379/0` | Адрес Redis (`redis.ParseURL`); должен парситься |
-| `REDIS_KEY_PREFIX` | `KeyPrefix` | `string` | пусто | Префикс **всех** ключей кита, включая `tag:` и `idempotency:` |
+| `REDIS_KEY_PREFIX` | `KeyPrefix` | `string` | `""` | Префикс **всех** ключей кита, включая `tag:` и `idempotency:` |
 | `REDIS_POOL_SIZE` | `PoolSize` | `int` | `10` | Размер пула соединений; `>= 1` |
 | `REDIS_MAX_RETRIES` | `MaxRetries` | `int` | `3` | Повторы команды после сетевой ошибки; `-1` отключает, `>= -1` |
 | `REDIS_DIAL_TIMEOUT` | `DialTimeout` | `time.Duration` | `5s` | Таймаут установления соединения; `>= 0` |

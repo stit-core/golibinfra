@@ -68,7 +68,8 @@ make test         # быстрый цикл: unit -short -race, без конт�
   в `README.md § Пакеты` и, если нужны test-хелперы, `testkit/<name>test`.
 - Тронул конфиг / эмитимые метрики / labels / span-attrs → обнови `README.md`
   (+ `docs/`) соответствующего кита, а endpoint-переменную — ещё и в
-  `README.md § Per-concern endpoints`; `make envdoc-check` сверит обе стороны.
+  `README.md § Per-concern endpoints`; `make envdoc-check` сверит имена и
+  дефолты в обе стороны.
 - Багфикс → регрессионный тест в том же PR; новый `Module` → fx-тест
   (`fx.ValidateApp`).
 - **Conventional Commits** — `<type>(<scope>)?: <subject>`, subject ≤72. Типы:
