@@ -143,7 +143,9 @@ blocked-by: —
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S2
 - [ ] **S10** — httpkit, остановка: фаза дренажа с `/ready` 503 (C), дедлайн HTTP из остатка бюджета
   с отменой ctx и `Close` (KFX-08 вместе с KCOR-08), `recover` в пробах `/ready` и
-  `healthkit.WithTimeout` (KOBS-14)
+  `healthkit.WithTimeout` (KOBS-14); проверка здоровья без shell для distroless-образа — функция
+  httpkit для подкоманды бинаря потребителя (`GET /health` по `HTTP_ADDR`, код выхода), шаблон
+  снимает свою `cmd/api/healthcheck.go`
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: —
 - [ ] **S11** — authnkit: iss и aud из конфига `Module`, ротация секрета через предыдущий секрет (C)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S5
