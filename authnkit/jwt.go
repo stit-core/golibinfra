@@ -19,28 +19,23 @@ const (
 
 	// DefaultAccessTTL — TTL access-токена при нулевом JWTConfig.AccessTTL.
 	DefaultAccessTTL = 15 * time.Minute
-	// DefaultRefreshTTL — TTL refresh-токена при нулевом JWTConfig.RefreshTTL.
-	DefaultRefreshTTL = 720 * time.Hour
 	// DefaultLeeway — допуск рассинхрона часов при нулевом JWTConfig.Leeway.
 	DefaultLeeway = time.Minute
 )
 
 const (
-	// ClaimTokenType — claim с типом токена; проставляется SignAccess/SignRefresh
-	// и проверяется ParseAccess/ParseRefresh.
+	// ClaimTokenType — claim с типом токена; проставляется SignAccess и
+	// проверяется ParseAccess. Refresh — непрозрачный токен authnkit/session, не JWT.
 	ClaimTokenType = "typ"
 	// TokenTypeAccess — значение ClaimTokenType у access-токена.
 	TokenTypeAccess = "access"
-	// TokenTypeRefresh — значение ClaimTokenType у refresh-токена.
-	TokenTypeRefresh = "refresh"
 )
 
-// JWTConfig — секрет, сроки жизни токенов и допуск рассинхрона часов.
+// JWTConfig — секрет, срок жизни access-токена и допуск рассинхрона часов.
 type JWTConfig struct {
-	Secret     string        `envconfig:"JWT_SECRET" required:"true"`
-	AccessTTL  time.Duration `envconfig:"JWT_ACCESS_TTL" default:"15m"`
-	RefreshTTL time.Duration `envconfig:"JWT_REFRESH_TTL" default:"720h"`
-	Leeway     time.Duration `envconfig:"JWT_LEEWAY" default:"60s"`
+	Secret    string        `envconfig:"JWT_SECRET" required:"true"`
+	AccessTTL time.Duration `envconfig:"JWT_ACCESS_TTL" default:"15m"`
+	Leeway    time.Duration `envconfig:"JWT_LEEWAY" default:"60s"`
 }
 
 // Validate требует секрет не короче MinSecretLen и неотрицательные TTL/leeway;
@@ -49,7 +44,7 @@ func (c JWTConfig) Validate() error {
 	switch {
 	case len(c.Secret) < MinSecretLen:
 		return fmt.Errorf("%w: JWT secret must be at least %d bytes", ErrConfig, MinSecretLen)
-	case c.AccessTTL < 0 || c.RefreshTTL < 0:
+	case c.AccessTTL < 0:
 		return fmt.Errorf("%w: JWT TTL must not be negative", ErrConfig)
 	case c.Leeway < 0:
 		return fmt.Errorf("%w: JWT leeway must not be negative", ErrConfig)
@@ -57,24 +52,20 @@ func (c JWTConfig) Validate() error {
 	return nil
 }
 
-// JWTSigner — выпуск токенов: с явным TTL и типизированные access/refresh.
+// JWTSigner — выпуск токенов: с явным TTL и типизированный access.
 type JWTSigner interface {
 	// Sign — токен с явным ttl и без claim типа.
 	Sign(ctx context.Context, claims map[string]any, ttl time.Duration) (string, error)
 	// SignAccess — токен с JWTConfig.AccessTTL и typ=access.
 	SignAccess(ctx context.Context, claims map[string]any) (string, error)
-	// SignRefresh — токен с JWTConfig.RefreshTTL и typ=refresh.
-	SignRefresh(ctx context.Context, claims map[string]any) (string, error)
 }
 
-// JWTParser — разбор токенов: без проверки типа и с проверкой access/refresh.
+// JWTParser — разбор токенов: без проверки типа и с проверкой access.
 type JWTParser interface {
 	// Parse — подпись и сроки; тип токена не проверяется.
 	Parse(ctx context.Context, token string) (map[string]any, error)
 	// ParseAccess — Parse плюс typ=access, иначе ErrWrongTokenType.
 	ParseAccess(ctx context.Context, token string) (map[string]any, error)
-	// ParseRefresh — Parse плюс typ=refresh, иначе ErrWrongTokenType.
-	ParseRefresh(ctx context.Context, token string) (map[string]any, error)
 }
 
 var (
@@ -84,7 +75,7 @@ var (
 	ErrTokenMalformed = errors.New("authnkit: token malformed")
 	// ErrTokenSignature — подпись не сошлась.
 	ErrTokenSignature = errors.New("authnkit: token signature invalid")
-	// ErrWrongTokenType — тип токена не тот, который ждёт ParseAccess/ParseRefresh.
+	// ErrWrongTokenType — у токена нет typ=access, который ждёт ParseAccess.
 	ErrWrongTokenType = errors.New("authnkit: wrong token type")
 	// ErrTokenAudience — iss или aud токена не совпали с ожидаемыми.
 	ErrTokenAudience = errors.New("authnkit: token issuer or audience mismatch")
@@ -171,15 +162,14 @@ func usedCodeStoreOptions(opts []UsedCodeStoreOption) options {
 
 // HS256JWT — JWTSigner и JWTParser на HS256 поверх go-jose.
 type HS256JWT struct {
-	secret     []byte
-	signer     jose.Signer
-	accessTTL  time.Duration
-	refreshTTL time.Duration
-	leeway     time.Duration
-	issuer     string
-	audience   []string
-	clock      clockkit.Clock
-	instr      *jwtInstruments
+	secret    []byte
+	signer    jose.Signer
+	accessTTL time.Duration
+	leeway    time.Duration
+	issuer    string
+	audience  []string
+	clock     clockkit.Clock
+	instr     *jwtInstruments
 }
 
 // NewHS256JWT — подписчик/парсер по cfg; невалидный конфиг → ErrConfig.
@@ -197,15 +187,14 @@ func NewHS256JWT(cfg JWTConfig, opts ...JWTOption) (*HS256JWT, error) {
 	}
 	o := jwtOptions(opts)
 	return &HS256JWT{
-		secret:     secret,
-		signer:     signer,
-		accessTTL:  durationOr(cfg.AccessTTL, DefaultAccessTTL),
-		refreshTTL: durationOr(cfg.RefreshTTL, DefaultRefreshTTL),
-		leeway:     durationOr(cfg.Leeway, DefaultLeeway),
-		issuer:     o.issuer,
-		audience:   o.audience,
-		clock:      o.clock,
-		instr:      newJWTInstruments(),
+		secret:    secret,
+		signer:    signer,
+		accessTTL: durationOr(cfg.AccessTTL, DefaultAccessTTL),
+		leeway:    durationOr(cfg.Leeway, DefaultLeeway),
+		issuer:    o.issuer,
+		audience:  o.audience,
+		clock:     o.clock,
+		instr:     newJWTInstruments(),
 	}, nil
 }
 
@@ -247,24 +236,14 @@ func (h *HS256JWT) Sign(ctx context.Context, claims map[string]any, ttl time.Dur
 
 // SignAccess — токен с JWTConfig.AccessTTL и typ=access.
 func (h *HS256JWT) SignAccess(ctx context.Context, claims map[string]any) (string, error) {
-	return h.signTyped(ctx, claims, TokenTypeAccess, h.accessTTL)
-}
-
-// SignRefresh — токен с JWTConfig.RefreshTTL и typ=refresh.
-func (h *HS256JWT) SignRefresh(ctx context.Context, claims map[string]any) (string, error) {
-	return h.signTyped(ctx, claims, TokenTypeRefresh, h.refreshTTL)
-}
-
-func (h *HS256JWT) signTyped(ctx context.Context, claims map[string]any, typ string, ttl time.Duration) (string, error) {
 	all := make(map[string]any, len(claims)+1)
 	maps.Copy(all, claims)
-	all[ClaimTokenType] = typ
-	return h.Sign(ctx, all, ttl)
+	all[ClaimTokenType] = TokenTypeAccess
+	return h.Sign(ctx, all, h.accessTTL)
 }
 
 // Parse проверяет HS256-подпись, обязательный exp, сроки с leeway и заданные
-// опциями iss/aud. Тип токена не проверяется — для access/refresh есть
-// ParseAccess/ParseRefresh.
+// опциями iss/aud. Тип токена не проверяется — для access есть ParseAccess.
 func (h *HS256JWT) Parse(ctx context.Context, token string) (map[string]any, error) {
 	return h.parse(ctx, token, "")
 }
@@ -272,11 +251,6 @@ func (h *HS256JWT) Parse(ctx context.Context, token string) (map[string]any, err
 // ParseAccess — Parse плюс typ=access; иначе ErrWrongTokenType.
 func (h *HS256JWT) ParseAccess(ctx context.Context, token string) (map[string]any, error) {
 	return h.parse(ctx, token, TokenTypeAccess)
-}
-
-// ParseRefresh — Parse плюс typ=refresh; иначе ErrWrongTokenType.
-func (h *HS256JWT) ParseRefresh(ctx context.Context, token string) (map[string]any, error) {
-	return h.parse(ctx, token, TokenTypeRefresh)
 }
 
 func (h *HS256JWT) parse(ctx context.Context, token, wantType string) (map[string]any, error) {

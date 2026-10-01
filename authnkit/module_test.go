@@ -119,7 +119,7 @@ func TestNewConfigsFromEnv(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewJWTConfig: %v", err)
 		}
-		if c.AccessTTL.Minutes() != 5 || c.RefreshTTL != authnkit.DefaultRefreshTTL || c.Leeway != authnkit.DefaultLeeway {
+		if c.AccessTTL.Minutes() != 5 || c.Leeway != authnkit.DefaultLeeway {
 			t.Fatalf("config = %+v", c)
 		}
 

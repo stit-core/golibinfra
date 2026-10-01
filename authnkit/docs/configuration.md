@@ -53,14 +53,13 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 |---|---|---|---|---|
 | `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Короче 32 байт → `ErrConfig`. |
 | `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | TTL для `SignAccess`. `0` в литерале конфига → дефолт кита; отрицательный → `ErrConfig`. |
-| `JWT_REFRESH_TTL` | `RefreshTTL` | `time.Duration` | `720h` | TTL для `SignRefresh` (`720h` = 30 дней). `0` → дефолт кита; отрицательный → `ErrConfig`. |
 | `JWT_LEEWAY` | `Leeway` | `time.Duration` | `60s` | Допуск рассинхрона часов при проверке `exp`/`nbf`/`iat` в `Parse`. `0` → дефолт кита; отрицательный → `ErrConfig`. |
 
 `Sign(ctx, claims, ttl)` принимает TTL явно — для токенов с нестандартным сроком
 (одноразовые ссылки, приглашения); `ttl <= 0` → `ErrConfig`.
-`SignAccess`/`SignRefresh` берут TTL из конфига. Пороги и дефолты доступны
-константами: `MinSecretLen` (32), `DefaultAccessTTL`, `DefaultRefreshTTL`,
-`DefaultLeeway`.
+`SignAccess` берёт TTL из конфига. Пороги и дефолты доступны константами:
+`MinSecretLen` (32), `DefaultAccessTTL`, `DefaultLeeway`. Срок refresh — у сессий
+(`session.Config` ниже), не у JWT.
 
 `iss`/`aud` конфигом не задаются — это опции конструктора `WithIssuer` /
 `WithAudience` (см. [usage.md](usage.md)): они одновременно проставляются при
@@ -79,6 +78,20 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 Период (30 с), число цифр (6) и алгоритм (SHA1) — константы кита (`TOTPPeriod`),
 одинаковые в `Generate` и `Verify`; конфигурировать их незачем, authenticator-
 приложения ждут именно эти значения.
+
+## session.Config
+
+Сроки сессий refresh (`authnkit/session`). Читается из ENV через
+`session.NewConfig()`, передаётся в `pgstore.NewStore` или `pgstore.Module`.
+
+| Env | Поле | Тип | Default | Назначение |
+|---|---|---|---|---|
+| `SESSION_IDLE_TTL` | `IdleTTL` | `time.Duration` | `168h` | Срок refresh-токена: ротация выдаёт следующий на тот же срок, но не дальше срока сессии (`168h` = 7 дней без входа — сессия истекла). `<= 0` → `session.ErrConfig`. |
+| `SESSION_ABSOLUTE_TTL` | `AbsoluteTTL` | `time.Duration` | `720h` | Срок сессии от входа; ротация его не продлевает (`720h` = 30 дней — затем вход заново). Меньше `SESSION_IDLE_TTL` → `session.ErrConfig`. |
+| `SESSION_CLEANUP_INTERVAL` | `CleanupInterval` | `time.Duration` | `1h` | Период job'а `authnkit.session.cleanup`, удаляющего сессии с истёкшим абсолютным сроком. `<= 0` → `session.ErrConfig`. |
+
+Нулевой `session.Config` отвергается `Validate`: сессия без срока жизни хуже
+упавшего старта.
 
 ## Тюнинг стойкости Argon2id
 

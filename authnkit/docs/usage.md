@@ -20,13 +20,11 @@ var ErrConfig, ErrInvalidHash, ErrHashParams error // ErrHashParams завора
 // JWT
 type JWTSigner interface {
 	Sign(ctx context.Context, claims map[string]any, ttl time.Duration) (string, error)
-	SignAccess(ctx context.Context, claims map[string]any) (string, error)  // ttl = JWTConfig.AccessTTL
-	SignRefresh(ctx context.Context, claims map[string]any) (string, error) // ttl = JWTConfig.RefreshTTL
+	SignAccess(ctx context.Context, claims map[string]any) (string, error) // ttl = JWTConfig.AccessTTL
 }
 type JWTParser interface {
-	Parse(ctx context.Context, token string) (map[string]any, error)        // тип токена не проверяется
-	ParseAccess(ctx context.Context, token string) (map[string]any, error)  // typ == "access"
-	ParseRefresh(ctx context.Context, token string) (map[string]any, error) // typ == "refresh"
+	Parse(ctx context.Context, token string) (map[string]any, error)       // тип токена не проверяется
+	ParseAccess(ctx context.Context, token string) (map[string]any, error) // typ == "access"
 }
 func NewHS256JWT(cfg JWTConfig, opts ...JWTOption) (*HS256JWT, error) // реализует и JWTSigner, и JWTParser
 func (c JWTConfig) Validate() error
@@ -34,7 +32,7 @@ func WithClock(c clockkit.Clock) ClockOption // JWTOption + TOTPOption + UsedCod
 func WithIssuer(issuer string) JWTOption     // только NewHS256JWT
 func WithAudience(aud ...string) JWTOption   // только NewHS256JWT
 
-const ClaimTokenType = "typ" // значения TokenTypeAccess / TokenTypeRefresh
+const ClaimTokenType = "typ" // значение TokenTypeAccess
 var ErrTokenExpired, ErrTokenMalformed, ErrTokenSignature, ErrWrongTokenType, ErrTokenAudience error
 
 // TOTP
@@ -52,6 +50,24 @@ func NewMemoryUsedCodeStore(opts ...UsedCodeStoreOption) *MemoryUsedCodeStore
 // Одноразовые токены
 func NewToken() string               // 256 бит из crypto/rand, hex (64 символа)
 func HashToken(token string) string  // SHA-256 в hex — для хранения и поиска
+
+// Сессии refresh — authnkit/session и authnkit/session/pgstore
+type Store interface { // session.Store
+	Issue(ctx context.Context, subject string) (Token, error)
+	Rotate(ctx context.Context, refresh string) (Token, error)
+	Revoke(ctx context.Context, refresh string) error
+	RevokeAll(ctx context.Context, subject string) error
+}
+type Token struct{ Value, SessionID, Subject string; ExpiresAt, SessionExpiresAt time.Time }
+type ReusedError struct{ SessionID, Subject string } // errors.Is(err, ErrReused)
+var ErrConfig, ErrInvalidSubject, ErrInvalid, ErrExpired, ErrReused, ErrInTx error
+func NewConfig() (Config, error) // SESSION_*
+func CheckSubject(subject string) error
+func pgstore.NewStore(db *pgkit.DB, cfg session.Config, opts ...pgstore.Option) (*pgstore.Store, error)
+func pgstore.WithClock(c clockkit.Clock) pgstore.Option
+func (s *pgstore.Store) CheckSchema(ctx context.Context) error // pgstore.ErrSchema
+func (s *pgstore.Store) Cleanup(ctx context.Context) error
+var pgstore.Module, pgstore.Migrations
 
 // RBAC
 type Permission string
@@ -126,7 +142,6 @@ if err != nil {
 }
 
 access, _ := jwt.SignAccess(ctx, map[string]any{"sub": userID, "role": "admin"})
-refresh, _ := jwt.SignRefresh(ctx, map[string]any{"sub": userID})
 invite, _ := jwt.Sign(ctx, map[string]any{"sub": userID, "typ": "invite"}, 24*time.Hour) // нестандартный TTL
 
 claims, err := jwt.ParseAccess(ctx, access)
@@ -135,9 +150,9 @@ case err == nil:
 	sub, _ := claims["sub"].(string)
 	_ = sub
 case errors.Is(err, authnkit.ErrWrongTokenType):
-	// предъявили refresh (или чужой) токен там, где нужен access
+	// токен другой схемы (typ не access) там, где нужен access
 case errors.Is(err, authnkit.ErrTokenExpired):
-	// отправить на refresh
+	// отправить на refresh (session.Store.Rotate)
 case errors.Is(err, authnkit.ErrTokenSignature):
 	// чужой/подделанный токен
 case errors.Is(err, authnkit.ErrTokenAudience):
@@ -147,14 +162,14 @@ case errors.Is(err, authnkit.ErrTokenMalformed):
 }
 ```
 
-`exp`, `iat` и (для `SignAccess`/`SignRefresh`) `typ` **перезаписываются**
+`exp`, `iat` и (для `SignAccess`) `typ` **перезаписываются**
 китом — значения из `claims` для этих ключей не сохраняются. Числа в
 разобранных claims приходят как `float64` (поведение JSON-декодера) — приводи
 типы при чтении.
 
 Токены со своей схемой (приглашения, одноразовые ссылки) выпускай через
 `Sign` со своим `typ` и разбирай через `Parse`, проверяя `typ` в коде flow'а:
-`ParseAccess`/`ParseRefresh` пропускают только собственные типы кита.
+`ParseAccess` пропускает только `typ=access`.
 
 ### Изоляция по iss/aud
 
@@ -239,6 +254,46 @@ _, err := db.Exec(ctx, `INSERT INTO password_resets (user_id, token_hash, expire
 длиной 64 logkit маскирует по умолчанию, base64url — нет: свой формат токена
 не заводите.
 
+## Сессии refresh
+
+Refresh — не JWT, а непрозрачный токен в сессии `authnkit/session`: вход
+открывает сессию с абсолютным сроком (`SESSION_ABSOLUTE_TTL`), каждое обновление
+гасит токен и выдаёт следующий (`SESSION_IDLE_TTL`, не дальше срока сессии).
+Хранилище — `session/pgstore` (Postgres, миграции кита).
+
+```go
+// Вход: пароль проверен → access-JWT и refresh-сессия.
+access, err := jwt.SignAccess(ctx, map[string]any{"sub": u.ID, "role": u.Role})
+refresh, err := sessions.Issue(ctx, u.ID) // refresh.Value — клиенту (cookie)
+
+// Обновление: ротация вне транзакции, затем проверка, что пользователь ещё может входить.
+next, err := sessions.Rotate(ctx, refreshCookie)
+var reused *session.ReusedError
+switch {
+case errors.As(err, &reused):
+	// повтор использованного токена: сессия уже отозвана — аудит reused.Subject
+case errors.Is(err, session.ErrInvalid), errors.Is(err, session.ErrExpired):
+	// войти заново
+case err != nil:
+	return err
+}
+u, err := users.Get(ctx, next.Subject) // заблокирован → отказ, next не выдавать
+
+// Выход и отзыв всех сессий — в транзакции смены статуса пользователя.
+err = sessions.Revoke(ctx, refreshCookie)
+err = tx.WithTx(ctx, func(ctx context.Context) error {
+	if err := users.Block(ctx, userID); err != nil {
+		return err
+	}
+	return sessions.RevokeAll(ctx, userID) // откат блокировки откатит и отзыв
+})
+```
+
+В fx — `pgstore.Module` (нужны `pgkit.Module`, `timerkit.Module` и
+`fx.Provide(session.NewConfig)`); его миграции — источник `pgstore.Migrations`
+для `pgkit.MigrateModule` или отдельной команды миграций: без них старт падает
+(`pgstore.ErrSchema`). CLI без fx — `pgstore.NewStore(db, cfg)`.
+
 ## RBAC
 
 ```go
@@ -308,10 +363,14 @@ App-структуры — отдельный `fx.Provide` не нужен. Не
   зашиты в PHC-строку, поэтому поднятие `Argon2idParams` не ломает проверку ранее
   выданных хэшей. Перевыпуск под новую стойкость — `NeedsRehash` + `Hash` на
   успешном логине, на стороне потребителя.
-- **Тип токена — часть контракта.** `SignAccess`/`SignRefresh` пишут
-  `typ=access|refresh`, `ParseAccess`/`ParseRefresh` требуют совпадения:
-  refresh-токен в access-контуре → `ErrWrongTokenType`. `Parse` тип не
-  проверяет — используй его только для собственных схем токенов.
+- **Тип токена — часть контракта.** `SignAccess` пишет `typ=access`,
+  `ParseAccess` требует его: токен другой схемы на том же секрете →
+  `ErrWrongTokenType`. `Parse` тип не проверяет — используй его только для
+  собственных схем токенов.
+- **Refresh без окна прощения.** Повтор использованного refresh-токена отзывает
+  сессию целиком (`session.ErrReused`), в том числе при двух параллельных
+  обновлениях одним токеном: клиент обновляет последовательно. `Rotate` — вне
+  транзакции (`session.ErrInTx`): отзыв при повторе не откатывается.
 - **JWT: TTL из конфига или явно.** `Sign(ctx, claims, ttl)` с `ttl <= 0` →
   `ErrConfig` (а не токен, живущий один leeway).
 - **JWT clock skew.** `Parse*` принимает токен ещё `Leeway` (default 60s) после

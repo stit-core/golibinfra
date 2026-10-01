@@ -1,7 +1,8 @@
 # authnkit — observability
 
 Единый источник правды по сигналам кита. Имена/типы/labels берутся из
-`metrics.go` и точек записи в `jwt.go` / `hasher.go` / `totp.go`.
+`metrics.go` и точек записи в `jwt.go` / `hasher.go` / `totp.go`, у сессий —
+`session/pgstore/metrics.go` и `session/pgstore/store.go`.
 
 Meter: `git.stit.tech/stit-core/golibinfra/authnkit` (через `internal/otelkit`).
 Спанов кит не эмитит; `ctx` в сигнатурах нужен, чтобы измерения несли baggage и
@@ -11,7 +12,7 @@ exemplar'ы вызывающего.
 
 | Метрика | Тип | Unit | Labels | Назначение |
 |---|---|---|---|---|
-| `authn_jwt_verifications_total` | Int64 Counter | — | `result` | Исход разбора JWT в `HS256JWT.Parse`/`ParseAccess`/`ParseRefresh`. |
+| `authn_jwt_verifications_total` | Int64 Counter | — | `result` | Исход разбора JWT в `HS256JWT.Parse`/`ParseAccess`. |
 | `authn_password_hash_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Hash`. |
 | `authn_password_verify_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Verify` или `VerifyDummy`. |
 | `authn_totp_verifications_total` | Int64 Counter | — | `result` | Исход `TOTPGenerator.Verify`/`VerifyOnce`. |
@@ -29,7 +30,7 @@ exemplar'ы вызывающего.
 | `ok` | токен валиден, подпись, сроки и (если запрошен) тип прошли |
 | `expired` | сработал `exp` с учётом leeway (`ErrTokenExpired`) |
 | `signature_invalid` | подпись не сошлась (`ErrTokenSignature`) |
-| `wrong_type` | `ParseAccess`/`ParseRefresh` получили токен другого типа (`ErrWrongTokenType`) |
+| `wrong_type` | `ParseAccess` получил токен без `typ=access` (`ErrWrongTokenType`) |
 | `audience_mismatch` | не совпал ожидаемый `iss`/`aud` (`ErrTokenAudience`) |
 | `malformed` | битый токен / не-HS256 alg / нет `exp` / `nbf`,`iat` в будущем / payload не объект (`ErrTokenMalformed`) |
 
@@ -43,6 +44,21 @@ exemplar'ы вызывающего.
 | `replay` | `VerifyOnce`: код уже был принят в своём окне |
 | `store_error` | `VerifyOnce`: `UsedCodeStore` недоступен |
 
+## Сессии refresh (`session/pgstore`)
+
+Meter: `git.stit.tech/stit-core/golibinfra/authnkit/session`. Пишет хранилище
+`pgstore.Store`.
+
+| Метрика | Тип | Unit | Labels | Назначение |
+|---|---|---|---|---|
+| `authn_session_issued_total` | Int64 Counter | — | `result` | Исход `Issue`: `ok`, `invalid` (`ErrInvalidSubject`), `error`. |
+| `authn_session_rotations_total` | Int64 Counter | — | `result` | Исход `Rotate`: `ok`, `invalid` (неизвестный токен или отозванная сессия), `expired`, `reused` (повтор использованного токена), `error` (в т.ч. `ErrInTx`). |
+| `authn_session_revoked_total` | Int64 Counter | — | `reason` | Закрытые сессии: `logout` (`Revoke`), `all` (`RevokeAll`), `reused` (отзыв при повторе токена). Значение — число сессий. |
+| `authn_session_cleanup_deleted_total` | Int64 Counter | — | — | Сессии с истёкшим абсолютным сроком, удалённые `Cleanup`. |
+
+Рост `reused` — признак кражи refresh-токенов или клиента, который обновляет
+параллельно: алерт на него ставится первым.
+
 ## Что эмитится, а что нет
 
 - `Hash`, `Verify` и `VerifyDummy` пишут гистограмму **на каждый вызов**,
@@ -50,8 +66,8 @@ exemplar'ы вызывающего.
   меряет только время, включая ожидание слота вычислений (не больше
   `max(1, GOMAXPROCS/Threads)` одновременно): рост времени при той же стоимости
   одного хэша — очередь на наплыве логинов.
-- `authn_jwt_verifications_total` инкрементится **только при разборе**; `Sign*`
-  метрик не пишет.
+- `authn_jwt_verifications_total` инкрементится **только при разборе**; `Sign`
+  и `SignAccess` метрик не пишут.
 - `authn_totp_verifications_total` инкрементится **только при проверке кода**
   (ровно один раз на вызов `Verify`/`VerifyOnce`); `Generate` метрик не пишет.
 - RBAC (`Registry`) метрик не эмитит.

@@ -3,9 +3,10 @@
 Криптографически-корректные кирпичики для аутентификации: `Hasher` поверх
 Argon2id, JWT sign/verify на HS256 с типом токена (`HS256JWT`, go-jose),
 TOTP-генератор по RFC 6238 (`TOTPGenerator`), одноразовые непрозрачные токены
-(`NewToken`, `HashToken`) и in-process RBAC-реестр (`Registry`). Кит даёт только
-примитивы — конкретные auth-flow'ы (login, refresh, выдача/ротация токенов, MFA
-enrollment, хранение секретов) живут на стороне потребителя. Observability-by-default: эмитит исход верификаций
+(`NewToken`, `HashToken`), in-process RBAC-реестр (`Registry`) и сессии
+refresh-токенов `authnkit/session` (ротация, отзыв сессии при повторе токена,
+абсолютный срок, отзыв всех сессий пользователя; хранилище — `session/pgstore`).
+Login-flow, MFA enrollment и хранение секретов живут на стороне потребителя. Observability-by-default: эмитит исход верификаций
 JWT/TOTP и время хэширования/проверки пароля.
 
 ## Импорт
@@ -58,7 +59,7 @@ func main() {
 	case errors.Is(err, authnkit.ErrTokenExpired):
 		// токен протух — отправить на refresh
 	case errors.Is(err, authnkit.ErrWrongTokenType):
-		// в access-контуре предъявили refresh-токен
+		// в access-контуре предъявили токен другой схемы (typ не access)
 	}
 
 	// 3. Одноразовый токен (ссылка сброса, подтверждение email): в письмо — токен,
@@ -80,8 +81,8 @@ func main() {
 
 ## Документация
 
-- [docs/architecture.md](docs/architecture.md) — устройство четырёх примитивов (hashing / JWT / TOTP / RBAC), границы кита, проектные решения (WHY).
-- [docs/configuration.md](docs/configuration.md) — полный справочник ENV: `Argon2idParams`, `JWTConfig`, `TOTPConfig`, окна параметров и их `Validate`.
+- [docs/architecture.md](docs/architecture.md) — устройство примитивов (hashing / JWT / TOTP / токены / RBAC) и сессий refresh, границы кита, проектные решения (WHY).
+- [docs/configuration.md](docs/configuration.md) — полный справочник ENV: `Argon2idParams`, `JWTConfig`, `TOTPConfig`, `session.Config`, окна параметров и их `Validate`.
 - [docs/observability.md](docs/observability.md) — метрики и labels (единый источник правды).
-- [docs/usage.md](docs/usage.md) — рецепты: fx Module и прямой конструктор, хэш пароля, sign/verify JWT, TOTP с защитой от replay, проверка прав.
-- [docs/testing.md](docs/testing.md) — `testkit/authntest`: `DeterministicHasher`; `WithClock` для JWT/TOTP.
+- [docs/usage.md](docs/usage.md) — рецепты: fx Module и прямой конструктор, хэш пароля, sign/verify JWT, одноразовые токены, сессии refresh, TOTP с защитой от replay, проверка прав.
+- [docs/testing.md](docs/testing.md) — `testkit/authntest`: `DeterministicHasher`; `WithClock` для JWT/TOTP; сессии на Postgres с управляемыми часами.

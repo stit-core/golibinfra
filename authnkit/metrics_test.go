@@ -26,7 +26,11 @@ func TestMetricsEmitted(t *testing.T) {
 	if _, err := jwt.Parse(ctx, "not.a.token"); err == nil {
 		t.Fatal("expected error on malformed token")
 	}
-	if _, err := jwt.ParseRefresh(ctx, tok); err == nil {
+	untyped, err := jwt.Sign(ctx, map[string]any{"sub": "u1"}, time.Minute)
+	if err != nil {
+		t.Fatalf("sign untyped: %v", err)
+	}
+	if _, err := jwt.ParseAccess(ctx, untyped); err == nil {
 		t.Fatal("expected error on wrong token type")
 	}
 

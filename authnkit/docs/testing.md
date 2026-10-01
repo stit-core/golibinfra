@@ -62,6 +62,22 @@ _, err := jwt.ParseAccess(ctx, tok) // ErrTokenExpired
 `Argon2idParams` (окно). Для TOTP валидный код генерируй через
 `totp.GenerateCode(secret, clock.Now())` (`github.com/pquerna/otp/totp`).
 
+## Сессии refresh
+
+`pgstore.Store` проверяется на Postgres из `testkit.StartPostgres` с миграциями
+кита; сроки — часами `pgstore.WithClock(clockkit.NewTickable(...))`, без `sleep`:
+
+```go
+pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+clock := clockkit.NewTickable(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
+sessions, _ := pgstore.NewStore(pg.DB(t), cfg, pgstore.WithClock(clock))
+tok, _ := sessions.Issue(ctx, "user-1")
+clock.Advance(cfg.IdleTTL)
+_, err := sessions.Rotate(ctx, tok.Value) // session.ErrExpired
+```
+
+Лесенка миграций — `testkit.MigrationLadder(t, testkit.WithMigrations(pgstore.Migrations))`.
+
 ## RBAC
 
 `Registry` экземплярный — в каждом тесте свой `NewRegistry()`, общего состояния

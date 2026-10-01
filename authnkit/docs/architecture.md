@@ -1,10 +1,10 @@
 # authnkit — устройство
 
-`authnkit` — набор не связанных между собой примитивов аутентификации. Кит
-сознательно не строит flow: нет сессий, refresh-ротации, account lockout,
-enrollment'а MFA, хранилища секретов. Это «кирпичики», из которых потребитель
-собирает свой auth-домен, и каждый из них криптографически корректен по
-умолчанию.
+`authnkit` — набор не связанных между собой примитивов аутентификации и
+сабпакет сессий refresh (`authnkit/session`). Login-flow, account lockout
+(`bruteforcekit`), enrollment MFA и хранение секретов кит не строит: из его
+«кирпичиков» потребитель собирает свой auth-домен, и каждый из них
+криптографически корректен по умолчанию.
 
 ```
 authnkit/
@@ -14,6 +14,8 @@ authnkit/
 ├── totp.go          TOTPGenerator (RFC 6238, обёртка pquerna/otp) + UsedCodeStore
 ├── usedcode.go      MemoryUsedCodeStore (однократность кода в одной реплике)
 ├── token.go         NewToken / HashToken (одноразовые непрозрачные токены)
+├── session/         Store, Token, Config, ошибки сессий refresh
+│   └── pgstore/     Store на Postgres, миграции, проверка схемы, Module, cleanup-job, метрики
 ├── permissions.go   RBAC: Permission / Registry (экземплярный реестр)
 ├── metrics.go       OTel-инструменты (создаются в конструкторах через internal/otelkit)
 └── module.go        fx.Module + envconfig-конструкторы
@@ -73,17 +75,16 @@ base64 (`RawStdEncoding.Strict`: мусор в хвостовых битах —
 (`JWTConfig.Secret`, не короче 32 байт — иначе `NewHS256JWT` → `ErrConfig`).
 
 - `Sign(ctx, claims, ttl)` копирует переданные claims, проставляет `exp = now+ttl`
-  и `iat = now`; `ttl <= 0` → `ErrConfig`. `SignAccess` / `SignRefresh` — то же с
-  `JWTConfig.AccessTTL` / `RefreshTTL` (нулевые значения конфига → дефолты
-  15m / 720h) плюс claim `typ`.
+  и `iat = now`; `ttl <= 0` → `ErrConfig`. `SignAccess` — то же с
+  `JWTConfig.AccessTTL` (нулевое значение конфига → дефолт 15m) плюс claim
+  `typ=access`.
 - `Parse(ctx, token)` верифицирует подпись и сроки. Алгоритм закреплён:
   принимается только `alg: HS256` (`none`, RS*, HS384/512 → `ErrTokenMalformed`).
   `exp` обязателен — токен без него `ErrTokenMalformed`. `exp`/`nbf`/`iat`
   сверяются с leeway (`JWTConfig.Leeway`, default 60s): `ErrTokenExpired` /
   `ErrTokenSignature` / `ErrTokenMalformed` — потребитель матчит их через
   `errors.Is`, не разбирая ошибки go-jose.
-- `ParseAccess` / `ParseRefresh` дополнительно требуют `typ=access|refresh`
-  (`ErrWrongTokenType`).
+- `ParseAccess` дополнительно требует `typ=access` (`ErrWrongTokenType`).
 - `WithIssuer` / `WithAudience` включают симметричную проверку `iss`/`aud`:
   что проставлено при подписи, то требуется при разборе (`ErrTokenAudience`).
 - Часы — `clockkit.Clock` (`WithClock`); по умолчанию `clockkit.Real{}`.
@@ -92,10 +93,10 @@ Claims на выходе — `map[string]any`. Числовые значения
 свои) приходят как `float64` — это поведение JSON-декодера `encoding/json`,
 учитывай при чтении.
 
-WHY тип токена внутри кита: `SignAccess`/`SignRefresh` различались бы только
-сроком жизни, и refresh-токен проходил бы проверку access-контура. Проверку
-типа нельзя оставлять потребителю — кит, который выпускает два вида токенов,
-обязан их и различать.
+WHY тип токена внутри кита: под тем же секретом живут токены других схем
+(`Sign` с собственным `typ`, сессия `oidckit`), и без `typ=access` любой из них
+прошёл бы проверку access-контура. Refresh — не JWT: stateless-токен нельзя
+отозвать, поэтому он живёт в сессии `authnkit/session`.
 
 ### TOTP — RFC 6238
 
@@ -124,6 +125,37 @@ WHY тип токена внутри кита: `SignAccess`/`SignRefresh` раз
 SHA-256 в hex: перебор полной энтропии невозможен, поэтому Argon2id здесь только
 тратил бы CPU, а детерминированный хеш даёт поиск по индексу. Хранение и
 погашение — у владельца таблицы (условный `UPDATE`).
+
+### Сессии refresh — authnkit/session
+
+`session.Store` — сессия на вход: цепочка ротаций refresh-токенов с абсолютным
+сроком. Токен — `NewToken`, в хранилище — `HashToken`.
+
+- **Таблицы** (`session/pgstore`, источник `pgstore.Migrations`):
+  `authn_sessions` (id, subject, абсолютный срок, `revoked_at`) и
+  `authn_session_tokens` (хеш токена, сессия, срок токена, `used_at`).
+- **Ротация** — один оператор: условный `UPDATE … SET used_at WHERE used_at IS
+  NULL AND revoked_at IS NULL AND сроки живы` с вставкой следующего токена в
+  `WITH`. Строку токена блокирует первый `UPDATE`, параллельный видит `used_at` и
+  получает отказ: из N ротаций одним токеном успешна одна. Срок следующего
+  токена — `min(now + IdleTTL, срок сессии)`: абсолютный срок ротация не двигает.
+- **Повтор использованного токена** отзывает сессию целиком (`ErrReused`,
+  `*ReusedError` с subject и сессией для аудита). Окна прощения нет: клиент или
+  тот, кто украл токен, неразличимы, клиент обновляет последовательно.
+- **Транзакции.** `Issue`, `Revoke`, `RevokeAll` идут в транзакции из ctx: отзыв
+  всех сессий фиксируется вместе со сменой статуса или пароля пользователя и
+  откатывается вместе с ней. `Rotate` в транзакции — `ErrInTx`: откат
+  вызывающего не должен отменять отзыв при повторе.
+- **Время** — часы приложения (`pgstore.WithClock`, в fx — `clockkit.Clock` из
+  графа, если есть): токен проверяется теми же часами, которыми выдан, а тесты
+  двигают время без `sleep`.
+- **Старт.** `pgstore.Module` в `OnStart` (после `pgkit.MigrateModule`, если он в
+  графе) сверяет таблицу версий `schema_migrations_authnkit_session` с последней
+  миграцией кита: без неё сервис не стартует (`pgstore.ErrSchema` с подсказкой),
+  а не падает на первом входе.
+- **Очистка** — job `authnkit.session.cleanup` (`timerkit`) удаляет сессии с
+  истёкшим абсолютным сроком вместе с токенами. Отозванные сессии живут до своего
+  срока: повтор их токенов остаётся заметным.
 
 ### RBAC — экземплярный реестр прав
 

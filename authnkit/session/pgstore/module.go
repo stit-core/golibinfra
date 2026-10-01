@@ -1,0 +1,67 @@
+package pgstore
+
+import (
+	"context"
+
+	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/authnkit/session"
+	"git.stit.tech/stit-core/golibinfra/clockkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
+	"git.stit.tech/stit-core/golibinfra/timerkit"
+)
+
+// Module — fx-вход кита: *Store как session.Store, проверка схемы в OnStart (после
+// pgkit.MigrateModule, если он в графе), миграции в группе pgkit.migrations и
+// cleanup-job в группе timerkit.Group. Нужны *pgkit.DB (pgkit.Module),
+// session.Config (fx.Provide(session.NewConfig)) и timerkit.Module; clockkit.Clock
+// из графа — опционально.
+var Module = fx.Module(
+	"authnkit/session/pgstore",
+	fx.Provide(
+		newStore,
+		func(s *Store) session.Store { return s },
+	),
+	fx.Invoke(checkSchemaOnStart),
+	timerkit.Provide(CleanupJob),
+	pgkit.ProvideMigrations(Migrations),
+)
+
+type storeParams struct {
+	fx.In
+
+	DB    *pgkit.DB
+	Cfg   session.Config
+	Clock clockkit.Clock `optional:"true"`
+}
+
+// NewStore вариадический, fx.Provide его не аннотирует — в графе он живёт обёрткой.
+func newStore(p storeParams) (*Store, error) {
+	return NewStore(p.DB, p.Cfg, WithClock(p.Clock))
+}
+
+// schemaParams: зависимость от pgkit.Migrated ставит хук после миграций; optional —
+// сборка без pgkit.MigrateModule (миграции накатывает отдельная команда) остаётся
+// рабочей.
+type schemaParams struct {
+	fx.In
+
+	LC       fx.Lifecycle
+	Store    *Store
+	Migrated pgkit.Migrated `optional:"true"`
+}
+
+func checkSchemaOnStart(p schemaParams) {
+	p.LC.Append(fx.Hook{OnStart: p.Store.CheckSchema})
+}
+
+// CleanupJob — периодическая очистка сессий с истёкшим абсолютным сроком с
+// интервалом Config.CleanupInterval.
+func CleanupJob(s *Store, cfg session.Config) timerkit.Job {
+	return timerkit.Job{
+		Name:     "authnkit.session.cleanup",
+		Interval: cfg.CleanupInterval,
+		Timeout:  cfg.CleanupInterval,
+		Run:      func(ctx context.Context) error { return s.Cleanup(ctx) },
+	}
+}

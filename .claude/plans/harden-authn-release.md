@@ -18,21 +18,13 @@ blocked-by: —
   B1–B3, ключ IP клиента в `internal/`; его Handoff переносится сюда при закрытии. Программа, метод
   и push — `go-backend-template/.claude/plans/audit-program.md`; партии — `M/replan-golibinfra.md`
   §6; находки — `M/kits-audit/summary.md` и отчёты углов (`M` — `/home/mm/.cache/stit-audit-program/`).
-- **Потребитель** — шаблон, `fix-reference-code` S9 и его Handoff:
-  - сессии на `authnkit/session`: ротация, повтор → отзыв цепочки, `CanLogin` в Refresh, абсолютный
-    срок, отзыв всех сессий при блокировке, удалении, смене роли и пароля — в одной транзакции со
-    сменой; `seed-admin` не отдаёт права чужим сессиям;
-  - снять `pkg/tokens`, client-IP middleware, `publicOperations`, ручные IP и RequestID аудита;
-  - S11 — бизнес-метрики с проверкой записи; S2 — `App` читает envconfig напрямую, потому что
-    `config.Load` требует ctx.
-
-  Рефреш шаблона сейчас — JWT и `refresh_sessions` с check-then-act
-  (`internal/domain/auth/usecase.go:160-222`).
+- **Потребитель** — шаблон, `fix-reference-code` S9 и его Handoff: сессии на `authnkit/session`
+  (ротация, отзыв цепочки, `CanLogin` в Refresh, абсолютный срок, отзыв всех сессий в транзакции
+  смены статуса, `seed-admin`); снять `pkg/tokens`, client-IP middleware, `publicOperations`, ручные
+  IP и RequestID аудита; S11 — бизнес-метрики с проверкой записи; S2 — `App` читает envconfig
+  напрямую, потому что `config.Load` требует ctx.
 - **Код китов:**
-  - authnkit: `authnkit/jwt.go` — stateless refresh (`SignRefresh`/`ParseRefresh`,
-    `JWT_REFRESH_TTL`); `authnkit/module.go:26` — `NewHS256JWT` без iss/aud, хотя опции
-    `WithIssuer`/`WithAudience` есть;
-  - аудит и ctx: `auditkit/audit.go:47-50`, `internal/requestid`;
+  - authnkit: `authnkit/module.go:26` — `NewHS256JWT` без iss/aud, хотя опции есть;
   - natskit: `natskit/jetstream.go:545-599`, `natskit/config.go:50-52`;
   - httpclient: `httpclient/client.go:163`;
   - остановка и пробы: `httpkit/module.go:153-157`, `httpkit/health.go:77-94`,
@@ -73,7 +65,8 @@ blocked-by: —
   - stateless refresh JWT в ките больше нет.
 
   Проверка: `go test -race ./authnkit/... ./testkit/sessiontest/` с Docker → PASS;
-  `grep -rn "SignRefresh\|ParseRefresh\|JWT_REFRESH_TTL" --include=*.go --include=*.md .` → пусто
+  `grep -rn "SignRefresh\|ParseRefresh\|JWT_REFRESH_TTL" --include=*.go --include=*.md --exclude-dir=plans .`
+  → пусто
 - [ ] **AC5** — `config.Load` и `config.Source` работают без ctx; в доках нет
   `fx.Provide(context.Background)`. Проверка: `go test -race ./config/` → PASS;
   `grep -rn "context" config/` → пусто
@@ -114,13 +107,11 @@ blocked-by: —
 - [x] **S1** — Инструменты метрик китов создаются от текущего глобального провайдера (KOBS-10):
   logkit, timerkit, auditkit и bruteforcekit (pgstore), storagekit/minio, httpkit
   - Проверка: AC1 (KO09, HO06) → PASS · Закрывает: AC1 · Зависит от: —
-  - Сделано: инструменты — в конструкторах (и спан timerkit); KO09, HO06 → PASS;
-    `TestInstrumentsAreNotPackageLevel` ловит `var` с `otelkit`/`otel` Meter и Tracer
+  - Сделано: инструменты в конструкторах; KO09, HO06 → PASS; `TestInstrumentsAreNotPackageLevel`
 - [x] **S2** — B7: `testkit/metrictest` — один провайдер на процесс, дельты, проверка коллизий имён.
   Обвязка метрик в тестах китов переведена на него (KTST-06)
   - Проверка: AC1 → выполнен; `make check` → зелёный · Закрывает: AC1 · Зависит от: S1
-  - Сделано: `Collect`/`Sub`/`Get`/`Find`/`Value`/`All`, `Collisions`, `PromName`; на нём 17 из
-    20 файлов обвязки (кроме `internal/otelkit`, `telemetry`) и рецепты доков; `make check` → зелёный
+  - Сделано: metrictest; на нём 17 из 20 файлов обвязки (кроме `internal/otelkit`, `telemetry`)
 - [x] **S3** — B4: auditkit берёт `RequestID` и `IP` из ctx, если в записи пусто; `audittest` —
   так же
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: —
@@ -128,11 +119,12 @@ blocked-by: —
 - [x] **S4** — B5: одноразовые токены в authnkit — генерация и хеш
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Зависит от: —
   - Сделано: `authnkit.NewToken() string` и `HashToken(token) string`, рецепт погашения в доке
-- [ ] **S5** — B6: `authnkit/session` и `authnkit/session/pgstore`:
+- [x] **S5** — B6: `authnkit/session` и `authnkit/session/pgstore`:
   - выдача, ротация, отзыв цепочки, `RevokeAll`, `Revoke`, абсолютный срок;
   - kit-owned миграция, проверка схемы на старте, очистка через timerkit, метрики;
   - stateless refresh JWT удалён.
   - Проверка: `go test -race ./authnkit/...` с Docker → PASS · Закрывает: AC4 · Зависит от: S2, S4
+  - Сделано: PASS; 4 мутанта ротации — красные; лесенка; без миграций — `ErrSchema` на старте
 - [ ] **S6** — B6: фейк `testkit/sessiontest` и общий контрактный набор; набор гоняется по фейку и по
   pgstore
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S5
@@ -168,47 +160,41 @@ blocked-by: —
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S3, S6, S7, S8, S9, S10, S11, S12
 
 ## Решения
-- **Порядок.** metrictest (S1–S2) — первым, раньше B4–B6: им проверяют метрики сессий (S5) и
-  отсутствие коллизий httpclient (S9). Остальное — по replan §6: B4–B8, затем high, затем C.
-- **Инструменты метрик** — в конструкторах, от текущего `otel.GetMeterProvider()` через
-  `otelkit.Meter`, а не на уровне пакета; трейсер timerkit — так же (та же ловушка у
-  `TracerProvider`). Регресс держит статический тест `internal/otelkit`: поведенческий тест
-  второго провайдера в пакете противоречит одному провайдеру metrictest.
-- **metrictest.** Провайдер ставит импорт пакета (`init`): измерения до первого `Collect` не
-  теряются; подменённый провайдер роняет `Collect`. `Get` — ровно эти labels, `Find`/`Value` —
-  фильтр; `Sub` оставляет новую серию и с нулём, gauge — текущим значением. `PromName` сверен с
-  otlptranslator v1.0.0 на 1292 кейсах вне репо. Переведены и киты вне объёма (один способ);
-  свой провайдер — только у `internal/otelkit` и `telemetry`: их тесты проверяют саму связку с
-  SDK. Инъекция метра в тестах (`newInstrumentsWithMeter`, `newObserveHookWith`) удалена. Глобальный делегат OTel привязывает пакетный инструмент к
-  первому провайдеру процесса: второй его не видит (KO09, HO06). metrictest ставит один провайдер на
-  процесс и сравнивает дельты: `otel.SetMeterProvider` глобален, параллельные тесты иначе мешают
-  друг другу. Проверка коллизий — своя трансляция имён OTel → Prometheus (подмножество
-  `UnderscoreEscapingWithSuffixes`), закреплённая на паре KOBS-01, без новой зависимости.
-- **Аудит.** Заполнение — функцией ядра auditkit, её зовут и pgstore, и `audittest`. Ключ IP — из
-  `internal/` (он же у httpkit), auditkit не импортирует httpkit. Функция — метод
-  `Entry.Enrich(ctx)`: своя реализация `Logger` зовёт его так же, до `Validate`.
-- **Токены.** Hex: маска hex ≥ 32 в logkit ловит его по умолчанию, base64url — нет (бэклог
-  `logkit-redact-gaps`). SHA-256, а не Argon2id: у токена полная энтропия. Поиск — по хешу в SQL
-  владельца таблицы, сравнение в памяти — `subtle`. `NewToken` без ошибки: `crypto/rand.Read`
-  с Go 1.24 её не возвращает.
-- **Сессии, устройство.**
-  - Раскладка: `authnkit/session` — API, конфиг, метрики; `authnkit/session/pgstore` — хранилище,
-    миграции, `Module`, очистка; `testkit/sessiontest` — фейк и набор `Run(t, newStore)`, по
-    образцу `storagetest`.
-  - Refresh — непрозрачный токен из S4 в цепочке с абсолютным сроком. Ротация — условный
-    `UPDATE … WHERE used_at IS NULL AND revoked_at IS NULL … RETURNING` и вставка нового токена в
-    одной транзакции: из параллельных побеждает один.
-  - Повтор использованного токена — отзыв цепочки и `ErrSessionReused`, без окна прощения: клиент
-    обновляет последовательно.
-- **Сессии, транзакции и API.**
-  - `RevokeAll(ctx, subject)` и `Revoke(ctx, token)` идут в транзакции из ctx (pgkit).
-  - Схема проверяется на старте — образец для KFX-02 партии 3.
-  - Метрики `authn_session_*{result}` — с конечными labels.
-  - Конструктор без fx — для CLI (`seed-admin`).
-  - Дефолты — срок токена, продлеваемый ротацией, и абсолютный срок не больше прежних 720 ч — в
-    `configuration.md`.
-  - Stateless refresh (`SignRefresh`/`ParseRefresh`/`JWT_REFRESH_TTL`) удалён: одна механика
-    refresh. Его брали только шаблон и тест `oidckit`.
+- **Порядок.** metrictest (S1–S2) — первым: им проверяют метрики сессий (S5) и коллизии httpclient
+  (S9). Остальное — по replan §6: B4–B8, затем high, затем C.
+- **Инструменты метрик** — в конструкторах через `otelkit.Meter` (и трейсер timerkit): делегат OTel
+  привязывает пакетный инструмент к первому провайдеру процесса (KO09, HO06). Регресс держит
+  статический тест `internal/otelkit`: тест второго провайдера противоречит metrictest.
+- **metrictest.** Провайдер — один на процесс, его ставит импорт пакета (`init`): измерения до
+  первого `Collect` не теряются, подмена провайдера роняет `Collect`; тесты сравнивают дельты.
+  `Get` — ровно эти labels, `Find`/`Value` — фильтр; `Sub` оставляет новую серию и с нулём, gauge —
+  текущим значением. Коллизии — своя трансляция (подмножество `UnderscoreEscapingWithSuffixes`,
+  сверена с otlptranslator v1.0.0 на 1292 кейсах вне репо). Переведены и киты вне объёма; свой
+  провайдер — у `internal/otelkit` и `telemetry`: их тесты проверяют связку с SDK.
+- **Аудит.** `Entry.Enrich(ctx)` ядра auditkit зовут pgstore, `audittest` и свой `Logger` до
+  `Validate`. Ключ IP — из `internal/`, auditkit не импортирует httpkit.
+- **Токены.** Hex: маска hex ≥ 32 в logkit ловит его, base64url — нет (`logkit-redact-gaps`).
+  SHA-256, а не Argon2id: полная энтропия. Поиск — по хешу в SQL, в памяти — `subtle`. `NewToken`
+  без ошибки: `crypto/rand.Read` с Go 1.24 её не возвращает.
+- **Сессии.**
+  - Раскладка: `authnkit/session` — `Store`, `Token`, `Config`, ошибки; `session/pgstore` —
+    хранилище с метриками (их пишет хранилище, как у auditkit и bruteforcekit), миграции, `Module`,
+    очистка; `testkit/sessiontest` — фейк и набор `Run`.
+  - Ротация — один оператор: условный `UPDATE … WHERE used_at IS NULL AND revoked_at IS NULL` и
+    вставка следующего токена в `WITH`, Transactor не нужен; срок следующего — `min(now + IdleTTL,
+    срок сессии)`.
+  - Повтор использованного токена — отзыв сессии и `*ReusedError` (subject и сессия — для аудита),
+    без окна прощения. `Rotate` в транзакции — `ErrInTx`, как `Attempt` bruteforcekit: откат
+    вызывающего не отменяет отзыв. `Issue`, `Revoke`, `RevokeAll` — в транзакции из ctx.
+  - Время — часы приложения (`WithClock`, `clockkit.Clock` из графа): набор двигает время
+    одинаково для фейка и Postgres; цена — расхождение часов реплик (NTP).
+  - Старт — таблица версий против последней миграции кита (`ErrSchema` с подсказкой) после
+    `pgkit.Migrated`; образец для KFX-02. Очистка — по абсолютному сроку: отозванные сессии живут
+    до него, повтор их токенов виден.
+  - Метрики `authn_session_*{result|reason}`; конструктор без fx — для CLI; дефолты
+    `SESSION_IDLE_TTL` 168h и `SESSION_ABSOLUTE_TTL` 720h (не больше прежних 720 ч).
+  - Stateless refresh JWT удалён — одна механика refresh (его брали шаблон и тест `oidckit`);
+    `typ` остаётся у access.
 - **config.** `Load(dst, sources...)` и `Source.Apply(dst)` без ctx. Удалённый источник сам
   ограничивает свой I/O. ctx в графе даёт любому конструктору вечный контекст (FX-10).
 - **natskit.**
@@ -244,7 +230,8 @@ blocked-by: —
     заново один раз;
   - `RevokeAll` — в транзакции блокировки, удаления, смены роли, смены и сброса пароля, в
     `seed-admin`;
-  - `CanLogin` проверяется после `Rotate`; `ErrSessionReused` → аудит `refresh_reused`.
+  - `Rotate` — вне транзакции; `CanLogin` — после него; `session.ErrReused` (`*ReusedError`:
+    subject, сессия) → аудит `refresh_reused`.
 - **IP.** `authgate.ClientIP` и `identity.WithIP` → `httpkit.ClientIPFrom(ctx)`; за Traefik —
   `HTTP_TRUST_PROXY_HOPS=1`.
 - **Публичные операции.** `publicOperations` и `TestHTTPOperations` → `httpkit.Public(op)` в
@@ -264,7 +251,7 @@ blocked-by: —
   `outboxkit.WithSubjects(name+".>")` (бэклог шаблона `publisher-stream-check`).
 - **env для INFRA-HANDOFF:**
   - `HTTP_RATE_LIMIT_TRUST_PROXY` → `HTTP_TRUST_PROXY_HOPS`;
-  - `JWT_REFRESH_TTL` → `SESSION_*`;
+  - `JWT_REFRESH_TTL` → `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_CLEANUP_INTERVAL`;
   - `JWT_ISSUER`, `JWT_AUDIENCE`; `JWT_PREVIOUS_SECRET` — при ротации;
   - конечный `OUTBOX_MAX_ATTEMPTS`;
   - `HTTP_SHUTDOWN_TIMEOUT` и `HTTP_SHUTDOWN_DRAIN_DELAY`, бюджет ретраев `NATS_JS_*`.
@@ -276,10 +263,9 @@ blocked-by: —
 
 ## Где мы сейчас
 Первая половина партии 2 (`harden-gate-defaults`: гейт, B1–B3) закрыта, её аннотация — в
-материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S4 сделаны; следующий шаг — S5
-(`authnkit/session`). Хвост для S8: под нагрузкой гейта `TestStreamBus_SubscriptionUnsubscribe`
-получил доставку после `Unsubscribe` (1 прогон из 4, отдельно 8 из 8 PASS), а дока обещает «снимает
-интерес сразу».
+материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S5 сделаны; следующий шаг — S6
+(`testkit/sessiontest`). Хвост для S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта
+получил доставку после `Unsubscribe` (1 прогон из 4), а дока обещает «снимает интерес сразу».
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio,
@@ -292,3 +278,12 @@ blocked-by: —
   `Entry` убрать; изменения — `Entry.Enrich(ctx)` для своей реализации `Logger`.
 - Изменения — authnkit: `NewToken()` (256 бит hex) и `HashToken` (SHA-256) → `pkg/tokens`
   шаблона заменить.
+- Breaking — authnkit: `SignRefresh`, `ParseRefresh`, `TokenTypeRefresh`, `DefaultRefreshTTL`,
+  `JWTConfig.RefreshTTL` (`JWT_REFRESH_TTL`) удалены, в `JWTSigner`/`JWTParser` их нет → refresh —
+  сессии `authnkit/session`: `session/pgstore.Module` (+ `fx.Provide(session.NewConfig)`), миграции
+  `pgstore.Migrations` в мигратор (без них — `ErrSchema` на старте), env `SESSION_IDLE_TTL`,
+  `SESSION_ABSOLUTE_TTL`, `SESSION_CLEANUP_INTERVAL`; старые refresh-JWT недействительны — вход
+  заново один раз.
+- Изменения — `authnkit/session`: `Store` (`Issue`, `Rotate` вне транзакции, `Revoke`,
+  `RevokeAll` в транзакции из ctx), `Token`, `ReusedError`, ошибки; `session/pgstore`: `NewStore`,
+  `WithClock`, `CheckSchema`, `Cleanup`, `Module`, метрики `authn_session_*`.

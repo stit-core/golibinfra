@@ -60,16 +60,12 @@ func TestExtractor_RejectsForeignTokens(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignAccess: %v", err)
 	}
-	refresh, err := signer.SignRefresh(t.Context(), map[string]any{"sub": "u-1"})
-	if err != nil {
-		t.Fatalf("SignRefresh: %v", err)
-	}
 
 	cases := map[string]string{
-		"access-токен парольной схемы":  access,
-		"refresh-токен парольной схемы": refresh,
-		"токен без typ":                 sessionToken(t, map[string]any{"sub": "u-1"}),
-		"сессия без sub":                sessionToken(t, map[string]any{authnkit.ClaimTokenType: SessionTokenType}),
+		"access-токен парольной схемы": access,
+		"токен чужого typ":             sessionToken(t, map[string]any{"sub": "u-1", authnkit.ClaimTokenType: "invite"}),
+		"токен без typ":                sessionToken(t, map[string]any{"sub": "u-1"}),
+		"сессия без sub":               sessionToken(t, map[string]any{authnkit.ClaimTokenType: SessionTokenType}),
 	}
 	for name, token := range cases {
 		t.Run(name, func(t *testing.T) {

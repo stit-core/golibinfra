@@ -28,11 +28,10 @@ func newTestHS256(t *testing.T, opts ...JWTOption) *HS256JWT {
 
 func TestNewHS256JWT_Config(t *testing.T) {
 	cases := map[string]JWTConfig{
-		"short secret":     {Secret: "short"},
-		"empty secret":     {},
-		"negative leeway":  {Secret: testSecret, Leeway: -time.Second},
-		"negative access":  {Secret: testSecret, AccessTTL: -time.Second},
-		"negative refresh": {Secret: testSecret, RefreshTTL: -time.Second},
+		"short secret":    {Secret: "short"},
+		"empty secret":    {},
+		"negative leeway": {Secret: testSecret, Leeway: -time.Second},
+		"negative access": {Secret: testSecret, AccessTTL: -time.Second},
 	}
 	for name, cfg := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -78,7 +77,7 @@ func TestHS256JWT_RoundTrip(t *testing.T) {
 	if _, ok := parsed["iat"].(float64); !ok {
 		t.Errorf("iat: got %T, want float64", parsed["iat"])
 	}
-	// Sign не навязывает тип: типизированы только SignAccess/SignRefresh.
+	// Sign не навязывает тип: типизирован только SignAccess.
 	if _, ok := parsed[ClaimTokenType]; ok {
 		t.Errorf("Sign must not set %q", ClaimTokenType)
 	}
@@ -94,10 +93,10 @@ func TestHS256JWT_SignRejectsNonPositiveTTL(t *testing.T) {
 	}
 }
 
-func TestHS256JWT_SignAccessRefresh_UseConfigTTL(t *testing.T) {
+func TestHS256JWT_SignAccess_UsesConfigTTL(t *testing.T) {
 	ctx := t.Context()
 	clock := clockkit.NewFixed(time.Unix(1_700_000_000, 0))
-	h, err := NewHS256JWT(JWTConfig{Secret: testSecret, AccessTTL: 5 * time.Minute, RefreshTTL: 48 * time.Hour}, WithClock(clock))
+	h, err := NewHS256JWT(JWTConfig{Secret: testSecret, AccessTTL: 5 * time.Minute}, WithClock(clock))
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -114,15 +113,8 @@ func TestHS256JWT_SignAccessRefresh_UseConfigTTL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignAccess: %v", err)
 	}
-	refresh, err := h.SignRefresh(ctx, map[string]any{"sub": "u"})
-	if err != nil {
-		t.Fatalf("SignRefresh: %v", err)
-	}
 	if got := expOf(access); got != clock.Now().Add(5*time.Minute).Unix() {
 		t.Fatalf("access exp=%d", got)
-	}
-	if got := expOf(refresh); got != clock.Now().Add(48*time.Hour).Unix() {
-		t.Fatalf("refresh exp=%d", got)
 	}
 
 	// Нулевые TTL в конфиге → дефолты кита, а не мгновенно протухшие токены.
@@ -139,7 +131,7 @@ func TestHS256JWT_SignAccessRefresh_UseConfigTTL(t *testing.T) {
 	}
 }
 
-// Refresh-токен в access-cookie не должен проходить как access.
+// Токен другой схемы под тем же секретом (typ не access) не проходит как access.
 func TestHS256JWT_TokenTypeIsChecked(t *testing.T) {
 	ctx := t.Context()
 	h := newTestHS256(t)
@@ -148,11 +140,6 @@ func TestHS256JWT_TokenTypeIsChecked(t *testing.T) {
 	if err != nil {
 		t.Fatalf("SignAccess: %v", err)
 	}
-	refresh, err := h.SignRefresh(ctx, map[string]any{"sub": "u"})
-	if err != nil {
-		t.Fatalf("SignRefresh: %v", err)
-	}
-
 	claims, err := h.ParseAccess(ctx, access)
 	if err != nil {
 		t.Fatalf("ParseAccess(access): %v", err)
@@ -160,19 +147,17 @@ func TestHS256JWT_TokenTypeIsChecked(t *testing.T) {
 	if claims[ClaimTokenType] != TokenTypeAccess {
 		t.Fatalf("access %s=%v", ClaimTokenType, claims[ClaimTokenType])
 	}
-	if _, err := h.ParseRefresh(ctx, refresh); err != nil {
-		t.Fatalf("ParseRefresh(refresh): %v", err)
-	}
 
-	if _, err := h.ParseAccess(ctx, refresh); !errors.Is(err, ErrWrongTokenType) {
-		t.Fatalf("refresh accepted as access: %v", err)
+	foreign, err := h.Sign(ctx, map[string]any{"sub": "u", ClaimTokenType: "invite"}, time.Minute)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
 	}
-	if _, err := h.ParseRefresh(ctx, access); !errors.Is(err, ErrWrongTokenType) {
-		t.Fatalf("access accepted as refresh: %v", err)
+	if _, err := h.ParseAccess(ctx, foreign); !errors.Is(err, ErrWrongTokenType) {
+		t.Fatalf("foreign typ accepted as access: %v", err)
 	}
 
 	// Подмена typ в claims перетирается подписывающей стороной.
-	forged, err := h.SignAccess(ctx, map[string]any{"sub": "u", ClaimTokenType: TokenTypeRefresh})
+	forged, err := h.SignAccess(ctx, map[string]any{"sub": "u", ClaimTokenType: "invite"})
 	if err != nil {
 		t.Fatalf("SignAccess: %v", err)
 	}
