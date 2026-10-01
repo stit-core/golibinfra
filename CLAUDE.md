@@ -88,7 +88,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   `pgtest`, `storagetest`) — внутри китов test-хелперов нет.
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
-  `internal/requestid` (ctx-ключ request-id),
+  `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента,
+  свёртка IPv6 — у лимитера httpkit и bruteforcekit),
   `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`),
   `internal/grpcstatus` (классификация gRPC-кодов), `internal/grpclogkit`
   (мост grpclog → logkit). Общие helper'ы живут в `internal/`, наружу не

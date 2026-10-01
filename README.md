@@ -135,7 +135,8 @@ go mod tidy
 Служебные пакеты `internal/otelkit` (scope, версия инструментации, `Must` и две
 общие шкалы bucket-границ для гистограмм длительности — `DurationBuckets` и
 `LongDurationBuckets`), `internal/requestid`
-(ctx-ключ request-id), `internal/jwks` (JWKS-кэш с троттлингом и grace-периодом
+(ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента и свёртка IPv6 в ключ —
+общая у лимитера `httpkit` и `bruteforcekit`), `internal/jwks` (JWKS-кэш с троттлингом и grace-периодом
 ключа), `internal/httpdoer` (общий интерфейс `Doer`), `internal/grpcstatus`
 (классификация gRPC-кодов) и `internal/grpclogkit` (мост grpclog → logkit)
 наружу не экспортируются.
