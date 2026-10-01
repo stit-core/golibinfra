@@ -47,7 +47,7 @@ exemplar'ы вызывающего.
 ## Сессии refresh (`session/pgstore`)
 
 Meter: `git.stit.tech/stit-core/golibinfra/authnkit/session`. Пишет хранилище
-`pgstore.Store`.
+`pgstore.Store`; фейк `testkit/sessiontest` метрик не эмитит.
 
 | Метрика | Тип | Unit | Labels | Назначение |
 |---|---|---|---|---|

@@ -13,7 +13,13 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
+	"git.stit.tech/stit-core/golibinfra/testkit/sessiontest"
 )
+
+// testConfig — сроки тестов хранилища: токен живёт час, сессия — три.
+var testConfig = session.Config{IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Hour, CleanupInterval: time.Hour}
+
+var testStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 func startDB(t *testing.T) (*testkit.PostgresFixture, *pgkit.DB) {
 	t.Helper()
@@ -23,16 +29,17 @@ func startDB(t *testing.T) (*testkit.PostgresFixture, *pgkit.DB) {
 
 func newStore(t *testing.T, db *pgkit.DB, clock clockkit.Clock) *pgstore.Store {
 	t.Helper()
-	s, err := pgstore.NewStore(db, contractConfig, pgstore.WithClock(clock))
+	s, err := pgstore.NewStore(db, testConfig, pgstore.WithClock(clock))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
 	return s
 }
 
+// Хранилище держит общий контракт session.Store — тот же, что фейк sessiontest.
 func TestStore_Contract(t *testing.T) {
 	_, db := startDB(t)
-	runContract(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {
+	sessiontest.Run(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {
 		s, err := pgstore.NewStore(db, cfg, pgstore.WithClock(clock))
 		if err != nil {
 			t.Fatalf("NewStore: %v", err)
@@ -103,7 +110,7 @@ func TestStore_StoresTokenHash(t *testing.T) {
 
 func TestStore_CleanupDeletesExpiredSessions(t *testing.T) {
 	_, db := startDB(t)
-	clock := clockkit.NewTickable(contractStart)
+	clock := clockkit.NewTickable(testStart)
 	s := newStore(t, db, clock)
 	ctx := t.Context()
 	old, err := s.Issue(ctx, "cleanup-user")
@@ -142,7 +149,7 @@ func TestStore_CleanupDeletesExpiredSessions(t *testing.T) {
 
 func TestStore_Metrics(t *testing.T) {
 	_, db := startDB(t)
-	clock := clockkit.NewTickable(contractStart)
+	clock := clockkit.NewTickable(testStart)
 	s := newStore(t, db, clock)
 	ctx := t.Context()
 	before := metrictest.Collect(t)

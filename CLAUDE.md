@@ -86,7 +86,7 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   `testkit/<name>test`
   (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`,
   `handlertest`, `hubtest`, `logtest`, `metrictest`, `natstest`, `oidctest`,
-  `outboxtest`, `pgtest`, `storagetest`) — внутри китов test-хелперов нет.
+  `outboxtest`, `pgtest`, `sessiontest`, `storagetest`) — внутри китов test-хелперов нет.
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
   `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента,

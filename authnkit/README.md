@@ -85,4 +85,4 @@ func main() {
 - [docs/configuration.md](docs/configuration.md) — полный справочник ENV: `Argon2idParams`, `JWTConfig`, `TOTPConfig`, `session.Config`, окна параметров и их `Validate`.
 - [docs/observability.md](docs/observability.md) — метрики и labels (единый источник правды).
 - [docs/usage.md](docs/usage.md) — рецепты: fx Module и прямой конструктор, хэш пароля, sign/verify JWT, одноразовые токены, сессии refresh, TOTP с защитой от replay, проверка прав.
-- [docs/testing.md](docs/testing.md) — `testkit/authntest`: `DeterministicHasher`; `WithClock` для JWT/TOTP; сессии на Postgres с управляемыми часами.
+- [docs/testing.md](docs/testing.md) — `testkit/authntest`: `DeterministicHasher`; `WithClock` для JWT/TOTP; сессии: фейк и контракт `testkit/sessiontest`, Postgres с управляемыми часами.

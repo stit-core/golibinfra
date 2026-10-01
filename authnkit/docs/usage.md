@@ -259,7 +259,8 @@ _, err := db.Exec(ctx, `INSERT INTO password_resets (user_id, token_hash, expire
 Refresh — не JWT, а непрозрачный токен в сессии `authnkit/session`: вход
 открывает сессию с абсолютным сроком (`SESSION_ABSOLUTE_TTL`), каждое обновление
 гасит токен и выдаёт следующий (`SESSION_IDLE_TTL`, не дальше срока сессии).
-Хранилище — `session/pgstore` (Postgres, миграции кита).
+Хранилище — `session/pgstore` (Postgres, миграции кита), фейк для юнит-тестов —
+`testkit/sessiontest`.
 
 ```go
 // Вход: пароль проверен → access-JWT и refresh-сессия.

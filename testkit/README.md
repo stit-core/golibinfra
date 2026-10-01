@@ -18,8 +18,9 @@
 - **Юнит-слой.** Сабпакеты дают детерминированные fake-реализации интерфейсов
   китов (`auditkit.Logger`, `authnkit.Hasher`, `bruteforcekit.Guard`,
   `outboxkit.Publisher`, `pgkit.Transactor`, `anthropickit.API`,
-  `natskit.Bus`/`StreamBus`, `storagekit.Storage`/`Presigner`, `logkit.Logger`),
-  контрактный набор для собственных реализаций `storagekit` (`storagetest`),
+  `natskit.Bus`/`StreamBus`, `storagekit.Storage`/`Presigner`, `logkit.Logger`,
+  `session.Store` сессий `authnkit`), контрактные наборы, которые фейк и боевое
+  хранилище проходят одними кейсами (`storagetest`, `sessiontest`),
   проверку записи метрик китов и бизнес-метрик (`metrictest`) и харнессы для
   тестов huma-хендлеров (`handlertest`) и gRPC-сервисов (`grpctest`).
 
@@ -210,6 +211,7 @@ huma-хендлеры поверх `httpkit`, `metrictest` — метрики в
 | [`oidctest`](oidctest/) | `oidckit` | `New(t)` поднимает stub OIDC-провайдера (discovery, JWKS, `/authorize`, `/token`, RS256/ES256): `SetClaims`, `SetStatus`, `SetTokenBody`, `SetDiscoveryOverride`, `Hits`, `LastAuthorize`; токены для негативных тестов — `IDToken`, `IDTokenWithKID`, `IDTokenHS256`, `IDTokenUnsigned`. |
 | [`outboxtest`](outboxtest/) | `outboxkit` | `Recorder` — in-memory `outboxkit.Publisher`: `Publish` вне транзакции (`pgkit.InTx`) отвечает `outboxkit.ErrNoTx` и событие не копит, как pgstore с `OUTBOX_REQUIRE_TX=true`; запросы `All`/`Published`/`Last`/`Count` + `Reset`. |
 | [`pgtest`](pgtest/) | `pgkit` | `pgkit.Transactor`-фейки (`WithTx` и `WithTxOptions`): `Identity` (прогоняет `fn` без транзакции), `Recorder` (то же + счётчик `Calls`). Оба помечают `ctx` через `pgkit.WithTestTx`, поэтому код с гейтом на `pgkit.InTx` проходит без Postgres. |
+| [`sessiontest`](sessiontest/) | `authnkit/session` | `New(cfg, clock)` — in-memory `session.Store` с семантикой `session/pgstore`: те же сроки (`IdleTTL`, абсолютный срок), ротация, отзыв сессии при повторе токена (`*session.ReusedError`), `session.ErrInTx` у `Rotate` в транзакции (`pgkit.InTx`); `Active(subject)` — число открытых сессий; откат транзакции фейк не видит. `Run(t, newStore)` — контрактный набор `session.Store`: время двигает набор через переданные часы, его проходят и фейк, и pgstore. |
 | [`storagetest`](storagetest/) | `storagekit` | `RunContract(t, newSubject)` — общий контрактный набор для `storagekit.Storage`/`Presigner`: боевой адаптер и in-memory проверяются одними кейсами; `Subject{Storage, Presigner, Keys}` описывает проверяемую реализацию. |
 
 ## Observability

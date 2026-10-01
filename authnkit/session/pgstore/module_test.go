@@ -26,7 +26,7 @@ func TestModule_ProvidesStore(t *testing.T) {
 	t.Parallel()
 	err := fx.ValidateApp(
 		fx.NopLogger,
-		fx.Supply(&pgkit.DB{}, contractConfig),
+		fx.Supply(&pgkit.DB{}, testConfig),
 		scheduler(),
 		pgstore.Module,
 		fx.Invoke(func(session.Store) {}),
@@ -38,15 +38,15 @@ func TestModule_ProvidesStore(t *testing.T) {
 
 func TestCleanupJob(t *testing.T) {
 	t.Parallel()
-	job := pgstore.CleanupJob(nil, contractConfig)
-	if job.Name != "authnkit.session.cleanup" || job.Interval != contractConfig.CleanupInterval || job.Run == nil {
+	job := pgstore.CleanupJob(nil, testConfig)
+	if job.Name != "authnkit.session.cleanup" || job.Interval != testConfig.CleanupInterval || job.Run == nil {
 		t.Fatalf("CleanupJob = %+v", job)
 	}
 }
 
 func TestModule_RequiresTimerkit(t *testing.T) {
 	t.Parallel()
-	err := fx.ValidateApp(fx.NopLogger, fx.Supply(&pgkit.DB{}, contractConfig), pgstore.Module)
+	err := fx.ValidateApp(fx.NopLogger, fx.Supply(&pgkit.DB{}, testConfig), pgstore.Module)
 	if err == nil || !strings.Contains(err.Error(), "timerkit.scheduler") {
 		t.Fatalf("pgstore.Module without timerkit.Module: err = %v, want missing timerkit.scheduler", err)
 	}
@@ -73,7 +73,7 @@ func TestModule_ChecksSchemaOnStart(t *testing.T) {
 	app := func(extra ...fx.Option) *fx.App {
 		return fx.New(append([]fx.Option{
 			fx.NopLogger,
-			fx.Supply(pg.PoolConfig(), contractConfig),
+			fx.Supply(pg.PoolConfig(), testConfig),
 			scheduler(),
 			pgstore.Module,
 			pgkit.Module,

@@ -54,7 +54,7 @@ blocked-by: —
   SHA-256 токена. logkit маскирует такой токен по умолчанию. Проверка:
   `go test -race -run Token ./authnkit/ ./logkit/` → PASS
   - Подтверждено: PASS; токен в base64url (мутант) — `TestRedact_OneTimeTokenOfAuthnkit` красный
-- [ ] **AC4** — `authnkit/session` управляет сессиями refresh:
+- [x] **AC4** — `authnkit/session` управляет сессиями refresh:
   - вход выдаёт сессию;
   - обновление ротирует токен атомарно: из N параллельных обновлений одним токеном успешно одно;
   - повтор использованного токена отзывает всю цепочку;
@@ -67,6 +67,7 @@ blocked-by: —
   Проверка: `go test -race ./authnkit/... ./testkit/sessiontest/` с Docker → PASS;
   `grep -rn "SignRefresh\|ParseRefresh\|JWT_REFRESH_TTL" --include=*.go --include=*.md --exclude-dir=plans .`
   → пусто
+  - Подтверждено: PASS, grep пуст; `sessiontest.Run` — по фейку и pgstore, его мутанты красные
 - [ ] **AC5** — `config.Load` и `config.Source` работают без ctx; в доках нет
   `fx.Provide(context.Background)`. Проверка: `go test -race ./config/` → PASS;
   `grep -rn "context" config/` → пусто
@@ -125,9 +126,10 @@ blocked-by: —
   - stateless refresh JWT удалён.
   - Проверка: `go test -race ./authnkit/...` с Docker → PASS · Закрывает: AC4 · Зависит от: S2, S4
   - Сделано: PASS; 4 мутанта ротации — красные; лесенка; без миграций — `ErrSchema` на старте
-- [ ] **S6** — B6: фейк `testkit/sessiontest` и общий контрактный набор; набор гоняется по фейку и по
+- [x] **S6** — B6: фейк `testkit/sessiontest` и общий контрактный набор; набор гоняется по фейку и по
   pgstore
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S5
+  - Сделано: `sessiontest.New`, `Active`, `Run` (10 кейсов) — по фейку и pgstore
 - [ ] **S7** — B8: `config.Load` и `Source.Apply` без ctx, README без ctx в графе (KAPI-10)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: —
 
@@ -263,8 +265,8 @@ blocked-by: —
 
 ## Где мы сейчас
 Первая половина партии 2 (`harden-gate-defaults`: гейт, B1–B3) закрыта, её аннотация — в
-материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S5 сделаны; следующий шаг — S6
-(`testkit/sessiontest`). Хвост для S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта
+материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S6 сделаны; следующий шаг — S7
+(`config` без ctx). Хвост для S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта
 получил доставку после `Unsubscribe` (1 прогон из 4), а дока обещает «снимает интерес сразу».
 
 Заготовка аннотации второй половины v1.3.0:
@@ -286,4 +288,5 @@ blocked-by: —
   заново один раз.
 - Изменения — `authnkit/session`: `Store` (`Issue`, `Rotate` вне транзакции, `Revoke`,
   `RevokeAll` в транзакции из ctx), `Token`, `ReusedError`, ошибки; `session/pgstore`: `NewStore`,
-  `WithClock`, `CheckSchema`, `Cleanup`, `Module`, метрики `authn_session_*`.
+  `WithClock`, `CheckSchema`, `Cleanup`, `Module`, метрики `authn_session_*`; `testkit/sessiontest`:
+  фейк `New`/`Active` и контракт `Run`.
