@@ -130,7 +130,7 @@ go mod tidy
 | [`mapkit`](mapkit/) | Декодеры `map[string]any`: `String/Int/Int64/Float/Strings/Map/IntPtr/BoolPtr`; nil-safe, знают `json.Number`, значение вне диапазона типа — несовпадение |
 | [`idkit`](idkit/) | Внутренние id: `NewV7()` — UUID v7 строкой (time-sortable), `Validate`/`IsV7` — проверка канонической формы |
 | [`config`](config/) | Композиция ENV-источников (`Source`, `Load`, `Env`/`EnvPrefixed`) для App-конфига приложения; ошибки всех источников объединяются |
-| [`testkit`](testkit/) | testcontainers: `StartPostgres(t, WithMigrations(...))`, `StartNATS(t, WithJetStream())`, `StartRedis`, `StartMinIO`, `RequireDocker`; сабпакеты `testkit/<name>test` — `anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`, `handlertest`, `hubtest`, `logtest`, `natstest`, `oidctest`, `outboxtest`, `pgtest`, `storagetest` |
+| [`testkit`](testkit/) | testcontainers: `StartPostgres(t, WithMigrations(...))`, `StartNATS(t, WithJetStream())`, `StartRedis`, `StartMinIO`, `RequireDocker`, лесенка миграций `MigrationLadder`; сабпакеты `testkit/<name>test` — `anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`, `handlertest`, `hubtest`, `logtest`, `natstest`, `oidctest`, `outboxtest`, `pgtest`, `storagetest` |
 
 Служебные пакеты `internal/otelkit` (scope, версия инструментации, `Must` и две
 общие шкалы bucket-границ для гистограмм длительности — `DurationBuckets` и

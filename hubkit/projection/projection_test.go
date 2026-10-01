@@ -38,6 +38,11 @@ func TestMigrations_Apply(t *testing.T) {
 	}
 }
 
+// Откат шаблона — рабочий путь: down каждой версии возвращает схему к состоянию до её up.
+func TestMigrations_Ladder(t *testing.T) {
+	testkit.MigrationLadder(t, testkit.WithMigrations(projection.Migrations))
+}
+
 // Каждый эталонный запрос обязан быть валиден против эталонной схемы.
 func TestQueries_ValidAgainstSchema(t *testing.T) {
 	pg := testkit.StartPostgres(t, testkit.WithMigrations(projection.Migrations))

@@ -13,7 +13,8 @@
 - **Интеграционный слой.** `StartPostgres` / `StartNATS` / `StartRedis` /
   `StartMinIO` поднимают реальный контейнер на свободном порту и регистрируют
   `t.Cleanup` для остановки. Тест получает DSN/URL живого инстанса — без моков
-  самой БД/брокера/хранилища.
+  самой БД/брокера/хранилища. `MigrationLadder` проверяет обратимость миграций:
+  up → down → up по версиям со сверкой схемы.
 - **Юнит-слой.** Сабпакеты дают детерминированные fake-реализации интерфейсов
   китов (`auditkit.Logger`, `authnkit.Hasher`, `bruteforcekit.Guard`,
   `outboxkit.Publisher`, `pgkit.Transactor`, `anthropickit.API`,
@@ -86,6 +87,8 @@ func StartNATS(t testing.TB, opts ...Option) *NATSFixture
 func StartRedis(t testing.TB, opts ...Option) *RedisFixture
 func StartMinIO(t testing.TB, opts ...Option) *MinIOFixture
 
+func MigrationLadder(t testing.TB, opts ...Option)
+
 func WithImage(ref string) Option
 func WithMigrations(sources ...pgkit.Source) Option
 func WithMigrationsDir(path string) Option
@@ -97,6 +100,21 @@ func WithJetStream() Option
 порядок применения = порядок опций); без опций миграции не прогоняются.
 `WithJetStream` запускает `nats-server -js` — нужен тестам `natskit.StreamBus` и
 `outboxkit`.
+
+`MigrationLadder` — лесенка источников миграций на своём чистом Postgres: каждая
+версия — up → down → up, затем весь источник — down до нуля (остаются только
+таблицы версий) и снова up. После каждого шага схема из `pg_catalog` сверяется со
+снимком: down обязан вернуть её к состоянию до своего up, повторный up —
+воспроизвести; при расхождении тест падает с разницей объектов. Источники идут
+по порядку опций поверх предыдущих, как в `pgkit.MigrateUpAll`; расширения не
+сравниваются (down не обязан удалять общее расширение). Тест на каждый источник —
+одна строка:
+
+```go
+func TestMigrations_Ladder(t *testing.T) {
+	testkit.MigrationLadder(t, testkit.WithMigrations(pgstore.Migrations))
+}
+```
 
 Юнит-helper из сабпакета — fake без контейнера:
 
@@ -195,14 +213,15 @@ testkit ничего не эмитит: ни метрик, ни спанов, н
 | `StartNATS(t, opts...) *NATSFixture` | Контейнер NATS; `NATSFixture{URL, Container}`. |
 | `StartRedis(t, opts...) *RedisFixture` | Контейнер Redis; `RedisFixture{URL, Container}`. |
 | `StartMinIO(t, opts...) *MinIOFixture` | Контейнер MinIO; `MinIOFixture{Endpoint, AccessKey, SecretKey, Container}`. |
+| `MigrationLadder(t, opts...)` | Лесенка источников из `WithMigrations`/`WithMigrationsDir` (up → down → up по версиям, down до нуля и up) со сверкой схемы; `WithImage` — образ Postgres. |
 | `WithImage(ref)` | Подмена образа для любого `Start*`. |
-| `WithMigrations(sources...)` / `WithMigrationsDir(path)` | Источники миграций (`pgkit.Source`) / каталог приложения (источник `pgkit.AppSourceName`); только `StartPostgres`. |
+| `WithMigrations(sources...)` / `WithMigrationsDir(path)` | Источники миграций (`pgkit.Source`) / каталог приложения (источник `pgkit.AppSourceName`); только `StartPostgres` и `MigrationLadder`. |
 | `WithJetStream()` | Запуск NATS с `-js`; только `StartNATS`. |
 | `PostgresImage`, `NATSImage`, `RedisImage`, `MinIOImage` | Константы образов по умолчанию. |
 
-`Option` — общий тип опций всех `Start*`. Опция, не применимая к вызванному
-helper'у (`WithJetStream` в `StartRedis`), обрывает тест `t.Fatalf`, а не
-игнорируется молча.
+`Option` — общий тип опций всех `Start*` и `MigrationLadder`. Опция, не
+применимая к вызванному helper'у (`WithJetStream` в `StartRedis`), обрывает тест
+`t.Fatalf`, а не игнорируется молча.
 
 `Container` в каждой fixture доступен напрямую — для дополнительных операций над
 контейнером поверх готовых helper'ов.

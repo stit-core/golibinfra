@@ -2,28 +2,41 @@ package testkit
 
 import (
 	"errors"
+	"fmt"
 	"runtime"
 	"testing"
 )
 
-// outcomeTB записывает исход RequireDocker и, как testing.T, обрывает горутину
-// на Skip и Fatal.
+// outcomeTB записывает исход хелпера и текст отказа и, как testing.T, обрывает
+// горутину на Skip и Fatal; остальное уходит в тест под ним.
 type outcomeTB struct {
 	testing.TB
-	outcome string
+	outcome, msg string
 }
 
-func (tb *outcomeTB) Helper()               {}
-func (tb *outcomeTB) Skip(...any)           { tb.stop("skip") }
-func (tb *outcomeTB) Skipf(string, ...any)  { tb.stop("skip") }
-func (tb *outcomeTB) SkipNow()              { tb.stop("skip") }
-func (tb *outcomeTB) Fatal(...any)          { tb.stop("fail") }
-func (tb *outcomeTB) Fatalf(string, ...any) { tb.stop("fail") }
-func (tb *outcomeTB) FailNow()              { tb.stop("fail") }
+func (tb *outcomeTB) Helper()                   {}
+func (tb *outcomeTB) Skip(a ...any)             { tb.stop("skip", fmt.Sprint(a...)) }
+func (tb *outcomeTB) Skipf(f string, a ...any)  { tb.stop("skip", fmt.Sprintf(f, a...)) }
+func (tb *outcomeTB) SkipNow()                  { tb.stop("skip", "") }
+func (tb *outcomeTB) Fatal(a ...any)            { tb.stop("fail", fmt.Sprint(a...)) }
+func (tb *outcomeTB) Fatalf(f string, a ...any) { tb.stop("fail", fmt.Sprintf(f, a...)) }
+func (tb *outcomeTB) FailNow()                  { tb.stop("fail", "") }
 
-func (tb *outcomeTB) stop(outcome string) {
-	tb.outcome = outcome
+func (tb *outcomeTB) stop(outcome, msg string) {
+	tb.outcome, tb.msg = outcome, msg
 	runtime.Goexit()
+}
+
+// runOutcome зовёт fn с outcomeTB поверх t в своей горутине: Goexit обрывает только её.
+func runOutcome(t testing.TB, fn func(testing.TB)) *outcomeTB {
+	tb := &outcomeTB{TB: t}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		fn(tb)
+	}()
+	<-done
+	return tb
 }
 
 // Без Docker вне -short integration-тест падает: пропуск делал зелёными и
@@ -33,13 +46,7 @@ func TestRequireDocker_UnavailableDockerFailsOutsideShort(t *testing.T) {
 	dockerHealth = func() error { return errors.New("docker probe failed") }
 	t.Cleanup(func() { dockerHealth = probe })
 
-	tb := &outcomeTB{}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		RequireDocker(tb)
-	}()
-	<-done
+	tb := runOutcome(t, RequireDocker)
 
 	want := "fail"
 	if testing.Short() {

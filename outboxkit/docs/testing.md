@@ -83,6 +83,8 @@ id в двух namespace'ах даёт разные `Msg-Id` (иначе stream-
   возвращает её;
 - `ReviveDead`: фильтр по subject возвращает dead-строки в очередь и сбрасывает
   `attempts`, чужие строки остаются dead;
+- обратимость миграций `Migrations` и `TableMigrations` (`testkit.MigrationLadder`:
+  up → down → up по версиям, down до нуля и снова up со сверкой схемы);
 - партиционирование: `MessageRef` бьёт UPDATE'ами только по своим партициям,
   таблица партиционирована (`relkind = 'p'`), `EnsurePartitions` идемпотентна,
   не падает рядом с транзакцией, создающей ту же партицию, и считает месяцы от

@@ -263,7 +263,8 @@ err := s.Log(ctx, auditkit.Entry{Action: "user.create", Resource: "user"})
 (`pg.Transactor(t).WithTx` — откат оставляет 0 строк, коммит 1, вне транзакции
 строка пишется сразу), ошибка `INSERT` с префиксом `auditkit:`, отказ на
 невалидной `Entry`, сборка `Module` (`fx.ValidateApp` + регистрация миграций),
-метрики.
+метрики, обратимость миграций (`testkit.MigrationLadder`: up → down → up по
+версиям со сверкой схемы).
 
 Тесты, которым нужен Postgres, идут через `testkit.StartPostgres`: гейт
 `testkit.RequireDocker` внутри helper'а пропускает их под `go test -short`, а без

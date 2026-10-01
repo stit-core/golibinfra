@@ -80,7 +80,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - **Auth и интеграции:** `authnkit` (Argon2id/JWT/TOTP/RBAC), `oidckit` (OIDC BFF),
   `hubkit` (SDK хаба stit: sso/issuer/client/sync/projection/hubclaims), `anthropickit`
   (клиент Anthropic с `Usage`+`Cost`), `amocrmkit` (транспорт к amoCRM).
-- **Тесты:** `testkit` (testcontainers) + сабпакеты `testkit/<name>test`
+- **Тесты:** `testkit` (testcontainers, лесенка миграций `MigrationLadder`) + сабпакеты
+  `testkit/<name>test`
   (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`,
   `handlertest`, `hubtest`, `logtest`, `natstest`, `oidctest`, `outboxtest`,
   `pgtest`, `storagetest`) — внутри китов test-хелперов нет.
@@ -174,7 +175,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   переменная — endpoint, строку в `README.md § Per-concern endpoints`:
   `make envdoc-check` сверяет обе стороны и падает на расхождении.
 - Каждый багфикс — с регрессионным тестом; у `Module` кита — fx-тест
-  (`fx.ValidateApp` с минимальным набором провайдеров).
+  (`fx.ValidateApp` с минимальным набором провайдеров); у каждого источника миграций
+  кита (`pgkit.Source`) — лесенка `testkit.MigrationLadder` (`TestMigrations_Ladder`).
 
 ### Сначала спросить пользователя
 - Смена конвенции имён метрик (`bizmetric`, `biz_*`) — на неё опираются все сервисы.

@@ -16,8 +16,12 @@ func WithImage(ref string) testkit.Option                   // другой об
 
 Поднимает `testkit.PostgresImage` на свободном порту, ждёт готовности и
 регистрирует `t.Cleanup` для остановки контейнера. Под `-short` сам делает
-`t.Skip`, без Docker — `t.Fatalf`. Переданные источники применяются через `pgkit.MigrateUpAll` —
-так же, как это делает `MigrateModule`.
+`t.Skip`, без Docker — `t.Fatalf`. Переданные источники применяются через
+`pgkit.MigrateUpAll` — так же, как это делает `MigrateModule`.
+
+Обратимость своих миграций проверяет `testkit.MigrationLadder(t, opts...)` с теми
+же опциями: каждая версия — up → down → up со сверкой схемы (down возвращает её к
+состоянию до своего up), затем down до нуля и снова up.
 
 ```go
 type PostgresFixture struct {
