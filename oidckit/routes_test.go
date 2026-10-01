@@ -16,14 +16,12 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit/oidctest"
 )
 
-// newAPI поднимает роуты кита за настоящим httpkit.HumaAuth: e2e проверяет и
+// newAPI поднимает роуты кита за настоящим httpkit.HumaAuth со схемой Cookie: e2e проверяет и
 // связку extractor'а с гейтом защищённых операций.
 func newAPI(t *testing.T, b *BFF, e *Extractor) handlertest.API {
 	t.Helper()
-	return handlertest.NewAPI(t, func(api huma.API) {
-		api.UseMiddleware(httpkit.HumaAuth(logkit.Nop(), e.Extract))
-		RegisterRoutes(api, b)
-	})
+	return handlertest.NewAPI(t, func(api huma.API) { RegisterRoutes(api, b) },
+		handlertest.WithAuth(e.Extract), handlertest.WithSecuritySchemes(NewSecurityScheme(b.cookie)))
 }
 
 func cookieHeader(t *testing.T, resp *httptest.ResponseRecorder, name string) string {

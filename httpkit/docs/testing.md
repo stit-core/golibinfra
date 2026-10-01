@@ -4,8 +4,10 @@
 
 `testkit/handlertest` поднимает huma-API сервера `httpkit` (`NewServer` +
 `BindAPI`, из цепочки — только `RequestID`) под `humatest` без реального
-`*http.Server`: ответы-ошибки те же, что в проде — `request_id`, `Retry-After`,
-404/405 маршрутизатора, коды `ErrorMap.Declare` в OpenAPI:
+`*http.Server`, с контрактом сервера: ответы-ошибки те же, что в проде — `request_id`,
+`Retry-After`, 404/405 маршрутизатора, коды `ErrorMap.Declare` в OpenAPI; `HumaAuth`
+стоит до маршрутов; маршруты `register` проходят проверку старта `Module`
+(`Server.CheckRoutes`, иначе `t.Fatalf`); конфиг — `httpkit.NewConfig()`:
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/testkit/handlertest"
@@ -28,16 +30,22 @@ func TestGetUser(t *testing.T) {
 `AssertAPIError` — статус, `application/problem+json`, `code` и `request_id`,
 равный `X-Request-ID` ответа.
 
-`HumaAuth` работает на любом huma-адаптере, поэтому auth-гейт тестируется прямо
-на `handlertest.NewAPI`:
+То, что сервер берёт из графа, `NewAPI` берёт опциями: `WithAuth(extract)` —
+`AuthExtractor` (без него защищённая операция отвечает `500 AUTH_NOT_CONFIGURED`, а не
+открыта), `WithSecuritySchemes(entries...)` — схемы (с ними операция без `Security` и без
+`httpkit.Public` валит тест, как старт `Module`), `WithConfig(cfg)` — конфиг вместо
+`httpkit.NewConfig()`, `WithLogger(log)` — логгер: причина 5xx — строкой `handler error`
+с `request_id` ответа:
 
 ```go
-api := handlertest.NewAPI(t, func(api huma.API) {
-    api.UseMiddleware(httpkit.HumaAuth(logkit.Nop(), extract))
-    registerRoutes(api, svc)
-})
+api := handlertest.NewAPI(t, func(api huma.API) { registerRoutes(api, svc) },
+    handlertest.WithAuth(extract))
 handlertest.AssertAPIError(t, api.Get("/me"), http.StatusUnauthorized, "UNAUTHORIZED")
 ```
+
+`HumaAuth` действует на операции, зарегистрированные после него: свой `HumaAuth`
+внутри `register` не нужен, и операции, добавленные на API после `NewAPI`, проверку
+маршрутов не проходят.
 
 ## Полнота маппинга ошибок
 
@@ -126,4 +134,5 @@ resp, _ := http.Get("http://" + srv.Addr().String() + "/ready") // 503
 причины даже на голом `humatest`. `request_id`, `Retry-After` и строку
 `handler error` в логе ставит Transformer сервера: их видит API из
 `handlertest.NewAPI` или `Module`, а не голый `humatest.New`. Строку лога с
-причиной проверяйте на `Module` с логгером в буфер (`TestErrorContract`).
+причиной проверяйте логгером в буфер — `handlertest.WithLogger` или логгер графа `Module`
+(`TestErrorContract`).

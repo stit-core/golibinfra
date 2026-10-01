@@ -1,6 +1,7 @@
 package handlertest_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -153,26 +154,128 @@ func (tb *recordTB) Helper() {}
 
 func (tb *recordTB) Fatalf(string, ...any) { tb.fatals++ }
 
-// Регрессия: auth-гейт потребителя должен тестироваться на handlertest.NewAPI —
-// httpkit.HumaAuth не завязан на конкретный huma-адаптер.
-func TestNewAPI_WorksWithHumaAuth(t *testing.T) {
-	api := handlertest.NewAPI(t, func(api huma.API) {
-		api.UseMiddleware(httpkit.HumaAuth(logkit.Nop(), func(r *http.Request) (context.Context, error) {
-			if r.Header.Get("Authorization") == "" {
-				return nil, errors.New("no credentials")
-			}
-			return r.Context(), nil
-		}))
-		huma.Register(api, huma.Operation{
-			OperationID: "get-secret",
-			Method:      http.MethodGet,
-			Path:        "/secret",
-			Security:    []map[string][]string{{"Bearer": {}}},
-		}, func(context.Context, *struct{}) (*emptyOutput, error) {
-			return &emptyOutput{}, nil
-		})
+func registerSecret(api huma.API) {
+	huma.Register(api, huma.Operation{
+		OperationID: "get-secret",
+		Method:      http.MethodGet,
+		Path:        "/secret",
+		Security:    []map[string][]string{{"Bearer": {}}},
+	}, func(context.Context, *struct{}) (*emptyOutput, error) {
+		return &emptyOutput{}, nil
 	})
+}
+
+// Auth-гейт — как у сервера: HumaAuth до маршрутов, extractor — опцией WithAuth.
+func TestNewAPI_WithAuth(t *testing.T) {
+	api := handlertest.NewAPI(t, registerSecret, handlertest.WithAuth(func(r *http.Request) (context.Context, error) {
+		if r.Header.Get("Authorization") == "" {
+			return nil, errors.New("no credentials")
+		}
+		return r.Context(), nil
+	}))
 
 	handlertest.AssertAPIError(t, api.Get("/secret"), http.StatusUnauthorized, "UNAUTHORIZED")
 	handlertest.AssertStatus(t, api.Get("/secret", "Authorization: Bearer alice"), http.StatusNoContent)
+}
+
+// KTST-08: без WithAuth защищённая операция закрыта (500 AUTH_NOT_CONFIGURED), а не открыта, — и
+// HumaAuth потребителя после маршрутов её не откроет.
+func TestNewAPI_SecuredOperationClosedByDefault(t *testing.T) {
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		registerSecret(api)
+		api.UseMiddleware(httpkit.HumaAuth(logkit.Nop(), func(r *http.Request) (context.Context, error) { return r.Context(), nil }))
+	})
+	handlertest.AssertAPIError(t, api.Get("/secret", "Authorization: Bearer alice"), http.StatusInternalServerError, "AUTH_NOT_CONFIGURED")
+}
+
+// Маршруты register проходят проверку старта Module: дубль METHOD+path и, при схеме, операция
+// без Security и без httpkit.Public — провал теста.
+func TestNewAPI_ChecksRoutes(t *testing.T) {
+	bearer := httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}}
+	open := func(api huma.API) {
+		huma.Register(api, huma.Operation{OperationID: "list", Method: http.MethodGet, Path: "/items"},
+			func(context.Context, *struct{}) (*emptyOutput, error) { return &emptyOutput{}, nil })
+	}
+	cases := map[string]struct {
+		register func(huma.API)
+		opts     []handlertest.Option
+		fatals   int
+	}{
+		"без схем открытая операция": {register: open},
+		"при схеме — без Public":     {register: open, opts: []handlertest.Option{handlertest.WithSecuritySchemes(bearer)}, fatals: 1},
+		"при схеме — Security и Public": {register: func(api huma.API) {
+			registerSecret(api)
+			huma.Register(api, httpkit.Public(huma.Operation{OperationID: "status", Method: http.MethodGet, Path: "/status"}),
+				func(context.Context, *struct{}) (*emptyOutput, error) { return &emptyOutput{}, nil })
+		}, opts: []handlertest.Option{handlertest.WithSecuritySchemes(bearer)}},
+		"дубль METHOD+path": {register: func(api huma.API) {
+			open(api)
+			huma.Register(api, huma.Operation{OperationID: "list-again", Method: http.MethodGet, Path: "/items"},
+				func(context.Context, *struct{}) (*emptyOutput, error) { return &emptyOutput{}, nil })
+		}, fatals: 1},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			tb := &recordTB{}
+			handlertest.NewAPI(tb, c.register, c.opts...)
+			if tb.fatals != c.fatals {
+				t.Fatalf("fatals = %d, want %d", tb.fatals, c.fatals)
+			}
+		})
+	}
+}
+
+type putInput struct {
+	Body struct {
+		Blob string `json:"blob"`
+	}
+}
+
+func registerPut(api huma.API) {
+	huma.Register(api, huma.Operation{OperationID: "put-blob", Method: http.MethodPut, Path: "/blob"},
+		func(context.Context, *putInput) (*emptyOutput, error) { return &emptyOutput{}, nil })
+}
+
+// KTST-09: конфиг — как у сервера: по умолчанию httpkit.NewConfig() (ENV), иначе WithConfig.
+func TestNewAPI_ServerConfig(t *testing.T) {
+	body := map[string]any{"blob": strings.Repeat("x", 4096)}
+
+	t.Setenv("HTTP_MAX_BODY_BYTES", "1024")
+	handlertest.AssertAPIError(t, handlertest.NewAPI(t, registerPut).Put("/blob", body), http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE")
+
+	cfg, err := httpkit.NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.MaxBody.MaxBytes = 1 << 20
+	handlertest.AssertStatus(t, handlertest.NewAPI(t, registerPut, handlertest.WithConfig(cfg)).Put("/blob", body), http.StatusNoContent)
+
+	tb := &recordTB{}
+	handlertest.NewAPI(tb, registerPut, handlertest.WithConfig(httpkit.Config{}))
+	if tb.fatals == 0 {
+		t.Fatal("an invalid WithConfig must fail the test")
+	}
+}
+
+// Логгер — как у сервера: причина 5xx — строкой handler error с request_id ответа.
+func TestNewAPI_WithLogger(t *testing.T) {
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		huma.Register(api, huma.Operation{OperationID: "boom", Method: http.MethodGet, Path: "/boom"},
+			func(context.Context, *struct{}) (*emptyOutput, error) {
+				return nil, errors.New("pq: connection refused")
+			})
+	}, handlertest.WithLogger(log))
+
+	resp := api.Get("/boom")
+	handlertest.AssertAPIError(t, resp, http.StatusInternalServerError, "INTERNAL")
+	line := buf.String()
+	if !strings.Contains(line, `"msg":"handler error"`) || !strings.Contains(line, "pq: connection refused") ||
+		!strings.Contains(line, resp.Header().Get(httpkit.HeaderRequestID)) {
+		t.Fatalf("handler error line with request_id: %s", line)
+	}
 }
