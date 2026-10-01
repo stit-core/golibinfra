@@ -9,7 +9,9 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 (`application/problem+json`: `title`, `status`, `detail`, машинный `code`,
 `request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный маршрут и
 метод, лимиты, panic; 5xx — без текста причины (она в логе с тем же
-`request_id`), 429 — с `Retry-After`. `/health` и `/ready` (по пробам из
+`request_id`), 429 — с `Retry-After`. При схеме безопасности в графе открытость
+операции явная — `Security` или `httpkit.Public`; дубли маршрутов, забытая пометка и
+маршрут мимо huma — ошибка старта (`CheckRoutes`). `/health` и `/ready` (по пробам из
 fx-группы `healthkit.probes`) регистрируются автоматически. RED-метрики и
 server-span — by default.
 
@@ -57,7 +59,7 @@ app.Run()
 
 Без fx (caller сам ставит middleware и вызывает `BindAPI` после `Use`; операции с
 `Security` проверяет только `api.UseMiddleware(httpkit.HumaAuth(log, extract))`,
-поставленный до их регистрации):
+поставленный до их регистрации, а проверку старта `Module` — `s.CheckRoutes()`):
 
 ```go
 s := httpkit.NewServer(cfg, httpkit.WithLogger(log))
@@ -65,6 +67,9 @@ s.Router().Use(httpkit.RequestID(), httpkit.OTel(), httpkit.AccessLog(log), http
 api := s.BindAPI()
 httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout, pgkit.Probe(db))
 huma.Get(api, "/ping", handler)
+if err := s.CheckRoutes(); err != nil {
+    return err
+}
 _ = s.Serve()
 ```
 

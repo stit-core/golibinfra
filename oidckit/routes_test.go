@@ -37,6 +37,25 @@ func cookieHeader(t *testing.T, resp *httptest.ResponseRecorder, name string) st
 	return ""
 }
 
+// При схеме Cookie в графе роуты BFF проходят проверку старта httpkit: login, callback и
+// logout — httpkit.Public, me — под Security.
+func TestRoutes_PassesServerRouteCheck(t *testing.T) {
+	idp := oidctest.New(t)
+	b, err := NewBFF(testConfig(idp), idp.Client(), sessionSigner(t), memStore(), devCookies, Hooks{}, logkit.Nop())
+	if err != nil {
+		t.Fatalf("NewBFF: %v", err)
+	}
+	cfg, err := httpkit.NewConfig()
+	if err != nil {
+		t.Fatalf("httpkit config: %v", err)
+	}
+	srv := httpkit.NewServer(cfg, httpkit.WithSecuritySchemes(NewSecurityScheme(devCookies)))
+	RegisterRoutes(srv.API(), b)
+	if err := srv.CheckRoutes(); err != nil {
+		t.Fatalf("BFF routes fail the httpkit start check: %v", err)
+	}
+}
+
 // Полный проход BFF через huma: login → idp → callback → me → logout. Обе
 // политики cookie: у прода имена с префиксом __Host-, и callback читает
 // flow-cookie именно по ним.

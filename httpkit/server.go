@@ -90,14 +90,15 @@ type SecuritySchemeEntry struct {
 }
 
 // ServerOption — опция NewServer: логгер, схемы безопасности, chi-middleware,
-// правка huma.Config.
+// правка huma.Config, публичные маршруты мимо huma.
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
-	log        logkit.Logger
-	schemes    []SecuritySchemeEntry
-	middleware []func(http.Handler) http.Handler
-	humaConfig []func(*huma.Config)
+	log          logkit.Logger
+	schemes      []SecuritySchemeEntry
+	middleware   []func(http.Handler) http.Handler
+	humaConfig   []func(*huma.Config)
+	publicRoutes PublicRoutes
 }
 
 // WithLogger отдаёт серверу логгер: ошибки net/http (`http.Server.ErrorLog`) и
@@ -125,6 +126,11 @@ func WithHumaConfig(fn func(*huma.Config)) ServerOption {
 	return func(o *serverOptions) { o.humaConfig = append(o.humaConfig, fn) }
 }
 
+// WithPublicRoutes объявляет открытыми маршруты chi мимо huma.Register (PublicRoutes).
+func WithPublicRoutes(paths ...string) ServerOption {
+	return func(o *serverOptions) { o.publicRoutes = append(o.publicRoutes, paths...) }
+}
+
 // Server — chi-роутер (транспорт) и huma.API (операции + OpenAPI) поверх
 // одного *http.Server.
 type Server struct {
@@ -132,8 +138,11 @@ type Server struct {
 	opts serverOptions
 
 	router *chi.Mux
-	api    huma.API
+	api    *registry
 	srv    *http.Server
+	// docsRoutes — маршруты /docs, /openapi.*, /schemas, которые humachi.New ставит мимо
+	// huma.Register.
+	docsRoutes map[string]bool
 
 	mu sync.Mutex
 	ln net.Listener
@@ -171,8 +180,9 @@ func NewServer(cfg Config, opts ...ServerOption) *Server {
 	return &Server{cfg: cfg, opts: o, router: r, srv: srv}
 }
 
-// BindAPI инициализирует huma.API поверх chi. Идемпотентен; вызывать после
-// того, как все middleware зарегистрированы.
+// BindAPI инициализирует huma.API поверх chi; операции, зарегистрированные на нём (и на
+// его группах), проверяет CheckRoutes. Идемпотентен; вызывать после того, как все
+// middleware зарегистрированы.
 func (s *Server) BindAPI() huma.API {
 	if s.api != nil {
 		return s.api
@@ -196,7 +206,18 @@ func (s *Server) BindAPI() huma.API {
 	}
 	// Описание ошибок — после хуков потребителя: их Security тоже объявляет 401.
 	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors)
-	s.api = humachi.New(s.router, humaConfig)
+	consumer := chiRoutes(s.router)
+	api := humachi.New(s.router, humaConfig)
+	s.docsRoutes = chiRoutes(s.router)
+	for route := range consumer {
+		delete(s.docsRoutes, route)
+	}
+	s.api = &registry{API: api}
+	return s.api
+}
+
+func (s *Server) registry() *registry {
+	s.BindAPI()
 	return s.api
 }
 

@@ -79,6 +79,8 @@ fx выполняет `OnStart` в порядке добавления хуко�
   операцию, которую кит уже поправил (лимит тела). Описание ошибок (401 у
   `Security`, коды `Declare`) кит ставит последним хуком — оно видит и
   `Security`, выставленный хуком потребителя.
+- `WithPublicRoutes(paths...)` / значение `httpkit.PublicRoutes` в графе — пути chi
+  маршрутов мимо `huma.Register`, открытых без аутентификации (§ Аутентификация).
 - `HTTP_DOCS_ENABLED=false` — сервис без `/docs` и `/openapi.*`.
 
 ## Конвейер middleware и порядок
@@ -119,10 +121,14 @@ preflight, лимитер, лимит тела, идемпотентность.
 - `AuthExtractor` (`optional`) → `HumaAuth` и scope идемпотентности; нет, а у
   операции есть `Security`, — старт падает с `ErrAuthNotConfigured` и именами
   операций.
-- `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI.
+- `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI. Дубль имени и
+  схема без `Name` или `Scheme` — ошибка сборки графа (`ErrConfig`): из группы значения
+  приходят в случайном порядке, и в OpenAPI попала бы случайная из двух.
 - `Middlewares` (`optional`) → цепочка в порядке слайса.
 - `HumaConfigs` (`optional`) → правки huma в порядке слайса.
-- `[]healthkit.Probe` (группа `healthkit.probes`) → `/ready`. Тип именованный:
+- `PublicRoutes` (`optional`) → открытые маршруты мимо `huma.Register`.
+- `[]healthkit.Probe` (группа `healthkit.probes`) → `/ready`; две пробы с одним именем —
+  ошибка сборки графа (`ErrConfig`). Тип именованный:
   `httpkit.Probe` — alias `healthkit.Probe`, а `pgkit.Probe`, `natskit.Probe`,
   `cachekit.Probe` возвращают его же. Регистрация — `healthkit.Provide(ctor)`.
 
@@ -210,11 +216,12 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 
 ## Аутентификация
 
-`HumaAuth(log, extract)` проверяет только операции с непустым
-`Operation().Security` — гейт **opt-in**. Рекомендация: помечать `Security` все
-непубличные операции явно, а публичные объявлять `Security: []map[string][]string{}`,
-чтобы отсутствие тега не открывало эндпоинт молча (так сделаны `/health` и
-`/ready`).
+`HumaAuth(log, extract)` проверяет операции с непустым `Operation().Security`. Чтобы
+забытый `Security` не открывал операцию молча, открытость явная: когда в
+`components.securitySchemes` есть схема, у каждой операции — `Security` со схемой из
+`components` или пометка `httpkit.Public(op)` (в `Operation.Metadata`); пустой `Security`
+публичным не считается. Так сделаны `/health` и `/ready`. Без схем в графе (сервис без
+аутентификации) пометка не нужна.
 
 Ошибка extractor'а не уходит клиенту: `401 UNAUTHORIZED` (причина — в лог на
 Debug), `*APIError` от extractor'а сохраняет свой статус и код, а ошибка,
@@ -222,14 +229,21 @@ Debug), `*APIError` от extractor'а сохраняет свой статус �
 даёт `503 AUTH_UNAVAILABLE` — деградация зависимости не должна разлогинивать
 пользователя.
 
-Гейт fail-closed. Если в графе нет `AuthExtractor`, а у операции есть `Security`,
-`Module` не стартует: на `OnStart` сервера, когда все Invoke уже зарегистрировали
-операции, он обходит `OpenAPI().Paths` и возвращает `ErrAuthNotConfigured` с
-именами таких операций. Скрытую операцию (`Hidden`) OpenAPI не видит, поэтому
-`HumaAuth(log, nil)` сам закрывает защищённую операцию: `500 AUTH_NOT_CONFIGURED`
-и строка `auth not configured` с `operation` в логе. Мимо гейта идут маршруты,
-которые huma не регистрирует: сырой маршрут chi (`Router().Get`, `Mount`) и
-`api.Adapter().Handle` — middleware API huma вешает только в `huma.Register`.
+Гейт fail-closed, проверка — на `OnStart` сервера, когда все Invoke уже
+зарегистрировали операции. Видит она каждую операцию `huma.Register`, в том числе
+скрытую (`Hidden`) и из группы huma: API сервера — `huma.OperationDocumenter`, а
+`OnAddOperation` и `OpenAPI().Paths` скрытых не видят. `CheckRoutes` возвращает
+`ErrRoutes` с именами операций и маршрутов: два одинаковых METHOD+path (`/users/{id}` и
+`/users/{userID}` для chi — один маршрут, второй молча заменил бы первый), `Public` с
+`Security`; при схеме в графе — операция без `Security` и без `Public`, схема в
+`Security` вне `components`, маршрут мимо `huma.Register` (`Router().Get`, `Mount`,
+`api.Adapter().Handle` — middleware API huma, а с ним `HumaAuth`, вешает только
+`huma.Register`), путь которого не в `PublicRoutes`, и строка `PublicRoutes` без такого
+маршрута. Маршруты документации huma (`/docs`, `/openapi.*`, `/schemas`) — свои у кита.
+Затем, если в графе нет `AuthExtractor`, а у операции есть `Security`, `Module` не
+стартует с `ErrAuthNotConfigured` и именами таких операций. Без fx `CheckRoutes` зовут
+сами, а `HumaAuth(log, nil)` на защищённой операции отвечает `500 AUTH_NOT_CONFIGURED`
+со строкой `auth not configured` и `operation` в логе.
 
 Middleware работает с `huma.Context` (`*http.Request` достаётся из адаптера или
 собирается из полей контекста), поэтому один и тот же гейт тестируется и на

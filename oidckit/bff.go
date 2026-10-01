@@ -18,6 +18,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
 	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -464,28 +465,28 @@ func (b *BFF) sameSiteRequest(in *logoutInput) bool {
 	return self != "" && strings.EqualFold(in.Origin, self)
 }
 
-// RegisterRoutes регистрирует BFF-роуты под Config.RoutePrefix (default /auth):
-// GET <p>/login, GET <p>/callback, GET <p>/me (Security: Cookie), POST <p>/logout.
+// RegisterRoutes регистрирует BFF-роуты под Config.RoutePrefix (default /auth): публичные
+// (httpkit.Public) GET <p>/login, GET <p>/callback, POST <p>/logout и GET <p>/me (Security: Cookie).
 func RegisterRoutes(api huma.API, b *BFF) {
 	p := b.cfg.routePrefix()
 
-	huma.Register(api, huma.Operation{
+	huma.Register(api, httpkit.Public(huma.Operation{
 		OperationID:   "oidcLogin",
 		Method:        http.MethodGet,
 		Path:          p + "/login",
 		Tags:          []string{"auth"},
 		DefaultStatus: http.StatusFound,
 		Summary:       "Start OIDC login (redirect to idp)",
-	}, b.login)
+	}), b.login)
 
-	huma.Register(api, huma.Operation{
+	huma.Register(api, httpkit.Public(huma.Operation{
 		OperationID:   "oidcCallback",
 		Method:        http.MethodGet,
 		Path:          p + "/callback",
 		Tags:          []string{"auth"},
 		DefaultStatus: http.StatusFound,
 		Summary:       "OIDC callback: exchange code for a session cookie",
-	}, b.callback)
+	}), b.callback)
 
 	huma.Register(api, huma.Operation{
 		OperationID: "oidcMe",
@@ -496,12 +497,12 @@ func RegisterRoutes(api huma.API, b *BFF) {
 		Summary:     "Current identity from the session cookie",
 	}, b.me)
 
-	huma.Register(api, huma.Operation{
+	huma.Register(api, httpkit.Public(huma.Operation{
 		OperationID:   "oidcLogout",
 		Method:        http.MethodPost,
 		Path:          p + "/logout",
 		Tags:          []string{"auth"},
 		DefaultStatus: http.StatusNoContent,
 		Summary:       "Log out: clear the session cookie",
-	}, b.logout)
+	}), b.logout)
 }

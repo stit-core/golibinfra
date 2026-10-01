@@ -23,11 +23,9 @@ blocked-by: —
   FAIL — дефект есть; тяжёлые прогоны — последовательно.
 - **Гейт** (S1–S5, образец — шаблон): `GATE_STEPS` с integration и guard в `Makefile`,
   `scripts/gate-clean.sh`, pre-push, deny и guard `.claude/`, `testkit.MigrationLadder`, `scripts/envdoc`.
-- **httpkit на v1.2.0.** Старт проверяет только `Security` без extractor'а, по `OpenAPI().Paths` —
-  скрытых операций не видит (`httpkit/module.go:124-178`). `ClientIP` и
-  `HTTP_RATE_LIMIT_TRUST_PROXY` служат только лимитеру (`httpkit/ratelimit.go:13-104`).
-  `HTTP_DOCS_ENABLED` по умолчанию `true` (`httpkit/server.go:39`). У outbox
-  `OUTBOX_MAX_ATTEMPTS=0` — без предела (`outboxkit/config.go:41`).
+- **Код до B2–B3.** `ClientIP` и `HTTP_RATE_LIMIT_TRUST_PROXY` служат только лимитеру
+  (`httpkit/ratelimit.go`), `HTTP_DOCS_ENABLED` по умолчанию `true` (`httpkit/server.go`), у outbox
+  `OUTBOX_MAX_ATTEMPTS=0` — без предела (`outboxkit/config.go`).
 - **Потребитель** — шаблон, `fix-reference-code` S9 (bump v1.3.0): снимает `publicOperations`
   (`cmd/api/api_test.go:74-115`), client-IP middleware (`internal/platform/authgate/clientip.go`) и
   `identity.WithIP`. Полный Handoff шаблону — в `harden-authn-release`.
@@ -67,17 +65,14 @@ blocked-by: —
   Claude заблокированы; CLAUDE.md, README, CONTRIBUTING и скиллы `/plan`, `/release` описывают этот
   гейт. Проверка: `gate_inject.py --only G21,G31` → оба пойманы; `make check` при неактивном
   pre-push → FAIL
-  - Подтверждено: на кандидате S3 G21 и G31 пойманы; чистый зелёный HEAD пушится, не-HEAD ref и
-    `MAKEFLAGS=i git push` с падающим тестом — отказ; `make check` без `make hooks` → FAIL с
-    подсказкой; `M/hgd/guard_cases.py` — 84 случая, 0 расхождений (`M/hgd/s3/`)
+  - Подтверждено: на кандидате S3 G21, G31 пойманы; `MAKEFLAGS=i git push` с падающим тестом —
+    отказ; `make check` без `make hooks` → FAIL; `M/hgd/guard_cases.py` — 0 расхождений из 84
 - [x] **AC5** — Каждый kit-owned источник миграций (auditkit, bruteforcekit, outboxkit с
   `TableMigrations`) проходит в `make check` лесенку up → down до нуля → up со сверкой схемы
   хелпером testkit, которым потом пользуется шаблон. Проверка: `gate_inject.py --only G28` и тот же
   битый down под `make check` → пойманы
-  - Подтверждено: на кандидате S4 G28 и тот же битый down под `make check` пойманы
-    (`TestMigrations_Ladder` bruteforcekit: `down 2: … does not exist`); down 0002 bruteforcekit
-    без возврата `locked_idx` и outboxkit без снятия колонки → `down 2 must restore …`; лесенка
-    зелёная у auditkit, bruteforcekit, outboxkit (оба источника), hubkit/projection; `M/hgd/s4/`
+  - Подтверждено: на кандидате S4 G28 и тот же битый down под `make check` пойманы; down 0002
+    bruteforcekit без `locked_idx` и outboxkit без снятия колонки → `down 2 must restore …`; `M/hgd/s4/`
 - [x] **AC6** — `make envdoc-check` сверяет дефолты тегов с таблицами доков, требует строку таблицы
   на каждый тег, обходит все каталоги с Go-кодом (включая `internal/` и каталоги без README); поле
   без тега в структуре с тегами — ошибка. Проверка:
@@ -86,12 +81,15 @@ blocked-by: —
   - Подтверждено: на кандидате S5 `envdoc-inject.sh` — E1–E6, E8 красные, E0, E7 зелёные; G32
     пойман; GH04 (дефолт `HTTP_DOCS_ENABLED` перевёрнут в коде) — красный; 239 переменных
     сходятся с доками (`M/hgd/s5/`)
-- [ ] **AC7** — При схеме безопасности в графе — ошибка старта с именем операции или маршрута:
+- [x] **AC7** — При схеме безопасности в графе — ошибка старта с именем операции или маршрута:
   операция без `Security` и без `httpkit.Public` (в том числе скрытая и в группе huma), дубль
   METHOD+path, сырой маршрут chi или `Adapter().Handle` мимо реестра без объявления публичным,
   схема в `Security` вне `components`, дубль имени схемы, nil-схема, дубль имени пробы. Проверка:
   `M/kits-audit/httpkit-a/run.sh <rev> security` → H15 PASS;
   `M/kits-audit/httpkit-b/run.sh <rev> exp` → HX05, HX10, HX11 PASS
+  - Подтверждено: на кандидате S6 H15 — подтесты B1 PASS (ошибка называет операции; подтест
+    KSEC-08 — партия 3), HX05, HX10, HX11, HX11b PASS, прочие исходы `exp` — как на v1.2.0;
+    `M/hgd2/s6_mutants.py` — 11 из 11 мутантов проверки убиты
 - [ ] **AC8** — `handlertest.NewAPI` держит контракт сервера: `HumaAuth` до маршрутов (без
   extractor'а — `500 AUTH_NOT_CONFIGURED`, с `WithAuth` — 401 анониму), та же проверка, что в AC7;
   конфиг и логгер — как у сервера. Проверка: `httpkit-b/run.sh <rev> exp` → в HT01 T14, T22, T23,
@@ -117,37 +115,33 @@ blocked-by: —
 - [x] **S1** — `make check` с integration и обязательным Docker: testkit без Docker вне `-short` —
   FAIL, timing-тест logkit — вне гейта, `gate-clean` наследует (KGATE-01, KTST-01)
   - Проверка: AC1 → выполнен · Закрывает: AC1 · Зависит от: —
-  - Сделано: `RequireDocker` — `t.Fatalf` без Docker (регрессия RED на старом коде); `check` —
-    шаги `GATE_STEPS` с `test-full`; `make test-timing`; тексты обвязки и китов. AC1 → выполнен
+  - Сделано: `RequireDocker` без Docker — `t.Fatalf` (RED на старом коде), `GATE_STEPS` с `test-full`
 - [x] **S2** — Гейт не зависит от окружения и чужого checkout'а: guard переменных и флагов, охват в
   итоговой строке, кеш golangci-lint в checkout'е, `gate-clean` в чистом окружении с холодным кешем
   (KGATE-02, KGATE-04)
   - Проверка: AC2, AC3 → выполнены · Закрывает: AC2, AC3 · Зависит от: S1
-  - Сделано: guard `gate_bad`, шаги через `GATE` с `PKGS=./... GO=go A=`, кеш lint в `.cache/`,
-    `gate-clean` без make-окружения вызывающего; тексты обвязки. AC2, AC3 → выполнены
+  - Сделано: guard `gate_bad`, шаги через `GATE`, кеш lint в `.cache/`, `gate-clean` без make-env
 - [x] **S3** — Рабочие хуки: `scripts/git-hooks/pre-push` по образцу шаблона (чистое дерево, пушимый
   коммит = HEAD, окружение гейта вычищено), `make hooks` туда, `make check` требует активный
   pre-push, `.claude/settings.json` с deny и guard обходов, тексты обвязки (KGATE-03, KGATE-05,
   KGATE-11)
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S2
-  - Сделано: `scripts/git-hooks/pre-push` (чистое дерево, refs = HEAD), `make hooks`, шаг
-    `hooks-check`; `.claude/settings.json` с `guard-bash.sh`; тексты обвязки. AC4 → выполнен
+  - Сделано: `scripts/git-hooks/pre-push`, `make hooks`, `hooks-check`, deny и `guard-bash.sh`
 - [x] **S4** — Хелпер лесенки миграций в testkit и её тест на каждый kit-owned источник (KGATE-06)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: S1
-  - Сделано: `testkit.MigrationLadder` с тестами отказов, `TestMigrations_Ladder` у каждого
-    kit-owned источника; откат 0002 `TableMigrations` — no-op; тексты. AC5 → выполнен
+  - Сделано: `testkit.MigrationLadder`, `TestMigrations_Ladder` у каждого kit-owned источника
 - [x] **S5** — Строгий `envdoc-check`: дефолты, строки таблиц, все каталоги с Go-кодом, поля без
   тегов (KDOC-04, KGATE-12, дефолты из KGATE-13)
   - Проверка: AC6 → выполнен · Закрывает: AC6 · Зависит от: S1
-  - Сделано: `scripts/envdoc` (Go, `go/ast`) вместо `envdoc-check.sh`, инъекции — тест
-    `TestCheck`; ячейки дефолтов приведены к канону; natskit `Config.Instance` —
-    `ignored:"true"`; тексты. AC6 → выполнен
+  - Сделано: `scripts/envdoc` вместо `envdoc-check.sh`, инъекции — `TestCheck`, дефолты в доках
 
 ### httpkit и outbox: B1–B3
-- [ ] **S6** — B1: реестр всех операций huma, пометка `httpkit.Public`, проверки старта из AC7 — с
+- [x] **S6** — B1: реестр всех операций huma, пометка `httpkit.Public`, проверки старта из AC7 — с
   сырыми маршрутами chi (бэклог `httpkit-auth-bypass`) и значениями групп (KFX-09 с KFX-07)
   - Проверка: AC7 → выполнен; `go test -race ./httpkit/ ./oidckit/ ./hubkit/...` → PASS ·
     Закрывает: AC7 · Зависит от: S1
+  - Сделано: реестр операций, `Public`, `PublicRoutes`, `Server.CheckRoutes` (`ErrRoutes`); схемы и
+    пробы — `ErrConfig` в графе; `Public` у `/health`, `/ready`, роутов oidckit и JWKS hubkit; доки
 - [ ] **S7** — `handlertest.NewAPI` по контракту сервера: `HumaAuth`, `WithAuth`, проверка B1, опции
   конфига и логгера, тест различий с `Module` (KTST-08, KTST-09, паритет из KGATE-13)
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: S6
@@ -173,16 +167,25 @@ blocked-by: —
 - **Состав A.** Кроме high (KGATE-01…-04, KTST-01) и плановой лесенки (KGATE-06) в A взяты KGATE-05
   (тот же хук), KGATE-11 (тексты того же гейта) и KDOC-04 с KGATE-12 (аудит рекомендовал их в A:
   партия 2 меняет дефолты). KGATE-07…-10 и сигналы KGATE-13 — партия 3.
-- **B1, реестр.** Реестр — `huma.OperationDocumenter` на API кита: huma зовёт `DocumentOperation`
-  для каждой операции, в том числе `Hidden` и из групп (`huma.go:813-817`, `group.go:101-111`), а
-  `OnAddOperation` скрытых не видит (`huma.go:816`). Проверка — одна функция для старта `Module` и
-  `handlertest.NewAPI`.
-- **B1, публичность.** Пометка — `httpkit.Public(op)` в `op.Metadata`; пустой `Security` публичным
-  не считается — один способ. Правило действует, когда в графе есть схема: без схем все операции
-  публичны (как у amoCRM-шлюза). Сырые маршруты — `chi.Walk` против реестра: маршрут вне реестра и
-  вне маршрутов кита — ошибка старта, если не объявлен публичным (`httpkit.PublicRoutes` или форма на
-  выбор исполнителя). Дубль METHOD+path — с нормализацией параметров (`{id}` и `{userID}` для chi —
-  один маршрут).
+- **B1, реестр.** API сервера — `huma.OperationDocumenter`: huma зовёт `DocumentOperation` для каждой
+  операции, в том числе `Hidden` и из групп, а `OnAddOperation` скрытых не видит (`huma.go:813-817`,
+  `group.go:101-111`). Проверка — экспортируемый `Server.CheckRoutes()` (`ErrRoutes`): `Module` — на
+  OnStart, без fx — потребитель, `handlertest.NewAPI` — S7. Проверка extractor'а — по тому же
+  реестру: скрытая защищённая операция без extractor'а — ошибка старта, а не 500.
+- **B1, публичность.** `httpkit.Public(op)` — метка в `op.Metadata` (форма `ErrorMap.Declare`); пустой
+  `Security` не публичен, `Public` с `Security` — ошибка. «`Security` или `Public`», схема `Security`
+  из `components` и сырые маршруты — при схеме в `components` (из группы или `HumaConfigs`): без схем
+  все операции публичны (amoCRM-шлюз). Дубль METHOD+path — всегда, `{id}` и `{userID}` — один маршрут.
+- **B1, сырые маршруты.** `chi.Walk` против реестра; маршруты документации huma — разница роутера до
+  и после `humachi.New`. Объявление — путь chi в `httpkit.PublicRoutes` (значение на граф, как
+  `Middlewares`; без fx — `WithPublicRoutes`), без метода: мимо huma обычно `Mount` на все методы.
+  Строка `PublicRoutes` без маршрута — ошибка: устаревшее объявление открыло бы будущий маршрут.
+- **B1, значения групп.** Дубль имени схемы и схема без `Name`/`Scheme` — `ErrConfig` в `newServer`
+  (уже `fx.New`: HX05 смотрит `app.Err()`) и в `CheckRoutes`; дубль имени пробы — `ErrConfig` Invoke
+  `registerHealth`. Роуты oidckit (login, callback, logout) и JWKS hubkit — `Public` (правки рядом).
+- **B1, эксперименты.** H15 (подтесты B1), HX10, HX11 правлены под «ошибку старта с именем»
+  (`tryStartApp`), HX11 — из INFO в PASS/FAIL, HX11b — со схемой в графе; оригиналы — `M/hgd2/orig/`.
+  Подтест H15 «AdminKey принимает Bearer» — KSEC-08 (партия 3, `httpkit-auth-edge`), он красный.
 - **B2, доверие прокси.** Одна настройка `HTTP_TRUST_PROXY_HOPS` вместо булевой
   `HTTP_RATE_LIMIT_TRUST_PROXY`: `0` — адрес соединения, `N` — N-я справа запись `X-Forwarded-For`,
   `X-Real-IP` не читается. Булева не говорит, какой заголовок ставит прокси и сколько ступеней
@@ -251,9 +254,6 @@ blocked-by: —
   `scripts/tools/test.sh:21-22` («testkit пропустит тесты без Docker») неверен;
   `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...),
   testkit.WithMigrationsDir(...))` — один способ.
-- httpkit: при схеме в графе публичная операция — `httpkit.Public(op)`, пустой `Security` не
-  публичен; сырой маршрут chi объявляется публичным; дубль METHOD+path, схема вне `components`,
-  дубли имён схем и проб — ошибка старта.
 - testkit/handlertest: `NewAPI` закрыт по умолчанию → защищённые операции через `WithAuth`, конфиг и
   логгер — опциями.
 - httpkit: `HTTP_RATE_LIMIT_TRUST_PROXY` удалён → `HTTP_TRUST_PROXY_HOPS` (за одним прокси — 1); IP
@@ -265,10 +265,17 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
-закрыты (N4 — S11). Дальше — S6 (B1: реестр операций и `httpkit.Public`). Эксперименты — `M/hgd/`,
-`M/hgd2/`; правки материалов аудита — «Решения».
+закрыты (N4 — S11). S6 (B1) сделан; дальше — S7 (`handlertest.NewAPI` по контракту сервера).
+Эксперименты — `M/hgd/`, `M/hgd2/`; правки материалов аудита — «Решения».
 
 Заготовка аннотации v1.3.0 по сделанному:
+- Breaking — httpkit: при схеме безопасности в графе операция без `Security` и без `httpkit.Public`
+  (пустой `Security` не публичен, в том числе у скрытой), схема `Security` вне `components` и
+  маршрут мимо `huma.Register` вне `httpkit.PublicRoutes` — ошибка старта `ErrRoutes`; дубль
+  METHOD+path и `Public` с `Security` — тоже, и без схем; скрытая операция с `Security` без
+  extractor'а — ошибка старта; дубль имени схемы, схема без `Scheme`, дубль имени пробы — ошибка
+  графа `ErrConfig` → открытые операции — `httpkit.Public(op)`, сырые маршруты — `PublicRoutes`.
+- Изменения — httpkit: `Public`, `PublicRoutes`/`WithPublicRoutes`, `Server.CheckRoutes`, `ErrRoutes`.
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест
   (`t.Fatalf`), а не пропускают → без Docker integration-прогон потребителя (`-tags=integration`,
   без `-short`) красный; без Docker гонять только `go test -short`.

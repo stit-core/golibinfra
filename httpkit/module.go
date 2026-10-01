@@ -63,15 +63,26 @@ type serverIn struct {
 	Config Config
 	Log    logkit.Logger
 
-	Extract     AuthExtractor         `optional:"true"`
-	Store       IdempotencyStore      `optional:"true"`
-	Middlewares Middlewares           `optional:"true"`
-	HumaConfigs HumaConfigs           `optional:"true"`
-	Schemes     []SecuritySchemeEntry `group:"httpkit.security_scheme"`
+	Extract      AuthExtractor         `optional:"true"`
+	Store        IdempotencyStore      `optional:"true"`
+	Middlewares  Middlewares           `optional:"true"`
+	HumaConfigs  HumaConfigs           `optional:"true"`
+	PublicRoutes PublicRoutes          `optional:"true"`
+	Schemes      []SecuritySchemeEntry `group:"httpkit.security_scheme"`
 }
 
-func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe) {
+// registerHealth отвергает две пробы с одним именем: /ready гонял бы обе, а в логе
+// readiness probe failed их не различить.
+func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe) error {
+	names := make(map[string]bool, len(probes))
+	for _, p := range probes {
+		if names[p.Name] {
+			return fmt.Errorf("%w: readiness probe %q is provided twice", ErrConfig, p.Name)
+		}
+		names[p.Name] = true
+	}
 	RegisterHealth(api, log, cfg.ReadyProbeTimeout, probes...)
+	return nil
 }
 
 // Порядок цепочки: RequestID и OTel первыми (request_id и trace_id в ctx у
@@ -81,6 +92,10 @@ func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe)
 func newServer(in serverIn) (*Server, error) {
 	cfg := in.Config
 	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	// Схемы проверяются уже в fx.New, а не на OnStart: их дубль — ошибка сборки графа.
+	if err := checkSchemes(in.Schemes); err != nil {
 		return nil, err
 	}
 
@@ -108,6 +123,7 @@ func newServer(in serverIn) (*Server, error) {
 		WithLogger(in.Log),
 		WithSecuritySchemes(in.Schemes...),
 		WithMiddleware(mws...),
+		WithPublicRoutes(in.PublicRoutes...),
 	}
 	for _, fn := range in.HumaConfigs {
 		opts = append(opts, WithHumaConfig(fn))
@@ -133,7 +149,10 @@ func serve(in serveIn) {
 	in.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			// На OnStart все Invoke уже выполнены: операции зарегистрированы целиком.
-			if ops := securedOperations(s.API()); in.Extract == nil && len(ops) > 0 {
+			if err := s.CheckRoutes(); err != nil {
+				return err
+			}
+			if ops := securedOperations(s.registry()); in.Extract == nil && len(ops) > 0 {
 				return fmt.Errorf("%w: operations with Security need an httpkit.AuthExtractor in the graph: %s",
 					ErrAuthNotConfigured, strings.Join(ops, ", "))
 			}
@@ -158,19 +177,12 @@ func serve(in serveIn) {
 	})
 }
 
-// securedOperations — операции OpenAPI с Security (скрытые туда не попадают), по имени.
-func securedOperations(api huma.API) []string {
+// securedOperations — операции с Security, в том числе скрытые, по имени.
+func securedOperations(reg *registry) []string {
 	var names []string
-	for path, item := range api.OpenAPI().Paths {
-		for _, op := range []*huma.Operation{item.Get, item.Put, item.Post, item.Delete, item.Options, item.Head, item.Patch, item.Trace} {
-			if op == nil || len(op.Security) == 0 {
-				continue
-			}
-			name := op.OperationID
-			if name == "" {
-				name = op.Method + " " + path
-			}
-			names = append(names, name)
+	for _, op := range reg.ops {
+		if len(op.Security) > 0 {
+			names = append(names, operationName(op))
 		}
 	}
 	slices.Sort(names)

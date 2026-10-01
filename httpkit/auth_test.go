@@ -225,16 +225,15 @@ func TestModule_AuthRequiresExtractor(t *testing.T) {
 	}
 }
 
-// Скрытую операцию старт не видит, но и без extractor'а она закрыта: 500 вместо пропуска.
-func TestModule_AuthHiddenOperationFailsClosed(t *testing.T) {
-	srv := startApp(t, fx.Invoke(func(api huma.API) {
+// Скрытую операцию OpenAPI не видит, а старт видит: без extractor'а она — тоже ошибка старта.
+func TestModule_AuthHiddenOperationNeedsExtractor(t *testing.T) {
+	err := startErr(t, fx.Invoke(func(api huma.API) {
 		huma.Register(api, huma.Operation{
 			OperationID: "hidden", Method: http.MethodGet, Path: "/hidden", Hidden: true,
 			Security: []map[string][]string{{"Bearer": {}}},
 		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
 	}))
-	resp := get(t, srv, "/hidden")
-	if resp.StatusCode != http.StatusInternalServerError || !strings.Contains(bodyString(t, resp), `"code":"AUTH_NOT_CONFIGURED"`) {
-		t.Fatalf("hidden secured operation without an extractor: %d", resp.StatusCode)
+	if !errors.Is(err, httpkit.ErrAuthNotConfigured) || !strings.Contains(err.Error(), "hidden") {
+		t.Fatalf("hidden secured operation without an extractor must fail the start: %v", err)
 	}
 }

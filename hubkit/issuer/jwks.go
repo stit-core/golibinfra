@@ -8,6 +8,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	jose "github.com/go-jose/go-jose/v4"
+
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 )
 
 // JWKSPath — канонический путь публикации ключей (sso-verifier ходит именно сюда).
@@ -20,21 +22,22 @@ type jwksOutput struct {
 
 // RegisterJWKS вешает GET /.well-known/jwks.json на huma-API: отдаёт публичные
 // ключи (активный + next + previous) с Cache-Control: max-age из
-// HUB_SESSION_JWKS_MAX_AGE. Операция публичная (без Security).
+// HUB_SESSION_JWKS_MAX_AGE. Операция публичная (httpkit.Public).
 func RegisterJWKS(api huma.API, s *Signer) {
 	cacheControl := cacheControlFor(s)
-	huma.Register(api, huma.Operation{
+	huma.Register(api, httpkit.Public(huma.Operation{
 		OperationID: "hubJWKS",
 		Method:      http.MethodGet,
 		Path:        JWKSPath,
 		Tags:        []string{"auth"},
 		Summary:     "JWKS for hub-session JWT verification",
-	}, func(_ context.Context, _ *struct{}) (*jwksOutput, error) {
+	}), func(_ context.Context, _ *struct{}) (*jwksOutput, error) {
 		return &jwksOutput{CacheControl: cacheControl, Body: s.JWKS()}, nil
 	})
 }
 
-// JWKSHandler — plain net/http вариант (для сервисов без huma на этом роуте).
+// JWKSHandler — plain net/http вариант (для сервисов без huma на этом роуте); на сервере
+// httpkit со схемой безопасности его путь — в httpkit.PublicRoutes.
 func JWKSHandler(s *Signer) http.HandlerFunc {
 	cacheControl := cacheControlFor(s)
 	return func(w http.ResponseWriter, _ *http.Request) {

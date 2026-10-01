@@ -3,8 +3,8 @@
 ## API-поверхность (кратко)
 
 - **Сервер**: `NewServer(cfg, opts...) *Server`; опции `WithLogger`,
-  `WithSecuritySchemes`, `WithMiddleware`, `WithHumaConfig`. Методы: `Router()`,
-  `API()`/`BindAPI()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
+  `WithSecuritySchemes`, `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes`. Методы:
+  `Router()`, `API()`/`BindAPI()`, `CheckRoutes()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
 - **Middleware** (net/http): `RequestID`, `OTel(quietPaths...)`, `Recovery(log)`,
   `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
   `AccessLog(log, quietPaths...)`, `Metrics()`,
@@ -12,8 +12,8 @@
 - **Ошибки**: `APIError`, `FieldError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
   Conflict/Internal/Unavailable`, `ErrorMap` (`NewErrorMap`, `ErrorRule`, `Map`,
   `Declare`, `Unmapped`), `ProblemContentType`.
-- **Auth**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
-  `ContextWithSubject`, `SubjectFrom`.
+- **Auth и маршруты**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
+  `ContextWithSubject`, `SubjectFrom`, `Public`, `PublicRoutes`, `ErrRoutes`.
 - **Health**: `RegisterHealth(api, log, probeTimeout, probes...)`, `Probe`
   (= `healthkit.Probe`).
 - **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
@@ -133,10 +133,9 @@ IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` не сохраняются, зап
 
 **Без валидных credentials дедупликации нет.** Extractor зовётся на каждом
 write-запросе с ключом, независимо от `Operation().Security`; его ошибка даёт
-`result=skipped` и сквозной проход. Публичная write-операция
-(`Security: []map[string][]string{}`) с анонимным клиентом выполняется столько
-раз, сколько раз пришёл запрос, — закрывайте такие операции `Security` или не
-опирайтесь на `Idempotency-Key` в их контракте.
+`result=skipped` и сквозной проход. Публичная write-операция (`httpkit.Public`) с
+анонимным клиентом выполняется столько раз, сколько раз пришёл запрос, — закрывайте
+такие операции `Security` или не опирайтесь на `Idempotency-Key` в их контракте.
 
 ```go
 fx.Provide(func(v *oidckit.Verifier) httpkit.AuthExtractor {
@@ -209,9 +208,11 @@ ip := httpkit.ClientIP(r, cfg.RateLimit.TrustProxy)
 
 ## Auth
 
-`HumaAuth` проверяет только операции с непустым `Operation().Security`, поэтому
-непубличные операции обязаны объявлять `Security` явно, а публичные — пустой
-`Security: []map[string][]string{}`:
+`HumaAuth` проверяет операции с непустым `Operation().Security`. Когда в графе есть
+схема безопасности, открытость операции — явная: `Security` со схемой из
+`components.securitySchemes` или пометка `httpkit.Public`; операция без того и
+другого (в том числе скрытая и из группы huma) — ошибка старта, пустой `Security`
+публичным не считается:
 
 ```go
 huma.Register(api, huma.Operation{
@@ -219,19 +220,26 @@ huma.Register(api, huma.Operation{
     Security: []map[string][]string{{"Bearer": {}}},   // закрыто
 }, handler)
 
-huma.Register(api, huma.Operation{
+huma.Register(api, httpkit.Public(huma.Operation{  // открыто без аутентификации
     OperationID: "get-status", Method: http.MethodGet, Path: "/status",
-    Security: []map[string][]string{},                 // публично, осознанно
-}, handler)
+}), handler)
+```
+
+`Public` совместим с `ErrorMap.Declare` (`httpkit.Public(errs.Declare(op))`). Маршрут
+мимо `huma.Register` — `Router().Get`, `Mount`, `api.Adapter().Handle` — `HumaAuth` не
+видит, поэтому при схеме в графе он тоже ошибка старта, пока его путь не объявлен
+открытым одним значением на граф:
+
+```go
+fx.Supply(httpkit.PublicRoutes{"/.well-known/jwks.json"}) // путь chi; без fx — WithPublicRoutes
 ```
 
 `AuthExtractor` (`func(*http.Request) (context.Context, error)`) кладёт личность
 в ctx; ошибка → `401 UNAUTHORIZED`, её текст — только в лог. Инфраструктурную
 ошибку (JWKS/хаб недоступны) оборачивайте в `httpkit.ErrAuthUnavailable` — клиент
 получит `503 AUTH_UNAVAILABLE` вместо разлогина; свой статус задаётся возвратом
-`*httpkit.APIError`. Операция с `Security` без extractor'а в графе не даёт
-стартовать (`httpkit.ErrAuthNotConfigured` с именами операций), а скрытая —
-отвечает `500 AUTH_NOT_CONFIGURED`.
+`*httpkit.APIError`. Операция с `Security` без extractor'а в графе, в том числе
+скрытая, не даёт стартовать (`httpkit.ErrAuthNotConfigured` с именами операций).
 
 ```go
 fx.Provide(func(v *authnkit.Verifier) httpkit.AuthExtractor {
@@ -255,6 +263,9 @@ fx.Provide(fx.Annotate(
     fx.ResultTags(`group:"httpkit.security_scheme"`),
 ))
 ```
+
+Имя схемы в графе одно: дубль имени и схема без `Scheme` — ошибка сборки графа
+(`httpkit.ErrConfig` с обоими значениями).
 
 ## Свои middleware и настройка huma
 
@@ -315,7 +326,8 @@ s.Router().Use(httpkit.RequestID(), httpkit.OTel(cfg.QuietPaths...),
 api := s.BindAPI() // после Use
 api.UseMiddleware(httpkit.HumaAuth(log, extract)) // до регистрации: без него Security не проверяется
 httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout)
-huma.Get(api, "/ping", pingHandler)
+huma.Register(api, httpkit.Public(huma.Operation{Method: http.MethodGet, Path: "/ping"}), pingHandler)
+if err := s.CheckRoutes(); err != nil { /* операции и маршруты — как на старте Module */ }
 if err := s.Listen(); err != nil { /* порт занят */ }
 go func() { _ = s.Serve() }()
 // ...

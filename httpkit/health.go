@@ -39,27 +39,25 @@ type readyOutput struct {
 	Body   readyBody
 }
 
-// RegisterHealth регистрирует /health (liveness) и /ready (readiness по пробам).
-// Пробы выполняются параллельно, каждая — не дольше probeTimeout. Текст ошибок
+// RegisterHealth регистрирует публичные (Public) /health (liveness) и /ready (readiness по
+// пробам). Пробы выполняются параллельно, каждая — не дольше probeTimeout. Текст ошибок
 // проб уходит в лог, а не в ответ: там могут быть DSN и адреса.
 func RegisterHealth(api huma.API, log logkit.Logger, probeTimeout time.Duration, probes ...Probe) {
-	huma.Register(api, huma.Operation{
+	huma.Register(api, Public(huma.Operation{
 		OperationID: "get-health",
 		Method:      http.MethodGet,
 		Path:        "/health",
 		Summary:     "Health check",
-		Security:    []map[string][]string{},
-	}, func(context.Context, *struct{}) (*healthOutput, error) {
+	}), func(context.Context, *struct{}) (*healthOutput, error) {
 		return &healthOutput{Body: healthBody{Status: "ok"}}, nil
 	})
 
-	huma.Register(api, huma.Operation{
+	huma.Register(api, Public(huma.Operation{
 		OperationID: "get-ready",
 		Method:      http.MethodGet,
 		Path:        "/ready",
 		Summary:     "Readiness check",
-		Security:    []map[string][]string{},
-	}, func(ctx context.Context, _ *struct{}) (*readyOutput, error) {
+	}), func(ctx context.Context, _ *struct{}) (*readyOutput, error) {
 		statuses := runProbes(ctx, log, probeTimeout, probes)
 		out := &readyOutput{Status: http.StatusOK, Body: readyBody{Status: "ok", Probes: statuses}}
 		for _, s := range statuses {

@@ -14,6 +14,7 @@ import (
 	"go.uber.org/fx/fxtest"
 
 	"git.stit.tech/stit-core/golibinfra/cachekit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/hubkit/issuer"
 	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 )
@@ -57,6 +58,21 @@ func TestRegisterJWKS_HumaRoute(t *testing.T) {
 	}
 	if len(set.Keys) != 1 || set.Keys[0].KeyID != s.ActiveKID() {
 		t.Fatalf("keys = %+v", set.Keys)
+	}
+}
+
+// JWKS публичен (httpkit.Public): сервер со схемой безопасности проходит проверку старта.
+func TestRegisterJWKS_PassesServerRouteCheck(t *testing.T) {
+	cfg, err := httpkit.NewConfig()
+	if err != nil {
+		t.Fatalf("httpkit config: %v", err)
+	}
+	srv := httpkit.NewServer(cfg, httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
+	}))
+	issuer.RegisterJWKS(srv.API(), newSigner(t, keyConfig(genPEM(t))))
+	if err := srv.CheckRoutes(); err != nil {
+		t.Fatalf("JWKS route fails the httpkit start check: %v", err)
 	}
 }
 
