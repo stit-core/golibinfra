@@ -324,6 +324,24 @@ func TestStore_HappyPath(t *testing.T) {
 	}
 }
 
+// Предел тела по умолчанию оставляет запас до max_payload NATS: воркер публикует строку в
+// JSONB-представлении, а оно длиннее JSON на пробел после каждого `:` и `,` — сильнее всего
+// у массива однозначных чисел.
+func TestStore_DefaultPayloadLimitFitsNATSMaxPayload(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+	digits := make([]int, (outboxkit.DefaultMaxPayloadBytes-1)/2) // JSON `[0,0,…]` у предела
+	if err := tr.WithTx(ctx, func(ctx context.Context) error {
+		return outboxkit.NewBus("outbox", s).Publish(ctx, "evt", digits)
+	}); err != nil {
+		t.Fatalf("Publish at the limit: %v", err)
+	}
+	const natsMaxPayload, headers = 1 << 20, 4 << 10 // дефолт сервера NATS; Nats-Msg-Id и trace
+	if n := len(list(t, tr, s, ctx, 1)[0].Payload); n+headers > natsMaxPayload {
+		t.Fatalf("published JSONB body %d bytes + headers exceeds NATS max_payload %d", n, natsMaxPayload)
+	}
+}
+
 // MessageRef несёт ключ партиционирования: UPDATE'ы тика бьют только по своим
 // партициям и не задевают соседние.
 func TestStore_MarkAndFailAcrossPartitions(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
@@ -116,8 +117,8 @@ func TestWorkers_ConcurrentBatch_NoDuplicates(t *testing.T) {
 
 	transport := newBarrierTransport(false)
 	cfg := outboxkit.Config{BatchSize: 5, PublishMode: outboxkit.PublishBatch, TickTimeout: 30 * time.Second}
-	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg)
-	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg)
+	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg, logkit.Nop())
+	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg, logkit.Nop())
 
 	if err1, err2 := runTwoWorkers(t, ctx, w1, w2); err1 != nil || err2 != nil {
 		t.Fatalf("Run: w1=%v w2=%v", err1, err2)
@@ -147,8 +148,8 @@ func TestWorkers_ConcurrentBatch_AttemptsCountedOnce(t *testing.T) {
 
 	transport := newBarrierTransport(true)
 	cfg := outboxkit.Config{BatchSize: 5, PublishMode: outboxkit.PublishBatch, TickTimeout: 30 * time.Second}
-	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg)
-	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg)
+	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg, logkit.Nop())
+	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg, logkit.Nop())
 
 	if err1, err2 := runTwoWorkers(t, ctx, w1, w2); err1 == nil || err2 == nil {
 		t.Fatalf("expected publish errors, got w1=%v w2=%v", err1, err2)
@@ -171,8 +172,8 @@ func TestWorkers_Ordered_SingleDrainer(t *testing.T) {
 
 	transport := &gateTransport{gate: make(chan struct{}), inside: make(chan struct{}, 1)}
 	cfg := outboxkit.Config{BatchSize: 3, PublishMode: outboxkit.PublishOrdered, TickTimeout: 30 * time.Second}
-	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg)
-	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg)
+	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg, logkit.Nop())
+	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg, logkit.Nop())
 
 	done := make(chan error, 1)
 	go func() { done <- w1.Run(ctx) }()

@@ -4,9 +4,13 @@ import (
 	"context"
 	"errors"
 	"math"
+	"strings"
 	"testing"
+	"time"
 
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 )
 
 func TestBusPublishSerializesOnce(t *testing.T) {
@@ -58,5 +62,44 @@ func TestBusPublishMarshalError(t *testing.T) {
 	attrs := map[string]string{"instance": "orders", "status": "marshal_error"}
 	if got := counterValue(collect(), "outbox_events_inserted_total", attrs); got != 1 {
 		t.Fatalf("marshal_error counter = %d, want 1", got)
+	}
+}
+
+// JSON больше предела отвергается в транзакции домена: строку, которую брокер не примет,
+// воркер ретраил бы весь бюджет попыток, держа ordered-очередь.
+func TestBusPublishRejectsOversizedPayload(t *testing.T) {
+	collect := collectMetrics(t)
+	repo := &fakeRepo{}
+	bus := outboxkit.NewBus("orders", repo)
+
+	big := strings.Repeat("x", outboxkit.DefaultMaxPayloadBytes)
+	if err := bus.Publish(context.Background(), "order.created", big); !errors.Is(err, outboxkit.ErrPayloadTooLarge) {
+		t.Fatalf("err = %v, want ErrPayloadTooLarge", err)
+	}
+	if len(repo.inserted) != 0 {
+		t.Fatal("oversized payload must not reach the store")
+	}
+	attrs := map[string]string{"instance": "orders", "status": "payload_too_large"}
+	if got := counterValue(collect(), "outbox_events_inserted_total", attrs); got != 1 {
+		t.Fatalf("payload_too_large counter = %d, want 1", got)
+	}
+}
+
+// Предел инстанса — OUTBOX_MAX_PAYLOAD_BYTES: JSON на пределе проходит, на байт больше — нет.
+func TestOutbox_PayloadLimitFromConfig(t *testing.T) {
+	repo := &fakeRepo{}
+	o := outboxkit.New("orders", repo, &fakeTransport{}, &pgtest.Recorder{},
+		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxPayloadBytes: 8},
+		logkit.Nop())
+	ctx := context.Background()
+
+	if err := o.Publisher().Publish(ctx, "a", "123456"); err != nil {
+		t.Fatalf("8-byte JSON at the limit: %v", err)
+	}
+	if err := o.Publisher().Publish(ctx, "a", "1234567"); !errors.Is(err, outboxkit.ErrPayloadTooLarge) {
+		t.Fatalf("9-byte JSON: err = %v, want ErrPayloadTooLarge", err)
+	}
+	if len(repo.inserted) != 1 {
+		t.Fatalf("inserted = %d, want 1", len(repo.inserted))
 	}
 }

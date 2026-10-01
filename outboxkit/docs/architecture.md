@@ -29,14 +29,15 @@ Core-абстракция отделена от Postgres-реализации, �
   `MarkPublished`, `RecordFailures`). Опциональные интерфейсы поверх него:
   `BacklogReporter` (снимок очереди), `DeadReviver` (оживление dead-строк),
   `Maintainer` (job'ы обслуживания хранилища).
-- `outboxkit.Transport` — порт публикации в брокер (`Publish`, `PublishBatch`).
+- `outboxkit.Transport` — порт публикации в брокер (`Publish`, `PublishBatch`); сбой брокера
+  целиком он оборачивает в `outboxkit.ErrUnavailable`.
 - `outboxkit.Publisher` — узкий порт публикации для доменов и тестов (один метод
   `Publish`), реализуется `Bus`.
 - `pgkit.Transactor` — граница атомарности тика `Worker`'а; для не-Postgres
   хранилища подойдёт любая реализация интерфейса.
-- `outboxkit.Bus` — сериализует payload и пишет событие в `Repository`
-  (insert-сторона). `Repository.Insert` принимает готовый `json.RawMessage`:
-  политика сериализации одна на кит, а не своя в каждом хранилище.
+- `outboxkit.Bus` — сериализует payload, проверяет предел тела и subject'ы инстанса и пишет
+  событие в `Repository` (insert-сторона). `Repository.Insert` принимает готовый
+  `json.RawMessage`: политика сериализации одна на кит, а не своя в каждом хранилище.
 - `outboxkit.Worker` — drain-сторона: тик = транзакция list → publish → mark /
   record-failures.
 - `outboxkit/pgstore.Store` — Postgres-реализация `Repository` (и всех
@@ -121,29 +122,61 @@ Core-абстракция отделена от Postgres-реализации, �
 Строка, которую брокер стабильно отвергает (poison), не должна вечно крутиться в
 очереди и в `ordered`-режиме блокировать её хвост.
 
-При неудачной публикации `Worker` вызывает `Repository.RecordFailures`, который
+При неудачной публикации строки `Worker` вызывает `Repository.RecordFailures`, который
 инкрементит `attempts`, пишет `last_error` и ставит `next_attempt_at` —
 экспоненциальную паузу `OUTBOX_RETRY_BACKOFF × 2^attempts` с потолком
 `OUTBOX_RETRY_MAX_BACKOFF`. Пока пауза не истекла, строка не вычитывается в
 `batch`-режиме; в `ordered` она остаётся головой очереди и тик просто ничего не
 делает — более позднее событие не обгоняет неудавшееся.
 
-`OUTBOX_MAX_ATTEMPTS > 0` — число попыток публикации: когда очередная попытка
-достигает порога (`Attempts + 1 >= MaxAttempts`), строка помечается
-`Failure.Dead = true` → в Postgres проставляется `dead_at = NOW()`. Благодаря
-backoff попытки растянуты во времени, а не выжигаются за `N × OUTBOX_INTERVAL`
-секунд недоступности брокера. Dead-строки больше не вычитываются
-`ListUnpublished` (фильтр `dead_at IS NULL`) — они освобождают очередь, но
-остаются в таблице для разбора (`last_error`, `attempts`) до retention партиции.
-При каждом переходе в dead эмитится `outbox_events_dead_total`.
+Сбой брокера целиком — не неудача строки. `Transport` оборачивает его (соединение,
+выключенный в рантайме JetStream, таймаут `PubAck`, дедлайн тика) в
+`outboxkit.ErrUnavailable`; батч без результатов по строкам — тоже сбой брокера. Такие строки
+`RecordFailures` не получают: `attempts` и пауза не меняются, строка уходит в следующий тик, в
+метрике — `publish_error`. Иначе простой брокера дольше бюджета массово увёл бы очередь в
+dead. «Нет стрима для subject» (`no response from stream`) — неудача строки: стримы
+subject'ов инстанса проверяет старт (§ Проверка старта).
 
-`OUTBOX_MAX_ATTEMPTS = 0` (default) — без ограничения: строка ретраится вечно с
-той же паузой (с потолком `OUTBOX_RETRY_MAX_BACKOFF`).
+`OUTBOX_MAX_ATTEMPTS` (default `25`) — число попыток публикации: когда
+очередная попытка достигает порога (`Attempts + 1 >= MaxAttempts`), строка помечается
+`Failure.Dead = true` → в Postgres проставляется `dead_at = NOW()`. Благодаря
+backoff попытки растянуты во времени (с дефолтами — ≈ 1 ч 24 мин, расчёт — в
+[configuration.md](configuration.md)), а не выжигаются за `N × OUTBOX_INTERVAL`. Dead-строки
+больше не вычитываются `ListUnpublished` (фильтр `dead_at IS NULL`) — они освобождают
+очередь, но остаются в таблице для разбора (`last_error`, `attempts`) до retention партиции.
+Каждый переход в dead после коммита тика `Worker` пишет в лог — ERROR `outboxkit: event dead`
+с `instance`, `id`, `subject`, `attempts`, `err` — и считает в `outbox_events_dead_total`:
+событие больше не доставится, а без telemetry метрика — no-op. `OUTBOX_MAX_ATTEMPTS=-1` —
+без предела: poison не становится dead и в `ordered` держит очередь, пока причину не починят.
 
 Dead-строки возвращаются в очередь `Outbox.ReviveDead(ctx, ReviveFilter{IDs,
 Subject, Since})` (реализация — `pgstore.Store.ReviveDead`): сбрасываются
 `dead_at`, `attempts`, `last_error` и пауза; число оживлённых уходит в
 `outbox_revived_total`. Пустой фильтр берёт все dead-строки таблицы.
+
+## Проверка старта
+
+`outboxkit.Module` и `outboxkit.Instance` вешают `OnStart`-хук на шину
+`natskit.StreamBus`, если она реализует `natskit.StreamChecker` (шину из `natskit.New` и
+`natskit.Module`). Выключенный JetStream (`NATS_JETSTREAM_ENABLED=false`) валит старт, как
+у `natskit.SubscribeOnStart`, — а не оставляет сервис здоровым с тиком, который падает
+каждую секунду, пока события копятся в таблице.
+
+Subject'ы инстанса объявляет `outboxkit.WithSubjects` — фильтры NATS, например `orders.>`.
+Хук сверяет их со стримами: каждый фильтр целиком накрывает один стрим, иначе ошибка старта
+с именем инстанса (`natskit.ErrNoStream`) — без неё строки копились бы без `PubAck` при
+здоровом сервисе. `Bus` инстанса отвергает subject вне объявленных
+(`outboxkit.ErrSubjectNotDeclared`): его стрим старт не проверял. Без `WithSubjects` (и у
+`Module`) хук проверяет только JetStream. Шину-фейк без `StreamChecker`
+(`testkit/natstest`) хук пропускает: стримов она не знает.
+
+## Предел payload
+
+`Bus.Publish` отвергает JSON больше `OUTBOX_MAX_PAYLOAD_BYTES`
+(`outboxkit.ErrPayloadTooLarge`) в транзакции домена: строку, которую брокер не примет
+никогда (`max_payload` NATS), воркер ретраил бы весь бюджет попыток, а в `ordered` она всё
+это время держала бы голову очереди. Дефолт оставляет запас под JSONB-представление строки
+и заголовки — [configuration.md](configuration.md) § Тюнинг payload.
 
 ## Lifecycle: остановка и перезапуск
 
@@ -156,8 +189,9 @@ Subject, Since})` (реализация — `pgstore.Store.ReviveDead`): сбр�
   дедлайном `OUTBOX_TICK_TIMEOUT + 5s` — уже подтверждённые `PubAck`'ом строки
   фиксируются как published, а не откатываются вместе с транзакцией.
 
-Строки, чей `PubAck` не пришёл до остановки, остаются неопубликованными и уходят
-в стрим после старта: гарантия остаётся at-least-once. Повтор в пределах окна
+Строки, чей `PubAck` не пришёл до остановки, остаются неопубликованными — без траты
+попытки: отмена — не неудача строки — и уходят в стрим после старта: гарантия остаётся
+at-least-once. Повтор в пределах окна
 `NATS_JS_DUPLICATES` дедуплицируется стримом по `Nats-Msg-Id`; деплой длиннее
 этого окна на единственной реплике означает, что потребитель может увидеть
 событие дважды — потребитель обязан быть идемпотентным.
@@ -218,7 +252,7 @@ id строки идёт как `Nats-Msg-Id`. Корректно, потому 
 таблице на домен): `pgstore.FactoryModule` + `outboxkit.Instance(name, table)` на
 каждый. `Instance` берёт из `outboxkit.RepositoryFactory` store и схему таблицы
 (в группу `pgkit.migrations`), собирает namespace'ный транспорт, drain- и
-maintenance-job'ы и backlog-gauge'и; `*Outbox`
+maintenance-job'ы, backlog-gauge'и и проверку старта (стримы — с `WithSubjects`); `*Outbox`
 и `Publisher` провайдятся под fx-тегом `name:"<name>"`. Каждая per-domain таблица
 имеет собственный независимый `BIGSERIAL` — id повторяются между таблицами,
 поэтому `Msg-Id` намспейсится именем инстанса.
@@ -267,7 +301,13 @@ outbox-таблиц делят один JetStream-стрим, голый id ст
 - **Партиции по месяцам.** Retention через detach+drop партиции, не построчный
   `DELETE`; партиция с неопубликованным не дропается.
 - **`dead_at` вместо удаления poison.** Освобождает очередь, но сохраняет строку
-  для разбора причины и для `ReviveDead`.
+  для разбора причины и для `ReviveDead`; переход — ERROR в логе, а не только метрика.
+- **Попытка — неудача строки, а не брокера.** Конечный бюджет иначе превращал бы любой
+  простой брокера длиннее бюджета в массовый dead.
+- **Предел payload — на вставке.** Ошибка в транзакции домена видна вызывающему сразу, а
+  строка, которую брокер не примет, стала бы poison на весь бюджет.
+- **Брокер — на старте.** Выключенный JetStream и subject без стрима — ошибка старта, как у
+  подписки, а не строки без `PubAck` у здорового сервиса.
 - **co-located с pg-хостом.** У `outboxkit` нет своего per-concern эндпоинта: он
   пишется в той же транзакции, что и доменные данные, значит живёт на том же
   Postgres, что `PG_DSN` (см. корневой `README.md` § Per-concern endpoints).

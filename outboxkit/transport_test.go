@@ -2,8 +2,14 @@ package outboxkit_test
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"testing"
 
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
+
+	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 )
 
@@ -69,5 +75,63 @@ func TestStreamTransportFor_NoCrossTableCollision(t *testing.T) {
 	msgs := bus.msgs()
 	if msgs[0].MsgID == msgs[1].MsgID {
 		t.Fatalf("cross-table MsgID collision at id=1: both %q", msgs[0].MsgID)
+	}
+}
+
+// errBus — StreamBus, где каждое сообщение отвечает item, а батч целиком — batch.
+type errBus struct{ item, batch error }
+
+func (b errBus) PublishStream(context.Context, string, []byte, ...natskit.PublishOption) error {
+	return b.item
+}
+
+func (b errBus) PublishStreamBatch(_ context.Context, msgs []natskit.StreamMsg) ([]error, error) {
+	if b.batch != nil {
+		return nil, b.batch
+	}
+	errs := make([]error, len(msgs))
+	for i := range errs {
+		errs[i] = b.item
+	}
+	return errs, nil
+}
+
+func (errBus) SubscribeStream(context.Context, string, string, string, natskit.Handler) (natskit.Subscription, error) {
+	return nil, nil
+}
+
+// Сбой брокера целиком транспорт помечает ErrUnavailable — попытку строки он не тратит;
+// «нет стрима» и отказ по самому сообщению остаются неудачей строки.
+func TestStreamTransport_BrokerDownIsUnavailable(t *testing.T) {
+	cases := []struct {
+		err  error
+		down bool
+	}{
+		{nats.ErrConnectionClosed, true},
+		{nats.ErrConnectionReconnecting, true},
+		{fmt.Errorf("natskit: jetstream publish: %w", nats.ErrNoServers), true},
+		{nats.ErrTimeout, true},
+		{jetstream.ErrAsyncPublishTimeout, true},
+		{natskit.ErrJetStreamDisabled, true},
+		{context.DeadlineExceeded, true},
+		{context.Canceled, true},
+		{jetstream.ErrNoStreamResponse, false},
+		{nats.ErrMaxPayload, false},
+	}
+	ctx := context.Background()
+	msgs := []outboxkit.OutMsg{{ID: 1, Subject: "order.created"}}
+	for _, tc := range cases {
+		err := outboxkit.NewStreamTransport(errBus{item: tc.err}).Publish(ctx, msgs[0])
+		if errors.Is(err, outboxkit.ErrUnavailable) != tc.down || !errors.Is(err, tc.err) {
+			t.Errorf("Publish: %v, want unavailable=%v", err, tc.down)
+		}
+		results, err := outboxkit.NewStreamTransport(errBus{item: tc.err}).PublishBatch(ctx, msgs)
+		if err != nil || len(results) != 1 || errors.Is(results[0], outboxkit.ErrUnavailable) != tc.down {
+			t.Errorf("PublishBatch results = %v, err = %v; want unavailable=%v for %v", results, err, tc.down, tc.err)
+		}
+		_, err = outboxkit.NewStreamTransport(errBus{batch: tc.err}).PublishBatch(ctx, msgs)
+		if errors.Is(err, outboxkit.ErrUnavailable) != tc.down || !errors.Is(err, tc.err) {
+			t.Errorf("PublishBatch batch error = %v, want unavailable=%v", err, tc.down)
+		}
 	}
 }

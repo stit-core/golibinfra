@@ -56,6 +56,13 @@ type StreamBus interface {
 
 func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error)
 
+// Проверка стримов публикатора на старте; реализует StreamBus из New/Module, фейки — нет.
+type StreamChecker interface {
+	CheckStreams(ctx context.Context, filters ...string) error
+}
+var ErrJetStreamDisabled error // NATS_JETSTREAM_ENABLED=false: любой метод StreamBus
+var ErrNoStream error          // CheckStreams: фильтр не накрыт целиком ни одним стримом
+
 type StreamMsg struct {
 	Subject       string
 	Payload       []byte
@@ -105,7 +112,8 @@ func HeadersFromContext(ctx context.Context) nats.Header // заголовки �
 // Для фейков шины: кладёт subject и заголовки так, как это делает кит.
 func ContextWithMessage(ctx context.Context, subject string, h nats.Header) context.Context
 
-// Накрывает ли фильтр (с * и >) конкретный subject — та же семантика, что у подписки.
+// Накрывает ли фильтр (с * и >) subject — та же семантика, что у подписки; subject-фильтр
+// накрыт, только если накрыт каждый подходящий под него subject.
 func SubjectMatches(filter, subject string) bool
 ```
 
@@ -318,6 +326,22 @@ for i, e := range results {
 `Client`) не задерживает этот. Общий потолок ожидания на сообщение —
 `NATS_JS_PUBLISH_ASYNC_TIMEOUT`; отмена `ctx` возвращает исход по каждому
 сообщению (уже подтверждённые — успех) и ошибку батча.
+
+### Проверка стримов публикатора
+
+Публикация в subject без стрима не получает `PubAck` (`jetstream.ErrNoStreamResponse`).
+Публикатор узнаёт об этом на старте, а не на первом событии:
+
+```go
+if checker, ok := sb.(natskit.StreamChecker); ok { // фейки шины стримов не знают
+	return checker.CheckStreams(ctx, "ORDERS.>") // ErrJetStreamDisabled или ErrNoStream
+}
+```
+
+Фильтр (subject или фильтр с `*`, `>`) накрыт, если subject одного стрима накрывает каждый
+подходящий под него subject: пересечения мало — стрим `ORDERS.created` фильтр `ORDERS.>` не
+накрывает. Без фильтров метод проверяет только, что JetStream включён. `outboxkit.Module` и
+`outboxkit.Instance` зовут его в `OnStart`.
 
 ## DLQ / NAK
 

@@ -3,11 +3,13 @@ package outboxkit
 import (
 	"context"
 	"fmt"
+	"slices"
 
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
@@ -25,14 +27,15 @@ type Outbox struct {
 	cfg    Config
 }
 
-// New собирает именованный outbox поверх готовых repo/transport/transactor.
-func New(name string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config) *Outbox {
+// New собирает именованный outbox поверх готовых repo/transport/transactor; в log Worker
+// пишет ERROR на каждый переход строки в dead (nil — logkit.Nop()).
+func New(name string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) *Outbox {
 	instr := newOutboxInstruments(name)
 	return &Outbox{
 		name:   name,
 		repo:   repo,
-		bus:    newBus(instr, repo),
-		worker: newWorker(instr, repo, tr, tx, cfg),
+		bus:    newBus(instr, repo, cfg.withDefaults().MaxPayloadBytes),
+		worker: newWorker(name, instr, repo, tr, tx, cfg, log),
 		instr:  instr,
 		cfg:    cfg,
 	}
@@ -95,7 +98,8 @@ func (o *Outbox) ReviveDead(ctx context.Context, filter ReviveFilter) (int64, er
 }
 
 type instanceOptions struct {
-	cfg *Config
+	cfg      *Config
+	subjects []string
 }
 
 // InstanceOption — опция сборки Instance.
@@ -107,10 +111,18 @@ func WithInstanceConfig(cfg Config) InstanceOption {
 	return func(o *instanceOptions) { o.cfg = &cfg }
 }
 
+// WithSubjects объявляет subject'ы событий инстанса (фильтры NATS с `*`, `>`, например
+// `user.>`): старт проверяет, что каждый целиком накрыт стримом JetStream, Publish отвергает
+// остальные (ErrSubjectNotDeclared). Без опции старт проверяет только, что JetStream включён.
+func WithSubjects(filters ...string) InstanceOption {
+	return func(o *instanceOptions) { o.subjects = append(o.subjects, filters...) }
+}
+
 // Instance собирает именованный outbox поверх таблицы table: store и схему
 // таблицы (в группу pgkit.MigrationsGroup) из RepositoryFactory, namespace'ный
-// транспорт, drain- и maintenance-job'ы в группе timerkit.Group, backlog-gauge'и.
-// *Outbox и Publisher — под fx-тегом `name:"<name>"`; рецепт — docs/usage.md.
+// транспорт, drain- и maintenance-job'ы в группе timerkit.Group, backlog-gauge'и и
+// проверку стримов на старте (checkStreams). *Outbox и Publisher — под fx-тегом
+// `name:"<name>"`; рецепт — docs/usage.md.
 func Instance(name, table string, opts ...InstanceOption) fx.Option {
 	if name == "" {
 		return fx.Error(fmt.Errorf("%w: outbox instance name is empty", ErrConfig))
@@ -119,12 +131,15 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 	for _, opt := range opts {
 		opt(&o)
 	}
+	if slices.Contains(o.subjects, "") {
+		return fx.Error(fmt.Errorf("%w: outbox instance %s: empty subject in WithSubjects", ErrConfig, name))
+	}
 	tag := `name:"` + name + `"`
 	return fx.Module(
 		"outboxkit:"+name,
 		fx.Provide(
 			fx.Annotate(
-				func(f RepositoryFactory, sb natskit.StreamBus, tx pgkit.Transactor, cfg Config) (*Outbox, error) {
+				func(f RepositoryFactory, sb natskit.StreamBus, tx pgkit.Transactor, cfg Config, log logkit.Logger) (*Outbox, error) {
 					repo, err := f.Repository(table)
 					if err != nil {
 						return nil, err
@@ -132,7 +147,9 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 					if o.cfg != nil {
 						cfg = *o.cfg
 					}
-					return New(name, repo, NewStreamTransportFor(sb, name), tx, cfg), nil
+					ob := New(name, repo, NewStreamTransportFor(sb, name), tx, cfg, log)
+					ob.bus.subjects = o.subjects
+					return ob, nil
 				},
 				fx.ResultTags(tag),
 			),
@@ -152,7 +169,24 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 			fx.ParamTags(tag, `optional:"true"`),
 		),
 		fx.Invoke(fx.Annotate(registerInstanceGauges, fx.ParamTags(``, tag))),
+		fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) { checkStreams(lc, sb, name, o.subjects) }),
 	)
+}
+
+// checkStreams вешает проверку старта: JetStream включён, subject'ы WithSubjects накрыты
+// стримом — иначе строки копились бы в таблице без PubAck при «здоровом» сервисе. Шина без
+// natskit.StreamChecker (фейк natstest) стримов не знает — проверки нет.
+func checkStreams(lc fx.Lifecycle, sb natskit.StreamBus, name string, subjects []string) {
+	checker, ok := sb.(natskit.StreamChecker)
+	if !ok {
+		return
+	}
+	lc.Append(fx.Hook{OnStart: func(ctx context.Context) error {
+		if err := checker.CheckStreams(ctx, subjects...); err != nil {
+			return fmt.Errorf("outboxkit: instance %s: %w", name, err)
+		}
+		return nil
+	}})
 }
 
 func registerInstanceGauges(lc fx.Lifecycle, o *Outbox) error {

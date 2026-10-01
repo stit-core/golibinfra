@@ -29,7 +29,7 @@ retry-политика бизнес-уровня, выбор subject'ов и str
 |---|---|
 | `bus.go` | `Bus`-интерфейс (`Publish`/`Subscribe`/`SubscribeQueue`), `natsBus` (Core NATS), `ErrTerminal`, дженерики `PublishJSON[T]`/`SubscribeJSON[T]`/`SubscribeQueueJSON[T]`, `decodeJSON`. |
 | `publish.go` | `PublishOption` и `PublishSpec` — общие опции публикации обоих транспортов (`WithMsgID`, `WithHeader`, `WithMetricSubject`). |
-| `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `ensureStreams`/`reconcileStream`, deadline + `InProgress` обработчика (`keepInProgress`), poison-обработка (`failStream`/`terminalReason`/`deadLetter`), `StreamMsg`, `SubjectMatches`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
+| `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `StreamChecker` (`CheckStreams` — стримы публикатора), `ensureStreams`/`reconcileStream`, deadline + `InProgress` обработчика (`keepInProgress`), poison-обработка (`failStream`/`terminalReason`/`deadLetter`), `StreamMsg`, `SubjectMatches`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
 | `subscription.go` | `Handler`, `Subscription` (`Unsubscribe`/`Drain`), внутренняя `subscription` и `inflightGroup` — учёт работающих обработчиков. |
 | `conn.go` | `Conn` — соединение + реестр подписок; `NewConn` (аутентификация, handlers nats.go → logkit), `Healthy`, graceful `Close`/`CloseContext`, `redactURL`, ctx обработчиков. |
 | `client.go` | `Client` — инстанс шины (соединение + `Bus` + `StreamBus`), `New`, `Probe` (`healthkit.Probe`). |
@@ -103,6 +103,15 @@ ctx → ошибка сразу). Время жизни подписки — `Su
   (`ErrStreamNameAlreadyInUse`) уходит в ту же сверку subjects.
 - `false` — кит только проверяет, что каждый стрим существует; иначе ошибка
   старта.
+
+### Проверка стримов публикатора
+
+`CheckStreams` (интерфейс `StreamChecker`) берёт `ListStreams` с фильтром subject: сервер
+отдаёт стримы, чьи subjects пересекаются с фильтром, а накрыть его целиком должен subject
+одного из них (`SubjectMatches` с фильтром в роли subject) — иначе `ErrNoStream` с фильтром в
+тексте. У `disabledStreamBus` — `ErrJetStreamDisabled`. Это отдельный интерфейс, а не метод
+`StreamBus`: фейки шины (`testkit/natstest`) стримов не знают, и их потребители проверку
+пропускают.
 
 ### Публикация
 

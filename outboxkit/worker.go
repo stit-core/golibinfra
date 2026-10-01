@@ -11,6 +11,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
@@ -24,6 +25,8 @@ const maxLastError = 1000
 
 // Worker — drain-сторона outbox'а: тик = транзакция list → publish → mark.
 type Worker struct {
+	name            string
+	log             logkit.Logger
 	repo            Repository
 	tr              Transport
 	tx              pgkit.Transactor
@@ -36,15 +39,21 @@ type Worker struct {
 	instr           *outboxInstruments
 }
 
-// NewWorker строит Worker; instance — значение label `instance`. Невалидные
-// поля cfg заменяются дефолтами (Config.Validate ловит их на старте).
-func NewWorker(instance string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config) *Worker {
-	return newWorker(newOutboxInstruments(instance), repo, tr, tx, cfg)
+// NewWorker строит Worker; instance — значение label `instance`, в log уходит ERROR на каждый
+// переход строки в dead (nil — logkit.Nop()). Невалидные поля cfg заменяются дефолтами
+// (Config.Validate ловит их на старте).
+func NewWorker(instance string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) *Worker {
+	return newWorker(instance, newOutboxInstruments(instance), repo, tr, tx, cfg, log)
 }
 
-func newWorker(instr *outboxInstruments, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config) *Worker {
+func newWorker(name string, instr *outboxInstruments, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) *Worker {
 	cfg = cfg.withDefaults()
+	if log == nil {
+		log = logkit.Nop()
+	}
 	return &Worker{
+		name:            name,
+		log:             log,
 		repo:            repo,
 		tr:              tr,
 		tx:              tx,
@@ -63,11 +72,11 @@ type failedMsg struct {
 	err error
 }
 
-// tickResult — исходы тика, которые становятся метриками только после коммита:
+// tickResult — исходы тика, которые становятся метриками и логом только после коммита:
 // до него транзакция может откатиться и факты не случатся.
 type tickResult struct {
 	published []Message
-	dead      []Message
+	dead      []failedMsg
 }
 
 // Run — тик в одной транзакции: запертые строки не видны другим репликам.
@@ -154,6 +163,8 @@ func (w *Worker) tick(opCtx, txCtx context.Context) (res tickResult, publishErr,
 
 // publishBatch — async-батч: все улетают разом, метятся только подтверждённые
 // PubAck'ом; неподтверждённые уходят на ретрай (дедуп по MsgID — без дублей).
+// Сбой брокера целиком (нет результатов по строкам или ErrUnavailable) попыток не тратит:
+// иначе простой брокера дольше бюджета увёл бы всю очередь в dead.
 func (w *Worker) publishBatch(ctx context.Context, msgs []Message, out []OutMsg) ([]Message, []failedMsg, error) {
 	pubStart := time.Now()
 	results, err := w.tr.PublishBatch(ctx, out)
@@ -164,6 +175,9 @@ func (w *Worker) publishBatch(ctx context.Context, msgs []Message, out []OutMsg)
 		if err == nil {
 			err = fmt.Errorf("outboxkit worker: transport returned %d results for %d messages", len(results), len(msgs))
 		}
+		for _, m := range msgs {
+			w.processed(ctx, m.Subject, "publish_error")
+		}
 		return nil, nil, fmt.Errorf("outboxkit worker: publish batch: %w", err)
 	}
 
@@ -171,15 +185,18 @@ func (w *Worker) publishBatch(ctx context.Context, msgs []Message, out []OutMsg)
 	var failed []failedMsg
 	firstErr := err
 	for i, m := range msgs {
-		if perr := results[i]; perr != nil {
-			w.processed(ctx, m.Subject, "publish_error")
-			failed = append(failed, failedMsg{m, perr})
-			if firstErr == nil {
-				firstErr = fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, perr)
-			}
+		perr := results[i]
+		if perr == nil {
+			acked = append(acked, m)
 			continue
 		}
-		acked = append(acked, m)
+		w.processed(ctx, m.Subject, "publish_error")
+		if !errors.Is(perr, ErrUnavailable) {
+			failed = append(failed, failedMsg{m, perr})
+		}
+		if firstErr == nil {
+			firstErr = fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, perr)
+		}
 	}
 	return acked, failed, firstErr
 }
@@ -196,7 +213,11 @@ func (w *Worker) publishOrdered(ctx context.Context, msgs []Message, out []OutMs
 	for i, m := range msgs {
 		if err := w.tr.Publish(ctx, out[i]); err != nil {
 			w.processed(ctx, m.Subject, "publish_error")
-			return acked, []failedMsg{{m, err}}, fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, err)
+			var failed []failedMsg
+			if !errors.Is(err, ErrUnavailable) {
+				failed = []failedMsg{{m, err}}
+			}
+			return acked, failed, fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, err)
 		}
 		acked = append(acked, m)
 	}
@@ -220,12 +241,12 @@ func (w *Worker) markAll(ctx context.Context, acked []Message) error {
 	return nil
 }
 
-func (w *Worker) recordFailures(ctx context.Context, failed []failedMsg) ([]Message, error) {
+func (w *Worker) recordFailures(ctx context.Context, failed []failedMsg) ([]failedMsg, error) {
 	if len(failed) == 0 {
 		return nil, nil
 	}
 	fs := make([]Failure, len(failed))
-	var dead []Message
+	var dead []failedMsg
 	for i, f := range failed {
 		isDead := w.maxAttempts > 0 && f.msg.Attempts+1 >= w.maxAttempts
 		fs[i] = Failure{
@@ -235,7 +256,7 @@ func (w *Worker) recordFailures(ctx context.Context, failed []failedMsg) ([]Mess
 			Dead:       isDead,
 		}
 		if isDead {
-			dead = append(dead, f.msg)
+			dead = append(dead, f)
 		}
 	}
 	if err := w.repo.RecordFailures(ctx, fs); err != nil {
@@ -267,16 +288,20 @@ func (w *Worker) retryAfter(attempts int) time.Duration {
 	return d
 }
 
-// recordCommitted эмитит счётчики состоявшихся исходов — после коммита тика.
+// recordCommitted эмитит счётчики и строки dead состоявшихся исходов — после коммита тика.
 func (w *Worker) recordCommitted(ctx context.Context, res tickResult) {
 	for _, m := range res.published {
 		w.processed(ctx, m.Subject, "published")
 	}
-	for _, m := range res.dead {
+	for _, f := range res.dead {
 		w.instr.deadTotal.Add(ctx, 1, metric.WithAttributes(
 			w.instr.instance,
-			attribute.String("subject", m.Subject),
+			attribute.String("subject", f.msg.Subject),
 		))
+		// Dead — событие больше не доставится: без telemetry метрика — no-op, строка лога остаётся.
+		w.log.Error(ctx, "outboxkit: event dead",
+			"instance", w.name, "id", f.msg.ID, "subject", f.msg.Subject,
+			"attempts", f.msg.Attempts+1, "err", f.err)
 	}
 }
 

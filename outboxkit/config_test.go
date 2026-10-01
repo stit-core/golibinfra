@@ -17,10 +17,11 @@ func TestNewConfig_Defaults(t *testing.T) {
 		BatchSize:       100,
 		Interval:        time.Second,
 		PublishMode:     outboxkit.PublishBatch,
-		MaxAttempts:     0,
+		MaxAttempts:     outboxkit.DefaultMaxAttempts,
 		TickTimeout:     30 * time.Second,
 		RetryBackoff:    time.Second,
 		RetryMaxBackoff: 5 * time.Minute,
+		MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes,
 	}
 	if cfg != want {
 		t.Fatalf("defaults = %+v, want %+v", cfg, want)
@@ -69,11 +70,17 @@ func TestNewConfig_BackoffFromEnv(t *testing.T) {
 
 func TestConfig_Validate(t *testing.T) {
 	base := outboxkit.Config{
-		BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch,
+		BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxAttempts: 1,
 		TickTimeout: 30 * time.Second, RetryBackoff: time.Second, RetryMaxBackoff: time.Minute,
+		MaxPayloadBytes: 1,
 	}
 	if err := base.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+	unlimited := base
+	unlimited.MaxAttempts = -1
+	if err := unlimited.Validate(); err != nil {
+		t.Fatalf("MaxAttempts=-1 (unlimited) rejected: %v", err)
 	}
 
 	bad := map[string]func(c outboxkit.Config) outboxkit.Config{
@@ -87,6 +94,10 @@ func TestConfig_Validate(t *testing.T) {
 		"backoff":     func(c outboxkit.Config) outboxkit.Config { c.RetryBackoff = -time.Second; return c },
 		"max backoff": func(c outboxkit.Config) outboxkit.Config { c.RetryMaxBackoff = -time.Second; return c },
 		"backoff cap": func(c outboxkit.Config) outboxkit.Config { c.RetryMaxBackoff = time.Millisecond; return c },
+		// Строка без предела попыток держала бы ordered-очередь вечно.
+		"max attempts":       func(c outboxkit.Config) outboxkit.Config { c.MaxAttempts = 0; return c },
+		"max attempts below": func(c outboxkit.Config) outboxkit.Config { c.MaxAttempts = -2; return c },
+		"max payload":        func(c outboxkit.Config) outboxkit.Config { c.MaxPayloadBytes = 0; return c },
 	}
 	for name, mutate := range bad {
 		if err := mutate(base).Validate(); !errors.Is(err, outboxkit.ErrConfig) {
@@ -100,5 +111,17 @@ func TestNewConfig_ZeroTickTimeoutIsErrConfig(t *testing.T) {
 	_, err := outboxkit.NewConfig()
 	if !errors.Is(err, outboxkit.ErrConfig) {
 		t.Fatalf("err = %v, want ErrConfig", err)
+	}
+}
+
+// OUTBOX_MAX_ATTEMPTS=0 — ошибка старта; «без предела» — только явное -1.
+func TestNewConfig_MaxAttemptsUnlimitedIsExplicit(t *testing.T) {
+	t.Setenv("OUTBOX_MAX_ATTEMPTS", "0")
+	if _, err := outboxkit.NewConfig(); !errors.Is(err, outboxkit.ErrConfig) {
+		t.Fatalf("OUTBOX_MAX_ATTEMPTS=0: err = %v, want ErrConfig", err)
+	}
+	t.Setenv("OUTBOX_MAX_ATTEMPTS", "-1")
+	if cfg, err := outboxkit.NewConfig(); err != nil || cfg.MaxAttempts != -1 {
+		t.Fatalf("OUTBOX_MAX_ATTEMPTS=-1: cfg.MaxAttempts = %d, err = %v; want -1, nil", cfg.MaxAttempts, err)
 	}
 }

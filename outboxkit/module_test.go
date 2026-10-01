@@ -3,6 +3,7 @@ package outboxkit_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -240,6 +241,102 @@ func TestInstance_EmptyNameRejected(t *testing.T) {
 	}
 }
 
+// instanceDeps — граф Instance: фабрика поверх repo, шина bus и конфиг batch.
+func instanceDeps(repo outboxkit.Repository, bus natskit.StreamBus) fx.Option {
+	return fx.Provide(
+		func() outboxkit.RepositoryFactory { return &fakeFactory{repo: repo} },
+		func() natskit.StreamBus { return bus },
+		func() pgkit.Transactor { return &pgtest.Recorder{} },
+		func() outboxkit.Config {
+			return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+		},
+	)
+}
+
+// Subject'ы инстанса старт сверяет со стримами, а Publish вне них отвергает: иначе строки
+// копились бы без PubAck при здоровом сервисе.
+func TestInstance_WithSubjectsChecksStreamsOnStart(t *testing.T) {
+	collect := collectMetrics(t)
+	repo := &fakeRepo{}
+	bus := &checkingBus{}
+	var pub outboxkit.Publisher
+	app := fxtest.New(t,
+		instanceDeps(repo, bus),
+		scheduler(),
+		outboxkit.Instance("orders", "outbox_orders", outboxkit.WithSubjects("order.>", "invoice.*")),
+		fx.Invoke(fx.Annotate(func(p outboxkit.Publisher) { pub = p }, fx.ParamTags(`name:"orders"`))),
+	)
+	app.RequireStart()
+	defer app.RequireStop()
+
+	if want := [][]string{{"order.>", "invoice.*"}}; !slices.EqualFunc(bus.checked, want, slices.Equal[[]string]) {
+		t.Fatalf("checked = %v, want %v", bus.checked, want)
+	}
+	ctx := pgkit.WithTestTx(context.Background())
+	for _, subject := range []string{"order.created", "order.item.added", "invoice.paid"} {
+		if err := pub.Publish(ctx, subject, struct{}{}); err != nil {
+			t.Fatalf("Publish(%s): %v", subject, err)
+		}
+	}
+	for _, subject := range []string{"user.created", "invoice.paid.late", "order"} {
+		if err := pub.Publish(ctx, subject, struct{}{}); !errors.Is(err, outboxkit.ErrSubjectNotDeclared) {
+			t.Fatalf("Publish(%s): err = %v, want ErrSubjectNotDeclared", subject, err)
+		}
+	}
+	if len(repo.inserted) != 3 {
+		t.Fatalf("inserted = %d, want 3", len(repo.inserted))
+	}
+	attrs := map[string]string{"instance": "orders", "status": "undeclared_subject"}
+	if got := counterValue(collect(), "outbox_events_inserted_total", attrs); got != 3 {
+		t.Fatalf("undeclared_subject counter = %d, want 3", got)
+	}
+}
+
+// Выключенный JetStream и subject'ы без стрима — ошибка старта с именем инстанса, а не
+// тики, которые падают каждую секунду, пока события копятся в таблице.
+func TestOutbox_StreamsCheckedOnStart(t *testing.T) {
+	disabled, err := natskit.NewStreamBus(nil, nil, natskit.Config{})
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+	noStream := &checkingBus{err: fmt.Errorf("%w: order.>", natskit.ErrNoStream)}
+	cases := map[string]struct {
+		graph fx.Option
+		want  error
+		name  string
+	}{
+		"module, JetStream disabled": {
+			fx.Options(deps(&fakeRepo{}, disabled, outboxkit.Config{BatchSize: 10, Interval: time.Second}), outboxkit.Module),
+			natskit.ErrJetStreamDisabled, outboxkit.DefaultInstance,
+		},
+		"instance, JetStream disabled": {
+			fx.Options(instanceDeps(&fakeRepo{}, disabled), outboxkit.Instance("orders", "outbox_orders")),
+			natskit.ErrJetStreamDisabled, "orders",
+		},
+		"instance, no stream": {
+			fx.Options(instanceDeps(&fakeRepo{}, noStream), outboxkit.Instance("orders", "outbox_orders", outboxkit.WithSubjects("order.>"))),
+			natskit.ErrNoStream, "orders",
+		},
+	}
+	for name, tc := range cases {
+		t.Run(name, func(t *testing.T) {
+			app := fx.New(fx.NopLogger, tc.graph, scheduler())
+			err := app.Start(context.Background())
+			defer func() { _ = app.Stop(context.Background()) }()
+			if !errors.Is(err, tc.want) || !strings.Contains(err.Error(), "instance "+tc.name) {
+				t.Fatalf("start err = %v, want %v naming instance %s", err, tc.want, tc.name)
+			}
+		})
+	}
+}
+
+func TestInstance_EmptySubjectRejected(t *testing.T) {
+	err := fx.New(fx.NopLogger, outboxkit.Instance("orders", "outbox_orders", outboxkit.WithSubjects("order.>", ""))).Err()
+	if !errors.Is(err, outboxkit.ErrConfig) {
+		t.Fatalf("err = %v, want ErrConfig", err)
+	}
+}
+
 func TestInstance_ConfigOverride(t *testing.T) {
 	repo := &fakeRepo{}
 	factory := &fakeFactory{repo: repo}
@@ -277,7 +374,7 @@ func TestOutbox_ReviveDead(t *testing.T) {
 	collect := collectMetrics(t)
 	repo := &fakeRepo{revived: 3}
 	o := outboxkit.New("orders", repo, &fakeTransport{}, &pgtest.Recorder{},
-		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
+		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
 
 	filter := outboxkit.ReviveFilter{IDs: []int64{1, 2, 3}, Subject: "order.created"}
 	n, err := o.ReviveDead(context.Background(), filter)
@@ -297,7 +394,7 @@ func TestOutbox_ReviveDead(t *testing.T) {
 
 func TestOutbox_ReviveDeadUnsupported(t *testing.T) {
 	o := outboxkit.New("orders", bareRepo{repo: &fakeRepo{}}, &fakeTransport{}, &pgtest.Recorder{},
-		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
+		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
 
 	if _, err := o.ReviveDead(context.Background(), outboxkit.ReviveFilter{}); !errors.Is(err, outboxkit.ErrNotSupported) {
 		t.Fatalf("err = %v, want ErrNotSupported", err)
@@ -325,7 +422,7 @@ func TestOutbox_ReviveDeadUnsupported(t *testing.T) {
 func TestOutbox_ReviveDeadError(t *testing.T) {
 	repo := &fakeRepo{reviveErr: errors.New("db down")}
 	o := outboxkit.New("orders", repo, &fakeTransport{}, &pgtest.Recorder{},
-		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
+		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
 
 	if _, err := o.ReviveDead(context.Background(), outboxkit.ReviveFilter{}); err == nil {
 		t.Fatal("expected error from repository")
@@ -372,7 +469,7 @@ func TestInstanceRecipeValidates(t *testing.T) {
 		natskit.Module(""),
 		timerkit.Module,
 		pgstore.FactoryModule,
-		outboxkit.Instance("orders", "outbox_orders"),
+		outboxkit.Instance("orders", "outbox_orders", outboxkit.WithSubjects("orders.>")),
 		fx.Invoke(fx.Annotate(func(outboxkit.Publisher) {}, fx.ParamTags(`name:"orders"`))),
 	)
 	if err != nil {

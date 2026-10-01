@@ -30,9 +30,13 @@ in-memory фейках (`testkit/pgtest.Identity` / `Recorder` как транз
   публикации не мешает пометить уже подтверждённые строки (фаза mark/commit идёт
   на `context.WithoutCancel`);
 - ошибки хранилища (list / mark / record failures) доходят наружу обёрнутыми;
-- poison: при `MaxAttempts > 0` строка, достигшая порога, помечается
-  `Failure.Dead`; при `MaxAttempts = 0` dead не наступает никогда; пауза
-  `Failure.RetryAfter` растёт экспоненциально и упирается в потолок;
+- poison: строка, достигшая `MaxAttempts`, помечается `Failure.Dead`, `MaxAttempts = 0`
+  литерала — `DefaultMaxAttempts`, `-1` — dead не наступает никогда; переход — ERROR `outboxkit: event dead` с координатами
+  строки (`testkit/logtest`), и только после коммита тика; пауза `Failure.RetryAfter` растёт
+  экспоненциально и упирается в потолок;
+- сбой брокера целиком — батч без результатов, `ErrUnavailable` у строки батча и в
+  `ordered` — даёт `publish_error`, но не `RecordFailures`; неудача строки рядом попытку
+  тратит;
 - `last_error` режется по границе руны и остаётся валидным UTF-8;
 - zero-value `Config` даёт рабочий воркер (`BatchSize` — дефолт, не `LIMIT 0`);
 - счётчики `published`/`dead` эмитятся только после коммита тика, `mark_error` —
@@ -43,7 +47,11 @@ in-memory фейках (`testkit/pgtest.Identity` / `Recorder` как транз
 `fx`-сборки (`outboxkit.Module`, `outboxkit.Instance`) поднимаются через
 `fxtest`: резолвятся `Publisher`/`Worker`, в группе `timerkit.Group` лежат
 drain- и maintenance-job'ы, backlog-gauge'и появляются на старте и исчезают
-после `Unregister` на стопе.
+после `Unregister` на стопе. Проверка старта: выключенный JetStream (заглушка
+`natskit.NewStreamBus` с `Config{}`) валит старт `Module` и `Instance`, фейк с
+`natskit.StreamChecker` получает фильтры `WithSubjects` и его `ErrNoStream` валит старт с
+именем инстанса; `Publish` вне объявленных subject'ов — `ErrSubjectNotDeclared`, JSON сверх
+предела — `ErrPayloadTooLarge` (статусы `undeclared_subject`, `payload_too_large`).
 
 Минимальный фейк-транспорт реализует два метода порта:
 
@@ -52,7 +60,8 @@ func (t *fakeTransport) Publish(ctx context.Context, m outboxkit.OutMsg) error
 func (t *fakeTransport) PublishBatch(ctx context.Context, msgs []outboxkit.OutMsg) ([]error, error)
 ```
 
-`results[i] == nil` означает «i-е сообщение подтверждено».
+`results[i] == nil` означает «i-е сообщение подтверждено»; ошибка, обёрнутая в
+`outboxkit.ErrUnavailable`, — сбой брокера, попытку строки она не тратит.
 
 ## Транспорт: дедуп Msg-Id
 
@@ -60,7 +69,9 @@ func (t *fakeTransport) PublishBatch(ctx context.Context, msgs []outboxkit.OutMs
 захватывает опубликованные `StreamMsg`: `NewStreamTransport` отдаёт голый id
 (`"42"`), `NewStreamTransportFor(sb, ns)` — namespace'ный (`"account:42"`), один
 id в двух namespace'ах даёт разные `Msg-Id` (иначе stream-дедуп уронил бы второй
-факт), а `MetricSubject` равен имени инстанса.
+факт), а `MetricSubject` равен имени инстанса. Ошибки соединения, JetStream, таймаута
+`PubAck` и `ctx` транспорт оборачивает в `ErrUnavailable` — у одиночной публикации, у строки
+батча и у батча целиком; «нет стрима» и `ErrMaxPayload` остаются неудачей строки.
 
 ## pgstore: testcontainers
 
@@ -83,6 +94,8 @@ id в двух namespace'ах даёт разные `Msg-Id` (иначе stream-
   возвращает её;
 - `ReviveDead`: фильтр по subject возвращает dead-строки в очередь и сбрасывает
   `attempts`, чужие строки остаются dead;
+- запас предела payload: JSON `[0,0,…]` у `DefaultMaxPayloadBytes` в JSONB-представлении,
+  которое публикует воркер, с заголовками укладывается в `max_payload` NATS (1 MiB);
 - обратимость миграций `Migrations` и `TableMigrations` (`testkit.MigrationLadder`:
   up → down → up по версиям, down до нуля и снова up со сверкой схемы);
 - партиционирование: `MessageRef` бьёт UPDATE'ами только по своим партициям,

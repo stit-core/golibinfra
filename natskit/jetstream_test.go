@@ -33,6 +33,30 @@ func TestStreamBus_Disabled(t *testing.T) {
 	if _, err := sb.SubscribeStream(context.Background(), "S", "x.y", "d", func(context.Context, []byte) error { return nil }); !errors.Is(err, natskit.ErrJetStreamDisabled) {
 		t.Fatalf("SubscribeStream err = %v, want ErrJetStreamDisabled", err)
 	}
+	if err := sb.(natskit.StreamChecker).CheckStreams(context.Background()); !errors.Is(err, natskit.ErrJetStreamDisabled) {
+		t.Fatalf("CheckStreams err = %v, want ErrJetStreamDisabled", err)
+	}
+}
+
+// Публикатор узнаёт на старте, что его subject'ы не попадут в стрим: пересечения со
+// стримом мало, фильтр накрыт целиком или это ErrNoStream.
+func TestStreamBus_CheckStreams(t *testing.T) {
+	stream := nameFor(t)
+	checker := newStreamBus(t, jsConfig(stream)).(natskit.StreamChecker)
+	ctx := context.Background()
+	for _, filter := range []string{stream + ".>", stream + ".events.*", subj(t, "created")} {
+		if err := checker.CheckStreams(ctx, filter); err != nil {
+			t.Errorf("CheckStreams(%s) = %v, want covered", filter, err)
+		}
+	}
+	for _, filter := range []string{stream, stream + "_other.>", ">"} {
+		if err := checker.CheckStreams(ctx, filter); !errors.Is(err, natskit.ErrNoStream) || !strings.Contains(err.Error(), filter) {
+			t.Errorf("CheckStreams(%s) = %v, want ErrNoStream naming the filter", filter, err)
+		}
+	}
+	if err := checker.CheckStreams(ctx); err != nil {
+		t.Errorf("CheckStreams() with JetStream enabled = %v", err)
+	}
 }
 
 // Невалидный конфиг не доживает до первой публикации.

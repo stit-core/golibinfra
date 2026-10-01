@@ -268,6 +268,21 @@ func (b *capturingBus) msgs() []natskit.StreamMsg {
 	return append([]natskit.StreamMsg(nil), b.batch...)
 }
 
+// checkingBus — capturingBus с natskit.StreamChecker: запоминает фильтры проверки старта
+// и отвечает err.
+type checkingBus struct {
+	capturingBus
+	err     error
+	checked [][]string
+}
+
+func (b *checkingBus) CheckStreams(_ context.Context, filters ...string) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.checked = append(b.checked, filters)
+	return b.err
+}
+
 // collectMetrics ставит ManualReader глобальным провайдером; инструменты кита
 // создаются в конструкторах, поэтому вызывается до них.
 func collectMetrics(t *testing.T) func() metricdata.ResourceMetrics {

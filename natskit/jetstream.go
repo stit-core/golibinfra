@@ -25,6 +25,9 @@ import (
 // ErrJetStreamDisabled — обращение к StreamBus при NATS_JETSTREAM_ENABLED=false.
 var ErrJetStreamDisabled = errors.New("natskit: jetstream is disabled")
 
+// ErrNoStream — subject'ы не накрыты ни одним стримом JetStream: публикация в них не получит PubAck.
+var ErrNoStream = errors.New("natskit: no stream covers subjects")
+
 // Заголовки DLQ-сообщения: контекст мёртвого сообщения для разбора.
 const (
 	HeaderDLQOrigin     = "Natskit-Dlq-Origin"
@@ -66,6 +69,14 @@ type StreamMsg struct {
 
 func (m StreamMsg) spec() PublishSpec {
 	return PublishSpec{MsgID: m.MsgID, Header: m.Header, MetricSubject: m.MetricSubject}
+}
+
+// StreamChecker — проверка стримов публикатора на старте; её реализует StreamBus natskit
+// (natskit.New, Module), фейки шины — нет.
+type StreamChecker interface {
+	// CheckStreams — JetStream включён (иначе ErrJetStreamDisabled) и каждый filter — subject
+	// или фильтр с `*`, `>` — целиком накрыт subject'ами одного стрима (иначе ErrNoStream).
+	CheckStreams(ctx context.Context, filters ...string) error
 }
 
 // StreamBus — JetStream: персист, дедуп по Nats-Msg-Id и durable-консьюмеры с
@@ -110,6 +121,10 @@ func (disabledStreamBus) PublishStreamBatch(context.Context, []StreamMsg) ([]err
 
 func (disabledStreamBus) SubscribeStream(context.Context, string, string, string, Handler) (Subscription, error) {
 	return nil, ErrJetStreamDisabled
+}
+
+func (disabledStreamBus) CheckStreams(context.Context, ...string) error {
+	return ErrJetStreamDisabled
 }
 
 // NewStreamBus собирает JetStream-шину и декларирует стримы конфига; при
@@ -294,6 +309,35 @@ func parseRetention(s string) (jetstream.RetentionPolicy, error) {
 	default:
 		return 0, fmt.Errorf("%w: NATS_JS_RETENTION: unknown retention policy %q", ErrConfig, s)
 	}
+}
+
+// CheckStreams — стрим, который накрывает каждый filter целиком (StreamChecker).
+func (b *jsBus) CheckStreams(ctx context.Context, filters ...string) error {
+	for _, filter := range filters {
+		if err := b.covered(ctx, filter); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// covered: сервер отбирает стримы, чьи subject'ы пересекаются с filter, а накрыть его целиком
+// должен subject одного из них — пересечения мало (`user.events.a` пересекает `user.>`).
+func (b *jsBus) covered(ctx context.Context, filter string) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel() // досрочный выход не оставляет горутину листинга ждать читателя
+	streams := b.js.ListStreams(ctx, jetstream.WithStreamListSubject(filter))
+	for info := range streams.Info() {
+		for _, subject := range info.Config.Subjects {
+			if SubjectMatches(subject, filter) {
+				return nil
+			}
+		}
+	}
+	if err := streams.Err(); err != nil {
+		return fmt.Errorf("natskit: streams for %s: %w", filter, err)
+	}
+	return fmt.Errorf("%w: %s", ErrNoStream, filter)
 }
 
 func (b *jsBus) PublishStream(ctx context.Context, subject string, payload []byte, opts ...PublishOption) error {
@@ -674,8 +718,9 @@ func truncate(s string, limit int) string {
 	return s[:limit]
 }
 
-// SubjectMatches сообщает, накрывает ли filter (с wildcard'ами `*` и `>`)
-// конкретный subject — та же семантика, что у фильтра подписки NATS.
+// SubjectMatches сообщает, накрывает ли filter (с wildcard'ами `*` и `>`) subject — та же
+// семантика, что у фильтра подписки NATS. subject — конкретный или сам фильтр: тогда true,
+// только если filter накрывает каждый подходящий под него subject.
 func SubjectMatches(filter, subject string) bool {
 	f := strings.Split(filter, ".")
 	s := strings.Split(subject, ".")
@@ -683,7 +728,7 @@ func SubjectMatches(filter, subject string) bool {
 		if token == ">" {
 			return i < len(s)
 		}
-		if i >= len(s) {
+		if i >= len(s) || s[i] == ">" {
 			return false
 		}
 		if token != "*" && token != s[i] {

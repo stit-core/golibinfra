@@ -17,10 +17,11 @@ public API**: их изменение — breaking change; выпускаетс�
 | `OUTBOX_BATCH_SIZE` | `BatchSize` | `int` (`>= 1`) | `100` | Сколько строк `Worker` вычитывает за один тик (`LIMIT`). |
 | `OUTBOX_INTERVAL` | `Interval` | `time.Duration` (`> 0`) | `1s` | Период тика `Worker`'а (интервал `timerkit.Job`). |
 | `OUTBOX_PUBLISH_MODE` | `PublishMode` | `string` (`batch`\|`ordered`) | `batch` | Режим публикации (см. ниже). Иное значение → `ErrConfig`. |
-| `OUTBOX_MAX_ATTEMPTS` | `MaxAttempts` | `int` | `0` | Сколько попыток публикации даётся строке до пометки dead. `<= 0` — без ограничения. |
+| `OUTBOX_MAX_ATTEMPTS` | `MaxAttempts` | `int` (`>= 1` или `-1`) | `25` | После стольких неудачных публикаций строка помечается dead (с дефолтами backoff — ≈ 1 ч 24 мин, см. ниже). Сбой брокера целиком попытку не тратит. `-1` — без предела, `0` — `ErrConfig`. |
 | `OUTBOX_TICK_TIMEOUT` | `TickTimeout` | `time.Duration` (`> 0`) | `30s` | Дедлайн одного тика: транзакция + публикация. `0` — `ErrConfig`. |
 | `OUTBOX_RETRY_BACKOFF` | `RetryBackoff` | `time.Duration` (`>= 0`) | `1s` | Пауза перед первым ретраем строки; каждая следующая неудача удваивает её. `0` — ретрай на ближайшем тике. |
 | `OUTBOX_RETRY_MAX_BACKOFF` | `RetryMaxBackoff` | `time.Duration` (`>= RetryBackoff`) | `5m` | Потолок паузы между попытками. `0` — без потолка. |
+| `OUTBOX_MAX_PAYLOAD_BYTES` | `MaxPayloadBytes` | `int` (`>= 1`) | `524288` | Предел JSON-тела события: больше — `outboxkit.ErrPayloadTooLarge` из `Publish` в транзакции домена. Дефолт — половина `max_payload` NATS (см. ниже). |
 
 `pgstore.Config` (Postgres-store, `pgstore.NewConfig`):
 
@@ -30,9 +31,11 @@ public API**: их изменение — breaking change; выпускаетс�
 | `OUTBOX_REQUIRE_TX` | `RequireTx` | `bool` | `true` | `Insert` вне транзакции — `outboxkit.ErrNoTx` (tx-strict insert guard). |
 
 `outboxkit` не имеет собственного эндпоинта брокера/БД. Публикация в JetStream
-требует `natskit` с `NATS_JETSTREAM_ENABLED=true` и стримом, покрывающим subject'ы
-outbox'а (`NATS_URL`); хранилище — тот же Postgres (версии 14 или новее), что
-`PG_DSN` (co-located, см. [architecture.md](architecture.md)).
+требует `natskit` с `NATS_JETSTREAM_ENABLED=true` (выключенный JetStream — ошибка старта
+`outboxkit.Module` и `outboxkit.Instance`) и стримом, покрывающим subject'ы outbox'а
+(`NATS_URL`; у `Instance` с `WithSubjects` покрытие проверяет старт); хранилище — тот же
+Postgres (версии 14 или новее), что `PG_DSN` (co-located, см.
+[architecture.md](architecture.md)).
 
 ## Тюнинг publish-mode
 
@@ -60,25 +63,41 @@ mark/commit сверху отводится ещё 5 секунд на неот�
 `PG_IDLE_IN_TX_SESSION_TIMEOUT` (`pgkit`, default `60s`): во время ожидания
 брокера транзакция простаивает, и Postgres оборвёт сессию по этому лимиту.
 Таймаут ожидания `PubAck` внутри async-батча задаётся на стороне `natskit`
-(`NATS_JS_PUBLISH_ASYNC_TIMEOUT`, потерянный ack → ошибка публикации строки) —
-`outboxkit` только передаёт `ctx` с дедлайном тика.
+(`NATS_JS_PUBLISH_ASYNC_TIMEOUT`; потерянный ack — сбой брокера, попытку строки он не
+тратит) — `outboxkit` только передаёт `ctx` с дедлайном тика.
 
 ## Тюнинг max-attempts и backoff
 
-- `OUTBOX_MAX_ATTEMPTS = 0` (default) — строка ретраится бесконечно. Уместно,
-  когда сбой публикации — это временная недоступность брокера и терять событие
-  нельзя.
-- `OUTBOX_MAX_ATTEMPTS = N > 0` — после `N` неудачных попыток строка помечается
-  dead (`dead_at`), перестаёт вычитываться и не блокирует очередь (важно для
-  `ordered`). Эмитится `outbox_events_dead_total`; вернуть строки в очередь —
-  `Outbox.ReviveDead` (см. [usage.md](usage.md)).
+- Попытка — неудача публикации **строки**: брокер отверг сообщение, у subject нет стрима.
+  После `OUTBOX_MAX_ATTEMPTS` таких неудач (default `25`) строка помечается dead
+  (`dead_at`), перестаёт вычитываться и не блокирует очередь (важно для `ordered`). Переход
+  виден ERROR-записью `outboxkit: event dead` и `outbox_events_dead_total`; вернуть строки в
+  очередь — `Outbox.ReviveDead` (см. [usage.md](usage.md)).
+- `OUTBOX_MAX_ATTEMPTS=-1` — без предела: строка не становится dead никогда. Это политика
+  «не терять и не переставлять» для `ordered`: poison держит очередь, пока причину не починят,
+  и виден по `publish_error`, `outbox_lag_seconds` и ERROR `timerkit: job error` каждого тика.
+- Сбой брокера целиком — соединение, выключенный в рантайме JetStream, таймаут `PubAck`,
+  дедлайн тика — попытку не тратит: строка остаётся без паузы и уходит в следующий тик, в
+  метрике — `publish_error`. Простой брокера любой длины не уводит очередь в dead.
 - Пауза между попытками растёт экспоненциально:
-  `OUTBOX_RETRY_BACKOFF × 2^attempts`, но не выше `OUTBOX_RETRY_MAX_BACKOFF`. С
-  дефолтами (`1s`, `5m`) десять попыток растянуты примерно на 25 минут, а не на
-  10 секунд. Планируя `OUTBOX_MAX_ATTEMPTS`, считайте бюджет ожидания как сумму
-  пауз, а не `N × OUTBOX_INTERVAL`.
+  `OUTBOX_RETRY_BACKOFF × 2^attempts`, но не выше `OUTBOX_RETRY_MAX_BACKOFF`. Бюджет — сумма
+  пауз между попытками, а не `N × OUTBOX_INTERVAL`: с дефолтами (`1s`, `5m`, `25`) это 24
+  паузы — 1 + 2 + … + 256 = 511 с у первых девяти и 15 × 300 с — ≈ 1 ч 24 мин от первой
+  неудачи до dead (десять попыток — 9 пауз, 8 мин 31 с). Пауза отсчитывается от начала
+  транзакции тика (`NOW()`), строку берёт первый тик после неё — к каждой паузе добавляется
+  до `OUTBOX_INTERVAL`.
 - `OUTBOX_RETRY_BACKOFF=0` выключает паузу: строка возвращается в выборку
   ближайшим тиком.
+
+## Тюнинг payload
+
+`OUTBOX_MAX_PAYLOAD_BYTES` меряет JSON, который сериализует `Bus`: событие сверх предела
+`Publish` отвергает в транзакции домена (`ErrPayloadTooLarge`), а не оставляет строкой, которую
+брокер не примет никогда. Воркер публикует строку в представлении хранилища: JSONB `pgstore`
+длиннее JSON на пробел после каждого `:` и `,` — до 1,5 раза у массива однозначных чисел, — а
+к телу идут заголовки (`Nats-Msg-Id`, trace). Поэтому дефолт — половина `max_payload` NATS
+(1 MiB у сервера по умолчанию); поднимая предел, держите его не выше половины `max_payload`
+сервера.
 
 ## Тюнинг retention
 

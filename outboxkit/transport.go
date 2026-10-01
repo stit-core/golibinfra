@@ -2,14 +2,20 @@ package outboxkit
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"strconv"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"git.stit.tech/stit-core/golibinfra/natskit"
 )
 
 // Transport — порт публикации в брокер. Контракт: возврат без ошибки — только
 // после подтверждённого персиста (JetStream PubAck), иначе Worker переотправит
-// событие; results[i] == nil = i-е сообщение батча подтверждено.
+// событие; results[i] == nil = i-е сообщение батча подтверждено. Сбой брокера целиком —
+// не строки — обёрнут в ErrUnavailable: попытку строки он не тратит.
 type Transport interface {
 	Publish(ctx context.Context, msg OutMsg) error
 	PublishBatch(ctx context.Context, msgs []OutMsg) (results []error, err error)
@@ -57,10 +63,10 @@ func (t streamTransport) msgID(id int64) string {
 }
 
 func (t streamTransport) Publish(ctx context.Context, m OutMsg) error {
-	return t.sb.PublishStream(ctx, m.Subject, m.Payload,
+	return unavailable(t.sb.PublishStream(ctx, m.Subject, m.Payload,
 		natskit.WithMsgID(t.msgID(m.ID)),
 		natskit.WithMetricSubject(t.metricSubject),
-	)
+	))
 }
 
 func (t streamTransport) PublishBatch(ctx context.Context, msgs []OutMsg) ([]error, error) {
@@ -73,5 +79,33 @@ func (t streamTransport) PublishBatch(ctx context.Context, msgs []OutMsg) ([]err
 			MetricSubject: t.metricSubject,
 		}
 	}
-	return t.sb.PublishStreamBatch(ctx, sm)
+	results, err := t.sb.PublishStreamBatch(ctx, sm)
+	for i := range results {
+		results[i] = unavailable(results[i])
+	}
+	return results, unavailable(err)
+}
+
+// brokerDown — ошибки брокера целиком, а не строки: соединение, JetStream, таймаут PubAck,
+// дедлайн тика. «Нет стрима для subject» сюда не входит: это строка или конфиг, а стримы
+// subject'ов инстанса проверяет старт.
+var brokerDown = []error{
+	natskit.ErrJetStreamDisabled, context.Canceled, context.DeadlineExceeded,
+	nats.ErrConnectionClosed, nats.ErrConnectionDraining, nats.ErrConnectionReconnecting,
+	nats.ErrDisconnected, nats.ErrNoServers, nats.ErrTimeout,
+	jetstream.ErrConnectionClosed, jetstream.ErrAsyncPublishTimeout, jetstream.ErrTooManyStalledMsgs,
+	jetstream.ErrJetStreamNotEnabled, jetstream.ErrJetStreamNotEnabledForAccount,
+	jetstream.ErrJetStreamPublisherClosed, jetstream.ErrServerShutdown,
+}
+
+func unavailable(err error) error {
+	if err == nil {
+		return nil
+	}
+	for _, down := range brokerDown {
+		if errors.Is(err, down) {
+			return fmt.Errorf("%w: %w", ErrUnavailable, err)
+		}
+	}
+	return err
 }

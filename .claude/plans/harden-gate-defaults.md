@@ -20,12 +20,9 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   дефект есть), тяжёлые прогоны — последовательно.
 - **Гейт** (S1–S5, образец — шаблон): `GATE_STEPS` с integration и guard в `Makefile`,
   `scripts/gate-clean.sh`, pre-push, deny и guard `.claude/`, `testkit.MigrationLadder`, `scripts/envdoc`.
-- **Код до B3.** `HTTP_DOCS_ENABLED` по умолчанию `true` (`httpkit/server.go`), у outbox
-  `OUTBOX_MAX_ATTEMPTS=0` — без предела (`outboxkit/config.go`).
 - **Потребитель** — шаблон, `fix-reference-code` S9 (bump v1.3.0): снимает `publicOperations`,
   client-IP middleware и `identity.WithIP`. Полный Handoff шаблону — в `harden-authn-release`.
-- **Правила шага:** README и `docs/` кита — тем же коммитом (`make envdoc-check`); breaking — `!` и
-  `BREAKING CHANGE:`.
+- **Правила шага:** доки кита — тем же коммитом (`make envdoc-check`); breaking — `!`, `BREAKING CHANGE:`.
 
 ## Не входит
 - Партия 3 (v1.4.0) — `backlog.md`, триггер «партия 3»; B4–B8, high из D, кандидаты C и релиз
@@ -101,12 +98,14 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   `httpkit-a/run.sh <rev> contract security` → H08, H14 PASS
   - Подтверждено: на кандидате S9 H08 (docs вкл. и выкл.) и H14 PASS; прочие исходы групп contract,
     security, api, lifecycle — как на v1.2.0, кроме закрытых B1–B3; мутанты S9 — 2 из 2 убиты
-- [ ] **AC11** — `OUTBOX_MAX_ATTEMPTS` по умолчанию конечен (бюджет ретраев — в доке); переход в dead
+- [x] **AC11** — `OUTBOX_MAX_ATTEMPTS` по умолчанию конечен (бюджет ретраев — в доке); переход в dead
   — ERROR `outboxkit: event dead` с instance, id, subject, attempts; выключенный JetStream — ошибка
   старта outbox; сбой брокера на весь батч пишет `publish_error` и попыток не сжигает; payload
   сверх предела отвергается в `Bus.Publish`. Проверка:
   `M/kits-audit/correctness-security/run.sh <rev> outbox-nats` → E17 PASS;
   `M/kits-audit/fx-observability/run.sh <rev> obs` → KO17 PASS; тесты outboxkit с Docker → PASS
+  - Подтверждено: на кандидате S10 E17 и KO17 PASS (прочие исходы `obs` и `compare.py` — как на
+    d62b2e6); тесты outboxkit и natskit с Docker — PASS; `M/hgd2/s10_mutants.py` — 28 из 28 убиты
 
 ## Шаги
 ### Гейт
@@ -115,14 +114,12 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Проверка: AC1 → выполнен · Закрывает: AC1 · Зависит от: —
   - Сделано: `RequireDocker` без Docker — `t.Fatalf` (RED на старом коде), `GATE_STEPS` с `test-full`
 - [x] **S2** — Гейт не зависит от окружения и чужого checkout'а: guard переменных и флагов, охват в
-  итоговой строке, кеш golangci-lint в checkout'е, `gate-clean` в чистом окружении с холодным кешем
-  (KGATE-02, KGATE-04)
+  итоговой строке, кеш lint в checkout'е, `gate-clean` в чистом окружении с холодным кешем (KGATE-02, -04)
   - Проверка: AC2, AC3 → выполнены · Закрывает: AC2, AC3 · Зависит от: S1
   - Сделано: guard `gate_bad`, шаги через `GATE`, кеш lint в `.cache/`, `gate-clean` без make-env
 - [x] **S3** — Рабочие хуки: `scripts/git-hooks/pre-push` по образцу шаблона (чистое дерево, пушимый
   коммит = HEAD, окружение гейта вычищено), `make hooks` туда, `make check` требует активный
-  pre-push, `.claude/settings.json` с deny и guard обходов, тексты обвязки (KGATE-03, KGATE-05,
-  KGATE-11)
+  pre-push, `.claude/settings.json` с deny и guard обходов, тексты обвязки (KGATE-03, -05, -11)
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S2
   - Сделано: `scripts/git-hooks/pre-push`, `make hooks`, `hooks-check`, deny и `guard-bash.sh`
 - [x] **S4** — Хелпер лесенки миграций в testkit и её тест на каждый kit-owned источник (KGATE-06)
@@ -153,19 +150,18 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - [x] **S9** — B3 в httpkit: docs выключены по умолчанию, `$schema` и `Link` сняты, у `handlertest` —
   тот же дефолт (KSEC-11)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S7
-  - Сделано: `HTTP_DOCS_ENABLED=false`, `CreateHooks` huma сняты (link-трансформер); handlertest —
-    через `httpkit.NewConfig()`; доки
-- [ ] **S10** — B3 в outbox: конечный `OUTBOX_MAX_ATTEMPTS`, dead-переход в лог (KOBS-05), выключенный
-  JetStream и сбой батча (KAPI-03), subject'ы инстанса без покрывающего стрима — ошибка старта, а
-  не строки без PubAck (находка шаблона, его `TestBoot`), предел payload (E17), бюджет ретраев в
-  доке (KDOC-09, outbox)
+  - Сделано: `HTTP_DOCS_ENABLED=false`, `CreateHooks` huma сняты, handlertest — `httpkit.NewConfig()`; доки
+- [x] **S10** — B3 в outbox: конечный `OUTBOX_MAX_ATTEMPTS`, dead-переход в лог (KOBS-05), выключенный
+  JetStream и сбой батча (KAPI-03), subject'ы инстанса без покрывающего стрима — ошибка старта, а не
+  строки без PubAck (находка шаблона, `TestBoot`), предел payload (E17), бюджет ретраев в доке (KDOC-09)
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S1
+  - Сделано: `OUTBOX_MAX_ATTEMPTS=25` (`-1` — без предела), `OUTBOX_MAX_PAYLOAD_BYTES`, лог dead,
+    `ErrUnavailable` без траты попытки, `natskit.StreamChecker` на старте, `WithSubjects`; доки
 
 ### Итог
 - [ ] **S11** — Итог плана: эксперименты аудита по закрытым находкам на HEAD — PASS (таблица — в «Где
   мы сейчас»), `make gate-clean` зелёный, Handoff перенесён в `harden-authn-release`, план удалён
-  - Проверка: `make gate-clean` → зелёный, охват `./...` · Закрывает: — · Зависит от: S3, S4, S5, S8,
-    S9, S10
+  - Проверка: `make gate-clean` → зелёный (`./...`) · Закрывает: — · Зависит от: S3, S4, S5, S8, S9, S10
 
 ## Решения
 - **Состав A.** Кроме high (KGATE-01…-04, KTST-01) и лесенки (KGATE-06) в A взяты KGATE-05 (тот же
@@ -178,9 +174,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - **S2, guard** (как у шаблона) — `-i -n -q -t`, `MAKE`, `SHELL`, `.SHELLFLAGS`, `MAKEFILES` из env или
   командной строки и непустой `go env GOFLAGS` — отказ до первого шага; `PKGS`, `GO`, `A`, `GATE*` до
   шагов не доходят (`override`, под-make); `-k` пропускается: красный шаг всё равно даёт код 2. Кеш
-  lint — `override` `$(CURDIR)/.cache/golangci-lint`, `GOLANGCI_DIFF_PROCESSOR_PATCH` и
-  `GOLANGCI_LINT_CACHEPROG` в шаги не идут; `gate-clean` — `env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS
-  -u MAKEFILES`, а не `env -i`: прогону нужны `DOCKER_HOST`, прокси и `GOPATH`.
+  lint — `override` `$(CURDIR)/.cache/golangci-lint`, `GOLANGCI_DIFF_PROCESSOR_PATCH`/`_CACHEPROG` в
+  шаги не идут; `gate-clean` — `env -u` make-переменных, а не `env -i`: нужны `DOCKER_HOST`, прокси, `GOPATH`.
 - **S3, хуки** — в `scripts/git-hooks/`, как у шаблона; обход один — `git push --no-verify` руками
   человека, без `SKIP_PREPUSH`. `hooks-check` — первый шаг: неактивный или неисполняемый pre-push —
   FAIL (G31), путь хуков относительный — у worktree свой. `settings.json` — deny обходов,
@@ -188,13 +183,11 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - **S4, лесенка** — `testkit.MigrationLadder(t, opts...)` (Docker, как `Start*`, принимает
   `pgkit.Source`): каждая версия up → down → up со снимком `pg_catalog`, затем down до нуля и up —
   «всё вниз — всё вверх» не видит down, не вернувший схему своего up (мутация bruteforcekit 0002);
-  расширения не сравниваются. Откат 0002 `TableMigrations` — no-op (версия 1 уже с колонкой); у
-  зеркала без колонки откат её оставляет. hubkit/projection — тоже kit-owned, лесенка и ему.
+  расширения не сравниваются; откат 0002 `TableMigrations` — в аннотации; hubkit/projection — kit-owned.
 - **S5, `envdoc`** — Go-команда `scripts/envdoc` (`go/ast`): вложенные конфиги и поля без тегов grep'ом
   не разобрать. Переменная — envconfig-тег или литерал `os.Getenv`/`LookupEnv` (кроме `allow.txt`),
   строка таблицы — в доках каталога пакета или выше, дефолт — в бэктиках, без `default` — `—` с
-  пояснением или нулевое значение; инъекции E0–E8, G32, G01 — `TestCheck`. natskit
-  `Config.Instance` — `ignored:"true"`.
+  пояснением или нуль; инъекции E0–E8, G32, G01 — `TestCheck`; natskit `Config.Instance` — `ignored`.
 - **`gate_inject.py`** — `s_plan` (G11, G20) ломает любой активный план; G21 запускает хук, который
   запустил бы git (`$(git rev-parse --git-path hooks)/pre-push`), со stdin `git push` (N1).
 - **N1** — pre-push гоняет `scripts/gate-clean.sh <коммит>` на каждом пушимом коммите: gitignored-файл
@@ -217,9 +210,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   и после `humachi.New`; объявление — путь в `httpkit.PublicRoutes` (как `Middlewares`; без метода:
   `Mount` — на все методы), лишняя строка — ошибка. Дубль имени схемы, схема без `Name`/`Scheme` —
   `ErrConfig` уже в `fx.New` (HX05 — `app.Err()`); дубль имени пробы — `ErrConfig` `registerHealth`.
-- **B1, эксперименты.** H15 (подтесты B1), HX10, HX11 — под «ошибку старта с именем» (`tryStartApp`),
-  HX11b — со схемой в графе; оригиналы — `M/hgd2/orig/`. Подтест H15 «AdminKey принимает Bearer» —
-  KSEC-08 (партия 3, `httpkit-auth-edge`), красный.
+- **B1, эксперименты.** H15 (подтесты B1), HX10, HX11 — под «ошибку старта с именем», HX11b — со схемой
+  в графе; подтест H15 «AdminKey принимает Bearer» — KSEC-08 (партия 3, `httpkit-auth-edge`), красный.
 - **S7, handlertest.** Что сервер берёт из графа, `NewAPI` — опциями; без `WithAuth` защищённая операция
   — 500 `AUTH_NOT_CONFIGURED` (fail-closed), а не провал теста. `register` получает API сервера с
   реестром (у обёртки `humatest` нет `OperationDocumenter`); конфиг — `httpkit.NewConfig()`, как у
@@ -240,12 +232,16 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   хук `DefaultConfig` и есть link-трансформер; поле не нужно контракту ошибок, отражает
   `X-Forwarded-Host` клиента, без docs ведёт в 404 (H08). `/schemas` остаётся частью docs. H01b
   (скрытая защищённая операция без extractor'а) правлен под S6: ошибка старта вместо 500.
-- **B3, outbox.** Попытка — неудача публикации строки; сбой брокера на весь батч (соединение,
-  JetStream выключен в рантайме) пишет `publish_error` и попыток не сжигает — иначе простой брокера
-  дольше бюджета массово уводит очередь в dead. Выключенный JetStream — ошибка старта, как у
-  `SubscribeOnStart`. Предел payload по умолчанию — 1 MiB (`max_payload` NATS), превышение — ошибка
-  `Bus.Publish` в транзакции домена (E17: 2 MiB держали ordered-очередь). Бюджет ретраев по
-  умолчанию — не меньше часа, пересчёт `configuration.md` (KDOC-09).
+- **B3, outbox.** Попытка — неудача строки (отказ брокера, «нет стрима»); сбой брокера целиком
+  (`ErrUnavailable` транспорта: соединение, JetStream, таймаут `PubAck`, `ctx`; батч без результатов)
+  — `publish_error` без `RecordFailures`. `OUTBOX_MAX_ATTEMPTS=25` (≈ 1 ч 24 мин), `0` — `ErrConfig`;
+  `-1` — без предела: never-drop биллинга `ai-gateway`, как `NATS_MAX_RECONNECTS=-1`. Dead — ERROR
+  после коммита, ключ `err`, как у natskit; логгер — аргумент `New`/`NewWorker`, у модулей — граф.
+- **B3, старт и payload.** Выключенный JetStream — ошибка старта, как у `SubscribeOnStart`;
+  `WithSubjects` — старт сверяет фильтры со стримами (`natskit.StreamChecker` опционален: фейки без
+  него), `Publish` вне них — ошибка; опция необязательна (шаблон — в `events.OutboxFor`), дефолт
+  `<name>.>` — магия имени. Предел тела 512 KiB: воркер публикует JSONB (до 1,5× JSON), 1 000 000 в
+  1 MiB не влезал. E17 — big в своей транзакции; zzcs, claimsB, контракт сигналов — под API (`orig/`).
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`: заготовка аннотации v1.3.0 из «Где мы сейчас»,
@@ -255,12 +251,11 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   `scripts/tools/test.sh:21-22` («testkit пропустит тесты без Docker») неверен;
   `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...),
   testkit.WithMigrationsDir(...))` — один способ.
-- outboxkit: `OUTBOX_MAX_ATTEMPTS` конечен (после бюджета — dead, вернуть — `ReviveDead`);
-  выключенный JetStream — ошибка старта; payload сверх предела — ошибка `Publish`.
+- `events.OutboxFor` — `outboxkit.WithSubjects(name+".>")` (бэклог шаблона `publisher-stream-check`).
 
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
-закрыты (N4 — S11). S6–S9 (B1, handlertest, B2, B3 httpkit) сделаны; дальше — S10 (B3 outbox).
+закрыты (N4 — S11). S6–S10 сделаны; дальше — валидатор этапа «httpkit и outbox: B1–B3», затем S11.
 Эксперименты — `M/hgd/`, `M/hgd2/`; правки материалов аудита — «Решения».
 
 Заготовка аннотации v1.3.0 по сделанному:
@@ -289,8 +284,16 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест
   (`t.Fatalf`), а не пропускают → без Docker integration-прогон потребителя (`-tags=integration`,
   без `-short`) красный; без Docker гонять только `go test -short`.
-- Поведение — outboxkit: откат 0002 `TableMigrations` — no-op (версия 1 уже с `next_attempt_at`);
+- Breaking — outboxkit: `New`, `NewWorker` принимают `logkit.Logger` (`Module`, `Instance` — из графа);
+  `OUTBOX_MAX_ATTEMPTS` по умолчанию 25, `0` — ошибка конфига; выключенный JetStream — ошибка
+  старта; JSON больше `OUTBOX_MAX_PAYLOAD_BYTES` (512 KiB) — `ErrPayloadTooLarge` → `New(…, cfg,
+  log)`, `OUTBOX_MAX_ATTEMPTS=0` → `-1`, `NATS_JETSTREAM_ENABLED=true`, крупное тело — ссылкой.
+- Поведение — outboxkit: сбой брокера целиком попыток не тратит (`publish_error`); dead — ERROR
+  `outboxkit: event dead`; откат 0002 `TableMigrations` — no-op (версия 1 уже с `next_attempt_at`),
   у таблицы-зеркала без колонки откат её оставляет (nullable, старому коду не мешает).
+- Изменения — outboxkit: `WithSubjects` (стримы — на старте), `ErrSubjectNotDeclared`,
+  `ErrPayloadTooLarge`, `ErrUnavailable`, статусы `payload_too_large`, `undeclared_subject`;
+  natskit: `StreamChecker`, `ErrNoStream`, `SubjectMatches` для фильтров.
 - Изменения — testkit: `MigrationLadder(t, WithMigrations(...))` — лесенка up → down → up по
   версиям, down до нуля и up со сверкой схемы для своих источников миграций.
 - Гейт: `make check` и `make gate-clean` — unit и integration (Docker), лесенка kit-owned миграций;

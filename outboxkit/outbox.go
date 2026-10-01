@@ -31,6 +31,16 @@ var ErrConfig = errors.New("outboxkit: invalid config")
 // ReviveDead у хранилища без dead-строк).
 var ErrNotSupported = errors.New("outboxkit: operation not supported by repository")
 
+// ErrPayloadTooLarge — JSON-тело события больше OUTBOX_MAX_PAYLOAD_BYTES: брокер его не примет.
+var ErrPayloadTooLarge = errors.New("outboxkit: payload too large")
+
+// ErrSubjectNotDeclared — subject вне WithSubjects инстанса: его стрим старт не проверял.
+var ErrSubjectNotDeclared = errors.New("outboxkit: subject is not declared for the instance")
+
+// ErrUnavailable — брокер недоступен целиком (соединение, JetStream, таймаут PubAck, дедлайн
+// тика): Transport оборачивает такую ошибку, и Worker не тратит на неё попытку строки.
+var ErrUnavailable = errors.New("outboxkit: broker unavailable")
+
 // Message — строка outbox'а, вычитанная воркером на публикацию.
 type Message struct {
 	// ID — идентификатор строки; уходит в Nats-Msg-Id.

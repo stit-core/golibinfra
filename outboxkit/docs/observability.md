@@ -15,7 +15,7 @@ Resource attrs (`service`/`env`/…) и экспорт настраивает п
 
 | Метрика | Тип | Labels | Что считает |
 |---|---|---|---|
-| `outbox_events_inserted_total` | Int64Counter | `instance`, `subject`, `status` (`ok`\|`error`\|`marshal_error`) | Вставки события в outbox (`Bus.Publish` → `Repository.Insert`). |
+| `outbox_events_inserted_total` | Int64Counter | `instance`, `subject`, `status` (`ok`\|`error`\|`marshal_error`\|`payload_too_large`\|`undeclared_subject`) | Вставки события в outbox (`Bus.Publish` → `Repository.Insert`). |
 | `outbox_events_processed_total` | Int64Counter | `instance`, `subject`, `status` (`published`\|`publish_error`\|`mark_error`) | Исход обработки события `Worker`'ом. |
 | `outbox_events_dead_total` | Int64Counter | `instance`, `subject` | Переходы строки в dead (исчерпан `OUTBOX_MAX_ATTEMPTS`). |
 | `outbox_revived_total` | Int64Counter | `instance` | Dead-строки, возвращённые в очередь `Outbox.ReviveDead`. |
@@ -28,13 +28,18 @@ Resource attrs (`service`/`env`/…) и экспорт настраивает п
 - `ok` — событие вставлено в outbox-таблицу.
 - `error` — вставка не удалась (ошибка хранилища или tx-strict guard).
 - `marshal_error` — payload не сериализуется в JSON; до хранилища не дошёл.
+- `payload_too_large` — JSON больше `OUTBOX_MAX_PAYLOAD_BYTES`
+  (`outboxkit.ErrPayloadTooLarge`); до хранилища не дошёл.
+- `undeclared_subject` — subject вне `WithSubjects` инстанса
+  (`outboxkit.ErrSubjectNotDeclared`); до хранилища не дошёл.
 
 Семантика `status` у `outbox_events_processed_total`:
 
 - `published` — событие подтверждено `PubAck`'ом, помечено published, и тик
   закоммичен (счётчик эмитится после коммита).
-- `publish_error` — публикация не удалась (строка уйдёт на ретрай после backoff
-  или станет dead).
+- `publish_error` — публикация не удалась: неудача строки уходит на ретрай после backoff
+  или в dead, сбой брокера целиком (`outboxkit.ErrUnavailable`, батч без результатов) —
+  на следующий тик без траты попытки.
 - `mark_error` — публикация прошла, но `MarkPublished` упал; транзакция тика
   откатилась, строка останется неопубликованной и переотправится (дедуп уберёт
   дубль).
@@ -68,6 +73,20 @@ callback зарегистрирован:
 эмитятся, а факт сбоя виден в `outbox_backlog_errors_total` — алерт на lag
 должен учитывать этот счётчик, иначе «нет отставания» и «снимок не берётся»
 выглядят одинаково.
+
+## Логи
+
+`Worker` пишет в `logkit.Logger` (у `Module` и `Instance` — из графа, у `New` и `NewWorker` —
+аргументом) одну запись — переход строки в dead, после коммита тика:
+
+| Уровень | Сообщение | Поля |
+|---|---|---|
+| ERROR | `outboxkit: event dead` | `instance`, `id`, `subject`, `attempts`, `err` |
+
+Событие больше не доставится — без telemetry `outbox_events_dead_total` — no-op, и запись
+лога остаётся единственным сигналом. Прочие ошибки тика (публикация, хранилище) `Worker.Run`
+возвращает: их пишет `timerkit` (`timerkit: job error`). Выключенный JetStream и subject'ы
+`WithSubjects` без стрима — ошибка старта, а не запись лога.
 
 ## Спаны
 

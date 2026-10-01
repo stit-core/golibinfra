@@ -54,6 +54,14 @@ func TestSubjectMatches(t *testing.T) {
 		{"a.*.cmd.>", "a.b.cmd.x", true},
 		{"a.*.cmd.>", "a.b.evt.x", false},
 		{">", "anything.at.all", true},
+		// subject-фильтр: накрыт, только если накрыт каждый подходящий subject.
+		{"ORDERS.>", "ORDERS.>", true},
+		{"ORDERS.>", "ORDERS.*.created", true},
+		{">", "ORDERS.>", true},
+		{"ORDERS.*", "ORDERS.*", true},
+		{"ORDERS.*", "ORDERS.>", false},
+		{"ORDERS.created", "ORDERS.*", false},
+		{"ORDERS.events.created", "ORDERS.>", false},
 	}
 	for _, tt := range tests {
 		if got := SubjectMatches(tt.filter, tt.subject); got != tt.want {

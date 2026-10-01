@@ -21,7 +21,7 @@ fx.New(
     logkit.Module,
     pgkit.Module,        // *pgkit.DB, pgkit.Transactor
     pgkit.MigrateModule, // применяет pgstore.Migrations, провайдит pgkit.Migrated
-    natskit.Module(""),  // natskit.StreamBus (NATS_JETSTREAM_ENABLED=true + стрим)
+    natskit.Module(""),  // natskit.StreamBus: NATS_JETSTREAM_ENABLED=true, иначе старт падает
     timerkit.Module,     // гоняет Worker.Run и keeper-job'ы по тикерам
 
     pgstore.Module,   // Store→Repository, миграции, партиции, retention
@@ -55,7 +55,8 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 
 `payload` — любое значение, сериализуемое `json.Marshal`; сериализует его `Bus`.
 Вне транзакции (при `OUTBOX_REQUIRE_TX=true`, default) `Publish` возвращает
-`outboxkit.ErrNoTx`.
+`outboxkit.ErrNoTx`, JSON больше `OUTBOX_MAX_PAYLOAD_BYTES` — `outboxkit.ErrPayloadTooLarge`,
+subject вне `WithSubjects` инстанса — `outboxkit.ErrSubjectNotDeclared`.
 
 ## Multi-instance: outboxkit.Instance
 
@@ -63,13 +64,14 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 `pgstore.FactoryModule` провайдит фабрику store'ов, `outboxkit.Instance` собирает
 инстанс целиком: store на свою таблицу, схему таблицы в группе `pgkit.migrations`,
 транспорт с namespace'ным `Nats-Msg-Id`, drain-job, партиции и retention,
-backlog-gauge'и.
+backlog-gauge'и и проверку старта.
 
 ```go
 // сигнатуры
 func pgstore.TableMigrations(table string) pgkit.Source
 func outboxkit.Instance(name, table string, opts ...outboxkit.InstanceOption) fx.Option
 func outboxkit.WithInstanceConfig(cfg outboxkit.Config) outboxkit.InstanceOption
+func outboxkit.WithSubjects(filters ...string) outboxkit.InstanceOption
 ```
 
 ```go
@@ -79,8 +81,8 @@ fx.New(
     logkit.Module, pgkit.Module, pgkit.MigrateModule, natskit.Module(""), timerkit.Module,
 
     pgstore.FactoryModule, // outboxkit.RepositoryFactory
-    outboxkit.Instance("orders", "outbox_orders"),
-    outboxkit.Instance("leads", "outbox_leads",
+    outboxkit.Instance("orders", "outbox_orders", outboxkit.WithSubjects("orders.>")),
+    outboxkit.Instance("leads", "outbox_leads", outboxkit.WithSubjects("leads.>"),
         outboxkit.WithInstanceConfig(orderedCfg)), // свой режим у одного домена
 
     fx.Invoke(fx.Annotate(
@@ -96,6 +98,12 @@ fx.New(
 именем `MigrateModule` отвергает (`duplicate source name`). Без `MigrateModule`
 (миграции накатывает отдельный шаг) тот же источник передают в
 `pgkit.MigrateUpAll`.
+
+`WithSubjects` объявляет subject'ы событий инстанса — фильтры NATS. Старт проверяет, что
+JetStream включён и каждый фильтр целиком накрыт одним стримом (`NATS_JS_STREAM_NAMES=orders`
+даёт стрим `orders` с subject'ами `orders.>`), иначе — ошибка старта с именем инстанса;
+`Publish` вне объявленных — `outboxkit.ErrSubjectNotDeclared`. Без опции старт проверяет
+только JetStream.
 
 Таблица `outbox` (`pgstore.Module` и `outboxkit.Module`) и инстансы
 (`pgstore.FactoryModule` и `outboxkit.Instance`) сочетаются в одном графе.
@@ -113,7 +121,7 @@ fx.New(
 // сигнатуры
 func pgstore.NewStoreFor(db *pgkit.DB, table string, opts ...pgstore.StoreOption) (*pgstore.Store, error)
 func outboxkit.NewStreamTransportFor(sb natskit.StreamBus, namespace string) outboxkit.Transport
-func outboxkit.New(name string, repo outboxkit.Repository, tr outboxkit.Transport, tx pgkit.Transactor, cfg outboxkit.Config) *outboxkit.Outbox
+func outboxkit.New(name string, repo outboxkit.Repository, tr outboxkit.Transport, tx pgkit.Transactor, cfg outboxkit.Config, log logkit.Logger) *outboxkit.Outbox
 ```
 
 ```go
@@ -122,7 +130,7 @@ store, err := pgstore.NewStoreFor(db, "outbox_orders",
 if err != nil {
     return err
 }
-orders := outboxkit.New("orders", store, outboxkit.NewStreamTransportFor(sb, "orders"), transactor, cfg)
+orders := outboxkit.New("orders", store, outboxkit.NewStreamTransportFor(sb, "orders"), transactor, cfg, log)
 
 publisher := orders.Publisher() // туда, где нужна доменная публикация
 jobs := orders.Jobs()           // drain + партиции + retention → timerkit.Group
@@ -131,12 +139,15 @@ reg, err := orders.RegisterBacklogGauges() // Unregister на shutdown
 
 Схему кастомной таблицы накатывает caller — `pgstore.TableMigrations(table)` в
 `pgkit.MigrateUpAll`/`MigrateModule` либо `pgstore.SchemaSQL(table)` в
-собственной миграции приложения.
+собственной миграции приложения. В `log` воркер пишет переход строки в dead (`nil` —
+`logkit.Nop()`). Проверку стримов на старте ручная сборка делает сама —
+`natskit.StreamChecker` шины (рецепт — `natskit/docs/usage.md`).
 
 ## Оживление dead-строк
 
 Строки, исчерпавшие `OUTBOX_MAX_ATTEMPTS`, остаются в таблице с `dead_at`,
-`attempts` и `last_error`. Вернуть их в очередь (после починки причины):
+`attempts` и `last_error`; каждый переход — ERROR `outboxkit: event dead` в логе. Вернуть их
+в очередь (после починки причины):
 
 ```go
 func (o *outboxkit.Outbox) ReviveDead(ctx context.Context, f outboxkit.ReviveFilter) (int64, error)

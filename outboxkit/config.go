@@ -27,6 +27,15 @@ const DefaultBatchSize = 100
 // невалидного (`TickTimeout <= 0`) в конфиге, собранном не через NewConfig.
 const DefaultTickTimeout = 30 * time.Second
 
+// DefaultMaxAttempts — бюджет попыток строки, который NewWorker подставляет вместо
+// невалидного (`MaxAttempts` 0 или меньше -1) в конфиге, собранном не через NewConfig.
+const DefaultMaxAttempts = 25
+
+// DefaultMaxPayloadBytes — предел JSON-тела события у NewBus и у New вместо невалидного
+// (`MaxPayloadBytes < 1`): половина max_payload NATS (1 MiB) — воркер публикует строку в
+// представлении хранилища (JSONB pgstore длиннее JSON до 1,5 раза), а к телу идут заголовки.
+const DefaultMaxPayloadBytes = 512 << 10
+
 // Config — конфиг orchestration-слоя (Bus + Worker); читается из ENV
 // через NewConfig, провайдится caller'ом.
 type Config struct {
@@ -36,9 +45,10 @@ type Config struct {
 	Interval time.Duration `envconfig:"OUTBOX_INTERVAL"     default:"1s"`
 	// PublishMode — режим публикации: batch или ordered.
 	PublishMode PublishMode `envconfig:"OUTBOX_PUBLISH_MODE" default:"batch"`
-	// MaxAttempts — сколько попыток публикации даётся строке; после N-й
-	// неудачи строка помечается dead. <= 0 — без ограничения.
-	MaxAttempts int `envconfig:"OUTBOX_MAX_ATTEMPTS" default:"0"`
+	// MaxAttempts — после стольких неудачных публикаций строка помечается dead; сбой брокера
+	// целиком (ErrUnavailable) попыткой не считается. >= 1 или -1 — без предела: poison держит
+	// ordered-очередь, пока причину не починят.
+	MaxAttempts int `envconfig:"OUTBOX_MAX_ATTEMPTS" default:"25"`
 	// TickTimeout — дедлайн одного тика (транзакция + публикация); > 0.
 	TickTimeout time.Duration `envconfig:"OUTBOX_TICK_TIMEOUT" default:"30s"`
 	// RetryBackoff — пауза перед первым ретраем строки; каждая следующая
@@ -46,6 +56,9 @@ type Config struct {
 	RetryBackoff time.Duration `envconfig:"OUTBOX_RETRY_BACKOFF" default:"1s"`
 	// RetryMaxBackoff — потолок паузы между попытками; 0 — без потолка.
 	RetryMaxBackoff time.Duration `envconfig:"OUTBOX_RETRY_MAX_BACKOFF" default:"5m"`
+	// MaxPayloadBytes — предел JSON-тела события: больше — ErrPayloadTooLarge из Publish в
+	// транзакции домена, а не строка, которую брокер не примет никогда. >= 1.
+	MaxPayloadBytes int `envconfig:"OUTBOX_MAX_PAYLOAD_BYTES" default:"524288"`
 }
 
 // NewConfig читает Config из ENV (`OUTBOX_*`) и валидирует его.
@@ -69,6 +82,10 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: OUTBOX_BATCH_SIZE must be >= 1, got %d", ErrConfig, c.BatchSize)
 	case c.Interval <= 0:
 		return fmt.Errorf("%w: OUTBOX_INTERVAL must be > 0, got %s", ErrConfig, c.Interval)
+	case c.MaxAttempts == 0 || c.MaxAttempts < -1:
+		return fmt.Errorf("%w: OUTBOX_MAX_ATTEMPTS must be >= 1 or -1 (unlimited), got %d", ErrConfig, c.MaxAttempts)
+	case c.MaxPayloadBytes < 1:
+		return fmt.Errorf("%w: OUTBOX_MAX_PAYLOAD_BYTES must be >= 1, got %d", ErrConfig, c.MaxPayloadBytes)
 	case c.TickTimeout <= 0:
 		return fmt.Errorf("%w: OUTBOX_TICK_TIMEOUT must be > 0, got %s", ErrConfig, c.TickTimeout)
 	case c.RetryBackoff < 0:
@@ -93,6 +110,12 @@ func (c Config) withDefaults() Config {
 	}
 	if c.TickTimeout <= 0 {
 		c.TickTimeout = DefaultTickTimeout
+	}
+	if c.MaxAttempts == 0 || c.MaxAttempts < -1 {
+		c.MaxAttempts = DefaultMaxAttempts
+	}
+	if c.MaxPayloadBytes < 1 {
+		c.MaxPayloadBytes = DefaultMaxPayloadBytes
 	}
 	if c.RetryBackoff < 0 {
 		c.RetryBackoff = 0

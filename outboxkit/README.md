@@ -27,7 +27,8 @@ import "git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 
 Single-instance путь (одна таблица `outbox`, fx-проводка). Нужны `logkit`,
 `pgkit` (с `MigrateModule` — он применяет миграции кита), `natskit` (с
-`NATS_JETSTREAM_ENABLED=true` и стримом, покрывающим subject'ы outbox'а) и
+`NATS_JETSTREAM_ENABLED=true` — выключенный JetStream валит старт — и стримом, покрывающим
+subject'ы outbox'а; у `outboxkit.Instance` покрытие проверяет старт — `WithSubjects`) и
 `timerkit` (он гоняет `Worker.Run` по тикеру; без `timerkit.Module` граф не
 собирается — `missing type: timerkit.scheduler`).
 
@@ -64,19 +65,24 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 ```
 
 `OUTBOX_REQUIRE_TX=true` (default) отвергает `Publish` вне транзакции
-(`outboxkit.ErrNoTx`).
+(`outboxkit.ErrNoTx`), `OUTBOX_MAX_PAYLOAD_BYTES` — JSON больше предела
+(`outboxkit.ErrPayloadTooLarge`). Строка, которую брокер `OUTBOX_MAX_ATTEMPTS` раз (default
+`25`, ≈ 1 ч 24 мин с backoff; `-1` — без предела) не принял, становится dead — ERROR
+`outboxkit: event dead` в логе; сбой брокера целиком попыток не тратит.
 
 ## Документация
 
 - [docs/architecture.md](docs/architecture.md) — как устроено: transactional
   outbox, транзакционный тик `Worker`'а и гарантии при нескольких репликах,
-  порядок публикации, backoff и poison→dead, lifecycle остановки, партиции и
-  retention, single- vs multi-instance, namespaced `Nats-Msg-Id`, решения (WHY).
+  порядок публикации, backoff и poison→dead, проверка старта, предел payload, lifecycle
+  остановки, партиции и retention, single- vs multi-instance, namespaced `Nats-Msg-Id`,
+  решения (WHY).
 - [docs/configuration.md](docs/configuration.md) — полный справочник ENV,
-  тюнинг publish-mode / max-attempts / backoff / tick-timeout / retention,
+  тюнинг publish-mode / max-attempts / backoff / payload / tick-timeout / retention,
   миграции и таблицы.
-- [docs/observability.md](docs/observability.md) — метрики (label `instance`),
-  спаны; `outbox_lag_seconds` / `outbox_pending_count` через `BacklogReporter`.
+- [docs/observability.md](docs/observability.md) — метрики (label `instance`), лог
+  перехода в dead, спаны; `outbox_lag_seconds` / `outbox_pending_count` через
+  `BacklogReporter`.
 - [docs/usage.md](docs/usage.md) — рецепты: single-instance `Module`,
   multi-instance `outboxkit.Instance`, оживление dead-строк, ручной drain,
   `BacklogReporter`.
