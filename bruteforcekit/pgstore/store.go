@@ -14,8 +14,9 @@ import (
 
 // Store — guard на таблице bruteforce_attempts с ключом (subject, ip).
 type Store struct {
-	db  *pgkit.DB
-	cfg bruteforcekit.Config
+	db    *pgkit.DB
+	cfg   bruteforcekit.Config
+	instr *instruments
 }
 
 var (
@@ -29,7 +30,7 @@ func NewStore(db *pgkit.DB, cfg bruteforcekit.Config) (*Store, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	return &Store{db: db, cfg: cfg}, nil
+	return &Store{db: db, cfg: cfg, instr: newInstruments()}, nil
 }
 
 // Upsert учитывает попытку, только пока активной блокировки нет: WHERE не
@@ -83,14 +84,14 @@ func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit
 		if err == nil {
 			// WHERE пускает upsert только без активной блокировки: locked_until здесь — переход.
 			if lockedUntil != nil {
-				locks.Add(ctx, 1)
+				s.instr.locks.Add(ctx, 1)
 			}
 			// Счётчик выше порога бывает после понижения MaxFailures: бюджет окна исчерпан.
 			if lockedUntil != nil && failedCount > s.cfg.MaxFailures {
-				checks.Add(ctx, 1, resultAttr(resultLocked))
+				s.instr.checks.Add(ctx, 1, resultAttr(resultLocked))
 				return &bruteforcekit.LockState{Until: *lockedUntil, FailedCount: failedCount}, nil
 			}
-			checks.Add(ctx, 1, resultAttr(resultAllowed))
+			s.instr.checks.Add(ctx, 1, resultAttr(resultAllowed))
 			return nil, nil
 		}
 		if !pgkit.IsNoRows(err) {
@@ -100,7 +101,7 @@ func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit
 		var st bruteforcekit.LockState
 		err = s.db.QueryRow(ctx, activeLockSQL, subject, ip).Scan(&st.FailedCount, &st.Until)
 		if err == nil {
-			checks.Add(ctx, 1, resultAttr(resultLocked))
+			s.instr.checks.Add(ctx, 1, resultAttr(resultLocked))
 			return &st, nil
 		}
 		if !pgkit.IsNoRows(err) {
@@ -149,7 +150,7 @@ func (s *Store) Cleanup(ctx context.Context) error {
 			return fmt.Errorf("bruteforcekit: cleanup: %w", err)
 		}
 		deleted := tag.RowsAffected()
-		cleanupDeleted.Add(ctx, deleted)
+		s.instr.cleanupDeleted.Add(ctx, deleted)
 		if deleted < cleanupBatchSize {
 			return nil
 		}

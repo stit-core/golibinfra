@@ -9,10 +9,14 @@ import (
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 )
 
-var logMessagesCounter = otelkit.Must(otelkit.Meter("logkit").Int64Counter(
-	"log_messages_total",
-	metric.WithDescription("Emitted log records by level"),
-))
+// newMessagesCounter зовётся при сборке логгера: инструмент берёт текущий
+// глобальный провайдер, а не первый провайдер процесса.
+func newMessagesCounter() metric.Int64Counter {
+	return otelkit.Must(otelkit.Meter("logkit").Int64Counter(
+		"log_messages_total",
+		metric.WithDescription("Emitted log records by level"),
+	))
+}
 
 // Наборы атрибутов собраны один раз: инкремент на горячем пути не аллоцирует.
 var levelOpts = [4]metric.MeasurementOption{

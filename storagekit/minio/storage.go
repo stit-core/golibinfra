@@ -27,26 +27,34 @@ const (
 	tailProbeGrace = 50 * time.Millisecond
 )
 
-var (
-	opsTotal = otelkit.Must(otelkit.Meter("storagekit").Int64Counter(
-		"storage_ops_total",
-		metric.WithDescription("Object storage operations by result"),
-	))
-	opDuration = otelkit.Must(otelkit.Meter("storagekit").Float64Histogram(
-		"storage_op_duration_seconds",
-		metric.WithDescription("Object storage operation duration"),
-		metric.WithUnit("s"),
-		otelkit.DurationBuckets(),
-	))
-)
+type instruments struct {
+	ops        metric.Int64Counter
+	opDuration metric.Float64Histogram
+}
 
-func observe(ctx context.Context, op string, start time.Time, err error) {
+// newInstruments зовётся в NewStorage: инструмент берёт текущий глобальный
+// провайдер, а не первый провайдер процесса.
+func newInstruments() *instruments {
+	m := otelkit.Meter("storagekit")
+	return &instruments{
+		ops: otelkit.Must(m.Int64Counter("storage_ops_total",
+			metric.WithDescription("Object storage operations by result"),
+		)),
+		opDuration: otelkit.Must(m.Float64Histogram("storage_op_duration_seconds",
+			metric.WithDescription("Object storage operation duration"),
+			metric.WithUnit("s"),
+			otelkit.DurationBuckets(),
+		)),
+	}
+}
+
+func (i *instruments) observe(ctx context.Context, op string, start time.Time, err error) {
 	result := "ok"
 	if err != nil {
 		result = "error"
 	}
-	opDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("op", op)))
-	opsTotal.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op), attribute.String("result", result)))
+	i.opDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("op", op)))
+	i.ops.Add(ctx, 1, metric.WithAttributes(attribute.String("op", op), attribute.String("result", result)))
 }
 
 // Storage — адаптер storagekit.Storage и storagekit.Presigner поверх minio-go.
@@ -56,6 +64,7 @@ type Storage struct {
 	partSize uint64
 	urls     *storagekit.URLBuilder
 	log      logkit.Logger
+	instr    *instruments
 }
 
 // NewStorage собирает адаптер; nil-логгер заменяется на logkit.Nop.
@@ -74,6 +83,7 @@ func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.
 		partSize: partSize,
 		urls:     urls,
 		log:      log,
+		instr:    newInstruments(),
 	}
 }
 
@@ -82,7 +92,7 @@ func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.
 // объект не остаётся.
 func (s *Storage) Put(ctx context.Context, r io.Reader, contentType string, size int64) (ref storagekit.Ref, err error) {
 	start := time.Now()
-	defer func() { observe(ctx, "put", start, err) }()
+	defer func() { s.instr.observe(ctx, "put", start, err) }()
 
 	contentType = storagekit.NormalizeContentType(contentType)
 	key, err := storagekit.NewKey(contentType)
@@ -142,7 +152,7 @@ func (s *Storage) Put(ctx context.Context, r io.Reader, contentType string, size
 // Get открывает объект; вызывающий обязан закрыть io.ReadCloser.
 func (s *Storage) Get(ctx context.Context, key string) (rc io.ReadCloser, info storagekit.ObjectInfo, err error) {
 	start := time.Now()
-	defer func() { observe(ctx, "get", start, err) }()
+	defer func() { s.instr.observe(ctx, "get", start, err) }()
 
 	if key == "" {
 		return nil, storagekit.ObjectInfo{}, fmt.Errorf("%w: key required", storagekit.ErrGetFailed)
@@ -163,7 +173,7 @@ func (s *Storage) Get(ctx context.Context, key string) (rc io.ReadCloser, info s
 // Stat возвращает метаданные объекта; отсутствующий ключ — ErrNotFound.
 func (s *Storage) Stat(ctx context.Context, key string) (info storagekit.ObjectInfo, err error) {
 	start := time.Now()
-	defer func() { observe(ctx, "stat", start, err) }()
+	defer func() { s.instr.observe(ctx, "stat", start, err) }()
 
 	if key == "" {
 		return storagekit.ObjectInfo{}, fmt.Errorf("%w: key required", storagekit.ErrStatFailed)
@@ -178,7 +188,7 @@ func (s *Storage) Stat(ctx context.Context, key string) (info storagekit.ObjectI
 // Delete идемпотентен: S3 отвечает 204 и на отсутствующий ключ.
 func (s *Storage) Delete(ctx context.Context, key string) (err error) {
 	start := time.Now()
-	defer func() { observe(ctx, "delete", start, err) }()
+	defer func() { s.instr.observe(ctx, "delete", start, err) }()
 
 	if key == "" {
 		return fmt.Errorf("%w: key required", storagekit.ErrDeleteFailed)
@@ -194,7 +204,7 @@ func (s *Storage) Delete(ctx context.Context, key string) (err error) {
 // разово резолвит bucket-location.
 func (s *Storage) PresignGet(ctx context.Context, key string, ttl time.Duration, opts ...storagekit.PresignOption) (link string, err error) {
 	start := time.Now()
-	defer func() { observe(ctx, "presign_get", start, err) }()
+	defer func() { s.instr.observe(ctx, "presign_get", start, err) }()
 
 	if err := s.validatePresign(key, ttl); err != nil {
 		return "", err
@@ -218,7 +228,7 @@ func (s *Storage) PresignGet(ctx context.Context, key string, ttl time.Duration,
 // PresignPut подписывает PUT-ссылку: клиент загружает объект напрямую в S3.
 func (s *Storage) PresignPut(ctx context.Context, key string, ttl time.Duration) (link string, err error) {
 	start := time.Now()
-	defer func() { observe(ctx, "presign_put", start, err) }()
+	defer func() { s.instr.observe(ctx, "presign_put", start, err) }()
 
 	if err := s.validatePresign(key, ttl); err != nil {
 		return "", err

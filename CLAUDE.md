@@ -105,6 +105,9 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 
 - Имена метрик — Prometheus-стиль `<kit_prefix>_<what>_<unit|total>`; label'ы —
   конечные множества (route-pattern, а не путь; хост, а не URL).
+- Инструменты — в конструкторе кита (`otelkit.Meter`/`otelkit.Tracer` при сборке объекта), не
+  в `var` пакета: пакетный инструмент делегат OTel привязывает к первому провайдеру процесса
+  (держит `TestInstrumentsAreNotPackageLevel` в `internal/otelkit`).
 - **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
   business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 - Гистограммы длительности — в секундах, `WithUnit("s")` + общие границы

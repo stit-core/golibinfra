@@ -8,8 +8,8 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-// Глобальный delegate OTel привязывает package-level инструменты к первому
-// SetMeterProvider, поэтому reader один на пакет, а тест сравнивает дельты.
+// Провайдер глобален и ставится до сборки Store, поэтому reader один на пакет,
+// а тест сравнивает дельты.
 var metricsReader = sdkmetric.NewManualReader()
 
 func TestMain(m *testing.M) {

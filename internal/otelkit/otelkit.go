@@ -29,11 +29,14 @@ func Scope(pkg string) string { return ModulePath + "/" + pkg }
 func Version() string { return version }
 
 // Meter возвращает Meter глобального провайдера со scope и версией пакета.
+// Зовётся в конструкторе кита: инструмент из var пакета делегат OTel привязал
+// бы к первому провайдеру процесса.
 func Meter(pkg string) metric.Meter {
 	return otel.Meter(Scope(pkg), metric.WithInstrumentationVersion(version))
 }
 
-// Tracer возвращает Tracer глобального провайдера со scope и версией пакета.
+// Tracer возвращает Tracer глобального провайдера со scope и версией пакета;
+// как и Meter, зовётся в конструкторе кита.
 func Tracer(pkg string) trace.Tracer {
 	return otel.Tracer(Scope(pkg), trace.WithInstrumentationVersion(version))
 }

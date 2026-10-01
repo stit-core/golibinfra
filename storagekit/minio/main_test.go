@@ -17,8 +17,8 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
-// Глобальный delegate OTel привязывает package-level инструменты к первому
-// SetMeterProvider, поэтому reader один на пакет, а тесты сравнивают дельты.
+// Провайдер глобален и ставится до сборки Storage, поэтому reader один на
+// пакет, а тесты сравнивают дельты.
 var metricsReader = sdkmetric.NewManualReader()
 
 // MinIO поднимается один раз на пакет: контейнер на каждый тест стоит минуты.

@@ -124,7 +124,7 @@ func buildHandler(cfg Config, opts []Option) (slog.Handler, error) {
 		h = newFanout(h, otelSink)
 	}
 	h = newCtxHandler(h, registeredCtxAttrs)
-	h = &metricHandler{Handler: h}
+	h = &metricHandler{Handler: h, messages: newMessagesCounter()}
 	if !o.redact.Disabled {
 		if h, err = NewRedactHandler(h, o.redact); err != nil {
 			return nil, err

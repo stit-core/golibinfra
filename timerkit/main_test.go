@@ -13,9 +13,8 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 )
 
-// Глобальный delegate OTel привязывает package-level инструменты к первому
-// SetMeterProvider/SetTracerProvider, поэтому reader и recorder одни на пакет,
-// а тесты сравнивают дельты и фильтруют спаны по имени job.
+// Провайдеры глобальны и ставятся до сборки runner'ов, поэтому reader и
+// recorder одни на пакет, а тесты сравнивают дельты и фильтруют спаны по имени job.
 var (
 	metricsReader = sdkmetric.NewManualReader()
 	spanRecorder  = tracetest.NewSpanRecorder()

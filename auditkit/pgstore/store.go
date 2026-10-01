@@ -14,14 +14,15 @@ import (
 
 // Store — auditkit.Logger на таблице audit_log.
 type Store struct {
-	db *pgkit.DB
+	db    *pgkit.DB
+	instr *instruments
 }
 
 var _ auditkit.Logger = (*Store)(nil)
 
 // NewStore собирает Store поверх пула/транзакции pgkit.
 func NewStore(db *pgkit.DB) *Store {
-	return &Store{db: db}
+	return &Store{db: db, instr: newInstruments()}
 }
 
 // Нулевой At → NOW() базы: одни часы для всех записей, как у DEFAULT колонки.
@@ -36,7 +37,7 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, NOW()))
 // auditkit.ErrInvalidEntry, запрос не выполняется.
 func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 	if err := e.Validate(); err != nil {
-		writes.Add(ctx, 1, resultAttr(resultInvalid))
+		s.instr.invalid(ctx)
 		return err
 	}
 
@@ -45,7 +46,7 @@ func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 		var err error
 		metaJSON, err = json.Marshal(e.Metadata)
 		if err != nil {
-			writes.Add(ctx, 1, resultAttr(resultInvalid))
+			s.instr.invalid(ctx)
 			return fmt.Errorf("auditkit: marshal metadata: %w", err)
 		}
 	}
@@ -62,7 +63,7 @@ func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 		nullStr(e.RequestID),
 		pgkit.Timestamptz(nullTime(e)),
 	)
-	observeWrite(ctx, start, err)
+	s.instr.observeWrite(ctx, start, err)
 	if err != nil {
 		return fmt.Errorf("auditkit: insert: %w", err)
 	}

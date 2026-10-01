@@ -54,7 +54,8 @@ description: Завести в golibinfra новый kit по конвенция
    тега — только с `ignored:"true"` (`make envdoc-check`).
 4. **Логирование и observability.** Логгер — `logkit.Logger` из fx-графа.
    Метрики/спаны — через `internal/otelkit` (`otelkit.Meter("<kit>")`,
-   `otelkit.Must(...)`): инертны без провайдера у потребителя. Имена —
+   `otelkit.Must(...)`) в конструкторе, не в `var` пакета: инертны без провайдера
+   у потребителя, пишут в провайдер, текущий на момент сборки. Имена —
    `<kit_prefix>_<what>_<unit|total>`, label'ы — конечные множества. Гистограмма
    длительности — `metric.WithUnit("s")` + `otelkit.DurationBuckets()`, своих
    границ не заводим. Кит с инфраструктурной зависимостью (БД, брокер, кэш,

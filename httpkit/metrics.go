@@ -4,7 +4,6 @@ import (
 	"net/http"
 	"slices"
 	"strconv"
-	"sync"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -25,11 +24,11 @@ type instruments struct {
 	rateLimited       metric.Int64Counter
 }
 
-// newInstruments — один набор инструментов на процесс: каждый middleware
-// иначе регистрирует свою копию всех шести.
-var newInstruments = sync.OnceValue(func() *instruments {
+// newInstruments зовётся при сборке middleware: инструмент берёт текущий
+// глобальный провайдер, а не первый провайдер процесса.
+func newInstruments() *instruments {
 	return newInstrumentsWithMeter(otelkit.Meter("httpkit"))
-})
+}
 
 func newInstrumentsWithMeter(m metric.Meter) *instruments {
 	return &instruments{

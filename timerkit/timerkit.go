@@ -72,30 +72,34 @@ func validate(jobs []Job) error {
 	return nil
 }
 
-var (
-	tracer  = otelkit.Tracer("timerkit")
-	jobRuns = otelkit.Must(otelkit.Meter("timerkit").Int64Counter(
-		"timer_job_runs_total",
-		metric.WithDescription("Timer job runs by result"),
-	))
-	jobDuration = otelkit.Must(otelkit.Meter("timerkit").Float64Histogram(
-		"timer_job_duration_seconds",
-		metric.WithDescription("Timer job run duration"),
-		metric.WithUnit("s"),
-		otelkit.DurationBuckets(),
-	))
-)
-
 type runner struct {
-	log   logkit.Logger
-	clock clockkit.Clock
+	log         logkit.Logger
+	clock       clockkit.Clock
+	tracer      trace.Tracer
+	runs        metric.Int64Counter
+	runDuration metric.Float64Histogram
 }
 
+// newRunner берёт инструменты у текущих глобальных провайдеров: пакетный
+// инструмент делегат OTel привязал бы к первому провайдеру процесса.
 func newRunner(log logkit.Logger, clock clockkit.Clock) *runner {
 	if clock == nil {
 		clock = clockkit.Real{}
 	}
-	return &runner{log: log, clock: clock}
+	m := otelkit.Meter("timerkit")
+	return &runner{
+		log:    log,
+		clock:  clock,
+		tracer: otelkit.Tracer("timerkit"),
+		runs: otelkit.Must(m.Int64Counter("timer_job_runs_total",
+			metric.WithDescription("Timer job runs by result"),
+		)),
+		runDuration: otelkit.Must(m.Float64Histogram("timer_job_duration_seconds",
+			metric.WithDescription("Timer job run duration"),
+			metric.WithUnit("s"),
+			otelkit.DurationBuckets(),
+		)),
+	}
 }
 
 // run: ожидание отсчитывается от завершения предыдущего запуска, запуски одной
@@ -127,7 +131,7 @@ func wait(j Job) time.Duration {
 }
 
 func (r *runner) once(ctx context.Context, j Job) {
-	ctx, span := tracer.Start(ctx, "timerkit.job "+j.Name,
+	ctx, span := r.tracer.Start(ctx, "timerkit.job "+j.Name,
 		trace.WithSpanKind(trace.SpanKindInternal),
 		trace.WithAttributes(attribute.String("timer.job", j.Name)),
 	)
@@ -158,6 +162,6 @@ func (r *runner) once(ctx context.Context, j Job) {
 		}
 	}()
 
-	jobDuration.Record(ctx, r.clock.Since(start).Seconds(), metric.WithAttributes(attribute.String("job", j.Name)))
-	jobRuns.Add(ctx, 1, metric.WithAttributes(attribute.String("job", j.Name), attribute.String("result", result)))
+	r.runDuration.Record(ctx, r.clock.Since(start).Seconds(), metric.WithAttributes(attribute.String("job", j.Name)))
+	r.runs.Add(ctx, 1, metric.WithAttributes(attribute.String("job", j.Name), attribute.String("result", result)))
 }

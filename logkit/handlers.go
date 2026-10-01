@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 
+	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/trace"
 )
 
@@ -87,19 +88,22 @@ func traceCtxAttrs(ctx context.Context, dst []slog.Attr) []slog.Attr {
 
 // metricHandler считает эмитированные записи: Handle вызывается уже после
 // Enabled, поэтому отфильтрованные по уровню вызовы не стоят ничего.
-type metricHandler struct{ slog.Handler }
+type metricHandler struct {
+	slog.Handler
+	messages metric.Int64Counter
+}
 
 func (h *metricHandler) Handle(ctx context.Context, r slog.Record) error {
-	logMessagesCounter.Add(ctx, 1, levelMeasurement(r.Level))
+	h.messages.Add(ctx, 1, levelMeasurement(r.Level))
 	return h.Handler.Handle(ctx, r)
 }
 
 func (h *metricHandler) WithAttrs(attrs []slog.Attr) slog.Handler {
-	return &metricHandler{Handler: h.Handler.WithAttrs(attrs)}
+	return &metricHandler{Handler: h.Handler.WithAttrs(attrs), messages: h.messages}
 }
 
 func (h *metricHandler) WithGroup(name string) slog.Handler {
-	return &metricHandler{Handler: h.Handler.WithGroup(name)}
+	return &metricHandler{Handler: h.Handler.WithGroup(name), messages: h.messages}
 }
 
 type fanoutHandler struct{ sinks []slog.Handler }
