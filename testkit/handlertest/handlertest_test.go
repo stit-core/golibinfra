@@ -214,6 +214,11 @@ func TestNewAPI_ChecksRoutes(t *testing.T) {
 			huma.Register(api, huma.Operation{OperationID: "list-again", Method: http.MethodGet, Path: "/items"},
 				func(context.Context, *struct{}) (*emptyOutput, error) { return &emptyOutput{}, nil })
 		}, fatals: 1},
+		// Adapter().Handle поверх операции заменил бы её хендлер мимо HumaAuth.
+		"Adapter().Handle поверх операции": {register: func(api huma.API) {
+			registerSecret(api)
+			api.Adapter().Handle(&huma.Operation{Method: http.MethodGet, Path: "/secret"}, func(huma.Context) {})
+		}, opts: []handlertest.Option{handlertest.WithSecuritySchemes(bearer)}, fatals: 1},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {

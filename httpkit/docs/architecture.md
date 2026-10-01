@@ -238,12 +238,16 @@ Debug), `*APIError` от extractor'а сохраняет свой статус �
 скрытую (`Hidden`) и из группы huma: API сервера — `huma.OperationDocumenter`, а
 `OnAddOperation` и `OpenAPI().Paths` скрытых не видят. `CheckRoutes` возвращает
 `ErrRoutes` с именами операций и маршрутов: два одинаковых METHOD+path (`/users/{id}` и
-`/users/{userID}` для chi — один маршрут, второй молча заменил бы первый), `Public` с
-`Security`; при схеме в графе — операция без `Security` и без `Public`, схема в
-`Security` вне `components`, маршрут мимо `huma.Register` (`Router().Get`, `Mount`,
-`api.Adapter().Handle` — middleware API huma, а с ним `HumaAuth`, вешает только
-`huma.Register`), путь которого не в `PublicRoutes`, и строка `PublicRoutes` без такого
-маршрута. Маршруты документации huma (`/docs`, `/openapi.*`, `/schemas`) — свои у кита.
+`/users/{userID}` для chi — один маршрут, второй молча заменил бы первый), маршрут мимо
+`huma.Register` на METHOD+path операции — в любом порядке: chi оставляет маршруту последний
+хендлер, и чужой открыл бы операцию мимо `HumaAuth` (хендлер операции кит ставит своего
+типа и по нему отличает), `Public` с `Security`; при схеме в графе — операция без
+`Security` и без `Public`, схема в `Security` вне `components`, маршрут мимо `huma.Register`
+(`Router().Get`, `Mount`, `api.Adapter().Handle` — middleware API huma, а с ним
+`HumaAuth`, вешает только `huma.Register`), путь которого не в `PublicRoutes`, и строка
+`PublicRoutes` без такого маршрута. Маршруты документации huma (`/docs`, `/openapi.*`,
+`/schemas`) — свои у кита. Маршрут, добавленный после проверки — в `OnStart` позже хука
+сервера или из хендлера, — она не видит: маршруты регистрируют в Invoke или конструкторе.
 Затем, если в графе нет `AuthExtractor`, а у операции есть `Security`, `Module` не
 стартует с `ErrAuthNotConfigured` и именами таких операций. Без fx `CheckRoutes` зовут
 сами, а `HumaAuth(log, nil)` на защищённой операции отвечает `500 AUTH_NOT_CONFIGURED`

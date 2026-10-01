@@ -214,13 +214,16 @@ func (s *Server) BindAPI() huma.API {
 	}
 	// Описание ошибок — после хуков потребителя: их Security тоже объявляет 401.
 	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors)
-	consumer := chiRoutes(s.router)
+	consumer := routeHandlers(s.router)
 	api := humachi.New(s.router, humaConfig)
-	s.docsRoutes = chiRoutes(s.router)
-	for route := range consumer {
-		delete(s.docsRoutes, route)
+	s.docsRoutes = map[string]bool{}
+	for route := range routeHandlers(s.router) {
+		if _, ok := consumer[route]; !ok {
+			s.docsRoutes[route] = true
+		}
 	}
 	s.api = &registry{API: api}
+	s.api.adapter = &opAdapter{Adapter: api.Adapter(), router: s.router, reg: s.api}
 	return s.api
 }
 

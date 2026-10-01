@@ -235,6 +235,11 @@ huma.Register(api, httpkit.Public(huma.Operation{  // открыто без ау
 fx.Supply(httpkit.PublicRoutes{"/.well-known/jwks.json"}) // путь chi; без fx — WithPublicRoutes
 ```
 
+На METHOD+path операции такой маршрут — ошибка старта всегда, в любом порядке и при
+`PublicRoutes`: chi оставляет маршруту последний хендлер. Маршруты регистрируют в Invoke или
+конструкторе: добавленный позже (в `OnStart` после хука сервера, из хендлера) проверку не
+проходит.
+
 `AuthExtractor` (`func(*http.Request) (context.Context, error)`) кладёт личность
 в ctx; ошибка → `401 UNAUTHORIZED`, её текст — только в лог. Инфраструктурную
 ошибку (JWKS/хаб недоступны) оборачивайте в `httpkit.ErrAuthUnavailable` — клиент

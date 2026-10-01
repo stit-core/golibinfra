@@ -36,8 +36,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   и битая up-миграция кита краснят `make check` и `make gate-clean`; timing-тест logkit в гейт не
   входит. Проверка: `gate_inject.py --only G25,G26,G30` → все пойманы; `make check` → зелёный,
   итоговая строка называет охват `./...`
-  - Подтверждено: на кандидате S1 G25, G26 (`Docker is unavailable` — FAIL), G30 пойманы;
-    `make check` → `✓ check clean (./...)`; `go test -run TestRedact_Cost -v ./logkit/` → SKIP
+  - Подтверждено: на кандидате S1 G25, G26, G30 пойманы; `✓ check clean (./...)`; timing logkit — SKIP
 - [x] **AC2** — `PKGS`, `GO`, `GOFLAGS` (и `go env -w`), `A`, флаги `-i`/`-n`/`-k`, `MAKEFLAGS=i` не
   сужают и не глушат гейт: `make check` отказывается запускаться или проверяет всё; `gate-clean` и
   pre-push окружение вызывающего не наследуют. Проверка:
@@ -70,13 +69,15 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
     GH04 (дефолт `HTTP_DOCS_ENABLED` перевёрнут в коде) пойманы (`M/hgd/s5/`)
 - [x] **AC7** — При схеме безопасности в графе — ошибка старта с именем операции или маршрута:
   операция без `Security` и без `httpkit.Public` (в том числе скрытая и в группе huma), дубль
-  METHOD+path, сырой маршрут chi или `Adapter().Handle` мимо реестра без объявления публичным,
-  схема в `Security` вне `components`, дубль имени схемы, nil-схема, дубль имени пробы. Проверка:
-  `M/kits-audit/httpkit-a/run.sh <rev> security` → H15 PASS;
-  `M/kits-audit/httpkit-b/run.sh <rev> exp` → HX05, HX10, HX11 PASS
+  METHOD+path (и всегда — маршрут мимо реестра на пути операции, в любом порядке), сырой маршрут
+  chi или `Adapter().Handle` мимо реестра без объявления публичным, схема в `Security` вне
+  `components`, дубль имени схемы, nil-схема, дубль имени пробы. Проверка:
+  `M/kits-audit/httpkit-a/run.sh <rev> security` → H15 PASS; `M/kits-audit/httpkit-b/run.sh <rev>
+  exp` → HX05, HX10, HX11 PASS; зонд B1 валидатора B → A1–A3, A1b — ошибка старта
   - Подтверждено: на кандидате S6 H15 — подтесты B1 PASS (ошибка называет операции; подтест
     KSEC-08 — партия 3), HX05, HX10, HX11, HX11b PASS, прочие исходы `exp` — как на v1.2.0;
-    `M/hgd2/s6_mutants.py` — 11 из 11 мутантов проверки убиты
+    `M/hgd2/s6_mutants.py` — 11 из 11 мутантов проверки убиты; фикс B1: `M/hgd2/logs/fix-b1-probe.log`
+    — A1–A3, A1b — ошибка старта, `M/hgd2/fixb_mutants.py B1` — 6 из 6
 - [x] **AC8** — `handlertest.NewAPI` держит контракт сервера: `HumaAuth` до маршрутов (без
   extractor'а — `500 AUTH_NOT_CONFIGURED`, с `WithAuth` — 401 анониму), та же проверка, что в AC7;
   конфиг и логгер — как у сервера. Проверка: `httpkit-b/run.sh <rev> exp` → в HT01 T14, T22, T23,
@@ -191,8 +192,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - **`gate_inject.py`** — `s_plan` (G11, G20) ломает любой активный план; G21 запускает хук, который
   запустил бы git (`$(git rev-parse --git-path hooks)/pre-push`), со stdin `git push` (N1).
 - **N1** — pre-push гоняет `scripts/gate-clean.sh <коммит>` на каждом пушимом коммите: gitignored-файл
-  рабочего дерева не прячет поломку, «чистое дерево» и «= HEAD» не нужны, удаление ref'а гейт не
-  гоняет (`M/hgd2/n1_probe.sh`).
+  рабочего дерева не прячет поломку, «чистое дерево» и «= HEAD» не нужны, удаление ref'а — без гейта.
 - **N2** — `--eval` — строка `gate_bad` (`--eval=` видно в `MAKEFLAGS` до чтения Makefile); второй
   makefile ловит пререквизит `gate-makefiles` у `check` и `gate-clean`: рецепт `-f extra.mk` подменяет,
   а пререквизиты правил складываются, `$(error)` не глушат `-k`/`SHELL` (`M/hgd2/n2_probe.sh`).
@@ -212,6 +212,9 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   `ErrConfig` уже в `fx.New` (HX05 — `app.Err()`); дубль имени пробы — `ErrConfig` `registerHealth`.
 - **B1, эксперименты.** H15 (подтесты B1), HX10, HX11 — под «ошибку старта с именем», HX11b — со схемой
   в графе; подтест H15 «AdminKey принимает Bearer» — KSEC-08 (партия 3, `httpkit-auth-edge`), красный.
+- **B1, подмена хендлера** (валидатор B). Адаптер реестра ставит операции хендлер типа `opHandler` (по
+  METHOD+path: группа документирует копию); маршрут на пути операции с чужим хендлером — ошибка всегда,
+  раньше операции — при её `Handle`. Маршрут после проверки — доки: роутер наружу — `*chi.Mux`.
 - **S7, handlertest.** Что сервер берёт из графа, `NewAPI` — опциями; без `WithAuth` защищённая операция
   — 500 `AUTH_NOT_CONFIGURED` (fail-closed), а не провал теста. `register` получает API сервера с
   реестром (у обёртки `humatest` нет `OperationDocumenter`); конфиг — `httpkit.NewConfig()`, как у
@@ -222,8 +225,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   и пришедшем XFF — одна строка Warn на middleware (за Traefik без настройки — один bucket на всех).
 - **B2, IP.** `httpkit.ClientIP(log, hops)` — после `RequestID`, до `OTel`; ключ ctx и свёртка —
   `internal/clientip` (`Canonical`, `Key`): ею ключуют лимитер (/64) и bruteforcekit, auditkit (B4)
-  читает тот же ключ. `ClientIPFrom(ctx) string` — для bruteforcekit и аудита; функция
-  `ClientIP(r, trustProxy)` удалена — один способ.
+  читает тот же ключ; `ClientIPFrom(ctx)` — для bruteforcekit и аудита; `ClientIP(r, trustProxy)` удалена.
 - **B2, лимитер и спан.** Предел — константа 100 000 bucket'ов (≈17 MiB), сверх — общий bucket до
   выметания: без env и LRU. Имя server-спана и `client.address` ставит `Metrics` в defer (HO02,
   HO04); форматтер otelhttp оставлен — при `r.Pattern` он зовётся после `Metrics` с тем же именем.
@@ -246,24 +248,24 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`: заготовка аннотации v1.3.0 из «Где мы сейчас»,
 строки несделанных шагов и пункты шаблону ниже.
-- Шаблону после bump (`fix-reference-code` S9): обход `TestDockerRequired`
-  (`cmd/migrate/migrate_test.go:21-31`) лишний — testkit без Docker сам FAIL; комментарий
-  `scripts/tools/test.sh:21-22` («testkit пропустит тесты без Docker») неверен;
-  `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...),
-  testkit.WithMigrationsDir(...))` — один способ.
+- Шаблону после bump (`fix-reference-code` S9): обход `TestDockerRequired` (`cmd/migrate/migrate_test.go`)
+  лишний — testkit без Docker сам FAIL; комментарий `scripts/tools/test.sh:21-22` («testkit пропустит
+  тесты без Docker») неверен; `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t,
+  testkit.WithMigrations(sources.Kits...), testkit.WithMigrationsDir(...))` — один способ.
 - `events.OutboxFor` — `outboxkit.WithSubjects(name+".>")` (бэклог шаблона `publisher-stream-check`).
 
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
-закрыты (N4 — S11). S6–S10 сделаны; дальше — валидатор этапа «httpkit и outbox: B1–B3», затем S11.
-Эксперименты — `M/hgd/`, `M/hgd2/`; правки материалов аудита — «Решения».
+закрыты (N4 — S11). S6–S10 сделаны, валидатор этапа — FAIL (`M/validation-harden-gate-defaults-B.md`):
+B1 закрыт; дальше B2, неблокирующие (JSONB, makefile, guard, литерал, флак httpclient), перепроверка, S11.
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой
   `Security` не публичен; и скрытая), схема `Security` вне `components`, маршрут мимо `huma.Register`
   вне `PublicRoutes`, а всегда — дубль METHOD+path, `Public` с `Security`, скрытая операция с
-  `Security` без extractor'а — ошибка старта; дубль имени схемы или пробы, схема без `Scheme` —
-  ошибка графа → открытые операции — `httpkit.Public(op)`, сырые маршруты — `PublicRoutes`.
+  `Security` без extractor'а, маршрут мимо `huma.Register` на METHOD+path операции — ошибка старта;
+  дубль имени схемы или пробы, схема без `Scheme` — ошибка графа → открытые операции —
+  `httpkit.Public(op)`, сырые маршруты — `PublicRoutes`, на пути операции — убрать.
 - Breaking — testkit/handlertest: `NewAPI` ставит `HumaAuth` до маршрутов и проверяет маршруты
   (`CheckRoutes`) → защищённая операция без `WithAuth` — 500 `AUTH_NOT_CONFIGURED`, свой `HumaAuth`
   в `register` не действует — `handlertest.WithAuth(extract)`; конфиг — `httpkit.NewConfig()` (свой
@@ -279,11 +281,9 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   → `openapi.json` перегенерировать, `HTTP_DOCS_ENABLED=true` — только dev; handlertest — тот же дефолт.
 - Изменения — httpkit: `Public`, `PublicRoutes`/`WithPublicRoutes`, `Server.CheckRoutes`, `ErrRoutes`,
   `ClientIP(log, hops)`, `ClientIPFrom`; bruteforcekit сворачивает IPv6 той же функцией, что лимитер;
-  handlertest: `WithAuth`, `WithConfig`, `WithLogger` (строка `handler error` в тесте хендлера),
-  `WithSecuritySchemes`.
-- Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест
-  (`t.Fatalf`), а не пропускают → без Docker integration-прогон потребителя (`-tags=integration`,
-  без `-short`) красный; без Docker гонять только `go test -short`.
+  handlertest: `WithAuth`, `WithConfig`, `WithLogger` (`handler error` в тесте), `WithSecuritySchemes`.
+- Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` — `t.Fatalf`, а не skip →
+  integration-прогон потребителя без Docker красный; без Docker — только `go test -short`.
 - Breaking — outboxkit: `New`, `NewWorker` принимают `logkit.Logger` (`Module`, `Instance` — из графа);
   `OUTBOX_MAX_ATTEMPTS` по умолчанию 25, `0` — ошибка конфига; выключенный JetStream — ошибка
   старта; JSON больше `OUTBOX_MAX_PAYLOAD_BYTES` (512 KiB) — `ErrPayloadTooLarge` → `New(…, cfg,

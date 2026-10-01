@@ -84,6 +84,20 @@ func TestModule_RoutesCheck(t *testing.T) {
 			srv.Router().Get(path, func(http.ResponseWriter, *http.Request) {})
 		})
 	}
+	item := secured(operation("get-item", http.MethodGet, "/items/{id}"))
+	adapterRoute := func(api huma.API) {
+		api.Adapter().Handle(&huma.Operation{Method: http.MethodGet, Path: "/items/{id}"}, func(huma.Context) {})
+	}
+	// chi оставляет маршруту последний хендлер: сырой поверх операции открыл бы её анониму.
+	overItem := func(first, then func(srv *httpkit.Server, api huma.API)) fx.Option {
+		return fx.Invoke(func(srv *httpkit.Server, api huma.API) { first(srv, api); then(srv, api) })
+	}
+	registerItem := func(_ *httpkit.Server, api huma.API) { huma.Register(api, item, noBody) }
+	rawItem := func(pattern string) func(*httpkit.Server, huma.API) {
+		return func(srv *httpkit.Server, _ huma.API) {
+			srv.Router().Get(pattern, func(http.ResponseWriter, *http.Request) {})
+		}
+	}
 	cases := []struct {
 		name string
 		opts []fx.Option
@@ -131,6 +145,38 @@ func TestModule_RoutesCheck(t *testing.T) {
 			name: "PublicRoutes без маршрута", opts: []fx.Option{withBearer, fx.Supply(httpkit.PublicRoutes{"/gone"})},
 			want: []string{"httpkit.PublicRoutes lists /gone, but no route bypasses huma.Register there"},
 		},
+		{
+			name: "сырой маршрут поверх операции", opts: []fx.Option{withBearer, overItem(registerItem, rawItem("/items/{id}"))},
+			want: []string{"route GET /items/{} replaces operation get-item"},
+		},
+		{
+			name: "сырой маршрут с другим именем параметра", opts: []fx.Option{withBearer, overItem(registerItem, rawItem("/items/{itemID}"))},
+			want: []string{"route GET /items/{} replaces operation get-item"},
+		},
+		{
+			name: "Adapter().Handle поверх операции",
+			opts: []fx.Option{withBearer, overItem(registerItem, func(_ *httpkit.Server, api huma.API) { adapterRoute(api) })},
+			want: []string{"route GET /items/{} replaces operation get-item"},
+		},
+		{
+			name: "сырой маршрут до операции", opts: []fx.Option{withBearer, overItem(rawItem("/items/{id}"), registerItem)},
+			want: []string{"route GET /items/{} is registered before operation get-item, which replaces it"},
+		},
+		{
+			name: "Adapter().Handle до операции",
+			opts: []fx.Option{withBearer, overItem(func(_ *httpkit.Server, api huma.API) { adapterRoute(api) }, registerItem)},
+			want: []string{"route GET /items/{} is registered before operation get-item, which replaces it"},
+		},
+		{
+			name: "сырой маршрут поверх операции и без схем", opts: []fx.Option{fx.Invoke(func(srv *httpkit.Server, api huma.API) {
+				huma.Register(api, operation("list", http.MethodGet, "/items"), noBody)
+				srv.Router().Get("/items", func(http.ResponseWriter, *http.Request) {})
+			})},
+			want: []string{"route GET /items replaces operation list"},
+		},
+		{name: "группа с двумя префиксами — хендлеры своих операций", opts: []fx.Option{withBearer, fx.Invoke(func(api huma.API) {
+			huma.Register(huma.NewGroup(api, "/v1", "/v2"), secured(operation("things", http.MethodGet, "/things")), noBody)
+		})}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

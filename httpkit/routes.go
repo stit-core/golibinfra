@@ -1,6 +1,7 @@
 package httpkit
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
 )
 
@@ -45,16 +47,76 @@ type PublicRoutes []string
 // скрытую и из группы huma (OperationDocumenter), а OnAddOperation скрытых не видит.
 type registry struct {
 	huma.API
-	ops []*huma.Operation
+	adapter *opAdapter
+	ops     []*huma.Operation
+	// pending — операции, которым huma.Register ещё не поставил хендлер.
+	pending []*huma.Operation
+	// replaced — маршруты chi, которые операция заменила при регистрации.
+	replaced []string
 }
 
 // DocumentOperation запоминает операцию и добавляет в OpenAPI нескрытую — как huma без
 // OperationDocumenter.
 func (r *registry) DocumentOperation(op *huma.Operation) {
 	r.ops = append(r.ops, op)
+	r.pending = append(r.pending, op)
 	if !op.Hidden {
 		r.OpenAPI().AddOperation(op)
 	}
+}
+
+// Adapter — адаптер реестра: его зовут huma.Register и группы huma.
+func (r *registry) Adapter() huma.Adapter { return r.adapter }
+
+// claim — операция без хендлера с тем же METHOD и путём: huma.Register документирует её до
+// Handle, группа — копией с префиксом.
+func (r *registry) claim(op *huma.Operation) *huma.Operation {
+	i := slices.IndexFunc(r.pending, func(p *huma.Operation) bool { return p.Method == op.Method && p.Path == op.Path })
+	if i < 0 {
+		return nil
+	}
+	claimed := r.pending[i]
+	r.pending = slices.Delete(r.pending, i, i+1)
+	return claimed
+}
+
+// opHandler — хендлер маршрута операции из реестра: по типу CheckRoutes отличает его от
+// маршрута chi, который на том же METHOD+path молча заменил операцию.
+type opHandler struct{ http.HandlerFunc }
+
+// opAdapter — адаптер humachi, который ставит операциям реестра хендлер opHandler; прочее
+// (Adapter().Handle мимо huma.Register) — обычный маршрут chi.
+type opAdapter struct {
+	huma.Adapter
+	router chi.Router
+	reg    *registry
+}
+
+// Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в replaced.
+func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
+	serve := func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(op, r, w)) }
+	documented := a.reg.claim(op)
+	if documented == nil {
+		a.router.MethodFunc(op.Method, op.Path, serve)
+		return
+	}
+	route := op.Method + " " + routeKey(op.Path)
+	if h, ok := routeHandlers(a.router)[route]; ok {
+		if _, isOp := h.(opHandler); !isOp {
+			a.reg.replaced = append(a.reg.replaced, fmt.Sprintf("route %s is registered before operation %s, which replaces it", route, operationName(documented)))
+		}
+	}
+	a.router.Method(op.Method, op.Path, opHandler{serve})
+}
+
+// SanitizeInternalContext — опциональный интерфейс адаптера humachi (autopatch huma).
+func (a *opAdapter) SanitizeInternalContext(ctx context.Context) context.Context {
+	if s, ok := a.Adapter.(interface {
+		SanitizeInternalContext(context.Context) context.Context
+	}); ok {
+		return s.SanitizeInternalContext(ctx)
+	}
+	return ctx
 }
 
 // Config — huma.Config API: его читают huma.Register и группы huma.
@@ -65,11 +127,13 @@ func (r *registry) Config() huma.Config {
 	return huma.Config{}
 }
 
-// CheckRoutes — проверка старта: METHOD+path у операций не повторяется, Public — без
-// Security. Если в components.securitySchemes есть схема, у каждой операции, в том числе
-// скрытой, — Security из components или Public, а маршрут chi мимо huma.Register (кроме
-// /docs, /openapi.*, /schemas) — в PublicRoutes. Module зовёт её на OnStart, после всех
-// Invoke; ошибка — ErrRoutes с именами операций и маршрутов, у невалидной схемы — ErrConfig.
+// CheckRoutes — проверка старта: METHOD+path у операций не повторяется и не занят маршрутом
+// chi мимо huma.Register (в любом порядке регистрации), Public — без Security. Если в
+// components.securitySchemes есть схема, у каждой операции, в том числе скрытой, — Security
+// из components или Public, а маршрут chi мимо huma.Register (кроме /docs, /openapi.*,
+// /schemas) — в PublicRoutes. Module зовёт её на OnStart, после всех Invoke; маршрут,
+// добавленный позже, она не видит. Ошибка — ErrRoutes с именами операций и маршрутов, у
+// невалидной схемы — ErrConfig.
 func (s *Server) CheckRoutes() error {
 	if err := checkSchemes(s.opts.schemes); err != nil {
 		return err
@@ -101,9 +165,8 @@ func (s *Server) CheckRoutes() error {
 			}
 		}
 	}
-	if guarded {
-		problems = append(problems, s.rawRouteProblems(ops)...)
-	}
+	problems = append(problems, reg.replaced...)
+	problems = append(problems, s.rawRouteProblems(ops, guarded)...)
 	if len(problems) == 0 {
 		return nil
 	}
@@ -111,28 +174,35 @@ func (s *Server) CheckRoutes() error {
 	return fmt.Errorf("%w: %s", ErrRoutes, strings.Join(slices.Compact(problems), "; "))
 }
 
-// rawRouteProblems — маршруты chi вне реестра, документации huma и PublicRoutes, и строки
-// PublicRoutes без такого маршрута: middleware huma (HumaAuth) на них не действует.
-func (s *Server) rawRouteProblems(ops map[string]string) []string {
+// rawRouteProblems — маршруты chi мимо huma.Register: на пути операции (chi молча оставил
+// последний хендлер — middleware huma там не действует), а при схеме (guarded) — и вне
+// документации huma и PublicRoutes; плюс строки PublicRoutes без такого маршрута.
+func (s *Server) rawRouteProblems(ops map[string]string, guarded bool) []string {
 	public := make(map[string]bool, len(s.opts.publicRoutes))
 	for _, p := range s.opts.publicRoutes {
 		public[routeKey(p)] = false
 	}
 	var problems []string
-	_ = chi.Walk(s.router, func(method, pattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		route := method + " " + routeKey(pattern)
-		if _, registered := ops[route]; registered || s.docsRoutes[route] {
-			return nil
+	for route, h := range routeHandlers(s.router) {
+		if _, isOp := h.(opHandler); isOp {
+			continue
 		}
-		if _, ok := public[routeKey(pattern)]; ok {
-			public[routeKey(pattern)] = true
-			return nil
+		if name, registered := ops[route]; registered {
+			problems = append(problems, fmt.Sprintf("route %s replaces operation %s", route, name))
+			continue
+		}
+		if !guarded || s.docsRoutes[route] {
+			continue
+		}
+		path := route[strings.IndexByte(route, ' ')+1:]
+		if _, declared := public[path]; declared {
+			public[path] = true
+			continue
 		}
 		problems = append(problems, fmt.Sprintf("route %s bypasses huma.Register: register an operation or list the path in httpkit.PublicRoutes", route))
-		return nil
-	})
+	}
 	for path, used := range public {
-		if !used {
+		if guarded && !used {
 			problems = append(problems, fmt.Sprintf("httpkit.PublicRoutes lists %s, but no route bypasses huma.Register there", path))
 		}
 	}
@@ -175,11 +245,11 @@ func operationName(op *huma.Operation) string {
 	return op.Method + " " + op.Path
 }
 
-// chiRoutes — маршруты роутера ключами «METHOD путь» (routeKey).
-func chiRoutes(r chi.Routes) map[string]bool {
-	routes := map[string]bool{}
-	_ = chi.Walk(r, func(method, pattern string, _ http.Handler, _ ...func(http.Handler) http.Handler) error {
-		routes[method+" "+routeKey(pattern)] = true
+// routeHandlers — хендлеры маршрутов роутера ключами «METHOD путь» (routeKey).
+func routeHandlers(r chi.Routes) map[string]http.Handler {
+	routes := map[string]http.Handler{}
+	_ = chi.Walk(r, func(method, pattern string, h http.Handler, _ ...func(http.Handler) http.Handler) error {
+		routes[method+" "+routeKey(pattern)] = h
 		return nil
 	})
 	return routes

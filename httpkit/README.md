@@ -11,8 +11,8 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 `request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный маршрут и
 метод, лимиты, panic; 5xx — без текста причины (она в логе с тем же
 `request_id`), 429 — с `Retry-After`. При схеме безопасности в графе открытость
-операции явная — `Security` или `httpkit.Public`; дубли маршрутов, забытая пометка и
-маршрут мимо huma — ошибка старта (`CheckRoutes`). `/health` и `/ready` (по пробам из
+операции явная — `Security` или `httpkit.Public`; дубли маршрутов (и маршрут мимо huma на
+пути операции), забытая пометка и маршрут мимо huma — ошибка старта (`CheckRoutes`). `/health` и `/ready` (по пробам из
 fx-группы `healthkit.probes`) регистрируются автоматически. RED-метрики и
 server-span — by default.
 
