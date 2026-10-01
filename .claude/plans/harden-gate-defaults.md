@@ -18,8 +18,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - **Находки** — базовый аудит `M/kits-audit/` (`M` — `/home/mm/.cache/stit-audit-program/`): сводка
   `summary.md` и отчёты углов; эксперименты — `run.sh` углов (тест утверждает желаемое, FAIL —
   дефект есть), тяжёлые прогоны — последовательно.
-- **Гейт** (S1–S5, образец — шаблон): `GATE_STEPS` с integration и guard в `Makefile`,
-  `scripts/gate-clean.sh`, pre-push, deny и guard `.claude/`, `testkit.MigrationLadder`, `scripts/envdoc`.
+- **Гейт** (S1–S5): `Makefile`, `scripts/gate-clean.sh`, pre-push, deny и guard `.claude/`, `scripts/envdoc`.
 - **Потребитель** — шаблон, `fix-reference-code` S9 (bump v1.3.0): снимает `publicOperations`,
   client-IP middleware и `identity.WithIP`. Полный Handoff шаблону — в `harden-authn-release`.
 - **Правила шага:** доки кита — тем же коммитом (`make envdoc-check`); breaking — `!`, `BREAKING CHANGE:`.
@@ -88,9 +87,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   лимитера ограничена; имя server-спана — маршрут и при middleware потребителя с `r.WithContext`.
   Проверка: `httpkit-a/run.sh <rev> security` → H11, H12 PASS; `httpkit-b/run.sh <rev> exp` →
   HO02, HO04 PASS
-  - Подтверждено: на кандидате S8 H11, H12 PASS (HOPS=0 — адрес соединения, HOPS=1 — запись прокси),
-    H11b — +15,7 MiB на 200 000 адресов (было 32,6); HO02 во всех 4 вариантах и HO04 PASS, сигналы —
-    0 расхождений; `M/hgd2/s8_mutants.py` — 10 из 10 мутантов убиты
+  - Подтверждено: на кандидате S8 H11, H12 PASS; H11b — +15,7 MiB на 200 000 адресов; HO02 во всех 4
+    вариантах и HO04 PASS, сигналы — 0 расхождений; `M/hgd2/s8_mutants.py` — 10 из 10 мутантов убиты
 - [x] **AC10** — По умолчанию `/docs`, `/openapi.*` и `/schemas/*` не отдаются; в ответах нет `$schema`
   и `Link` с хостом клиента. Проверка: `httpkit-a/run.sh <rev> contract security` → H08, H14 PASS
   - Подтверждено: на кандидате S9 H08 (docs вкл. и выкл.) и H14 PASS; прочие исходы групп contract,
@@ -190,10 +188,12 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - **N1** — pre-push гоняет `scripts/gate-clean.sh <коммит>` на каждом пушимом коммите: gitignored-файл
   рабочего дерева не прячет поломку, «чистое дерево» и «= HEAD» не нужны, удаление ref'а — без гейта.
 - **N2** — `--eval` — строка `gate_bad` (`--eval=` видно в `MAKEFLAGS` до чтения Makefile); второй
-  makefile ловит пререквизит `gate-makefiles` у `check` и `gate-clean`: рецепт `-f extra.mk` подменяет,
-  а пререквизиты правил складываются, `$(error)` не глушат `-k`/`SHELL` (`M/hgd2/n2_probe.sh`).
-- **N3** — deny `*--no-veri*` ловит флаг в кавычках и алиасе; guard — `chmod`/`rm`/`mv` (и `git rm`/`mv`)
-  по `scripts/git-hooks`: неисполняемый или удалённый хук git молча пропускает (`M/hgd2/n3_guard.py`).
+  makefile ловит пререквизит `gate-makefiles` у `check` и `gate-clean` (рецепт `-f extra.mk` подменяет,
+  а пререквизиты складываются; `$(error)` не глушат `-k`/`SHELL`) — по полному пути (валидатор B:
+  `Makefile` другого каталога); переопределение самого `gate-makefiles` — правка гейта, так и в доках.
+- **N3** — deny `*--no-veri*` ловит флаг в кавычках и алиасе; guard по пути `git-hooks` или `pre-push`
+  пускает только чтение — readers, git без правки дерева, `sed` без `-i`, `bash -n`, запуск хука — и без
+  записи перенаправлением (валидатор B: `cp`, `ln`, `truncate`, `>`, `sed -i`); `M/hgd2/fixb_guard.py`.
 - **B1, реестр.** API сервера — `huma.OperationDocumenter`: `DocumentOperation` видит каждую операцию,
   в том числе `Hidden` и из групп (`OnAddOperation` скрытых не видит). Проверка — экспортируемый
   `Server.CheckRoutes()` (`ErrRoutes`): `Module` — на OnStart, `handlertest` — S7, без fx —
@@ -256,7 +256,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
 закрыты (N4 — S11). S6–S10 сделаны, валидатор этапа — FAIL (`M/validation-harden-gate-defaults-B.md`):
-B1, B2, литерал в аннотации и JSONB закрыты; дальше makefile, guard, флак httpclient, перепроверка, S11.
+B1, B2, литерал в аннотации, JSONB, makefile и guard закрыты; дальше флак httpclient, перепроверка, S11.
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой

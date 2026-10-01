@@ -311,8 +311,9 @@ make gate-clean   # make check в чистом worktree от HEAD — перед
 падает, а не пропускается) и сети (`govulncheck` тянет базу уязвимостей). Он
 всегда проверяет всё дерево и заканчивается строкой `✓ check clean (./...)`:
 `PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-n`/`-q`/`-t`, `--eval`, вторым
-makefile (`-f`), `GOFLAGS` (env или `go env -w`) и подменой
-`MAKE`/`SHELL`/`.SHELLFLAGS`/`MAKEFILES` гейт не запускается. Кеш golangci-lint —
+makefile (`-f`, в том числе `Makefile` другого каталога), `GOFLAGS` (env или `go env -w`) и
+подменой `MAKE`/`SHELL`/`.SHELLFLAGS`/`MAKEFILES` гейт не запускается; makefile, который
+переопределяет рецепты самого гейта, — уже его правка. Кеш golangci-lint —
 свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
 
 Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь
@@ -321,8 +322,8 @@ make-окружения вызывающего, незакоммиченных �
 pre-push `make check` красный (`hooks-check`, подсказка — `make hooks`). Обход — только
 руками человека (`git push --no-verify`). Из сессии Claude Code удобные обходы блокируют
 deny `.claude/settings.json` (`--no-veri…` где угодно в команде, в том числе в кавычках и
-алиасе) и `.claude/hooks/guard-bash.sh` (`git commit -n`, смена `core.hooksPath`, `chmod`,
-`rm`, `mv` по `scripts/git-hooks`) — страховка от удобного обхода, а не от обфускации.
+алиасе) и `.claude/hooks/guard-bash.sh` (`git commit -n`, смена `core.hooksPath`, по
+`scripts/git-hooks` — всё, кроме чтения) — страховка от удобного обхода, а не от обфускации.
 
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),

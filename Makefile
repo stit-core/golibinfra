@@ -39,10 +39,12 @@ endif
 endif
 
 # Makefile, прочитанный после этого (make -f Makefile -f extra.mk), подменил бы рецепт check;
-# пререквизиты правил одной цели складываются, поэтому список makefile'ов сверяет пререквизит.
+# пререквизиты правил одной цели складываются, поэтому список makefile'ов сверяет пререквизит —
+# по полному пути: Makefile другого каталога тоже чужой. Makefile, который переопределяет и этот
+# рецепт, — уже правка гейта.
 check gate-clean: gate-makefiles
 gate-makefiles:
-	$(if $(filter-out Makefile,$(notdir $(MAKEFILE_LIST))),$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с makefile'ами $(strip $(MAKEFILE_LIST)) — только Makefile))
+	$(if $(filter-out $(abspath Makefile),$(abspath $(MAKEFILE_LIST))),$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с makefile'ами $(strip $(MAKEFILE_LIST)) — только Makefile этого каталога))
 
 check: ## Канонический gate: хуки, fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
 	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(GATE) $$step; done
