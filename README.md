@@ -296,14 +296,17 @@ go get git.stit.tech/stit-core/golibinfra@vX.Y.Z && go mod tidy
 ```bash
 make tools        # golangci-lint + govulncheck пиненных версий
 make hooks        # core.hooksPath=.githooks: pre-push гоняет make check
-make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check + plan-check
-make test-full    # + testcontainers (Postgres/NATS/Redis/MinIO), нужен Docker
+make check        # fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
+make test-full    # unit + integration (testcontainers: Postgres/NATS/Redis/MinIO) -race; без Docker — FAIL
+make test         # быстрый цикл: unit -short -race, без контейнеров
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
 ```
 
+`make check` требует Docker (integration на testcontainers: без Docker тест
+падает, а не пропускается) и сети (`govulncheck` тянет базу уязвимостей).
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
-(бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`).
-`make check` требует сети: `govulncheck` тянет базу уязвимостей.
+(бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),
+`make test-timing` (timing-тест logkit: под нагрузкой флакает, поэтому вне гейта).
 
 ## Локальная разработка с правкой golibinfra
 

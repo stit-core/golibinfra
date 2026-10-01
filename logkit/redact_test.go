@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -460,8 +461,8 @@ func TestRedact_CustomPatternsSkipTheHint(t *testing.T) {
 // которые обход ключей разбирает. Отношение двух замеров в одном процессе
 // устойчиво к скорости машины, минимум чередующихся раундов — к шуму соседей.
 func TestRedact_CostOfRecordWithoutSecrets(t *testing.T) {
-	if testing.Short() {
-		t.Skip("timing comparison")
+	if os.Getenv("GOLIBINFRA_TIMING") == "" {
+		t.Skip("timing comparison flakes under load: make test-timing")
 	}
 	items := make([]map[string]any, 20)
 	for i := range items {

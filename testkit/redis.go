@@ -18,7 +18,8 @@ type RedisFixture struct {
 }
 
 // StartRedis поднимает Redis.
-// Пропускает тест под -short и без Docker; контейнер снимается в t.Cleanup.
+// Под -short пропускает тест, без Docker обрывает (RequireDocker); контейнер
+// снимается в t.Cleanup.
 func StartRedis(t testing.TB, opts ...Option) *RedisFixture {
 	t.Helper()
 	RequireDocker(t)

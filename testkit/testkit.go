@@ -85,14 +85,15 @@ var dockerHealth = sync.OnceValue(func() (err error) {
 	return provider.Health(ctx)
 })
 
-// RequireDocker пропускает тест, если он идёт под -short или Docker недоступен.
-// Все Start* вызывают его сами; напрямую он нужен тестам со своим ContainerRequest.
+// RequireDocker пропускает тест под -short, а без доступного Docker обрывает его
+// (t.Fatalf): integration-тест не зеленеет, не открыв контейнер. Все Start*
+// вызывают его сами; напрямую он нужен тестам со своим ContainerRequest.
 func RequireDocker(t testing.TB) {
 	t.Helper()
 	if testing.Short() {
 		t.Skip("testkit: -short runs without Docker")
 	}
 	if err := dockerHealth(); err != nil {
-		t.Skipf("testkit: Docker is unavailable: %v", err)
+		t.Fatalf("testkit: Docker is unavailable (go test -short skips integration tests): %v", err)
 	}
 }

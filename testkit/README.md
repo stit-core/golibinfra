@@ -44,8 +44,9 @@ import "git.stit.tech/stit-core/golibinfra/testkit/outboxtest"
 
 Контейнерные helper'ы принимают `testing.TB`, при ошибке вызывают `t.Fatalf`, а
 остановку контейнера вешают на `t.Cleanup` — вручную ничего закрывать не нужно.
-Под `-short` и без Docker они пропускают тест (`t.Skip`), поэтому собственный
-гейт `testing.Short()` в тесте не нужен.
+Под `-short` они пропускают тест (`t.Skip`), поэтому собственный гейт
+`testing.Short()` в тесте не нужен; без доступного Docker вне `-short` тест
+падает (`t.Fatalf`), а не пропускается.
 
 ```go
 func TestRepository(t *testing.T) {
@@ -185,7 +186,7 @@ testkit ничего не эмитит: ни метрик, ни спанов, н
 
 | Символ | Назначение |
 | --- | --- |
-| `RequireDocker(t)` | `t.Skip`, если тест идёт под `-short` или Docker недоступен; вызывается всеми `Start*`. |
+| `RequireDocker(t)` | `t.Skip` под `-short`, `t.Fatalf`, если Docker недоступен; вызывается всеми `Start*`. |
 | `StartPostgres(t, opts...) *PostgresFixture` | Контейнер Postgres; `WithMigrations`/`WithMigrationsDir` применяют миграции. |
 | `PostgresFixture{DSN, Container}` | DSN живого инстанса + handle контейнера (`tcpostgres.PostgresContainer`). |
 | `(*PostgresFixture).Pool(t)` | Общий пул фикстуры через `pgkit.NewPool` (session-таймауты, otelpgx); открывается один раз, закрывается в `t.Cleanup`. |
@@ -213,7 +214,8 @@ Helper'ы вызываются прямо из `*_test.go` консьюмера.
 - `go test -short ./...` — контейнеры не поднимаются: `Start*` вызывают
   `RequireDocker`, который под `-short` делает `t.Skip`.
 - `go test ./...` — полный прогон, включая контейнерные тесты (нужен Docker).
-  Если демон недоступен, контейнерные тесты пропускаются, а не падают.
+  Если демон недоступен, контейнерные тесты падают, а не пропускаются: зелёный
+  полный прогон значит, что integration действительно прошёл.
 
 Сабпакетные fake'и Docker не требуют и под `-short` отрабатывают как обычные
 unit-тесты. Собственные тесты testkit устроены так же: сабпакеты — unit,
@@ -221,9 +223,10 @@ unit-тесты. Собственные тесты testkit устроены та
 
 ## Инварианты и подводные камни
 
-- **`-short` = без Docker.** Условие проверяет сам helper; дублировать
-  `if testing.Short() { t.Skip(...) }` в тесте не нужно. Тестам, которые строят
-  контейнер сами, тот же контракт даёт `testkit.RequireDocker(t)`. Собственный
+- **`-short` = без Docker, без `-short` Docker обязателен.** Условие проверяет
+  сам helper; дублировать `if testing.Short() { t.Skip(...) }` в тесте не нужно.
+  Тестам, которые строят контейнер сами, тот же контракт даёт
+  `testkit.RequireDocker(t)`. Собственный
   `testing.Short()` остаётся оправданным только там, где Docker ни при чём, а
   тест сам по себе долгий (десятки секунд стенного времени) — тогда в `t.Skip`
   пишется именно эта причина.

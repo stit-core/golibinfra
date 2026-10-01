@@ -75,7 +75,7 @@ func startSharedNATS() func() {
 	return func() { _ = testcontainers.TerminateContainer(c) }
 }
 
-// natsURL — URL общего сервера; тест пропускается под -short и без Docker.
+// natsURL — URL общего сервера; под -short тест пропускается, без Docker падает.
 func natsURL(t *testing.T) string {
 	t.Helper()
 	testkit.RequireDocker(t)

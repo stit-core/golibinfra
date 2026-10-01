@@ -303,9 +303,9 @@ CREATE INDEX bruteforce_attempts_last_attempt_idx ON bruteforce_attempts (last_a
 
 Интеграционные тесты (`pgstore/*_test.go`) поднимают реальный Postgres через
 `testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))`. Гейт
-держит сам helper (`testkit.RequireDocker`): под `-short` и без Docker тест
-пропускается, собственного `testing.Short()` в тесте нет. Полный прогон требует
-Docker.
+держит сам helper (`testkit.RequireDocker`): под `-short` тест пропускается,
+собственного `testing.Short()` в тесте нет. Полный прогон требует Docker: без
+него тест падает.
 
 Покрытие: блокировка после `MaxFailures` попыток и после единственной при
 `MaxFailures=1`, попытка под блокировкой строку не пишет, независимость

@@ -68,7 +68,7 @@ id в двух namespace'ах даёт разные `Msg-Id` (иначе stream-
 `testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))` — миграции
 кита применяются прямо из `embed.FS`, а таблица multi-instance —
 `testkit.WithMigrations(pgstore.TableMigrations("outbox_orders"))`. Хелпер сам
-пропускает тест под `-short` и без Docker. Покрывают:
+пропускает тест под `-short`, а без Docker обрывает его. Покрывают:
 
 - happy-path insert→list→mark (`published_at` ставит база), rollback (строка не
   остаётся в outbox при откате транзакции), tx-strict guard (`ErrNoTx` вне

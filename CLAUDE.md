@@ -38,16 +38,18 @@ generic-примитив, которого нет в ките, `go-backend-templ
 ## Команды (gate перед claim «готово»)
 
 ```bash
-make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check + plan-check
-make test-full    # + testcontainers (Postgres/NATS/Redis/MinIO), нужен Docker
+make check        # fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
+make test-full    # unit + integration (testcontainers: Postgres/NATS/Redis/MinIO) -race; без Docker — FAIL
+make test         # быстрый цикл: unit -short -race, без контейнеров
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
 make tools        # golangci-lint + govulncheck пиненных версий
 make hooks        # core.hooksPath=.githooks: pre-push гоняет make check
-make coverage     # покрытие -short + сводка; ещё есть bench и fuzz
+make coverage     # покрытие -short + сводка; ещё есть bench, fuzz и test-timing (вне гейта)
 ```
 
-Зелёный `make check` = можно claim «готово». Перед тегом — `make gate-clean`:
-он ловит файлы, которые есть локально, но не в git.
+Зелёный `make check` = можно claim «готово»: он гоняет и integration, поэтому нужны
+Docker и сеть (govulncheck). Перед тегом — `make gate-clean`: он ловит файлы,
+которые есть локально, но не в git.
 
 ## Карта пакетов
 

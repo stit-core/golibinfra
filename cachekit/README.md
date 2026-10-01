@@ -192,8 +192,8 @@ refresh): истёкшие ключи и членство в тегах вычи
 
 ## Тестирование
 
-Интеграционные тесты поднимают Redis через `testkit.StartRedis` и пропускаются
-в `-short` и без Docker; `MemoryCache`, `IdempotencyStore`, хук наблюдаемости,
+Интеграционные тесты поднимают Redis через `testkit.StartRedis`: в `-short`
+пропускаются, без Docker падают; `MemoryCache`, `IdempotencyStore`, хук наблюдаемости,
 `Config.Validate`, `Module` и работа с закрытым клиентом покрыты unit-тестами.
 Отдельные интеграционные проверки: старт на `redis:6-alpine` валится
 `ErrServerVersion` (и проходит с `REDIS_SKIP_VERSION_CHECK=true`), а инвалидация

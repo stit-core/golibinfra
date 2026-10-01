@@ -21,7 +21,8 @@ type MinIOFixture struct {
 }
 
 // StartMinIO поднимает MinIO (S3-совместимое хранилище для storagekit).
-// Пропускает тест под -short и без Docker; контейнер снимается в t.Cleanup.
+// Под -short пропускает тест, без Docker обрывает (RequireDocker); контейнер
+// снимается в t.Cleanup.
 func StartMinIO(t testing.TB, opts ...Option) *MinIOFixture {
 	t.Helper()
 	RequireDocker(t)

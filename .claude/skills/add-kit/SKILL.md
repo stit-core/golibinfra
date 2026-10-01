@@ -71,8 +71,8 @@ description: Завести в golibinfra новый kit по конвенция
    `configuration.md`, `observability.md`, `usage.md`, `testing.md`). Плюс строка
    в `README.md § Пакеты` (и в env-таблицу, если кит читает endpoint) и в карту
    пакетов `CLAUDE.md`. Без README kit «невидим».
-8. **Gate.** `make check` зелёный перед claim «готово» (`make test-full`, если кит
-   ходит в контейнер).
+8. **Gate.** `make check` зелёный перед claim «готово»: integration-тесты кита
+   (testcontainers) входят в него.
 
 ## Следующий шаг
 

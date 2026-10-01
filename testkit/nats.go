@@ -22,7 +22,8 @@ type NATSFixture struct {
 }
 
 // StartNATS поднимает NATS (с `-js` при WithJetStream).
-// Пропускает тест под -short и без Docker; контейнер снимается в t.Cleanup.
+// Под -short пропускает тест, без Docker обрывает (RequireDocker); контейнер
+// снимается в t.Cleanup.
 func StartNATS(t testing.TB, opts ...Option) *NATSFixture {
 	t.Helper()
 	RequireDocker(t)

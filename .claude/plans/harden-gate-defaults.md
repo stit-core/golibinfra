@@ -47,11 +47,14 @@ blocked-by: —
 ## Критерии приёмки
 Проверки — в своём worktree на HEAD; `gate_inject.py` — это
 `M/kits-audit/tests-gate/gate_inject.py --repo <worktree> --base <rev> --only …`.
-- [ ] **AC1** — `make check` гоняет unit и integration всех пакетов (testcontainers, `-race`); без
+- [x] **AC1** — `make check` гоняет unit и integration всех пакетов (testcontainers, `-race`); без
   Docker вне `-short` integration-тест падает, а не пропускается; баг, видимый только integration,
   и битая up-миграция кита краснят `make check` и `make gate-clean`; timing-тест logkit в гейт не
   входит. Проверка: `gate_inject.py --only G25,G26,G30` → все пойманы; `make check` → зелёный,
   итоговая строка называет охват `./...`
+  - Подтверждено: на кандидате S1 G25 (`gate-clean`, баг audit-04), G26 (сокет Docker скрыт —
+    `Docker is unavailable`, FAIL) и G30 (битый up `bruteforcekit`) — пойманы, rc=2; `make check`
+    → `✓ check clean (./...)` за 1 мин 22 с; `go test -run TestRedact_Cost -v ./logkit/` → SKIP
 - [ ] **AC2** — `PKGS`, `GO`, `GOFLAGS` (и `go env -w`), `A`, флаги `-i`/`-n`/`-k`, `MAKEFLAGS=i` не
   сужают и не глушат гейт: `make check` отказывается запускаться или проверяет всё; `gate-clean` и
   pre-push окружение вызывающего не наследуют. Проверка:
@@ -101,9 +104,13 @@ blocked-by: —
 
 ## Шаги
 ### Гейт
-- [ ] **S1** — `make check` с integration и обязательным Docker: testkit без Docker вне `-short` —
+- [x] **S1** — `make check` с integration и обязательным Docker: testkit без Docker вне `-short` —
   FAIL, timing-тест logkit — вне гейта, `gate-clean` наследует (KGATE-01, KTST-01)
   - Проверка: AC1 → выполнен · Закрывает: AC1 · Зависит от: —
+  - Сделано: `RequireDocker` — `t.Fatalf` без Docker, регрессия
+    `TestRequireDocker_UnavailableDockerFailsOutsideShort` (RED на старом коде); `check` —
+    последовательные шаги `GATE_STEPS` с `test-full`; timing-тест — `make test-timing`; тексты
+    testkit, китов, CLAUDE.md, README, CONTRIBUTING, `/release`, `/add-kit`. AC1 → выполнен
 - [ ] **S2** — Гейт не зависит от окружения и чужого checkout'а: guard переменных и флагов, охват в
   итоговой строке, кеш golangci-lint в checkout'е, `gate-clean` в чистом окружении с холодным кешем
   (KGATE-02, KGATE-04)
@@ -188,6 +195,14 @@ blocked-by: —
   `SubscribeOnStart`. Предел payload по умолчанию — 1 MiB (`max_payload` NATS), превышение — ошибка
   `Bus.Publish` в транзакции домена (E17: 2 MiB держали ordered-очередь). Бюджет ретраев по
   умолчанию — не меньше часа, пересчёт `configuration.md` (KDOC-09).
+- **S1, шаги `check`** — рецепт по списку `GATE_STEPS`, каждый шаг своим `make`: первый красный
+  останавливает прогон, `-j` не гонит integration параллельно с lint и vuln; итоговая строка —
+  `✓ check clean (<охват>)`.
+- **S1, timing-тест** — opt-in переменной `GOLIBINFRA_TIMING` в самом тесте, цель
+  `make test-timing` гоняет пакет logkit: vet и lint видят тест в гейте, Makefile не связан с
+  именем теста.
+- **S1, `storagekit/minio`** — `minioFixture` без общего контейнера вне `-short` — `t.Fatal`, а не
+  skip: иначе это вторая дорога к зелёному прогону без integration (правка рядом).
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`. Строки аннотации v1.3.0:
@@ -206,5 +221,12 @@ blocked-by: —
   выключенный JetStream — ошибка старта; payload сверх предела — ошибка `Publish`.
 
 ## Где мы сейчас
-План заведён по базовому аудиту (`M/kits-audit/summary.md`); шаги не начаты. Следующий шаг — S1
-(integration в `make check`); гейт перед его коммитом ещё без integration, после S1 нужен Docker.
+S1 закрыт: `make check` гоняет integration, без Docker вне `-short` тест падает. Следующий шаг — S2
+(guard окружения, кеш golangci-lint в checkout'е, чистый `gate-clean`). Гейт теперь требует
+Docker (≈1,5 мин).
+
+Заготовка аннотации v1.3.0 по сделанному:
+- Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест
+  (`t.Fatalf`), а не пропускают → без Docker гонять только `go test -short`; integration-гейт
+  потребителя без Docker красный.
+- Гейт: `make gate-clean` — unit и integration (Docker).

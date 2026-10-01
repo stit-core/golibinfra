@@ -7,12 +7,17 @@ FUZZTIME              ?= 10s
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check plan-check fmt fmt-check vet lint test test-full build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
+.PHONY: help check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
 
 help: ## Список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
 
-check: fmt-check vet lint test build tidy-check vuln envdoc-check plan-check ## Канонический gate: fmt+vet+lint+test+build+tidy+vuln+envdoc+plans (перед тегом)
+# Шаги гейта — по очереди, каждый своим make: первый красный останавливает check.
+GATE_STEPS := fmt-check vet lint test-full build tidy-check vuln envdoc-check plan-check
+
+check: ## Канонический gate: fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
+	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(MAKE) --no-print-directory $$step; done
+	@echo "✓ check clean ($(PKGS))"
 
 fmt: ## Форматирование (gofumpt через golangci-lint)
 	golangci-lint fmt $(PKGS)
@@ -26,11 +31,14 @@ vet: ## go vet
 lint: ## golangci-lint (.golangci.yml)
 	golangci-lint run $(PKGS)
 
-test: ## Unit-тесты: -short -race (без контейнеров)
+test: ## Быстрый цикл: unit-тесты -short -race, без контейнеров (не гейт)
 	$(GO) test -short -race -count=1 $(PKGS)
 
-test-full: ## Все тесты, включая testcontainers (нужен Docker)
+test-full: ## Unit + integration (testcontainers) -race; без Docker integration-тест падает
 	$(GO) test -race -count=1 $(PKGS)
+
+test-timing: ## Timing-тест logkit (цена маскирования): под нагрузкой флакает, поэтому вне гейта
+	GOLIBINFRA_TIMING=1 $(GO) test -race -count=1 ./logkit/
 
 build: ## go build
 	$(GO) build $(PKGS)

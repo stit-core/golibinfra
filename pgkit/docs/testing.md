@@ -15,8 +15,8 @@ func WithImage(ref string) testkit.Option                   // другой об
 ```
 
 Поднимает `testkit.PostgresImage` на свободном порту, ждёт готовности и
-регистрирует `t.Cleanup` для остановки контейнера. Под `-short` и без Docker сам
-делает `t.Skip`. Переданные источники применяются через `pgkit.MigrateUpAll` —
+регистрирует `t.Cleanup` для остановки контейнера. Под `-short` сам делает
+`t.Skip`, без Docker — `t.Fatalf`. Переданные источники применяются через `pgkit.MigrateUpAll` —
 так же, как это делает `MigrateModule`.
 
 ```go

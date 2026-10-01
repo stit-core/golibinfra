@@ -21,10 +21,10 @@ description: Выпустить новую версию golibinfra — make gate
 
 ## Шаги
 
-1. **Gate на чистом дереве.** `make gate-clean` — `make check` в worktree от HEAD
-   (ловит незакоммиченные и gitignored-файлы, от которых зависит сборка).
-   Красное → не релизим. Для китов с БД/шиной дополнительно `make test-full`
-   (Docker). `make hooks` держит тот же `make check` на pre-push.
+1. **Gate на чистом дереве.** `make gate-clean` — `make check` (с integration,
+   нужен Docker) в worktree от HEAD: ловит незакоммиченные и gitignored-файлы, от
+   которых зависит сборка. Красное → не релизим. `make hooks` держит тот же
+   `make check` на pre-push.
 2. **Версия (semver по форме, политика — `README.md § Версионирование`).**
    Совместимость между minor'ами `v1` не гарантируется: **breaking-изменения идут
    minor'ом** (`vX.Y+1.0`) и обязаны быть перечислены в аннотации тега с шагом
@@ -58,7 +58,7 @@ description: Выпустить новую версию golibinfra — make gate
    - testkit/logtest: capture-логгер для тестов потребителя
    - ...
 
-   Гейт: make gate-clean, make test-full (Docker).
+   Гейт: make gate-clean (unit + integration, Docker).
    EOF
    git push origin vX.Y.Z
    ```

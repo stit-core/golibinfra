@@ -266,8 +266,8 @@ err := s.Log(ctx, auditkit.Entry{Action: "user.create", Resource: "user"})
 метрики.
 
 Тесты, которым нужен Postgres, идут через `testkit.StartPostgres`: гейт
-`testkit.RequireDocker` внутри helper'а пропускает их под `go test -short` и без
-Docker. Для unit-тестов бизнес-кода подменяйте `auditkit.Logger` —
+`testkit.RequireDocker` внутри helper'а пропускает их под `go test -short`, а без
+Docker роняет. Для unit-тестов бизнес-кода подменяйте `auditkit.Logger` —
 готовый in-memory recorder есть в
 [`testkit/audittest`](../testkit/audittest/); он валидирует `Entry` так же, как
 `pgstore`, и хранит копию `Metadata`.

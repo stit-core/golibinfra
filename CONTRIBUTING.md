@@ -52,13 +52,15 @@
 ```bash
 make tools        # один раз: golangci-lint + govulncheck пиненных версий
 make hooks        # один раз: core.hooksPath=.githooks, pre-push гоняет make check
-make check        # fmt-check + vet + lint + test -short -race + build + tidy-check + govulncheck + envdoc-check + plan-check
-make test-full    # + testcontainers (нужен Docker) — для китов с БД/шиной/кэшем
+make check        # fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
+make test         # быстрый цикл: unit -short -race, без контейнеров
 ```
 
-Зелёный `make check` — gate пройден. Что именно он запускает — в `Makefile`
-(цели можно вызывать по отдельности: `make lint`, `make test`, …); есть ещё
-`make coverage`, `make bench` и `make fuzz`.
+Зелёный `make check` — gate пройден. Он гоняет и integration-тесты
+(testcontainers), поэтому нужен Docker: без него integration-тест падает, а не
+пропускается. Что именно он запускает — в `Makefile` (цели можно вызывать по
+отдельности: `make lint`, `make test-full`, …); есть ещё `make coverage`,
+`make bench`, `make fuzz` и `make test-timing` (timing-тест logkit, вне гейта).
 
 - Новый kit → собственный `README.md` кита (+ `docs/` у сложного), строка-индекс
   в `README.md § Пакеты` и, если нужны test-хелперы, `testkit/<name>test`.

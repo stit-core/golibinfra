@@ -31,7 +31,8 @@ type PostgresFixture struct {
 }
 
 // StartPostgres поднимает Postgres и применяет миграции из опций.
-// Пропускает тест под -short и без Docker; контейнер снимается в t.Cleanup.
+// Под -short пропускает тест, без Docker обрывает (RequireDocker); контейнер
+// снимается в t.Cleanup.
 func StartPostgres(t testing.TB, opts ...Option) *PostgresFixture {
 	t.Helper()
 	RequireDocker(t)

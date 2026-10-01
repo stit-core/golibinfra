@@ -37,13 +37,13 @@ func TestMain(m *testing.M) {
 	os.Exit(code)
 }
 
-// minioFixture отдаёт общий контейнер; без Docker и под -short пропускает тест
-// ровно так же, как это сделал бы testkit.StartMinIO.
+// minioFixture отдаёт общий контейнер; под -short пропускает тест, без Docker
+// роняет — ровно так же, как это сделал бы testkit.StartMinIO.
 func minioFixture(t *testing.T) *testkit.MinIOFixture {
 	t.Helper()
 	testkit.RequireDocker(t)
 	if sharedMinIO == nil {
-		t.Skip("testkit: MinIO fixture is unavailable")
+		t.Fatal("testkit: MinIO fixture is unavailable")
 	}
 	return sharedMinIO
 }

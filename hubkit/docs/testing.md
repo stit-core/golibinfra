@@ -98,8 +98,8 @@ go test -short -race -count=1 ./hubkit/...   # без контейнеров
 `hubkit/projection` поднимает Postgres через `testkit.StartPostgres`: применяет
 `projection.Migrations`, проверяет наличие таблиц, `PREPARE` каждого эталонного
 запроса против схемы (валидность sqlc-шаблона), маппинг «нет строки курсора → 0»
-и поведение FK `hub_projects.company_id`. Под `-short` и без Docker эти тесты
-пропускаются.
+и поведение FK `hub_projects.company_id`. Под `-short` эти тесты пропускаются,
+без Docker — падают.
 
 Регрессии, которые тесты держат явно:
 
