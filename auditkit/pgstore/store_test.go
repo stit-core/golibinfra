@@ -4,12 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/auditkit"
 	"git.stit.tech/stit-core/golibinfra/auditkit/pgstore"
+	"git.stit.tech/stit-core/golibinfra/internal/clientip"
+	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
@@ -113,6 +116,31 @@ func TestStore_Log(t *testing.T) {
 	}
 	if idx != 1 {
 		t.Fatal("audit_log_at_idx missing: миграция 0002 не применилась")
+	}
+}
+
+func TestStore_Log_RequestIDAndIPFromContext(t *testing.T) {
+	s, pg, ctx := startStore(t)
+	db := pg.DB(t)
+	reqCtx := requestid.With(clientip.With(ctx, netip.MustParseAddr("203.0.113.9")), "req-ctx")
+
+	if err := s.Log(reqCtx, auditkit.Entry{Action: "ctx.fill", Resource: "user"}); err != nil {
+		t.Fatalf("Log: %v", err)
+	}
+	if err := s.Log(reqCtx, auditkit.Entry{Action: "ctx.explicit", Resource: "user", IP: "10.0.0.1", RequestID: "req-own"}); err != nil {
+		t.Fatalf("Log explicit: %v", err)
+	}
+	for _, want := range []struct{ action, ip, requestID string }{
+		{"ctx.fill", "203.0.113.9", "req-ctx"},
+		{"ctx.explicit", "10.0.0.1", "req-own"},
+	} {
+		var ip, requestID string
+		if err := db.QueryRow(ctx, `SELECT ip, request_id FROM audit_log WHERE action = $1`, want.action).Scan(&ip, &requestID); err != nil {
+			t.Fatalf("scan %s: %v", want.action, err)
+		}
+		if ip != want.ip || requestID != want.requestID {
+			t.Errorf("%s: ip %q, request_id %q; want %q, %q", want.action, ip, requestID, want.ip, want.requestID)
+		}
 	}
 }
 

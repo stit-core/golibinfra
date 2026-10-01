@@ -16,9 +16,10 @@ type Recorder struct {
 	entries []auditkit.Entry
 }
 
-// Log сохраняет копию записи; невалидная Entry отвергается так же, как
-// в pgstore — auditkit.ErrInvalidEntry.
-func (r *Recorder) Log(_ context.Context, e auditkit.Entry) error {
+// Log сохраняет копию записи, как pgstore: пустые RequestID и IP — из ctx
+// (auditkit.Entry.Enrich), невалидная Entry — auditkit.ErrInvalidEntry.
+func (r *Recorder) Log(ctx context.Context, e auditkit.Entry) error {
+	e = e.Enrich(ctx)
 	if err := e.Validate(); err != nil {
 		return err
 	}

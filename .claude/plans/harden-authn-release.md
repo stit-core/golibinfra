@@ -54,9 +54,10 @@ blocked-by: —
   `go test -race ./testkit/metrictest/` → PASS; `M/kits-audit/fx-observability/run.sh <rev> obs-provider`
   → KO09 PASS; `M/kits-audit/httpkit-b/run.sh <rev> exp` → HO06 PASS
   - Подтверждено: metrictest PASS (пара KOBS-01 — коллизия); KO09, HO06 → PASS на S1 и S2
-- [ ] **AC2** — Запись аудита без `RequestID` или `IP` получает их из ctx запроса, явные значения не
+- [x] **AC2** — Запись аудита без `RequestID` или `IP` получает их из ctx запроса, явные значения не
   перетираются; `audittest` ведёт себя так же. Проверка:
   `go test -race ./auditkit/... ./testkit/audittest/` → PASS
+  - Подтверждено: PASS — `TestEntry_Enrich`, pgstore с Docker, `audittest` за middleware httpkit
 - [ ] **AC3** — authnkit выдаёт одноразовый токен: 256 бит из `crypto/rand`, hex. Для хранения —
   SHA-256 токена. logkit маскирует такой токен по умолчанию. Проверка:
   `go test -race -run Token ./authnkit/ ./logkit/` → PASS
@@ -119,9 +120,10 @@ blocked-by: —
   - Проверка: AC1 → выполнен; `make check` → зелёный · Закрывает: AC1 · Зависит от: S1
   - Сделано: `Collect`/`Sub`/`Get`/`Find`/`Value`/`All`, `Collisions`, `PromName`; на нём 17 из
     20 файлов обвязки (кроме `internal/otelkit`, `telemetry`) и рецепты доков; `make check` → зелёный
-- [ ] **S3** — B4: auditkit берёт `RequestID` и `IP` из ctx, если в записи пусто; `audittest` —
+- [x] **S3** — B4: auditkit берёт `RequestID` и `IP` из ctx, если в записи пусто; `audittest` —
   так же
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: —
+  - Сделано: `auditkit.Entry.Enrich` — его зовут `pgstore.Store.Log` и `audittest.Recorder.Log`
 - [ ] **S4** — B5: одноразовые токены в authnkit — генерация и хеш
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Зависит от: —
 - [ ] **S5** — B6: `authnkit/session` и `authnkit/session/pgstore`:
@@ -181,7 +183,8 @@ blocked-by: —
   друг другу. Проверка коллизий — своя трансляция имён OTel → Prometheus (подмножество
   `UnderscoreEscapingWithSuffixes`), закреплённая на паре KOBS-01, без новой зависимости.
 - **Аудит.** Заполнение — функцией ядра auditkit, её зовут и pgstore, и `audittest`. Ключ IP — из
-  `internal/` (он же у httpkit), auditkit не импортирует httpkit.
+  `internal/` (он же у httpkit), auditkit не импортирует httpkit. Функция — метод
+  `Entry.Enrich(ctx)`: своя реализация `Logger` зовёт его так же, до `Validate`.
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его по умолчанию, base64url — нет (бэклог
   `logkit-redact-gaps`). SHA-256, а не Argon2id: у токена полная энтропия. Поиск — по хешу в SQL
   владельца таблицы, сравнение в памяти — `subtle`.
@@ -270,8 +273,10 @@ blocked-by: —
 
 ## Где мы сейчас
 Первая половина партии 2 (`harden-gate-defaults`: гейт, B1–B3) закрыта, её аннотация — в
-материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S2 сделаны; следующий шаг — S3
-(аудит из ctx).
+материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S3 сделаны; следующий шаг — S4
+(одноразовые токены). Хвост для S8: под нагрузкой гейта `TestStreamBus_SubscriptionUnsubscribe`
+получил доставку после `Unsubscribe` (1 прогон из 4, отдельно 8 из 8 PASS), а дока обещает «снимает
+интерес сразу».
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio,
@@ -279,3 +284,6 @@ blocked-by: —
   процесса.
 - Изменения — `testkit/metrictest`: проверка записи метрик (провайдер процесса ставит импорт,
   дельты, `Get`/`Find`/`Value`, коллизии имён в Prometheus) — для бизнес-метрик потребителя.
+- Поведение — auditkit: пустые `IP` и `RequestID` записи `pgstore.Store` и `audittest.Recorder`
+  берут из ctx (`httpkit.ClientIP`, `RequestID`; request-id — и grpckit) → ручные значения в
+  `Entry` убрать; изменения — `Entry.Enrich(ctx)` для своей реализации `Logger`.

@@ -11,7 +11,9 @@ compliance- и forensics-запросы не приходилось склеив
 произошло значимое изменение состояния (создание/удаление сущности, смена прав,
 вход в систему). Запись — синхронная: `Log` пишет в транзакции из `ctx`
 (`pgkit.Transactor.WithTx`), если она там есть, иначе автономно, отдельным
-соединением пула в autocommit.
+соединением пула в autocommit. IP клиента и request-id запроса `Log` берёт из
+`ctx` сам (`Entry.Enrich`): их кладут middleware `httpkit` (request-id — и
+`grpckit`), сервису заполнять их не нужно.
 
 ## Импорт
 
@@ -65,8 +67,7 @@ func (s *UserService) Create(ctx context.Context, actorID, userID string) error 
             Resource:   "user",
             ResourceID: userID,
             Metadata:   map[string]any{"source": "admin-ui"},
-            IP:         "203.0.113.7",
-            RequestID:  "req-abc",
+            // IP и RequestID — из ctx запроса (httpkit.ClientIP, httpkit.RequestID).
         })
     })
 }
@@ -152,8 +153,8 @@ scope `git.stit.tech/stit-core/golibinfra/auditkit`); без зарегистр�
 | `ResourceID` | `string` | ≤ `MaxResourceIDLen` (255) | id конкретного ресурса; пусто → `NULL` |
 | `Metadata` | `map[string]any` | длина не ограничена китом | произвольный контекст; сериализуется в `JSONB`; пусто → `NULL` |
 | `At` | `time.Time` | — | момент события; нулевое значение → `NOW()` базы данных |
-| `IP` | `string` | длина не ограничена китом | IP инициатора; пусто → `NULL` |
-| `RequestID` | `string` | длина не ограничена китом | корреляция с HTTP/RPC-запросом; пусто → `NULL` |
+| `IP` | `string` | длина не ограничена китом | IP инициатора; пусто → IP клиента из `ctx` (`Enrich`), без него → `NULL` |
+| `RequestID` | `string` | длина не ограничена китом | корреляция с HTTP/RPC-запросом; пусто → request-id из `ctx` (`Enrich`), без него → `NULL` |
 
 Предельные длины — ровно у полей, попадающих в btree-индексы `audit_log`:
 значение длиннее не помещается в индексную запись Postgres, и `INSERT` падает
@@ -171,6 +172,18 @@ var ErrInvalidEntry = errors.New("auditkit: invalid entry")
 до похода в базу: пустая запись в audit-log хуже ошибки — её никто не заметит.
 Так же ведёт себя фейк `audittest.Recorder`.
 
+### `auditkit.Entry.Enrich`
+
+```go
+func (e Entry) Enrich(ctx context.Context) Entry
+```
+
+Копия записи, в которой пустые `RequestID` и `IP` взяты из `ctx` запроса: их
+кладут middleware `httpkit.RequestID` и `httpkit.ClientIP` (IP — в канонической
+форме, тот же, что у лимитера и `bruteforcekit`), request-id — и интерсептор
+`grpckit`. Явные значения не перетираются; без них в `ctx` поля остаются пустыми.
+`Log` зовёт `Enrich` до `Validate` — и `pgstore.Store`, и `audittest.Recorder`.
+
 ### `auditkit.Logger`
 
 ```go
@@ -180,14 +193,16 @@ type Logger interface {
 ```
 
 Порт записи аудита. Бизнес-код зависит от этого интерфейса, а не от конкретного
-хранилища. Реализуйте свой адаптер, чтобы писать в другой бэкенд.
+хранилища. Реализуйте свой адаптер, чтобы писать в другой бэкенд: он зовёт
+`e.Enrich(ctx)` до `Validate`, как `pgstore`.
 
 ### `pgstore.Store`
 
 Реализация `Logger` поверх Postgres.
 
 - `NewStore(db *pgkit.DB) *Store` — конструктор.
-- `(*Store).Log(ctx, Entry) error` — один `INSERT` в `audit_log`. Невалидная
+- `(*Store).Log(ctx, Entry) error` — один `INSERT` в `audit_log`; пустые
+  `RequestID` и `IP` — из `ctx` (`Entry.Enrich`). Невалидная
   `Entry` отвергается до запроса (`ErrInvalidEntry`). Пустые строковые поля и
   пустая `Metadata` пишутся как `NULL`; нулевой `At` подставляется как `NOW()`
   на стороне базы (`COALESCE`). Ошибки — с префиксом `auditkit:`.

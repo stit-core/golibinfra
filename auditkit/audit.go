@@ -10,6 +10,9 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	"git.stit.tech/stit-core/golibinfra/internal/clientip"
+	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 )
 
 // ErrInvalidEntry — запись не проходит Entry.Validate: пустое обязательное поле
@@ -44,10 +47,26 @@ type Entry struct {
 	Metadata map[string]any
 	// At — момент события; нулевое значение → часы базы (NOW()).
 	At time.Time
-	// IP — адрес инициатора; пусто → NULL.
+	// IP — адрес инициатора; пусто → IP клиента из ctx (Enrich), без него → NULL.
 	IP string
-	// RequestID — корреляция с HTTP/RPC-запросом; пусто → NULL.
+	// RequestID — корреляция с HTTP/RPC-запросом; пусто → request-id из ctx
+	// (Enrich), без него → NULL.
 	RequestID string
+}
+
+// Enrich — копия записи, в которой пустые RequestID и IP взяты из ctx запроса: их
+// кладут middleware RequestID и ClientIP httpkit (request-id — и интерсептор
+// grpckit). Явные значения не перетираются. Logger зовёт Enrich до Validate.
+func (e Entry) Enrich(ctx context.Context) Entry {
+	if e.RequestID == "" {
+		e.RequestID = requestid.From(ctx)
+	}
+	if e.IP == "" {
+		if addr := clientip.From(ctx); addr.IsValid() {
+			e.IP = addr.String()
+		}
+	}
+	return e
 }
 
 // Validate проверяет обязательные поля и предельные длины; нарушение —
@@ -72,6 +91,7 @@ func (e Entry) Validate() error {
 
 // Logger — порт записи аудита; реализация в библиотеке — auditkit/pgstore.
 type Logger interface {
-	// Log пишет одну запись; невалидная Entry — ErrInvalidEntry.
+	// Log пишет одну запись, дополненную из ctx (Entry.Enrich); невалидная Entry —
+	// ErrInvalidEntry.
 	Log(ctx context.Context, e Entry) error
 }

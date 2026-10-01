@@ -31,11 +31,13 @@ INSERT INTO audit_log (actor_id, action, resource, resource_id, metadata, ip, re
 VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, NOW()))
 `
 
-// Log пишет запись в audit_log. Если ctx получен из pgkit.Transactor.WithTx,
-// INSERT участвует в этой транзакции (откат домена откатывает и запись аудита);
-// иначе идёт отдельным соединением пула в autocommit. Невалидная Entry —
+// Log пишет запись в audit_log; пустые RequestID и IP — из ctx запроса
+// (auditkit.Entry.Enrich). Если ctx получен из pgkit.Transactor.WithTx, INSERT
+// участвует в этой транзакции (откат домена откатывает и запись аудита); иначе
+// идёт отдельным соединением пула в autocommit. Невалидная Entry —
 // auditkit.ErrInvalidEntry, запрос не выполняется.
 func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
+	e = e.Enrich(ctx)
 	if err := e.Validate(); err != nil {
 		s.instr.invalid(ctx)
 		return err

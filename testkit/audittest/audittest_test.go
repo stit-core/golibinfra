@@ -3,9 +3,13 @@ package audittest_test
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 
 	"git.stit.tech/stit-core/golibinfra/auditkit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/audittest"
 )
 
@@ -96,5 +100,34 @@ func TestRecorder_ClonesMetadata(t *testing.T) {
 	r.ByResource("auth")[0].Metadata["k"] = "tampered"
 	if got := r.Entries()[0].Metadata["k"]; got != "v" {
 		t.Fatalf("Metadata mutated through returned entry: %v", got)
+	}
+}
+
+// Recorder держит контракт pgstore: запись без IP и request-id берёт их из ctx
+// запроса, который собрали middleware httpkit, явные значения не трогает.
+func TestRecorder_RequestIDAndIPFromHTTPContext(t *testing.T) {
+	t.Parallel()
+	r := &audittest.Recorder{}
+	h := httpkit.RequestID()(httpkit.ClientIP(logkit.Nop(), 0)(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+		mustLogCtx(t, req.Context(), r, auditkit.Entry{Action: "login", Resource: "auth"})
+		mustLogCtx(t, req.Context(), r, auditkit.Entry{Action: "manual", Resource: "auth", IP: "10.0.0.1", RequestID: "own"})
+	})))
+	req := httptest.NewRequest(http.MethodPost, "/login", nil)
+	req.RemoteAddr = "192.0.2.10:5555"
+	req.Header.Set(httpkit.HeaderRequestID, "req-42")
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	if got := r.Last("login"); got == nil || got.RequestID != "req-42" || got.IP != "192.0.2.10" {
+		t.Fatalf("Last(login) = %+v, want RequestID req-42 and IP 192.0.2.10 from the request", got)
+	}
+	if got := r.Last("manual"); got == nil || got.RequestID != "own" || got.IP != "10.0.0.1" {
+		t.Fatalf("Last(manual) = %+v, want explicit values kept", got)
+	}
+}
+
+func mustLogCtx(t *testing.T, ctx context.Context, r *audittest.Recorder, e auditkit.Entry) {
+	t.Helper()
+	if err := r.Log(ctx, e); err != nil {
+		t.Errorf("Log(%s): %v", e.Action, err)
 	}
 }
