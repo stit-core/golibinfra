@@ -14,7 +14,7 @@ unexport GOLANGCI_DIFF_PROCESSOR_PATCH GOLANGCI_LINT_CACHEPROG
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check hooks-check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
+.PHONY: help check gate-makefiles hooks-check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
 
 help: ## Список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -26,16 +26,23 @@ override GATE_STEPS := hooks-check fmt-check vet lint test-full build tidy-check
 override GATE       := $(MAKE) --no-print-directory PKGS=$(GATE_PKGS) GO=go A=
 
 # check и gate-clean не запускаются там, где сказали бы «clean», не проверив всё: -i глушит
-# ошибки шагов, -n/-q/-t их не выполняют, подмена MAKE, SHELL, .SHELLFLAGS и MAKEFILES меняет
-# шаги, GOFLAGS (из env или go env -w) — go test, vet и govulncheck.
+# ошибки шагов, -n/-q/-t их не выполняют, подмена MAKE, SHELL, .SHELLFLAGS и MAKEFILES (и --eval
+# до чтения Makefile) меняет шаги, GOFLAGS (из env или go env -w) — go test, vet и govulncheck.
 ifneq (,$(filter check gate-clean,$(MAKECMDGOALS)))
 override gate_bad := $(foreach f,i n q t,$(if $(findstring $f,$(firstword -$(MAKEFLAGS))),-$f)) \
+	$(if $(filter --eval=%,$(MAKEFLAGS)),--eval) \
 	$(foreach v,MAKE SHELL .SHELLFLAGS MAKEFILES,$(if $(filter command% environment%,$(origin $v)),$v=…)) \
 	$(if $(shell go env GOFLAGS),GOFLAGS=$(shell go env GOFLAGS))
 ifneq (,$(strip $(gate_bad)))
 $(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с $(strip $(gate_bad)) — запусти без них)
 endif
 endif
+
+# Makefile, прочитанный после этого (make -f Makefile -f extra.mk), подменил бы рецепт check;
+# пререквизиты правил одной цели складываются, поэтому список makefile'ов сверяет пререквизит.
+check gate-clean: gate-makefiles
+gate-makefiles:
+	$(if $(filter-out Makefile,$(notdir $(MAKEFILE_LIST))),$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с makefile'ами $(strip $(MAKEFILE_LIST)) — только Makefile))
 
 check: ## Канонический gate: хуки, fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
 	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(GATE) $$step; done

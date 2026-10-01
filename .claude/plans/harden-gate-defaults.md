@@ -259,6 +259,9 @@ blocked-by: —
 - **N1** — pre-push гоняет `scripts/gate-clean.sh <коммит>` на каждом пушимом коммите: gitignored-файл
   рабочего дерева не прячет поломку, «чистое дерево» и «= HEAD» не нужны, удаление ref'а гейт не
   гоняет (`M/hgd2/n1_probe.sh`); G21 `gate_inject.py` подаёт хуку stdin `git push`.
+- **N2** — `--eval` — строка `gate_bad` (`--eval=` видно в `MAKEFLAGS` до чтения Makefile); второй
+  makefile ловит пререквизит `gate-makefiles` у `check` и `gate-clean`: рецепт `-f extra.mk` подменяет,
+  а пререквизиты правил складываются, `$(error)` не глушат `-k`/`SHELL` (`M/hgd2/n2_probe.sh`).
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`. Строки аннотации v1.3.0:

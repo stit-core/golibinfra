@@ -309,9 +309,10 @@ make gate-clean   # make check в чистом worktree от HEAD — перед
 `make check` требует Docker (integration на testcontainers: без Docker тест
 падает, а не пропускается) и сети (`govulncheck` тянет базу уязвимостей). Он
 всегда проверяет всё дерево и заканчивается строкой `✓ check clean (./...)`:
-`PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-n`/`-q`/`-t`, `GOFLAGS` (env или
-`go env -w`) и подменой `MAKE`/`SHELL`/`MAKEFILES` гейт не запускается. Кеш
-golangci-lint — свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
+`PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-n`/`-q`/`-t`, `--eval`, вторым
+makefile (`-f`), `GOFLAGS` (env или `go env -w`) и подменой
+`MAKE`/`SHELL`/`.SHELLFLAGS`/`MAKEFILES` гейт не запускается. Кеш golangci-lint —
+свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
 
 Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь
 `make check` на каждом пушимом коммите в свежем worktree, как `make gate-clean`, — без
