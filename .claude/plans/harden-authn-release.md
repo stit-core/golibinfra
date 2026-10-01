@@ -68,9 +68,10 @@ blocked-by: —
   `grep -rn "SignRefresh\|ParseRefresh\|JWT_REFRESH_TTL" --include=*.go --include=*.md --exclude-dir=plans .`
   → пусто
   - Подтверждено: PASS, grep пуст; `sessiontest.Run` — по фейку и pgstore, его мутанты красные
-- [ ] **AC5** — `config.Load` и `config.Source` работают без ctx; в доках нет
+- [x] **AC5** — `config.Load` и `config.Source` работают без ctx; в доках нет
   `fx.Provide(context.Background)`. Проверка: `go test -race ./config/` → PASS;
   `grep -rn "context" config/` → пусто
+  - Подтверждено: PASS, grep пуст; граф README без ctx — `TestModule_AppConfigWithoutCtxInGraph`
 - [ ] **AC6** — Сообщение JetStream переживает 15-секундный сбой зависимости обработчика при
   дефолтах. `ErrTerminal` уходит в dead сразу. ERROR `jetstream message dead` несёт `stream_seq`.
   Бюджет ретраев по умолчанию назван в доке. Проверка:
@@ -130,8 +131,9 @@ blocked-by: —
   pgstore
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S5
   - Сделано: `sessiontest.New`, `Active`, `Run` (10 кейсов) — по фейку и pgstore
-- [ ] **S7** — B8: `config.Load` и `Source.Apply` без ctx, README без ctx в графе (KAPI-10)
+- [x] **S7** — B8: `config.Load` и `Source.Apply` без ctx, README без ctx в графе (KAPI-10)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: —
+  - Сделано: `Load(dst, sources...)`, `Source.Apply(dst)`; README и тест графа без ctx
 
 ### High базового аудита и кандидаты C
 - [ ] **S8** — natskit: бюджет ретраев JetStream переживает типичный сбой (KCOR-01); `stream_seq`
@@ -264,29 +266,26 @@ blocked-by: —
 `fx.Provide(context.Background)`.
 
 ## Где мы сейчас
-Первая половина партии 2 (`harden-gate-defaults`: гейт, B1–B3) закрыта, её аннотация — в
-материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S6 сделаны; следующий шаг — S7
-(`config` без ctx). Хвост для S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта
-получил доставку после `Unsubscribe` (1 прогон из 4), а дока обещает «снимает интерес сразу».
+Первая половина партии 2 (`harden-gate-defaults`) закрыта, её аннотация — в материалах (Handoff).
+Этап S1–S7 сделан; следующий — S8 (natskit) после валидатора этапа. Хвост для S8:
+`TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
+(1 прогон из 4), а дока обещает «снимает интерес сразу».
 
 Заготовка аннотации второй половины v1.3.0:
-- Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio,
-  httpkit: инструменты берут глобальный провайдер при сборке объекта, а не первый провайдер
-  процесса.
-- Изменения — `testkit/metrictest`: проверка записи метрик (провайдер процесса ставит импорт,
-  дельты, `Get`/`Find`/`Value`, коллизии имён в Prometheus) — для бизнес-метрик потребителя.
-- Поведение — auditkit: пустые `IP` и `RequestID` записи `pgstore.Store` и `audittest.Recorder`
-  берут из ctx (`httpkit.ClientIP`, `RequestID`; request-id — и grpckit) → ручные значения в
-  `Entry` убрать; изменения — `Entry.Enrich(ctx)` для своей реализации `Logger`.
-- Изменения — authnkit: `NewToken()` (256 бит hex) и `HashToken` (SHA-256) → `pkg/tokens`
-  шаблона заменить.
+- Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
+  инструменты берут глобальный провайдер при сборке объекта, а не первый провайдер процесса.
+- Изменения — `testkit/metrictest`: запись метрик в тестах (провайдер ставит импорт, дельты,
+  `Get`/`Find`/`Value`, коллизии имён в Prometheus) — для бизнес-метрик потребителя.
+- Поведение — auditkit: пустые `IP` и `RequestID` записи `pgstore` и `audittest` берут из ctx
+  (httpkit; request-id — и grpckit) → ручные значения убрать; своему `Logger` — `Entry.Enrich(ctx)`.
+- Изменения — authnkit: `NewToken()` (256 бит hex) и `HashToken` (SHA-256) → вместо `pkg/tokens`.
 - Breaking — authnkit: `SignRefresh`, `ParseRefresh`, `TokenTypeRefresh`, `DefaultRefreshTTL`,
-  `JWTConfig.RefreshTTL` (`JWT_REFRESH_TTL`) удалены, в `JWTSigner`/`JWTParser` их нет → refresh —
-  сессии `authnkit/session`: `session/pgstore.Module` (+ `fx.Provide(session.NewConfig)`), миграции
-  `pgstore.Migrations` в мигратор (без них — `ErrSchema` на старте), env `SESSION_IDLE_TTL`,
-  `SESSION_ABSOLUTE_TTL`, `SESSION_CLEANUP_INTERVAL`; старые refresh-JWT недействительны — вход
-  заново один раз.
-- Изменения — `authnkit/session`: `Store` (`Issue`, `Rotate` вне транзакции, `Revoke`,
-  `RevokeAll` в транзакции из ctx), `Token`, `ReusedError`, ошибки; `session/pgstore`: `NewStore`,
-  `WithClock`, `CheckSchema`, `Cleanup`, `Module`, метрики `authn_session_*`; `testkit/sessiontest`:
-  фейк `New`/`Active` и контракт `Run`.
+  `JWTConfig.RefreshTTL` (`JWT_REFRESH_TTL`) удалены → refresh — `authnkit/session`:
+  `session/pgstore.Module` + `fx.Provide(session.NewConfig)`, `pgstore.Migrations` в мигратор (без
+  них — `ErrSchema` на старте), env `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`,
+  `SESSION_CLEANUP_INTERVAL`; старые refresh-JWT недействительны — вход заново один раз.
+- Изменения — `authnkit/session`: `Store` (`Rotate` вне транзакции, `RevokeAll` в транзакции из
+  ctx), `Token`, `ReusedError`; `session/pgstore`: `NewStore`, `WithClock`, `CheckSchema`,
+  `Cleanup`, `Module`, `authn_session_*`; `testkit/sessiontest`: фейк `New`/`Active`, контракт `Run`.
+- Breaking — config: `Load(ctx, dst, …)` → `Load(dst, …)`, `Source.Apply(ctx, dst)` → `Apply(dst)`
+  → убрать ctx и `fx.Provide(context.Background)`; свой `Source` с I/O ограничивает время сам.

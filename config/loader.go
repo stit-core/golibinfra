@@ -4,26 +4,27 @@
 package config
 
 import (
-	"context"
 	"errors"
 	"fmt"
 
 	"github.com/kelseyhightower/envconfig"
 )
 
-// Source заполняет переданную структуру значениями из своего хранилища.
+// Source заполняет переданную структуру значениями из своего хранилища. Load
+// зовут на сборке графа, где запроса нет: источник с I/O (файл, remote) сам
+// ограничивает своё время.
 type Source interface {
 	// Apply записывает значения в dst — указатель на struct.
-	Apply(ctx context.Context, dst any) error
+	Apply(dst any) error
 }
 
 // Load прогоняет dst через каждый Source по порядку: поздний источник
 // перезатирает поля раннего. Применяются все источники; ошибки собираются
 // в одну через errors.Join, каждая — с индексом своего источника.
-func Load(ctx context.Context, dst any, sources ...Source) error {
+func Load(dst any, sources ...Source) error {
 	var errs []error
 	for i, src := range sources {
-		if err := src.Apply(ctx, dst); err != nil {
+		if err := src.Apply(dst); err != nil {
 			errs = append(errs, fmt.Errorf("config: source[%d]: %w", i, err))
 		}
 	}
@@ -40,6 +41,6 @@ func EnvPrefixed(prefix string) Source { return envSource{prefix: prefix} }
 
 type envSource struct{ prefix string }
 
-func (s envSource) Apply(_ context.Context, dst any) error {
+func (s envSource) Apply(dst any) error {
 	return envconfig.Process(s.prefix, dst)
 }

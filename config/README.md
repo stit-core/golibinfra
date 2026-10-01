@@ -35,8 +35,6 @@ App-структура держит конфиги китов полями, `Loa
 package appconfig
 
 import (
-	"context"
-
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/config"
@@ -49,9 +47,9 @@ type App struct {
 	HTTP     httpkit.Config
 }
 
-func Load(ctx context.Context, srcs []config.Source) (*App, error) {
+func Load(srcs []config.Source) (*App, error) {
 	var cfg App
-	if err := config.Load(ctx, &cfg, srcs...); err != nil {
+	if err := config.Load(&cfg, srcs...); err != nil {
 		return nil, err
 	}
 	return &cfg, nil
@@ -71,13 +69,15 @@ var Module = fx.Module("appconfig",
 
 ```go
 fx.New(
-	fx.Provide(context.Background),
 	config.Module, // env → []config.Source
 	appconfig.Module,
 	pgkit.Module,
 	httpkit.Module,
 )
 ```
+
+Загрузка конфига идёт на сборке графа и ctx не берёт: ctx в графе дал бы любому
+конструктору вечный фоновый ctx вместо ctx запроса или `OnStart`.
 
 Набор источников можно задать и без `config.Module` — например, добавив свой
 `Source` после env:
@@ -92,7 +92,7 @@ fx.Provide(func(own MySource) []config.Source {
 
 ```go
 var cfg App
-if err := config.Load(ctx, &cfg, config.Env()); err != nil {
+if err := config.Load(&cfg, config.Env()); err != nil {
 	return err
 }
 ```
@@ -136,18 +136,20 @@ HTTP     httpkit.Config   → Addr `envconfig:"HTTP_ADDR"` → HTTP_HTTP_ADDR, �
 
 ```go
 type Source interface {
-	Apply(ctx context.Context, dst any) error
+	Apply(dst any) error
 }
 ```
 
 Источник, заполняющий переданную структуру `dst` (указатель на struct). Штатная
 реализация — `Env`/`EnvPrefixed`. Своя реализация (файл, remote)
 подставляется в `[]Source` наравне с ними; порядок в срезе — порядок приоритета.
+Источник с I/O сам ограничивает своё время (таймаут клиента, дедлайн чтения):
+`Load` зовут на сборке графа, где ctx запроса нет.
 
 ### `Load`
 
 ```go
-func Load(ctx context.Context, dst any, sources ...Source) error
+func Load(dst any, sources ...Source) error
 ```
 
 Прогоняет `dst` через каждый `Source` по порядку; поздний источник перезатирает
@@ -180,9 +182,9 @@ var Module = fx.Module("config", …)
 ## Тестирование
 
 - **ENV-источник** тестируется выставлением переменных окружения (`t.Setenv`) и
-  вызовом `config.Load(ctx, &cfg, config.Env())` с проверкой заполненных полей.
+  вызовом `config.Load(&cfg, config.Env())` с проверкой заполненных полей.
 - **Свой `Source`** — функциональный тип в две строки:
-  `type sourceFunc func(ctx context.Context, dst any) error` с методом `Apply`.
+  `type sourceFunc func(dst any) error` с методом `Apply`.
 
 Запуск:
 

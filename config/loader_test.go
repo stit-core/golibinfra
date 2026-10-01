@@ -1,7 +1,6 @@
 package config_test
 
 import (
-	"context"
 	"errors"
 	"strings"
 	"testing"
@@ -32,7 +31,7 @@ func TestEnv_FillsByTagsAndDefaults(t *testing.T) {
 	t.Setenv("DEBUG", "true")
 
 	var cfg appConfig
-	if err := config.Load(context.Background(), &cfg, config.Env()); err != nil {
+	if err := config.Load(&cfg, config.Env()); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Addr != ":9090" || cfg.Workers != 2 || !cfg.Debug {
@@ -45,7 +44,7 @@ func TestEnvPrefixed_PrefixedNameWins(t *testing.T) {
 	t.Setenv("ADDR", ":1")
 
 	var cfg appConfig
-	if err := config.Load(context.Background(), &cfg, config.EnvPrefixed("cfgtest")); err != nil {
+	if err := config.Load(&cfg, config.EnvPrefixed("cfgtest")); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Addr != ":7070" {
@@ -57,7 +56,7 @@ func TestEnvPrefixed_FallsBackToUnprefixed(t *testing.T) {
 	t.Setenv("ADDR", ":unprefixed")
 
 	var cfg appConfig
-	if err := config.Load(context.Background(), &cfg, config.EnvPrefixed("cfgtest")); err != nil {
+	if err := config.Load(&cfg, config.EnvPrefixed("cfgtest")); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Addr != ":unprefixed" {
@@ -71,7 +70,7 @@ func TestEnvPrefixed_UntaggedFieldHasNoFallback(t *testing.T) {
 	t.Setenv("REGION", "eu")
 
 	var cfg appConfig
-	if err := config.Load(context.Background(), &cfg, config.EnvPrefixed("cfgtest")); err != nil {
+	if err := config.Load(&cfg, config.EnvPrefixed("cfgtest")); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Region != "" {
@@ -84,7 +83,7 @@ func TestEnv_NestedStructFieldNameBecomesPrefix(t *testing.T) {
 	t.Setenv("POSTGRES_PG_DSN", "via-field-prefix")
 
 	var cfg nestedConfig
-	if err := config.Load(context.Background(), &cfg, config.Env()); err != nil {
+	if err := config.Load(&cfg, config.Env()); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Postgres.DSN != "via-field-prefix" {
@@ -96,7 +95,7 @@ func TestEnv_NestedStructFallsBackToTagName(t *testing.T) {
 	t.Setenv("PG_DSN", "via-tag")
 
 	var cfg nestedConfig
-	if err := config.Load(context.Background(), &cfg, config.Env()); err != nil {
+	if err := config.Load(&cfg, config.Env()); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Postgres.DSN != "via-tag" {
@@ -108,26 +107,26 @@ func TestEnv_ParseErrorIsWrappedWithIndex(t *testing.T) {
 	t.Setenv("WORKERS", "many")
 
 	var cfg appConfig
-	err := config.Load(context.Background(), &cfg, config.Env())
+	err := config.Load(&cfg, config.Env())
 	if err == nil || !strings.Contains(err.Error(), "config: source[0]") {
 		t.Fatalf("err = %v, want wrapped with source index", err)
 	}
 }
 
-type sourceFunc func(ctx context.Context, dst any) error
+type sourceFunc func(dst any) error
 
-func (f sourceFunc) Apply(ctx context.Context, dst any) error { return f(ctx, dst) }
+func (f sourceFunc) Apply(dst any) error { return f(dst) }
 
 func TestLoad_LaterSourceOverridesEarlier(t *testing.T) {
 	t.Setenv("ADDR", ":from-env")
 
-	override := sourceFunc(func(_ context.Context, dst any) error {
+	override := sourceFunc(func(dst any) error {
 		dst.(*appConfig).Addr = ":from-override"
 		return nil
 	})
 
 	var cfg appConfig
-	if err := config.Load(context.Background(), &cfg, config.Env(), override); err != nil {
+	if err := config.Load(&cfg, config.Env(), override); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Addr != ":from-override" {
@@ -135,7 +134,7 @@ func TestLoad_LaterSourceOverridesEarlier(t *testing.T) {
 	}
 
 	cfg = appConfig{}
-	if err := config.Load(context.Background(), &cfg, override, config.Env()); err != nil {
+	if err := config.Load(&cfg, override, config.Env()); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Addr != ":from-env" {
@@ -147,13 +146,13 @@ func TestLoad_AggregatesErrorsOfAllSources(t *testing.T) {
 	first := errors.New("first")
 	second := errors.New("second")
 	applied := 0
-	ok := sourceFunc(func(context.Context, any) error { applied++; return nil })
+	ok := sourceFunc(func(any) error { applied++; return nil })
 
 	var cfg appConfig
-	err := config.Load(context.Background(), &cfg,
-		sourceFunc(func(context.Context, any) error { return first }),
+	err := config.Load(&cfg,
+		sourceFunc(func(any) error { return first }),
 		ok,
-		sourceFunc(func(context.Context, any) error { return second }),
+		sourceFunc(func(any) error { return second }),
 	)
 	if !errors.Is(err, first) || !errors.Is(err, second) {
 		t.Fatalf("err = %v, want both source errors joined", err)
@@ -170,7 +169,7 @@ func TestLoad_AggregatesErrorsOfAllSources(t *testing.T) {
 
 func TestLoad_NoSourcesLeavesDstUntouched(t *testing.T) {
 	cfg := appConfig{Addr: ":kept"}
-	if err := config.Load(context.Background(), &cfg); err != nil {
+	if err := config.Load(&cfg); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Addr != ":kept" {
@@ -179,7 +178,7 @@ func TestLoad_NoSourcesLeavesDstUntouched(t *testing.T) {
 }
 
 func TestLoad_NonPointerDstIsError(t *testing.T) {
-	if err := config.Load(context.Background(), appConfig{}, config.Env()); err == nil {
+	if err := config.Load(appConfig{}, config.Env()); err == nil {
 		t.Fatal("Load(non-pointer) = nil, want error")
 	}
 }
@@ -196,10 +195,29 @@ func TestModule_ProvidesSingleEnvSource(t *testing.T) {
 	}
 
 	var cfg appConfig
-	if err := config.Load(context.Background(), &cfg, srcs...); err != nil {
+	if err := config.Load(&cfg, srcs...); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Addr != ":from-module" {
 		t.Fatalf("Addr = %q, want the provided source to read env", cfg.Addr)
+	}
+}
+
+// Граф из README: App-конфиг грузится провайдером без ctx в графе.
+func TestModule_AppConfigWithoutCtxInGraph(t *testing.T) {
+	t.Setenv("ADDR", ":from-graph")
+
+	var got *appConfig
+	app := fxtest.New(t,
+		config.Module,
+		fx.Provide(func(srcs []config.Source) (*appConfig, error) {
+			var cfg appConfig
+			return &cfg, config.Load(&cfg, srcs...)
+		}),
+		fx.Populate(&got),
+	)
+	app.RequireStart().RequireStop()
+	if got == nil || got.Addr != ":from-graph" {
+		t.Fatalf("App config = %+v, want Addr from the environment", got)
 	}
 }
