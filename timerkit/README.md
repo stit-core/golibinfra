@@ -152,7 +152,7 @@ timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"hubkit.sync.engine"`))
 
 Тесты кита не спят: часы — `clockkit.Tickable`, срабатывание таймера происходит
 внутри `Advance`, а `WaitTimers` снимает гонку «горутина job ещё не поставила
-таймер». Метрики читаются через `sdkmetric.ManualReader`, спаны — через
+таймер». Метрики читаются через `testkit/metrictest`, спаны — через
 `tracetest.SpanRecorder`. fx-уровень — `fx.New` + `Start`/`Stop`: остановка ждёт
 идущий запуск, ошибка валидации называет job, дедлайн `Stop` соблюдается при
 `Run`, игнорирующем `ctx`.

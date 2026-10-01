@@ -9,78 +9,24 @@ import (
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
-// metricReader ставит глобальный MeterProvider на время теста: инструменты
-// китов берут его в момент New.
-func metricReader(t *testing.T) *sdkmetric.ManualReader {
-	t.Helper()
-	reader := sdkmetric.NewManualReader()
-	prev := otel.GetMeterProvider()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	t.Cleanup(func() { otel.SetMeterProvider(prev) })
-	return reader
-}
-
-// durationLabels собирает значения label'а status (и mode) гистограммы запросов.
-func durationLabels(t *testing.T, reader *sdkmetric.ManualReader) map[string]uint64 {
-	t.Helper()
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("collect: %v", err)
-	}
+// durationCounts — число наблюдений гистограммы запросов по status (и mode).
+func durationCounts(d metrictest.Snapshot) map[string]uint64 {
 	got := map[string]uint64{}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != "http_client_request_duration_seconds" {
-				continue
-			}
-			hist, ok := m.Data.(metricdata.Histogram[float64])
-			if !ok {
-				t.Fatalf("unexpected data type %T", m.Data)
-			}
-			for _, dp := range hist.DataPoints {
-				status, _ := dp.Attributes.Value("status")
-				key := status.AsString()
-				if mode, ok := dp.Attributes.Value("mode"); ok {
-					key += "/" + mode.AsString()
-				}
-				got[key] += dp.Count
-			}
+	for _, s := range d.Find("http_client_request_duration_seconds") {
+		key := s.Labels["status"]
+		if mode, ok := s.Labels["mode"]; ok {
+			key += "/" + mode
 		}
+		got[key] += s.Count
 	}
 	return got
 }
 
-func counterValue(t *testing.T, reader *sdkmetric.ManualReader, name string) int64 {
-	t.Helper()
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	var total int64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("%s: unexpected data type %T", name, m.Data)
-			}
-			for _, dp := range sum.DataPoints {
-				total += dp.Value
-			}
-		}
-	}
-	return total
-}
-
 func TestMetrics_RequestDurationLabels(t *testing.T) {
-	reader := metricReader(t)
+	before := metrictest.Collect(t)
 
 	ok := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
@@ -117,25 +63,26 @@ func TestMetrics_RequestDurationLabels(t *testing.T) {
 	stream := openStream(t, c, sse.URL)
 	collect(stream)
 
-	got := durationLabels(t, reader)
+	d := metrictest.Collect(t).Sub(before)
+	got := durationCounts(d)
 	for _, want := range []string{"200", "503", "breaker_open", "200/sse"} {
 		if got[want] == 0 {
 			t.Errorf("no data point with status=%q (all: %v)", want, got)
 		}
 	}
-	if n := counterValue(t, reader, "http_client_retry_attempts_total"); n != 1 {
-		t.Errorf("http_client_retry_attempts_total: got %d, want 1", n)
+	if n := d.Value("http_client_retry_attempts_total"); n != 1 {
+		t.Errorf("http_client_retry_attempts_total: got %v, want 1", n)
 	}
-	if n := counterValue(t, reader, "http_client_breaker_transitions_total"); n == 0 {
+	if n := d.Value("http_client_breaker_transitions_total"); n == 0 {
 		t.Error("http_client_breaker_transitions_total: no transitions recorded")
 	}
-	if n := counterValue(t, reader, "http_client_breaker_open"); n != 1 {
-		t.Errorf("http_client_breaker_open: got %d, want 1 (open)", n)
+	if n := d.Value("http_client_breaker_open"); n != 1 {
+		t.Errorf("http_client_breaker_open: got %v, want 1 (open)", n)
 	}
 }
 
 func TestMetrics_SSEDialErrorRecorded(t *testing.T) {
-	reader := metricReader(t)
+	before := metrictest.Collect(t)
 
 	c := newTestClient(t, Config{}, WithTransport(rtFunc(func(*http.Request) (*http.Response, error) {
 		return nil, errors.New("dial refused")
@@ -144,7 +91,7 @@ func TestMetrics_SSEDialErrorRecorded(t *testing.T) {
 	if _, err := c.Stream(req); err == nil {
 		t.Fatal("expected dial error")
 	}
-	if got := durationLabels(t, reader); got["error/sse"] == 0 {
+	if got := durationCounts(metrictest.Collect(t).Sub(before)); got["error/sse"] == 0 {
 		t.Errorf("sse dial error must be recorded as status=error, mode=sse (all: %v)", got)
 	}
 }

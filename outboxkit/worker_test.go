@@ -19,6 +19,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 )
 
@@ -282,7 +283,7 @@ func TestWorkerBrokerDownSpendsNoAttempts(t *testing.T) {
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
-			collect := collectMetrics(t)
+			collect := metricsSince(t)
 			repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a"), msg(2, "b")}}
 			w, _ := newWorker(repo, tc.tr, outboxkit.Config{BatchSize: 10, PublishMode: tc.mode, MaxAttempts: 1})
 
@@ -292,9 +293,9 @@ func TestWorkerBrokerDownSpendsNoAttempts(t *testing.T) {
 			if failed := failedIDs(repo.recordedFailures()); !slices.Equal(failed, tc.wantFailed) {
 				t.Fatalf("failures = %v, want %v", failed, tc.wantFailed)
 			}
-			attrs := map[string]string{"instance": "test", "subject": "a", "status": "publish_error"}
-			if got := counterValue(collect(), "outbox_events_processed_total", attrs); got != 1 {
-				t.Fatalf("publish_error of the unavailable row = %d, want 1", got)
+			attrs := []string{"instance", "test", "subject", "a", "status", "publish_error"}
+			if got := collect().Value("outbox_events_processed_total", attrs...); got != 1 {
+				t.Fatalf("publish_error of the unavailable row = %v, want 1", got)
 			}
 		})
 	}
@@ -454,7 +455,7 @@ func (t commitFailTx) WithTxOptions(ctx context.Context, _ pgx.TxOptions, fn fun
 // Счётчики состоявшихся исходов эмитятся после коммита: откат тика не должен
 // оставлять published/dead в метриках.
 func TestWorkerCountersOnlyAfterCommit(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	m := msg(1, "boom")
 	m.Attempts = 1
 	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(2, "ok"), m}}
@@ -467,23 +468,23 @@ func TestWorkerCountersOnlyAfterCommit(t *testing.T) {
 		t.Fatal("expected commit error")
 	}
 	rm := collect()
-	inst := map[string]string{"instance": "commitfail"}
-	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "commitfail", "status": "published"}); got != 0 {
-		t.Fatalf("published counter = %d after rollback, want 0", got)
+	inst := []string{"instance", "commitfail"}
+	if got := rm.Value("outbox_events_processed_total", "instance", "commitfail", "status", "published"); got != 0 {
+		t.Fatalf("published counter = %v after rollback, want 0", got)
 	}
-	if got := counterValue(rm, "outbox_events_dead_total", inst); got != 0 {
-		t.Fatalf("dead counter = %d after rollback, want 0", got)
+	if got := rm.Value("outbox_events_dead_total", inst...); got != 0 {
+		t.Fatalf("dead counter = %v after rollback, want 0", got)
 	}
 	if log.Has(slog.LevelError, "outboxkit: event dead") {
 		t.Fatal("dead logged although the tick rolled back")
 	}
-	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "commitfail", "status": "publish_error"}); got != 1 {
-		t.Fatalf("publish_error counter = %d, want 1", got)
+	if got := rm.Value("outbox_events_processed_total", "instance", "commitfail", "status", "publish_error"); got != 1 {
+		t.Fatalf("publish_error counter = %v, want 1", got)
 	}
 }
 
 func TestWorkerCountersAfterSuccessfulCommit(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	m := msg(1, "boom")
 	m.Attempts = 1
 	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(2, "ok"), m}}
@@ -494,22 +495,22 @@ func TestWorkerCountersAfterSuccessfulCommit(t *testing.T) {
 		t.Fatal("expected publish error after commit")
 	}
 	rm := collect()
-	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "test", "status": "published"}); got != 1 {
-		t.Fatalf("published counter = %d, want 1", got)
+	if got := rm.Value("outbox_events_processed_total", "instance", "test", "status", "published"); got != 1 {
+		t.Fatalf("published counter = %v, want 1", got)
 	}
-	if got := counterValue(rm, "outbox_events_dead_total", map[string]string{"instance": "test"}); got != 1 {
-		t.Fatalf("dead counter = %d, want 1", got)
+	if got := rm.Value("outbox_events_dead_total", "instance", "test"); got != 1 {
+		t.Fatalf("dead counter = %v, want 1", got)
 	}
 	for _, name := range []string{"outbox_batch_duration_seconds", "outbox_publish_duration_seconds"} {
-		bounds := histogramBounds(rm, name)
-		if len(bounds) == 0 || bounds[0] != 0.005 {
-			t.Fatalf("%s has no shared duration buckets: %v", name, bounds)
+		series := rm.Find(name, "instance", "test")
+		if len(series) == 0 || series[0].Kind != metrictest.Histogram || len(series[0].Bounds) == 0 || series[0].Bounds[0] != 0.005 {
+			t.Fatalf("%s has no shared duration buckets: %v", name, series)
 		}
 	}
 }
 
 func TestWorkerMarkErrorCounted(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "a")}, markErr: errors.New("db down")}
 	w := outboxkit.NewWorker("markfail", repo, &fakeTransport{}, &pgtest.Recorder{},
 		outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
@@ -518,7 +519,7 @@ func TestWorkerMarkErrorCounted(t *testing.T) {
 		t.Fatal("expected mark error")
 	}
 	rm := collect()
-	if got := counterValue(rm, "outbox_events_processed_total", map[string]string{"instance": "markfail", "status": "mark_error"}); got != 1 {
-		t.Fatalf("mark_error counter = %d, want 1", got)
+	if got := rm.Value("outbox_events_processed_total", "instance", "markfail", "status", "mark_error"); got != 1 {
+		t.Fatalf("mark_error counter = %v, want 1", got)
 	}
 }

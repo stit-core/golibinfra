@@ -164,6 +164,18 @@ const UnitSeconds = "s"
 когда инструмент регистрируется вручную (ObservableGauge/Counter), но имя должно
 остаться в конвенции. Panic-ует на невалидные `domain`/`name`.
 
+## Тестирование
+
+Запись бизнес-метрики проверяет `testkit/metrictest`: снимок до действия,
+дельта после — тип, unit, labels и значение серии.
+
+```go
+before := metrictest.Collect(t)
+svc.Login(ctx, creds)
+s := metrictest.Collect(t).Sub(before).Get(t, "biz_auth_login_attempts_total", "result", "ok")
+// s.Kind == metrictest.Counter, s.Unit == bizmetric.UnitEvent, s.Value == 1
+```
+
 ## Инварианты и подводные камни
 
 - **Panic при нарушении конвенции.** `domain` или `name` вне `^[a-z][a-z0-9_]*$`

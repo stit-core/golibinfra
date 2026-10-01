@@ -89,10 +89,11 @@ httpkit.AccessLog(log, "/ready")(handler).ServeHTTP(rec, req)
 
 ## Метрики и спаны
 
-`Metrics()` пишет в глобальный `otel.Meter`: в тесте зарегистрируйте
-`sdkmetric.NewMeterProvider` с `ManualReader` через `otel.SetMeterProvider` до
-создания middleware и соберите `ResourceMetrics`. Label `path` — route-pattern
-или `unmatched`, `method` — стандартный метод или `other`.
+`Metrics()` пишет в глобальный `otel.Meter`: тест читает его через
+`testkit/metrictest` — `before := metrictest.Collect(t)`, запросы,
+`metrictest.Collect(t).Sub(before).Get(t, "http_requests_total", "method", "GET",
+"path", "/users/{id}", "status", "200")`. Label `path` — route-pattern или
+`unmatched`, `method` — стандартный метод или `other`.
 
 Имя спана проверяется `tracetest.NewSpanRecorder` c `otel.SetTracerProvider`:
 запрос через chi-роутер с `OTel()` и `Metrics()` даёт спан `GET /users/{id}` и

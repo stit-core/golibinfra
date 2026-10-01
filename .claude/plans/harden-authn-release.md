@@ -48,11 +48,12 @@ blocked-by: —
 - Push `main` и тега — делает дирижёр после PASS валидатора партии.
 
 ## Критерии приёмки
-- [ ] **AC1** — Инструменты китов пишут в текущий глобальный `MeterProvider`, в том числе в
+- [x] **AC1** — Инструменты китов пишут в текущий глобальный `MeterProvider`, в том числе в
   тестовый. `testkit/metrictest` проверяет запись метрики (имя, тип, unit, labels, значение) и
   отсутствие коллизий имён после трансляции в Prometheus. Проверка:
   `go test -race ./testkit/metrictest/` → PASS; `M/kits-audit/fx-observability/run.sh <rev> obs-provider`
   → KO09 PASS; `M/kits-audit/httpkit-b/run.sh <rev> exp` → HO06 PASS
+  - Подтверждено: metrictest PASS (пара KOBS-01 — коллизия); KO09, HO06 → PASS на S1 и S2
 - [ ] **AC2** — Запись аудита без `RequestID` или `IP` получает их из ctx запроса, явные значения не
   перетираются; `audittest` ведёт себя так же. Проверка:
   `go test -race ./auditkit/... ./testkit/audittest/` → PASS
@@ -113,9 +114,11 @@ blocked-by: —
   - Проверка: AC1 (KO09, HO06) → PASS · Закрывает: AC1 · Зависит от: —
   - Сделано: инструменты — в конструкторах (и спан timerkit); KO09, HO06 → PASS;
     `TestInstrumentsAreNotPackageLevel` ловит `var` с `otelkit`/`otel` Meter и Tracer
-- [ ] **S2** — B7: `testkit/metrictest` — один провайдер на процесс, дельты, проверка коллизий имён.
+- [x] **S2** — B7: `testkit/metrictest` — один провайдер на процесс, дельты, проверка коллизий имён.
   Обвязка метрик в тестах китов переведена на него (KTST-06)
   - Проверка: AC1 → выполнен; `make check` → зелёный · Закрывает: AC1 · Зависит от: S1
+  - Сделано: `Collect`/`Sub`/`Get`/`Find`/`Value`/`All`, `Collisions`, `PromName`; на нём 17 из
+    20 файлов обвязки (кроме `internal/otelkit`, `telemetry`) и рецепты доков; `make check` → зелёный
 - [ ] **S3** — B4: auditkit берёт `RequestID` и `IP` из ctx, если в записи пусто; `audittest` —
   так же
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: —
@@ -166,7 +169,13 @@ blocked-by: —
 - **Инструменты метрик** — в конструкторах, от текущего `otel.GetMeterProvider()` через
   `otelkit.Meter`, а не на уровне пакета; трейсер timerkit — так же (та же ловушка у
   `TracerProvider`). Регресс держит статический тест `internal/otelkit`: поведенческий тест
-  второго провайдера в пакете противоречит одному провайдеру metrictest. Глобальный делегат OTel привязывает пакетный инструмент к
+  второго провайдера в пакете противоречит одному провайдеру metrictest.
+- **metrictest.** Провайдер ставит импорт пакета (`init`): измерения до первого `Collect` не
+  теряются; подменённый провайдер роняет `Collect`. `Get` — ровно эти labels, `Find`/`Value` —
+  фильтр; `Sub` оставляет новую серию и с нулём, gauge — текущим значением. `PromName` сверен с
+  otlptranslator v1.0.0 на 1292 кейсах вне репо. Переведены и киты вне объёма (один способ);
+  свой провайдер — только у `internal/otelkit` и `telemetry`: их тесты проверяют саму связку с
+  SDK. Инъекция метра в тестах (`newInstrumentsWithMeter`, `newObserveHookWith`) удалена. Глобальный делегат OTel привязывает пакетный инструмент к
   первому провайдеру процесса: второй его не видит (KO09, HO06). metrictest ставит один провайдер на
   процесс и сравнивает дельты: `otel.SetMeterProvider` глобален, параллельные тесты иначе мешают
   друг другу. Проверка коллизий — своя трансляция имён OTel → Prometheus (подмножество
@@ -261,10 +270,12 @@ blocked-by: —
 
 ## Где мы сейчас
 Первая половина партии 2 (`harden-gate-defaults`: гейт, B1–B3) закрыта, её аннотация — в
-материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1 сделан; следующий шаг — S2
-(`testkit/metrictest`).
+материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S2 сделаны; следующий шаг — S3
+(аудит из ctx).
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio,
   httpkit: инструменты берут глобальный провайдер при сборке объекта, а не первый провайдер
   процесса.
+- Изменения — `testkit/metrictest`: проверка записи метрик (провайдер процесса ставит импорт,
+  дельты, `Get`/`Find`/`Value`, коллизии имён в Prometheus) — для бизнес-метрик потребителя.

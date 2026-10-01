@@ -13,6 +13,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func config() bruteforcekit.Config {
@@ -283,7 +284,7 @@ func TestStore_Guard(t *testing.T) {
 		lowered.MaxFailures = 3
 		s := newStore(t, db, lowered)
 
-		before := snapshot(t)
+		before := metrictest.Collect(t)
 		st, err := s.Attempt(ctx, subject, ip)
 		if err != nil || st == nil {
 			t.Fatalf("Attempt after lowering = %v, %v: budget of the window is spent", st, err)
@@ -291,16 +292,16 @@ func TestStore_Guard(t *testing.T) {
 		if st.FailedCount != 5 {
 			t.Fatalf("FailedCount = %d, want 5", st.FailedCount)
 		}
-		if got := snapshot(t).locks - before.locks; got != 1 {
-			t.Fatalf("bruteforce_locks_total delta = %d, want 1", got)
+		if got := metrictest.Collect(t).Sub(before).Value("bruteforce_locks_total"); got != 1 {
+			t.Fatalf("bruteforce_locks_total delta = %v, want 1", got)
 		}
 
-		before = snapshot(t)
+		before = metrictest.Collect(t)
 		if _, err := s.Attempt(ctx, subject, ip); err != nil {
 			t.Fatalf("Attempt over lock: %v", err)
 		}
-		if got := snapshot(t).locks - before.locks; got != 0 {
-			t.Fatalf("bruteforce_locks_total delta over an active lock = %d, want 0", got)
+		if got := metrictest.Collect(t).Sub(before).Value("bruteforce_locks_total"); got != 0 {
+			t.Fatalf("bruteforce_locks_total delta over an active lock = %v, want 0", got)
 		}
 	})
 

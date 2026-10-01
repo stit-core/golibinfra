@@ -85,17 +85,15 @@ err = pgkit.MigrateDown(ctx, pg.DSN, src)               // один шаг на�
 
 ## Рецепт: проверка метрик пула
 
-`InstrumentPool` пишет в глобальный Meter — в тесте подменяется
-`otel.SetMeterProvider` с `sdkmetric.NewManualReader`:
+`InstrumentPool` пишет в глобальный Meter — тест читает его через
+`testkit/metrictest` (провайдер процесса ставит импорт пакета):
 
 ```go
-reader := sdkmetric.NewManualReader()
-otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 reg := pgkit.InstrumentPool(pool, pgkit.RolePrimary)
 defer reg.Unregister()
 
-var rm metricdata.ResourceMetrics
-_ = reader.Collect(context.Background(), &rm) // → pg_pool_*{role="primary"} в rm.ScopeMetrics
+snap := metrictest.Collect(t)
+_ = snap.Find("pg_pool_total_conns", "role", pgkit.RolePrimary) // серии pg_pool_*{role="primary"}
 ```
 
 ## Рецепт: домен без Postgres

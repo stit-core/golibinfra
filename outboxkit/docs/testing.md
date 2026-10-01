@@ -42,8 +42,8 @@ in-memory фейках (`testkit/pgtest.Identity` / `Recorder` как транз
 - счётчики `published`/`dead` эмитятся только после коммита тика, `mark_error` —
   на откате.
 
-Метрики проверяются `sdk/metric.ManualReader` как глобальным `MeterProvider`:
-имена, атрибуты (`instance`, `subject`, `status`) и общие бакеты гистограмм.
+Метрики проверяются `testkit/metrictest` дельтой от начала теста: имена,
+атрибуты (`instance`, `subject`, `status`) и общие бакеты гистограмм.
 `fx`-сборки (`outboxkit.Module`, `outboxkit.Instance`) поднимаются через
 `fxtest`: резолвятся `Publisher`/`Worker`, в группе `timerkit.Group` лежат
 drain- и maintenance-job'ы, backlog-gauge'и появляются на старте и исчезают

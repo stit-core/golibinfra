@@ -19,9 +19,9 @@
   китов (`auditkit.Logger`, `authnkit.Hasher`, `bruteforcekit.Guard`,
   `outboxkit.Publisher`, `pgkit.Transactor`, `anthropickit.API`,
   `natskit.Bus`/`StreamBus`, `storagekit.Storage`/`Presigner`, `logkit.Logger`),
-  контрактный набор для собственных реализаций `storagekit` (`storagetest`) и
-  харнессы для тестов huma-хендлеров (`handlertest`) и gRPC-сервисов
-  (`grpctest`).
+  контрактный набор для собственных реализаций `storagekit` (`storagetest`),
+  проверку записи метрик китов и бизнес-метрик (`metrictest`) и харнессы для
+  тестов huma-хендлеров (`handlertest`) и gRPC-сервисов (`grpctest`).
 
 ## Импорт
 
@@ -135,6 +135,27 @@ func TestPublishesEvent(t *testing.T) {
 }
 ```
 
+Метрики — `metrictest`. Импорт пакета ставит глобальный `MeterProvider` с
+`ManualReader`, один на процесс: тест, подменивший провайдер, роняет `Collect`.
+Тест снимает `before` и сравнивает дельту; серия несёт имя, тип, unit, labels и
+значение, `Collisions` находит разные инструменты с одним именем в Prometheus:
+
+```go
+func TestLoginCounted(t *testing.T) {
+	before := metrictest.Collect(t)
+	if err := svc.Login(ctx, creds); err != nil {
+		t.Fatal(err)
+	}
+	s := metrictest.Collect(t).Sub(before).Get(t, "biz_auth_logins_total", "result", "ok")
+	if s.Kind != metrictest.Counter || s.Value != 1 {
+		t.Fatalf("logins: %v (%s), want counter delta 1", s, s.Kind)
+	}
+}
+```
+
+Дельта видит записи всего процесса, поэтому тест метрик не идёт параллельно с
+тестами тех же серий (`t.Parallel`) или разводит их своими labels.
+
 ## Конфигурация
 
 Конфиг-структур (envconfig) у testkit нет: поведение задаётся аргументами
@@ -171,8 +192,8 @@ helper'ов, ENV-переопределений образов нет тоже. 
 ## Сабпакеты
 
 Соглашение об именах: `<kit без суффикса kit>test` (`auditkit` → `audittest`,
-`outboxkit` → `outboxtest`). Исключение — `handlertest`: он обслуживает
-huma-хендлеры поверх `httpkit`, а не сам кит.
+`outboxkit` → `outboxtest`). Исключения обслуживают не один кит: `handlertest` —
+huma-хендлеры поверх `httpkit`, `metrictest` — метрики всех китов и `bizmetric`.
 
 | Сабпакет | Обслуживает | Что даёт |
 | --- | --- | --- |
@@ -184,6 +205,7 @@ huma-хендлеры поверх `httpkit`, а не сам кит.
 | [`handlertest`](handlertest/) | `httpkit` (huma) | `NewAPI` поднимает `humatest.TestAPI` (алиас `API`) поверх API сервера `httpkit` — контракт ошибок как в проде (`request_id`, `Retry-After`, 404/405, коды `ErrorMap.Declare` в OpenAPI), `HumaAuth` до маршрутов (без `WithAuth` защищённая операция — `500 AUTH_NOT_CONFIGURED`), проверка маршрутов старта `Module`, конфиг `httpkit.NewConfig()` (docs, как у сервера, по умолчанию выключены); опции `WithAuth`, `WithConfig`, `WithLogger`, `WithSecuritySchemes`; `DecodeAPIError` → `httpkit.APIError`, `AssertStatus`, `AssertAPIError` (статус, problem+json, `code`, `request_id` = `X-Request-ID`). |
 | [`hubtest`](hubtest/) | `hubkit` | `NewIssuer(t)`/`NewCustomerIssuer(t)` — ES256-ключи + JWKS на `httptest`: `EmployeeToken`, `CustomerToken`, `Sign`, `SignHS256`, `Rotate`/`RotateKeepingPrevious`, опции токена (`WithExpiry`, `WithoutClaim`, `WithKID`, …); `SSOConfig`, `Verifier`, `Extractor`, `WithEmployee`/`WithCustomer` для ctx; in-memory порты синка `Feed`/`Projection`/`Cursors`. |
 | [`logtest`](logtest/) | `logkit` | `Capture`/`CaptureAt` — `logkit.Logger`, копящий записи в памяти: `Entries`, `Find`, `FindFunc`, `Has`, `Reset`; `Entry.Str`/`Entry.Value` читают поля записи. |
+| [`metrictest`](metrictest/) | метрики китов и `bizmetric` | `Collect` — снимок серий процесса (импорт ставит глобальный `MeterProvider` с `ManualReader`; подменённый провайдер — падение `Collect`); `Snapshot.Sub` — дельта (gauge — текущее значение), `Get` — серия с ровно этими labels, `Find`/`Value` — labels как фильтр, `All`; `Series{Scope, Name, Kind, Unit, Labels, Value, Count, Bounds}`; `Collisions` и `PromName` — имена после трансляции в Prometheus (`UnderscoreEscapingWithSuffixes`). |
 | [`natstest`](natstest/) | `natskit` | `Recorder` — in-memory `natskit.Bus`/`StreamBus` с синхронной доставкой подписчикам: `Publish`/`PublishStream`/`PublishStreamBatch`, `Subscribe`/`SubscribeQueue`/`SubscribeStream`, запросы `Published`/`PublishedOn`/`Subscriptions`/`HandlerErrors`, инжекторы `Deliver` (сообщение «из шины») и `SetPublishError` + `Reset`. |
 | [`oidctest`](oidctest/) | `oidckit` | `New(t)` поднимает stub OIDC-провайдера (discovery, JWKS, `/authorize`, `/token`, RS256/ES256): `SetClaims`, `SetStatus`, `SetTokenBody`, `SetDiscoveryOverride`, `Hits`, `LastAuthorize`; токены для негативных тестов — `IDToken`, `IDTokenWithKID`, `IDTokenHS256`, `IDTokenUnsigned`. |
 | [`outboxtest`](outboxtest/) | `outboxkit` | `Recorder` — in-memory `outboxkit.Publisher`: `Publish` вне транзакции (`pgkit.InTx`) отвечает `outboxkit.ErrNoTx` и событие не копит, как pgstore с `OUTBOX_REQUIRE_TX=true`; запросы `All`/`Published`/`Last`/`Count` + `Reset`. |
@@ -192,7 +214,8 @@ huma-хендлеры поверх `httpkit`, а не сам кит.
 
 ## Observability
 
-testkit ничего не эмитит: ни метрик, ни спанов, ни логов через `logkit`.
+testkit ничего не эмитит: ни метрик, ни спанов, ни логов через `logkit`;
+`metrictest` только ставит при импорте глобальный `MeterProvider` процесса теста.
 Контейнерные helper'ы и fake'и сообщают о проблемах только через `t.Fatalf` /
 возвращаемые значения. Диагностика testcontainers идёт в `t.Log` — видна с `-v`
 и при падении теста, а не в общий stderr. Это тестовый код — он не часть рантайма

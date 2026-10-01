@@ -1,11 +1,10 @@
 package pgstore_test
 
 import (
-	"context"
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func TestStore_Metrics(t *testing.T) {
@@ -13,10 +12,10 @@ func TestStore_Metrics(t *testing.T) {
 	cfg := config()
 	cfg.MaxFailures = 2
 	cfg.CleanupRetention = time.Hour
+	before := metrictest.Collect(t)
 	s := newStore(t, db, cfg)
 
 	const subject, ip = "metrics@example.com", "10.0.0.10"
-	before := snapshot(t)
 
 	attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
 	// Попытки под активной блокировкой — locked, но не новый lock.
@@ -34,56 +33,19 @@ func TestStore_Metrics(t *testing.T) {
 		t.Fatalf("Cleanup: %v", err)
 	}
 
-	after := snapshot(t)
-	checks := map[string]int64{
-		"bruteforce_checks_total{result=allowed}": after.checks["allowed"] - before.checks["allowed"],
-		"bruteforce_checks_total{result=locked}":  after.checks["locked"] - before.checks["locked"],
-		"bruteforce_locks_total":                  after.locks - before.locks,
-		"bruteforce_cleanup_deleted_total":        after.cleanupDeleted - before.cleanupDeleted,
-	}
-	for name, want := range map[string]int64{
-		"bruteforce_checks_total{result=allowed}": 2,
-		"bruteforce_checks_total{result=locked}":  2,
-		"bruteforce_locks_total":                  1,
-		"bruteforce_cleanup_deleted_total":        1,
+	d := metrictest.Collect(t).Sub(before)
+	for _, want := range []struct {
+		name   string
+		labels []string
+		value  float64
+	}{
+		{"bruteforce_checks_total", []string{"result", "allowed"}, 2},
+		{"bruteforce_checks_total", []string{"result", "locked"}, 2},
+		{"bruteforce_locks_total", nil, 1},
+		{"bruteforce_cleanup_deleted_total", nil, 1},
 	} {
-		if checks[name] != want {
-			t.Fatalf("%s delta = %d, want %d", name, checks[name], want)
+		if got := d.Get(t, want.name, want.labels...); got.Kind != metrictest.Counter || got.Value != want.value {
+			t.Errorf("%v (%s), want counter delta %v", got, got.Kind, want.value)
 		}
 	}
-}
-
-type metricsSnapshot struct {
-	checks         map[string]int64
-	locks          int64
-	cleanupDeleted int64
-}
-
-func snapshot(t *testing.T) metricsSnapshot {
-	t.Helper()
-	var rm metricdata.ResourceMetrics
-	if err := metricsReader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	s := metricsSnapshot{checks: map[string]int64{}}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				continue
-			}
-			for _, dp := range sum.DataPoints {
-				switch m.Name {
-				case "bruteforce_checks_total":
-					result, _ := dp.Attributes.Value("result")
-					s.checks[result.AsString()] += dp.Value
-				case "bruteforce_locks_total":
-					s.locks += dp.Value
-				case "bruteforce_cleanup_deleted_total":
-					s.cleanupDeleted += dp.Value
-				}
-			}
-		}
-	}
-	return s
 }

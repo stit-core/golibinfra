@@ -17,6 +17,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 // Часы теста двигает сам тест: срабатывание таймера происходит внутри Advance,
@@ -182,7 +183,7 @@ func TestValidate(t *testing.T) {
 }
 
 func TestMetrics(t *testing.T) {
-	before := snapshot(t)
+	before := metrictest.Collect(t)
 
 	r := newRunner(logkit.Nop(), clockkit.NewTickable(time.Unix(0, 0)))
 	ctx := context.Background()
@@ -190,18 +191,19 @@ func TestMetrics(t *testing.T) {
 	r.once(ctx, Job{Name: "m", Run: func(context.Context) error { return errors.New("x") }})
 	r.once(ctx, Job{Name: "m", Run: func(context.Context) error { panic("p") }})
 
-	after := snapshot(t)
-	for _, k := range []string{"m/ok", "m/error", "m/panic"} {
-		if got := after.runs[k] - before.runs[k]; got != 1 {
-			t.Errorf("timer_job_runs_total{%s} delta = %d, want 1", k, got)
+	d := metrictest.Collect(t).Sub(before)
+	for _, result := range []string{"ok", "error", "panic"} {
+		if s := d.Get(t, "timer_job_runs_total", "job", "m", "result", result); s.Kind != metrictest.Counter || s.Value != 1 {
+			t.Errorf("timer_job_runs_total: %v (%s), want counter delta 1", s, s.Kind)
 		}
 	}
-	if got := after.durations["m"] - before.durations["m"]; got != 3 {
-		t.Errorf("timer_job_duration_seconds{job=m} count delta = %d, want 3", got)
+	dur := d.Get(t, "timer_job_duration_seconds", "job", "m")
+	if dur.Kind != metrictest.Histogram || dur.Unit != "s" || dur.Count != 3 {
+		t.Errorf("timer_job_duration_seconds: %v (%s, unit %q), want histogram in s with 3 runs", dur, dur.Kind, dur.Unit)
 	}
 	// Общие бакеты длительностей: секундная сетка, а не миллисекундные дефолты OTel.
-	if got, want := after.bounds["m"], []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}; !equalFloats(got, want) {
-		t.Errorf("duration buckets = %v, want %v", got, want)
+	if want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}; !slices.Equal(dur.Bounds, want) {
+		t.Errorf("duration buckets = %v, want %v", dur.Bounds, want)
 	}
 }
 
@@ -275,16 +277,4 @@ func hasAttr(s sdktrace.ReadOnlySpan, key, want string) bool {
 		}
 	}
 	return false
-}
-
-func equalFloats(got, want []float64) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			return false
-		}
-	}
-	return true
 }

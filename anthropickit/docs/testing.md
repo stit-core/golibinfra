@@ -118,9 +118,9 @@ st := anthropictest.ErrStream(anthropickit.ErrInvalidRequest)
 
 Боевой `Client` тестируется против `httptest.Server`, изображающего Anthropic
 API (`WithBaseURL(srv.URL)`): JSON-ответы Messages/count_tokens/models и SSE-поток
-с `Content-Type: text/event-stream`; метрики и спаны проверяются через in-memory
-OTel SDK (`sdkmetric.ManualReader`, `tracetest.SpanRecorder`), установленный в
-глобальные провайдеры до `New`. Ретраи SDK в тестах управляются заголовком
+с `Content-Type: text/event-stream`; метрики проверяются через
+`testkit/metrictest`, спаны — `tracetest.SpanRecorder` в глобальном
+`TracerProvider`, установленном до `New`. Ретраи SDK в тестах управляются заголовком
 `Retry-After-Ms` в ответе сервера.
 
 Маппинг запроса проверяется по телу HTTP-запроса (`wire_test.go`): табличный тест

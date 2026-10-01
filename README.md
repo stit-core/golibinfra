@@ -130,7 +130,7 @@ go mod tidy
 | [`mapkit`](mapkit/) | Декодеры `map[string]any`: `String/Int/Int64/Float/Strings/Map/IntPtr/BoolPtr`; nil-safe, знают `json.Number`, значение вне диапазона типа — несовпадение |
 | [`idkit`](idkit/) | Внутренние id: `NewV7()` — UUID v7 строкой (time-sortable), `Validate`/`IsV7` — проверка канонической формы |
 | [`config`](config/) | Композиция ENV-источников (`Source`, `Load`, `Env`/`EnvPrefixed`) для App-конфига приложения; ошибки всех источников объединяются |
-| [`testkit`](testkit/) | testcontainers: `StartPostgres(t, WithMigrations(...))`, `StartNATS(t, WithJetStream())`, `StartRedis`, `StartMinIO`, `RequireDocker`, лесенка миграций `MigrationLadder`; сабпакеты `testkit/<name>test` — `anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`, `handlertest`, `hubtest`, `logtest`, `natstest`, `oidctest`, `outboxtest`, `pgtest`, `storagetest` |
+| [`testkit`](testkit/) | testcontainers: `StartPostgres(t, WithMigrations(...))`, `StartNATS(t, WithJetStream())`, `StartRedis`, `StartMinIO`, `RequireDocker`, лесенка миграций `MigrationLadder`; сабпакеты `testkit/<name>test` — `anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`, `handlertest`, `hubtest`, `logtest`, `metrictest`, `natstest`, `oidctest`, `outboxtest`, `pgtest`, `storagetest` |
 
 Служебные пакеты `internal/otelkit` (scope, версия инструментации, `Must` и две
 общие шкалы bucket-границ для гистограмм длительности — `DurationBuckets` и
@@ -209,7 +209,9 @@ go mod tidy
 Инструменты кит создаёт в конструкторе (`New*`, сборка `Module`) от текущего
 глобального провайдера, а не на уровне пакета. Созданные до первого
 `SetMeterProvider` делегат OTel переносит на этот провайдер; второй провайдер
-процесса видит только объекты, собранные после его установки.
+процесса видит только объекты, собранные после его установки. Запись метрик в
+тестах проверяет `testkit/metrictest`: провайдер — один на процесс, тест
+сравнивает дельты серий и ищет коллизии имён после трансляции в Prometheus.
 
 Конфиг каждого кита провайдит caller — `Module` его не читает. Пример ниже
 собирается целиком (граф проверяется тестом `readme_example_test.go`):

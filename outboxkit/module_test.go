@@ -49,7 +49,7 @@ func hasName(names []string, want string) bool {
 }
 
 func TestModule_WiresPublisherWorkerAndJob(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{
 		unpublished: []outboxkit.Message{msg(1, "a")},
 		backlog:     []outboxkit.SubjectBacklog{{Subject: "a", Oldest: 2 * time.Second, Pending: 3}},
@@ -80,12 +80,12 @@ func TestModule_WiresPublisherWorkerAndJob(t *testing.T) {
 		t.Fatalf("job interval = %v, want %v", jobs[0].Interval, cfg.Interval)
 	}
 	// Backlog-gauge'и подключаются автоматически, пока приложение живо.
-	if n := gaugePoints(collect(), "outbox_pending_count"); n != 1 {
+	if n := len(collect().Find("outbox_pending_count", "instance", outboxkit.DefaultInstance)); n != 1 {
 		t.Fatalf("outbox_pending_count points = %d, want 1", n)
 	}
 
 	app.RequireStop()
-	if n := gaugePoints(collect(), "outbox_pending_count"); n != 0 {
+	if n := len(collect().Find("outbox_pending_count", "instance", outboxkit.DefaultInstance)); n != 0 {
 		t.Fatalf("gauges still observed after stop: %d points", n)
 	}
 }
@@ -140,7 +140,7 @@ func TestModule_RequiresTimerkit(t *testing.T) {
 }
 
 func TestInstance_WiresNamedOutbox(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{
 		unpublished: []outboxkit.Message{msg(1, "order.created")},
 		backlog:     []outboxkit.SubjectBacklog{{Subject: "order.created", Oldest: time.Second, Pending: 1}},
@@ -178,7 +178,7 @@ func TestInstance_WiresNamedOutbox(t *testing.T) {
 	if !hasName(names, "fake.maintenance") {
 		t.Fatalf("maintenance job missing: %v", names)
 	}
-	if n := gaugePoints(collect(), "outbox_lag_seconds"); n != 1 {
+	if n := len(collect().Find("outbox_lag_seconds", "instance", "orders")); n != 1 {
 		t.Fatalf("outbox_lag_seconds points = %d, want 1", n)
 	}
 	app.RequireStop()
@@ -257,7 +257,7 @@ func instanceDeps(repo outboxkit.Repository, bus natskit.StreamBus) fx.Option {
 // Subject'ы инстанса старт сверяет со стримами, а Publish вне них отвергает: иначе строки
 // копились бы без PubAck при здоровом сервисе.
 func TestInstance_WithSubjectsChecksStreamsOnStart(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{}
 	bus := &checkingBus{}
 	var pub outboxkit.Publisher
@@ -287,9 +287,9 @@ func TestInstance_WithSubjectsChecksStreamsOnStart(t *testing.T) {
 	if len(repo.inserted) != 3 {
 		t.Fatalf("inserted = %d, want 3", len(repo.inserted))
 	}
-	attrs := map[string]string{"instance": "orders", "status": "undeclared_subject"}
-	if got := counterValue(collect(), "outbox_events_inserted_total", attrs); got != 3 {
-		t.Fatalf("undeclared_subject counter = %d, want 3", got)
+	attrs := []string{"instance", "orders", "status", "undeclared_subject"}
+	if got := collect().Value("outbox_events_inserted_total", attrs...); got != 3 {
+		t.Fatalf("undeclared_subject counter = %v, want 3", got)
 	}
 }
 
@@ -409,7 +409,7 @@ func TestInstance_ConfigOverride(t *testing.T) {
 }
 
 func TestOutbox_ReviveDead(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{revived: 3}
 	o := outboxkit.New("orders", repo, &fakeTransport{}, &pgtest.Recorder{},
 		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
@@ -425,8 +425,8 @@ func TestOutbox_ReviveDead(t *testing.T) {
 	if repo.reviveFilter.Subject != "order.created" || len(repo.reviveFilter.IDs) != 3 {
 		t.Fatalf("filter not passed through: %+v", repo.reviveFilter)
 	}
-	if got := counterValue(collect(), "outbox_revived_total", map[string]string{"instance": "orders"}); got != 3 {
-		t.Fatalf("outbox_revived_total = %d, want 3", got)
+	if got := collect().Value("outbox_revived_total", "instance", "orders"); got != 3 {
+		t.Fatalf("outbox_revived_total = %v, want 3", got)
 	}
 }
 

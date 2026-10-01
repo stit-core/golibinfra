@@ -84,8 +84,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - **Тесты:** `testkit` (testcontainers, лесенка миграций `MigrationLadder`) + сабпакеты
   `testkit/<name>test`
   (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`,
-  `handlertest`, `hubtest`, `logtest`, `natstest`, `oidctest`, `outboxtest`,
-  `pgtest`, `storagetest`) — внутри китов test-хелперов нет.
+  `handlertest`, `hubtest`, `logtest`, `metrictest`, `natstest`, `oidctest`,
+  `outboxtest`, `pgtest`, `storagetest`) — внутри китов test-хелперов нет.
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
   `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента,
@@ -107,7 +107,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   конечные множества (route-pattern, а не путь; хост, а не URL).
 - Инструменты — в конструкторе кита (`otelkit.Meter`/`otelkit.Tracer` при сборке объекта), не
   в `var` пакета: пакетный инструмент делегат OTel привязывает к первому провайдеру процесса
-  (держит `TestInstrumentsAreNotPackageLevel` в `internal/otelkit`).
+  (держит `TestInstrumentsAreNotPackageLevel` в `internal/otelkit`); запись в тестах проверяет
+  `testkit/metrictest` — свой `MeterProvider` тест не ставит.
 - **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
   business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 - Гистограммы длительности — в секундах, `WithUnit("s")` + общие границы

@@ -6,20 +6,19 @@ import (
 	"testing"
 
 	"github.com/redis/go-redis/v9"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
-	"go.opentelemetry.io/otel/trace/noop"
+
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func TestObserveHook_RecordsResult(t *testing.T) {
-	reader := sdkmetric.NewManualReader()
-	provider := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	hook := newObserveHookWith(provider.Meter("test"), noop.NewTracerProvider().Tracer("test"))
+	before := metrictest.Collect(t)
+	hook := newObserveHook()
 
 	ctx := context.Background()
 	results := []error{nil, redis.Nil, errors.New("boom")}
@@ -30,58 +29,31 @@ func TestObserveHook_RecordsResult(t *testing.T) {
 	pipeline := hook.ProcessPipelineHook(func(context.Context, []redis.Cmder) error { return nil })
 	_ = pipeline(ctx, []redis.Cmder{redis.NewStringCmd(ctx, "set", "k", "v")})
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatal(err)
-	}
-	seen := map[string]int64{}
-	cmds := map[string]int64{}
-	var bounds []float64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			switch m.Name {
-			case "cache_commands_total":
-				sum, ok := m.Data.(metricdata.Sum[int64])
-				if !ok {
-					t.Fatalf("unexpected data type %T", m.Data)
-				}
-				for _, dp := range sum.DataPoints {
-					result, _ := dp.Attributes.Value("result")
-					seen[result.AsString()] += dp.Value
-					cmd, _ := dp.Attributes.Value("cmd")
-					cmds[cmd.AsString()] += dp.Value
-				}
-			case "cache_command_duration_seconds":
-				hist, ok := m.Data.(metricdata.Histogram[float64])
-				if !ok {
-					t.Fatalf("unexpected data type %T", m.Data)
-				}
-				if m.Unit != "s" {
-					t.Errorf("duration unit: got %q, want %q", m.Unit, "s")
-				}
-				bounds = hist.DataPoints[0].Bounds
-			}
-		}
-	}
+	d := metrictest.Collect(t).Sub(before)
 	// ok: успешный get и успешный пайплайн.
-	for want, count := range map[string]int64{"ok": 2, "miss": 1, "error": 1} {
-		if seen[want] != count {
-			t.Errorf("result=%s: got %d, want %d (all: %v)", want, seen[want], count, seen)
+	for want, count := range map[string]float64{"ok": 2, "miss": 1, "error": 1} {
+		if got := d.Value("cache_commands_total", "result", want); got != count {
+			t.Errorf("result=%s: got %v, want %v (all: %v)", want, got, count, d.Find("cache_commands_total"))
 		}
 	}
-	if cmds["get"] != 3 || cmds["pipeline"] != 1 {
-		t.Errorf("cmd labels: %v, want get=3 pipeline=1", cmds)
+	if d.Value("cache_commands_total", "cmd", "get") != 3 || d.Value("cache_commands_total", "cmd", "pipeline") != 1 {
+		t.Errorf("cmd labels: %v, want get=3 pipeline=1", d.Find("cache_commands_total"))
 	}
-	if len(bounds) != 12 || bounds[0] != 0.005 || bounds[len(bounds)-1] != 30 {
-		t.Errorf("duration buckets: %v, want otelkit.DurationBuckets()", bounds)
+	dur := d.Find("cache_command_duration_seconds")
+	if len(dur) == 0 || dur[0].Kind != metrictest.Histogram || dur[0].Unit != "s" {
+		t.Fatalf("cache_command_duration_seconds: %v, want histogram in s", dur)
+	}
+	if b := dur[0].Bounds; len(b) != 12 || b[0] != 0.005 || b[len(b)-1] != 30 {
+		t.Errorf("duration buckets: %v, want otelkit.DurationBuckets()", b)
 	}
 }
 
 func TestObserveHook_Spans(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
-	tp := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec))
-	reader := sdkmetric.NewManualReader()
-	hook := newObserveHookWith(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)).Meter("test"), tp.Tracer("test"))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	hook := newObserveHook()
 
 	ctx := context.Background()
 	ok := hook.ProcessHook(func(context.Context, redis.Cmder) error { return nil })

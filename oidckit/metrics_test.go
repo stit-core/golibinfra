@@ -3,12 +3,8 @@ package oidckit
 import (
 	"testing"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 	"git.stit.tech/stit-core/golibinfra/testkit/oidctest"
 )
 
@@ -16,17 +12,17 @@ type series struct{ name, stage, result string }
 
 // seriesOf — имя метрики плюс её labels; любой label сверх stage/result — это
 // потенциально неограниченное множество значений на дашборде.
-func seriesOf(t *testing.T, name string, attrs attribute.Set) series {
+func seriesOf(t *testing.T, name string, labels map[string]string) series {
 	t.Helper()
 	s := series{name: name}
-	for _, kv := range attrs.ToSlice() {
-		switch kv.Key {
+	for k, v := range labels {
+		switch k {
 		case "stage":
-			s.stage = kv.Value.AsString()
+			s.stage = v
 		case "result":
-			s.result = kv.Value.AsString()
+			s.result = v
 		default:
-			t.Errorf("метрика %s: посторонний label %s=%v", name, kv.Key, kv.Value.AsString())
+			t.Errorf("метрика %s: посторонний label %s=%v", name, k, v)
 		}
 	}
 	return s
@@ -36,8 +32,7 @@ func seriesOf(t *testing.T, name string, attrs attribute.Set) series {
 // переименование или потеря бакетов не должны проходить гейт молча.
 func TestMetricsEmitted(t *testing.T) {
 	ctx := t.Context()
-	reader := sdkmetric.NewManualReader()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	before := metrictest.Collect(t)
 
 	idp := oidctest.New(t)
 	b := newTestBFF(t, idp, memStore(), Hooks{})
@@ -60,34 +55,15 @@ func TestMetricsEmitted(t *testing.T) {
 		t.Fatal("Verify нечитаемого токена прошёл")
 	}
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-
 	got := map[series]bool{}
-	units := map[string]string{}
-	var discoveryBounds []float64
-	for _, sm := range rm.ScopeMetrics {
-		if sm.Scope.Name != otelkit.Scope("oidckit") {
+	for _, m := range metrictest.Collect(t).Sub(before).All() {
+		if m.Scope != otelkit.Scope("oidckit") {
 			continue
 		}
-		for _, m := range sm.Metrics {
-			units[m.Name] = m.Unit
-			switch data := m.Data.(type) {
-			case metricdata.Sum[int64]:
-				for _, dp := range data.DataPoints {
-					got[seriesOf(t, m.Name, dp.Attributes)] = true
-				}
-			case metricdata.Histogram[float64]:
-				for _, dp := range data.DataPoints {
-					got[seriesOf(t, m.Name, dp.Attributes)] = true
-					discoveryBounds = dp.Bounds
-				}
-			default:
-				t.Errorf("метрика %s: неожиданный тип данных %T", m.Name, m.Data)
-			}
+		if m.Kind != metrictest.Counter && m.Kind != metrictest.Histogram {
+			t.Errorf("метрика %s: неожиданный тип %s", m.Name, m.Kind)
 		}
+		got[seriesOf(t, m.Name, m.Labels)] = true
 	}
 
 	for _, want := range []series{
@@ -105,11 +81,12 @@ func TestMetricsEmitted(t *testing.T) {
 		}
 	}
 
-	if u := units["oidc_discovery_duration_seconds"]; u != "s" {
-		t.Errorf("oidc_discovery_duration_seconds: unit=%q, ожидали s", u)
+	disc := metrictest.Collect(t).Sub(before).Get(t, "oidc_discovery_duration_seconds", "result", "ok")
+	if disc.Unit != "s" {
+		t.Errorf("oidc_discovery_duration_seconds: unit=%q, ожидали s", disc.Unit)
 	}
 	// Дефолтные бакеты SDK рассчитаны на миллисекунды; границы китов — с 5 мс.
-	if len(discoveryBounds) == 0 || discoveryBounds[0] != 0.005 {
-		t.Errorf("oidc_discovery_duration_seconds без бакетов кита: %v", discoveryBounds)
+	if len(disc.Bounds) == 0 || disc.Bounds[0] != 0.005 {
+		t.Errorf("oidc_discovery_duration_seconds без бакетов кита: %v", disc.Bounds)
 	}
 }

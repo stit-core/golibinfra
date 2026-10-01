@@ -4,17 +4,13 @@ import (
 	"testing"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-
 	"git.stit.tech/stit-core/golibinfra/authnkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func TestMetricsEmitted(t *testing.T) {
 	ctx := t.Context()
-	reader := sdkmetric.NewManualReader()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	before := metrictest.Collect(t)
 
 	jwt, err := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "test-secret-key-of-at-least-32-bytes!!", AccessTTL: time.Minute})
 	if err != nil {
@@ -57,55 +53,19 @@ func TestMetricsEmitted(t *testing.T) {
 		t.Log("statistically improbable TOTP match")
 	}
 
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(ctx, &rm); err != nil {
-		t.Fatal(err)
-	}
-	want := map[string]bool{
-		"authn_jwt_verifications_total":          false,
-		"authn_password_hash_duration_seconds":   false,
-		"authn_password_verify_duration_seconds": false,
-		"authn_totp_verifications_total":         false,
-	}
-	buckets := map[string]bool{
-		"authn_password_hash_duration_seconds":   false,
-		"authn_password_verify_duration_seconds": false,
-	}
-	results := map[string]bool{}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if _, ok := want[m.Name]; ok {
-				want[m.Name] = true
-			}
-			if h, ok := m.Data.(metricdata.Histogram[float64]); ok {
-				if _, tracked := buckets[m.Name]; tracked && len(h.DataPoints) > 0 {
-					// Дефолтные бакеты SDK рассчитаны на миллисекунды: границы
-					// кита начинаются с 5 мс.
-					buckets[m.Name] = h.DataPoints[0].Bounds[0] == 0.005
-				}
-			}
-			if sum, ok := m.Data.(metricdata.Sum[int64]); ok && m.Name == "authn_jwt_verifications_total" {
-				for _, dp := range sum.DataPoints {
-					if v, found := dp.Attributes.Value("result"); found {
-						results[v.AsString()] = true
-					}
-				}
-			}
-		}
-	}
-	for name, found := range want {
-		if !found {
-			t.Errorf("metric %s not emitted", name)
-		}
-	}
-	for name, ok := range buckets {
-		if !ok {
-			t.Errorf("metric %s has no explicit duration buckets", name)
+	d := metrictest.Collect(t).Sub(before)
+	for _, name := range []string{"authn_password_hash_duration_seconds", "authn_password_verify_duration_seconds"} {
+		// Дефолтные бакеты SDK рассчитаны на миллисекунды: границы кита начинаются с 5 мс.
+		if s := d.Get(t, name); s.Kind != metrictest.Histogram || s.Unit != "s" || len(s.Bounds) == 0 || s.Bounds[0] != 0.005 {
+			t.Errorf("%v (%s, unit %q, bounds %v), want histogram in s on the shared buckets", s, s.Kind, s.Unit, s.Bounds)
 		}
 	}
 	for _, result := range []string{"ok", "malformed", "wrong_type"} {
-		if !results[result] {
-			t.Errorf("authn_jwt_verifications_total has no result=%q series", result)
+		if s := d.Get(t, "authn_jwt_verifications_total", "result", result); s.Kind != metrictest.Counter || s.Value != 1 {
+			t.Errorf("%v (%s), want counter delta 1", s, s.Kind)
 		}
+	}
+	if got := d.Find("authn_totp_verifications_total"); len(got) == 0 {
+		t.Error("metric authn_totp_verifications_total not emitted")
 	}
 }

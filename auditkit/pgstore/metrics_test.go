@@ -4,15 +4,13 @@ import (
 	"context"
 	"testing"
 
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-
 	"git.stit.tech/stit-core/golibinfra/auditkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func TestStore_Metrics(t *testing.T) {
+	before := metrictest.Collect(t)
 	s, _, ctx := startStore(t)
-
-	before := writeCounts(t)
 
 	if err := s.Log(ctx, auditkit.Entry{Action: "metric.ok", Resource: "user"}); err != nil {
 		t.Fatalf("Log: %v", err)
@@ -26,60 +24,17 @@ func TestStore_Metrics(t *testing.T) {
 		t.Fatal("Log with canceled ctx must fail")
 	}
 
-	after := writeCounts(t)
+	d := metrictest.Collect(t).Sub(before)
 	for _, result := range []string{"ok", "invalid", "error"} {
-		if got := after[result] - before[result]; got != 1 {
-			t.Fatalf("audit_log_writes_total{result=%s} delta = %d, want 1 (before %v, after %v)", result, got, before, after)
+		if got := d.Get(t, "audit_log_writes_total", "result", result); got.Kind != metrictest.Counter || got.Value != 1 {
+			t.Errorf("audit_log_writes_total: %v (%s), want counter delta 1", got, got.Kind)
 		}
 	}
-	if !hasDurationBuckets(t, "audit_log_write_duration_seconds") {
-		t.Fatal("audit_log_write_duration_seconds not emitted with explicit buckets")
-	}
-}
-
-func collect(t *testing.T) metricdata.ResourceMetrics {
-	t.Helper()
-	var rm metricdata.ResourceMetrics
-	if err := metricsReader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	return rm
-}
-
-func writeCounts(t *testing.T) map[string]int64 {
-	t.Helper()
-	out := map[string]int64{}
-	for _, sm := range collect(t).ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != "audit_log_writes_total" {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("audit_log_writes_total: unexpected data type %T", m.Data)
-			}
-			for _, dp := range sum.DataPoints {
-				result, _ := dp.Attributes.Value("result")
-				out[result.AsString()] += dp.Value
-			}
+	// Невалидная запись до INSERT не доходит: длительность — только у ok и error.
+	for _, result := range []string{"ok", "error"} {
+		dur := d.Get(t, "audit_log_write_duration_seconds", "result", result)
+		if dur.Kind != metrictest.Histogram || dur.Unit != "s" || dur.Count != 1 || len(dur.Bounds) == 0 {
+			t.Errorf("audit_log_write_duration_seconds: %v (%s, unit %q, bounds %v), want histogram in s with explicit buckets", dur, dur.Kind, dur.Unit, dur.Bounds)
 		}
 	}
-	return out
-}
-
-func hasDurationBuckets(t *testing.T, name string) bool {
-	t.Helper()
-	for _, sm := range collect(t).ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			h, ok := m.Data.(metricdata.Histogram[float64])
-			if !ok {
-				t.Fatalf("%s: unexpected data type %T", name, m.Data)
-			}
-			return len(h.DataPoints) > 0 && len(h.DataPoints[0].Bounds) > 0
-		}
-	}
-	return false
 }

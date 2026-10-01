@@ -20,13 +20,12 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 type logEntry struct {
@@ -71,91 +70,50 @@ func (l *captureLogger) find(level, msg string) (logEntry, bool) {
 	return logEntry{}, false
 }
 
-// installOTel подменяет глобальные провайдеры на in-memory SDK: кит читает их
-// в New (метрики) и в otelhttp-транспорте (спаны).
-func installOTel(t *testing.T) (*sdkmetric.ManualReader, *tracetest.SpanRecorder) {
+// installOTel ставит провайдер трейсов на время теста (спаны otelhttp-транспорта) и
+// запоминает снимок метрик: их провайдер один на процесс (metrictest), счётчики
+// читаются дельтой от вызова.
+func installOTel(t *testing.T) (func() metrictest.Snapshot, *tracetest.SpanRecorder) {
 	t.Helper()
-	reader := sdkmetric.NewManualReader()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
+	before := metrictest.Collect(t)
 	spans := tracetest.NewSpanRecorder()
 	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
-	t.Cleanup(func() {
-		otel.SetMeterProvider(sdkmetric.NewMeterProvider())
-		otel.SetTracerProvider(sdktrace.NewTracerProvider())
-	})
-	return reader, spans
+	t.Cleanup(func() { otel.SetTracerProvider(sdktrace.NewTracerProvider()) })
+	return func() metrictest.Snapshot {
+		t.Helper()
+		return metrictest.Collect(t).Sub(before)
+	}, spans
 }
 
-func collect(t *testing.T, reader *sdkmetric.ManualReader) metricdata.ResourceMetrics {
-	t.Helper()
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("collect metrics: %v", err)
-	}
-	return rm
-}
-
-func attrsMatch(set attribute.Set, want map[string]string) bool {
+func labelPairs(want map[string]string) []string {
+	out := make([]string, 0, 2*len(want))
 	for k, v := range want {
-		got, ok := set.Value(attribute.Key(k))
-		if !ok {
-			return false
-		}
-		var s string
-		switch got.Type() {
-		case attribute.BOOL:
-			s = strconv.FormatBool(got.AsBool())
-		default:
-			s = got.AsString()
-		}
-		if s != v {
-			return false
-		}
+		out = append(out, k, v)
 	}
-	return true
+	return out
 }
 
-// counterSum суммирует datapoints счётчика name, у которых атрибуты содержат want.
-func counterSum(t *testing.T, reader *sdkmetric.ManualReader, name string, want map[string]string) int64 {
+// counterSum суммирует серии счётчика name, чьи labels содержат want.
+func counterSum(t *testing.T, metrics func() metrictest.Snapshot, name string, want map[string]string) int64 {
 	t.Helper()
-	var total int64
-	for _, sm := range collect(t, reader).ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				t.Fatalf("%s is %T, want Sum[int64]", name, m.Data)
-			}
-			for _, dp := range sum.DataPoints {
-				if attrsMatch(dp.Attributes, want) {
-					total += dp.Value
-				}
-			}
+	var total float64
+	for _, s := range metrics().Find(name, labelPairs(want)...) {
+		if s.Kind != metrictest.Counter {
+			t.Fatalf("%s is %s, want counter", name, s.Kind)
 		}
+		total += s.Value
 	}
-	return total
+	return int64(total)
 }
 
-func histogram(t *testing.T, reader *sdkmetric.ManualReader, name string, want map[string]string) (count uint64, sum float64) {
+func histogram(t *testing.T, metrics func() metrictest.Snapshot, name string, want map[string]string) (count uint64, sum float64) {
 	t.Helper()
-	for _, sm := range collect(t, reader).ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			h, ok := m.Data.(metricdata.Histogram[float64])
-			if !ok {
-				t.Fatalf("%s is %T, want Histogram[float64]", name, m.Data)
-			}
-			for _, dp := range h.DataPoints {
-				if attrsMatch(dp.Attributes, want) {
-					count += dp.Count
-					sum += dp.Sum
-				}
-			}
+	for _, s := range metrics().Find(name, labelPairs(want)...) {
+		if s.Kind != metrictest.Histogram {
+			t.Fatalf("%s is %s, want histogram", name, s.Kind)
 		}
+		count += s.Count
+		sum += s.Value
 	}
 	return count, sum
 }
@@ -211,7 +169,7 @@ func apiError(status int, typ string) http.HandlerFunc {
 }
 
 func TestComplete_ParsesResponseAndRecordsSignals(t *testing.T) {
-	reader, spans := installOTel(t)
+	metrics, spans := installOTel(t)
 	var gotBody map[string]any
 	var gotKey string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -261,18 +219,18 @@ func TestComplete_ParsesResponseAndRecordsSignals(t *testing.T) {
 	}
 
 	calls := map[string]string{"model": "claude-opus-5", "op": "complete", "status": "ok", "priced": "true"}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", calls); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", calls); got != 1 {
 		t.Errorf("calls_total = %d, want 1", got)
 	}
 	for kind, n := range map[string]int64{"input": 100, "output": 20, "cache_write": 30, "cache_read": 10, "thinking": 5} {
-		if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": kind}); got != n {
+		if got := counterSum(t, metrics, "anthropic_api_tokens_total", map[string]string{"kind": kind}); got != n {
 			t.Errorf("tokens_total{kind=%s} = %d, want %d", kind, got, n)
 		}
 	}
-	if got := counterSum(t, reader, "anthropic_api_cost_micros_total", map[string]string{"model": "claude-opus-5"}); got != int64(messageCost) {
+	if got := counterSum(t, metrics, "anthropic_api_cost_micros_total", map[string]string{"model": "claude-opus-5"}); got != int64(messageCost) {
 		t.Errorf("cost_micros_total = %d, want %d", got, messageCost)
 	}
-	if n, _ := histogram(t, reader, "anthropic_api_latency_seconds", map[string]string{"op": "complete"}); n != 1 {
+	if n, _ := histogram(t, metrics, "anthropic_api_latency_seconds", map[string]string{"op": "complete"}); n != 1 {
 		t.Errorf("latency count = %d, want 1", n)
 	}
 
@@ -323,7 +281,7 @@ func TestComplete_ParsesResponseAndRecordsSignals(t *testing.T) {
 }
 
 func TestComplete_UnknownModelIsUnpriced(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(strings.ReplaceAll(messageJSON, "claude-opus-5", "claude-experimental-9")))
@@ -340,13 +298,13 @@ func TestComplete_UnknownModelIsUnpriced(t *testing.T) {
 	if resp.CostKnown || resp.Cost != 0 {
 		t.Errorf("unknown model: cost = %d known=%v", resp.Cost, resp.CostKnown)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"priced": "false", "status": "ok"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"priced": "false", "status": "ok"}); got != 1 {
 		t.Errorf("calls_total{priced=false} = %d, want 1", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": "input"}); got != 100 {
+	if got := counterSum(t, metrics, "anthropic_api_tokens_total", map[string]string{"kind": "input"}); got != 100 {
 		t.Errorf("tokens still counted for unpriced model: %d", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_cost_micros_total", nil); got != 0 {
+	if got := counterSum(t, metrics, "anthropic_api_cost_micros_total", nil); got != 0 {
 		t.Errorf("cost recorded for unpriced model: %d", got)
 	}
 }
@@ -367,7 +325,7 @@ func TestComplete_ClassifiesAPIErrors(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
-			reader, _ := installOTel(t)
+			metrics, _ := installOTel(t)
 			srv := httptest.NewServer(apiError(tc.status, tc.typ))
 			t.Cleanup(srv.Close)
 			log := &captureLogger{}
@@ -377,7 +335,7 @@ func TestComplete_ClassifiesAPIErrors(t *testing.T) {
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("err = %v, want %v", err, tc.want)
 			}
-			if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"status": "error", "op": "complete"}); got != 1 {
+			if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"status": "error", "op": "complete"}); got != 1 {
 				t.Errorf("calls_total{status=error} = %d, want 1", got)
 			}
 			e, ok := log.find("warn", "anthropickit: api error")
@@ -436,7 +394,7 @@ func TestNew_RetriesAreLoggedAtDebug(t *testing.T) {
 }
 
 func TestNew_TimeoutBoundsEachRequest(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		select {
 		case <-r.Context().Done():
@@ -455,7 +413,7 @@ func TestNew_TimeoutBoundsEachRequest(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("timeout not applied: took %s", time.Since(start))
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"status": "error"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"status": "error"}); got != 1 {
 		t.Errorf("calls_total{status=error} = %d, want 1", got)
 	}
 }
@@ -499,7 +457,7 @@ func TestNew_ValidatesConfig(t *testing.T) {
 }
 
 func TestCountTokens_RecordsMetricsWithoutTokens(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/v1/messages/count_tokens" {
 			t.Errorf("path = %s", r.URL.Path)
@@ -514,10 +472,10 @@ func TestCountTokens_RecordsMetricsWithoutTokens(t *testing.T) {
 	if err != nil || n != 42 {
 		t.Fatalf("CountTokens = %d, %v", n, err)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "count_tokens", "status": "ok"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "count_tokens", "status": "ok"}); got != 1 {
 		t.Errorf("calls_total{op=count_tokens} = %d, want 1", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_tokens_total", nil); got != 0 {
+	if got := counterSum(t, metrics, "anthropic_api_tokens_total", nil); got != 0 {
 		t.Errorf("count_tokens must not add billable tokens, got %d", got)
 	}
 }
@@ -572,7 +530,7 @@ func sseServer(t *testing.T, before func(), events []string, after func(r *http.
 }
 
 func TestStream_TranslatesEventsAndFinal(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := sseServer(t, nil, streamEvents, nil)
 	c := newTestClient(t, srv.URL, nil, nil)
 
@@ -638,19 +596,19 @@ func TestStream_TranslatesEventsAndFinal(t *testing.T) {
 		t.Errorf("final cost = %d known=%v", final.Cost, final.CostKnown)
 	}
 
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "ok", "priced": "true"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "ok", "priced": "true"}); got != 1 {
 		t.Errorf("calls_total{op=stream,status=ok} = %d, want 1", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", nil); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", nil); got != 1 {
 		t.Errorf("Close after drain must not double-count: calls_total = %d", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": "output"}); got != 15 {
+	if got := counterSum(t, metrics, "anthropic_api_tokens_total", map[string]string{"kind": "output"}); got != 15 {
 		t.Errorf("tokens_total{kind=output} = %d, want 15", got)
 	}
 }
 
 func TestStream_CloseBeforeEndRecordsAbandoned(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := sseServer(t, nil, streamEvents[:3], func(r *http.Request) {
 		select {
 		case <-r.Context().Done():
@@ -671,23 +629,23 @@ func TestStream_CloseBeforeEndRecordsAbandoned(t *testing.T) {
 	}
 	_ = st.Close()
 
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "abandoned"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "abandoned"}); got != 1 {
 		t.Errorf("calls_total{status=abandoned} = %d, want 1", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", nil); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", nil); got != 1 {
 		t.Errorf("double Close must not double-count: calls_total = %d", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": "input"}); got != 25 {
+	if got := counterSum(t, metrics, "anthropic_api_tokens_total", map[string]string{"kind": "input"}); got != 25 {
 		t.Errorf("abandoned stream must keep accumulated input tokens: %d", got)
 	}
 	// message_start несёт 25 input, 4 cache-read и 1 output токен: 125 + 2 + 25 micros.
-	if got := counterSum(t, reader, "anthropic_api_cost_micros_total", nil); got != 125+2+25 {
+	if got := counterSum(t, metrics, "anthropic_api_cost_micros_total", nil); got != 125+2+25 {
 		t.Errorf("abandoned stream cost = %d, want 152", got)
 	}
 }
 
 func TestStream_InitialRequestErrorSurfacesInErrAndFinal(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := httptest.NewServer(apiError(http.StatusTooManyRequests, "rate_limit_error"))
 	t.Cleanup(srv.Close)
 	log := &captureLogger{}
@@ -704,7 +662,7 @@ func TestStream_InitialRequestErrorSurfacesInErrAndFinal(t *testing.T) {
 	if _, err := st.Final(); !errors.Is(err, ErrRateLimited) {
 		t.Fatalf("Final err = %v, want ErrRateLimited", err)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
 		t.Errorf("calls_total{op=stream,status=error} = %d, want 1", got)
 	}
 	if _, ok := log.find("warn", "anthropickit: api error"); !ok {
@@ -713,20 +671,20 @@ func TestStream_InitialRequestErrorSurfacesInErrAndFinal(t *testing.T) {
 }
 
 func TestStream_CloseWithoutNextOnFailedRequestRecordsError(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := httptest.NewServer(apiError(http.StatusUnauthorized, "authentication_error"))
 	t.Cleanup(srv.Close)
 	c := newTestClient(t, srv.URL, nil, nil)
 
 	st := c.Stream(context.Background(), userRequest("hi"))
 	_ = st.Close()
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
 		t.Errorf("calls_total{status=error} = %d, want 1", got)
 	}
 }
 
 func TestStream_LatencyCoversRequestSetup(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	const delay = 80 * time.Millisecond
 	srv := sseServer(t, func() { time.Sleep(delay) }, streamEvents, nil)
 	c := newTestClient(t, srv.URL, nil, nil)
@@ -736,14 +694,14 @@ func TestStream_LatencyCoversRequestSetup(t *testing.T) {
 	}
 	_ = st.Close()
 
-	n, sum := histogram(t, reader, "anthropic_api_latency_seconds", map[string]string{"op": "stream"})
+	n, sum := histogram(t, metrics, "anthropic_api_latency_seconds", map[string]string{"op": "stream"})
 	if n != 1 || sum < delay.Seconds() {
 		t.Errorf("latency count=%d sum=%.3fs, want 1 and >= %s (measured from before the request)", n, sum, delay)
 	}
 }
 
 func TestStream_TimeoutBoundsWholeStream(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := sseServer(t, nil, streamEvents[:3], func(r *http.Request) {
 		select {
 		case <-r.Context().Done():
@@ -764,13 +722,13 @@ func TestStream_TimeoutBoundsWholeStream(t *testing.T) {
 	if time.Since(start) > 2*time.Second {
 		t.Fatalf("stream ran %s past the timeout", time.Since(start))
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
 		t.Errorf("calls_total{op=stream,status=error} = %d, want 1", got)
 	}
 }
 
 func TestStream_MappingErrorIsErrStream(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	c := newTestClient(t, "http://unused", nil, nil)
 	type bogus struct{ Block }
 	st := c.Stream(context.Background(), Request{Messages: []Message{{Role: RoleUser, Content: []Block{bogus{}}}}})
@@ -790,7 +748,7 @@ func TestStream_MappingErrorIsErrStream(t *testing.T) {
 	if err := st.Close(); err != nil {
 		t.Errorf("Close() = %v", err)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", nil); got != 0 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", nil); got != 0 {
 		t.Errorf("a request that never left must not be counted: %d", got)
 	}
 }
@@ -868,7 +826,7 @@ func TestComplete_ClassifiesTransientStatuses(t *testing.T) {
 }
 
 func TestComplete_PricedFollowsTheModelTheCostIsComputedFrom(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(messageJSON)) // отвечает claude-opus-5
@@ -886,10 +844,10 @@ func TestComplete_PricedFollowsTheModelTheCostIsComputedFrom(t *testing.T) {
 	if !resp.CostKnown || resp.Cost == 0 {
 		t.Fatalf("cost comes from the response model: %d known=%v", resp.Cost, resp.CostKnown)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"priced": "true"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"priced": "true"}); got != 1 {
 		t.Errorf("priced must agree with the recorded cost: calls{priced=true} = %d", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"model": modelLabelOther}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"model": modelLabelOther}); got != 1 {
 		t.Errorf("unknown requested model must collapse into %q: %d", modelLabelOther, got)
 	}
 	e, ok := log.find("warn", "anthropickit: model is absent from the price table, metric label collapsed")
@@ -961,7 +919,7 @@ func TestNew_IgnoresSDKEnvironmentDefaults(t *testing.T) {
 }
 
 func TestStream_CanceledContextKeepsAccountedUsage(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	released := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
@@ -1004,13 +962,13 @@ func TestStream_CanceledContextKeepsAccountedUsage(t *testing.T) {
 	if resp == nil || resp.Usage.InputTokens != 25 {
 		t.Fatalf("Final must return the partial response with usage: %+v", resp)
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "stream", "status": "error"}); got != 1 {
 		t.Errorf("calls_total{status=error} = %d, want 1", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": "input"}); got != 25 {
+	if got := counterSum(t, metrics, "anthropic_api_tokens_total", map[string]string{"kind": "input"}); got != 25 {
 		t.Errorf("an aborted stream must still be billed: input tokens = %d, want 25", got)
 	}
-	if got := counterSum(t, reader, "anthropic_api_cost_micros_total", nil); got != 125+2+25 {
+	if got := counterSum(t, metrics, "anthropic_api_cost_micros_total", nil); got != 125+2+25 {
 		t.Errorf("aborted stream cost = %d, want 152", got)
 	}
 }
@@ -1059,7 +1017,7 @@ func TestStream_NextAfterCloseKeepsErrStable(t *testing.T) {
 }
 
 func TestComplete_LumpedCacheCreationIsAccounted(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	const lumped = `{
 	  "id": "msg_04", "type": "message", "role": "assistant", "model": "claude-opus-5",
 	  "content": [{"type": "text", "text": "ok"}],
@@ -1084,7 +1042,7 @@ func TestComplete_LumpedCacheCreationIsAccounted(t *testing.T) {
 	if want := USDMicros(50 + 50 + 250); resp.Cost != want {
 		t.Errorf("cost = %d, want %d", resp.Cost, want)
 	}
-	if got := counterSum(t, reader, "anthropic_api_tokens_total", map[string]string{"kind": "cache_write"}); got != 40 {
+	if got := counterSum(t, metrics, "anthropic_api_tokens_total", map[string]string{"kind": "cache_write"}); got != 40 {
 		t.Errorf("cache_write tokens = %d, want 40", got)
 	}
 }
@@ -1119,7 +1077,7 @@ func TestStream_ThinkingDeltaIsTranslated(t *testing.T) {
 }
 
 func TestStream_AccumulateErrorIsSurfaced(t *testing.T) {
-	reader, _ := installOTel(t)
+	metrics, _ := installOTel(t)
 	events := []string{
 		sse("message_start", streamStart),
 		// Дельта в блок, которого не было: рассинхрон индексов ломает аккумуляцию.
@@ -1139,7 +1097,7 @@ func TestStream_AccumulateErrorIsSurfaced(t *testing.T) {
 	if _, err := st.Final(); err == nil {
 		t.Fatal("Final() must carry the accumulation failure")
 	}
-	if got := counterSum(t, reader, "anthropic_api_calls_total", map[string]string{"op": "stream"}); got != 1 {
+	if got := counterSum(t, metrics, "anthropic_api_calls_total", map[string]string{"op": "stream"}); got != 1 {
 		t.Errorf("calls_total{op=stream} = %d, want 1", got)
 	}
 }

@@ -8,14 +8,10 @@ import (
 	"testing/fstest"
 	"time"
 
-	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
-
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
@@ -283,83 +279,13 @@ func (b *checkingBus) CheckStreams(_ context.Context, filters ...string) error {
 	return b.err
 }
 
-// collectMetrics ставит ManualReader глобальным провайдером; инструменты кита
-// создаются в конструкторах, поэтому вызывается до них.
-func collectMetrics(t *testing.T) func() metricdata.ResourceMetrics {
+// metricsSince — дельта метрик процесса от момента вызова: инструменты кита
+// создаются в конструкторах, metrictest видит их при любом порядке.
+func metricsSince(t *testing.T) func() metrictest.Snapshot {
 	t.Helper()
-	reader := sdkmetric.NewManualReader()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
-	return func() metricdata.ResourceMetrics {
+	before := metrictest.Collect(t)
+	return func() metrictest.Snapshot {
 		t.Helper()
-		var rm metricdata.ResourceMetrics
-		if err := reader.Collect(context.Background(), &rm); err != nil {
-			t.Fatalf("collect: %v", err)
-		}
-		return rm
+		return metrictest.Collect(t).Sub(before)
 	}
-}
-
-// counterValue — сумма точек счётчика name с указанными атрибутами.
-func counterValue(rm metricdata.ResourceMetrics, name string, attrs map[string]string) int64 {
-	var total int64
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				continue
-			}
-			for _, dp := range sum.DataPoints {
-				if matchAttrs(dp.Attributes, attrs) {
-					total += dp.Value
-				}
-			}
-		}
-	}
-	return total
-}
-
-// gaugePoints — число точек ObservableGauge name.
-func gaugePoints(rm metricdata.ResourceMetrics, name string) int {
-	n := 0
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			switch d := m.Data.(type) {
-			case metricdata.Gauge[float64]:
-				n += len(d.DataPoints)
-			case metricdata.Gauge[int64]:
-				n += len(d.DataPoints)
-			}
-		}
-	}
-	return n
-}
-
-func histogramBounds(rm metricdata.ResourceMetrics, name string) []float64 {
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != name {
-				continue
-			}
-			if h, ok := m.Data.(metricdata.Histogram[float64]); ok && len(h.DataPoints) > 0 {
-				return h.DataPoints[0].Bounds
-			}
-		}
-	}
-	return nil
-}
-
-func matchAttrs(set attribute.Set, want map[string]string) bool {
-	for k, v := range want {
-		got, ok := set.Value(attribute.Key(k))
-		if !ok || got.AsString() != v {
-			return false
-		}
-	}
-	return true
 }

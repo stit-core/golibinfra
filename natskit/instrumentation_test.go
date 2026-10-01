@@ -6,87 +6,57 @@ import (
 	"time"
 
 	"go.opentelemetry.io/otel"
-	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/propagation"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
-func installOTel(t *testing.T) (*sdkmetric.ManualReader, *tracetest.SpanRecorder) {
+// installTracing ставит провайдер трейсов и propagator на время теста; метрики
+// снимает metrictest — его провайдер один на процесс.
+func installTracing(t *testing.T) *tracetest.SpanRecorder {
 	t.Helper()
-	reader := sdkmetric.NewManualReader()
-	otel.SetMeterProvider(sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)))
 	spans := tracetest.NewSpanRecorder()
 	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(spans)))
 	// Без propagator'а Inject/Extract — no-op, и связность трассы не проверить.
 	otel.SetTextMapPropagator(propagation.TraceContext{})
 	t.Cleanup(func() {
-		otel.SetMeterProvider(sdkmetric.NewMeterProvider())
 		otel.SetTracerProvider(sdktrace.NewTracerProvider())
 		otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator())
 	})
-	return reader, spans
+	return spans
 }
 
-// collectUntil опрашивает reader, пока cond не вернёт true или не истечёт deadline:
+// deltaUntil опрашивает метрики, пока cond не вернёт true или не истечёт deadline:
 // consume-метрики пишутся в defer обработчика — уже после сигнала тесту.
-func collectUntil(t *testing.T, reader *sdkmetric.ManualReader, cond func(rm metricdata.ResourceMetrics) bool) metricdata.ResourceMetrics {
+func deltaUntil(t *testing.T, before metrictest.Snapshot, cond func(metrictest.Snapshot) bool) metrictest.Snapshot {
 	t.Helper()
 	deadline := time.Now().Add(3 * time.Second)
 	for {
-		var rm metricdata.ResourceMetrics
-		if err := reader.Collect(context.Background(), &rm); err != nil {
-			t.Fatal(err)
-		}
-		if cond(rm) || time.Now().After(deadline) {
-			return rm
+		d := metrictest.Collect(t).Sub(before)
+		if cond(d) || time.Now().After(deadline) {
+			return d
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
 }
 
-func metricNames(rm metricdata.ResourceMetrics) map[string]bool {
+// labelValues — значения label'а key у серий метрики name; "" — серия без него.
+func labelValues(d metrictest.Snapshot, name, key string) map[string]bool {
 	out := map[string]bool{}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			out[m.Name] = true
-		}
-	}
-	return out
-}
-
-// attrValues — значения одного атрибута по всем точкам counter'а.
-func attrValues(rm metricdata.ResourceMetrics, metric, attr string) map[string]bool {
-	out := map[string]bool{}
-	for _, sm := range rm.ScopeMetrics {
-		for _, m := range sm.Metrics {
-			if m.Name != metric {
-				continue
-			}
-			sum, ok := m.Data.(metricdata.Sum[int64])
-			if !ok {
-				continue
-			}
-			for _, dp := range sum.DataPoints {
-				if v, ok := dp.Attributes.Value(attribute.Key(attr)); ok {
-					out[v.AsString()] = true
-				} else {
-					out[""] = true
-				}
-			}
-		}
+	for _, s := range d.Find(name) {
+		out[s.Labels[key]] = true
 	}
 	return out
 }
 
 func TestBus_EmitsMetricsAndSpans(t *testing.T) {
-	reader, spans := installOTel(t)
+	spans := installTracing(t)
+	before := metrictest.Collect(t)
 
 	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
@@ -111,18 +81,16 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 		"nats_handle_duration_seconds",
 		"nats_inflight_messages",
 	}
-	rm := collectUntil(t, reader, func(rm metricdata.ResourceMetrics) bool {
-		names := metricNames(rm)
+	d := deltaUntil(t, before, func(d metrictest.Snapshot) bool {
 		for _, n := range want {
-			if !names[n] {
+			if len(d.Find(n)) == 0 {
 				return false
 			}
 		}
 		return true
 	})
-	names := metricNames(rm)
 	for _, n := range want {
-		if !names[n] {
+		if len(d.Find(n)) == 0 {
 			t.Errorf("metric %s not emitted", n)
 		}
 	}
@@ -146,7 +114,7 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 // Consumer-спан — child producer-спана: обещание связной трассы держится на
 // инжекте trace-context в nats.Header.
 func TestBus_ConsumerSpanIsChildOfProducer(t *testing.T) {
-	_, spans := installOTel(t)
+	spans := installTracing(t)
 
 	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
@@ -198,7 +166,7 @@ func TestBus_ConsumerSpanIsChildOfProducer(t *testing.T) {
 // Label subject у publish-метрик появляется только с WithMetricSubject:
 // реальный subject публикации неограничен по кардинальности.
 func TestBus_PublishMetricSubjectIsOptIn(t *testing.T) {
-	reader, _ := installOTel(t)
+	before := metrictest.Collect(t)
 
 	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
@@ -206,23 +174,23 @@ func TestBus_PublishMetricSubjectIsOptIn(t *testing.T) {
 	if err := bus.Publish(context.Background(), subj(t, "42"), []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	rm := collectUntil(t, reader, func(rm metricdata.ResourceMetrics) bool {
-		return len(attrValues(rm, "nats_messages_published_total", "subject")) > 0
+	d := deltaUntil(t, before, func(d metrictest.Snapshot) bool {
+		return len(labelValues(d, "nats_messages_published_total", "subject")) > 0
 	})
-	if got := attrValues(rm, "nats_messages_published_total", "subject"); !got[""] || len(got) != 1 {
+	if got := labelValues(d, "nats_messages_published_total", "subject"); !got[""] || len(got) != 1 {
 		t.Fatalf("published_total subjects = %v, want a single series without the subject label", got)
 	}
 
 	if err := bus.Publish(context.Background(), subj(t, "43"), []byte("{}"), natskit.WithMetricSubject(nameFor(t)+".*")); err != nil {
 		t.Fatalf("publish: %v", err)
 	}
-	rm = collectUntil(t, reader, func(rm metricdata.ResourceMetrics) bool {
-		return len(attrValues(rm, "nats_messages_published_total", "subject")) > 1
+	d = deltaUntil(t, before, func(d metrictest.Snapshot) bool {
+		return len(labelValues(d, "nats_messages_published_total", "subject")) > 1
 	})
-	if got := attrValues(rm, "nats_messages_published_total", "subject"); !got[nameFor(t)+".*"] {
+	if got := labelValues(d, "nats_messages_published_total", "subject"); !got[nameFor(t)+".*"] {
 		t.Fatalf("published_total subjects = %v, want the pattern from WithMetricSubject", got)
 	}
-	if got := attrValues(rm, "nats_messages_published_total", "subject"); got[subj(t, "43")] {
+	if got := labelValues(d, "nats_messages_published_total", "subject"); got[subj(t, "43")] {
 		t.Fatalf("published_total carries the real subject: %v", got)
 	}
 }
@@ -230,7 +198,8 @@ func TestBus_PublishMetricSubjectIsOptIn(t *testing.T) {
 // Label subject у JetStream-консьюмера — фильтр подписки, не реальный subject:
 // иначе `orders.<id>.*` размножает серии на каждый id.
 func TestStreamBus_ConsumeMetricsUseFilterSubject(t *testing.T) {
-	reader, spans := installOTel(t)
+	spans := installTracing(t)
+	before := metrictest.Collect(t)
 
 	stream := nameFor(t)
 	sb := newStreamBus(t, jsConfig(stream))
@@ -248,10 +217,10 @@ func TestStreamBus_ConsumeMetricsUseFilterSubject(t *testing.T) {
 	}
 	recv(t, handled, 10*time.Second, "handler")
 
-	rm := collectUntil(t, reader, func(rm metricdata.ResourceMetrics) bool {
-		return len(attrValues(rm, "nats_messages_consumed_total", "subject")) > 0
+	d := deltaUntil(t, before, func(d metrictest.Snapshot) bool {
+		return len(labelValues(d, "nats_messages_consumed_total", "subject")) > 0
 	})
-	got := attrValues(rm, "nats_messages_consumed_total", "subject")
+	got := labelValues(d, "nats_messages_consumed_total", "subject")
 	if !got[filter] {
 		t.Fatalf("consumed_total subjects = %v, want filter %s", got, filter)
 	}

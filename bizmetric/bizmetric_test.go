@@ -3,15 +3,16 @@ package bizmetric_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"testing"
 
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
-	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
-	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 
 	"git.stit.tech/stit-core/golibinfra/bizmetric"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func TestMustName(t *testing.T) {
@@ -57,125 +58,67 @@ func TestMustName(t *testing.T) {
 	}
 }
 
-func collect(t *testing.T, record func(metric.Meter)) metricdata.Metrics {
+// recorded — серия name, записанная record через глобальный провайдер (metrictest).
+// Scope — имя теста: одноимённые инструменты разных тестов не сливаются.
+func recorded(t *testing.T, name string, record func(metric.Meter)) metrictest.Series {
 	t.Helper()
-	reader := sdkmetric.NewManualReader()
-	mp := sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	record(mp.Meter("test"))
-
-	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
-		t.Fatalf("collect: %v", err)
-	}
-	if len(rm.ScopeMetrics) != 1 || len(rm.ScopeMetrics[0].Metrics) != 1 {
-		t.Fatalf("want exactly one metric, got %+v", rm.ScopeMetrics)
-	}
-	return rm.ScopeMetrics[0].Metrics[0]
+	before := metrictest.Collect(t)
+	record(otel.Meter(t.Name()))
+	return metrictest.Collect(t).Sub(before).Get(t, name)
 }
 
 func TestCounter(t *testing.T) {
-	m := collect(t, func(meter metric.Meter) {
+	s := recorded(t, "biz_checkout_orders_completed_total", func(meter metric.Meter) {
 		bizmetric.Counter(meter, "checkout", "orders_completed").Add(context.Background(), 3)
 	})
-	if m.Name != "biz_checkout_orders_completed_total" {
-		t.Fatalf("name: got %q", m.Name)
-	}
-	if m.Unit != bizmetric.UnitEvent {
-		t.Fatalf("unit: got %q, want %q", m.Unit, bizmetric.UnitEvent)
-	}
-	sum, ok := m.Data.(metricdata.Sum[int64])
-	if !ok {
-		t.Fatalf("data: got %T, want Sum[int64]", m.Data)
-	}
-	if !sum.IsMonotonic {
-		t.Fatal("counter must be monotonic")
-	}
-	if got := sum.DataPoints[0].Value; got != 3 {
-		t.Fatalf("value: got %d, want 3", got)
+	if s.Kind != metrictest.Counter || s.Unit != bizmetric.UnitEvent || s.Value != 3 {
+		t.Fatalf("got %v (%s, unit %q), want counter in %q with value 3", s, s.Kind, s.Unit, bizmetric.UnitEvent)
 	}
 }
 
 func TestHistogram(t *testing.T) {
-	m := collect(t, func(meter metric.Meter) {
+	s := recorded(t, "biz_onboarding_duration_seconds", func(meter metric.Meter) {
 		bizmetric.Histogram(meter, "onboarding", "duration").Record(context.Background(), 1.5)
 	})
-	if m.Name != "biz_onboarding_duration_seconds" {
-		t.Fatalf("name: got %q", m.Name)
-	}
-	if m.Unit != bizmetric.UnitSeconds {
-		t.Fatalf("unit: got %q, want %q", m.Unit, bizmetric.UnitSeconds)
-	}
-	h, ok := m.Data.(metricdata.Histogram[float64])
-	if !ok {
-		t.Fatalf("data: got %T, want Histogram[float64]", m.Data)
+	if s.Kind != metrictest.Histogram || s.Unit != bizmetric.UnitSeconds || s.Count != 1 {
+		t.Fatalf("got %v (%s, unit %q), want histogram in %q", s, s.Kind, s.Unit, bizmetric.UnitSeconds)
 	}
 	// Регрессия: дефолтные бакеты SDK миллисекундные, длительности до 5 с падают в один бакет.
-	want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
-	got := h.DataPoints[0].Bounds
-	if len(got) != len(want) {
-		t.Fatalf("bounds: got %v, want %v", got, want)
-	}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("bounds[%d]: got %v, want %v", i, got[i], want[i])
-		}
+	if want := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}; !slices.Equal(s.Bounds, want) {
+		t.Fatalf("bounds: got %v, want %v", s.Bounds, want)
 	}
 }
 
 func TestHistogram_CallerOverridesBuckets(t *testing.T) {
-	m := collect(t, func(meter metric.Meter) {
+	s := recorded(t, "biz_onboarding_duration_seconds", func(meter metric.Meter) {
 		bizmetric.Histogram(meter, "onboarding", "duration",
 			metric.WithExplicitBucketBoundaries(1, 2, 3)).Record(context.Background(), 1.5)
 	})
-	h := m.Data.(metricdata.Histogram[float64])
-	if got := h.DataPoints[0].Bounds; len(got) != 3 {
-		t.Fatalf("caller options must win over defaults: got bounds %v", got)
+	if !slices.Equal(s.Bounds, []float64{1, 2, 3}) {
+		t.Fatalf("caller options must win over defaults: got bounds %v", s.Bounds)
 	}
 }
 
 func TestGauge(t *testing.T) {
-	m := collect(t, func(meter metric.Meter) {
+	s := recorded(t, "biz_checkout_active_carts", func(meter metric.Meter) {
 		g := bizmetric.Gauge(meter, "checkout", "active_carts")
 		g.Record(context.Background(), 7)
 		g.Record(context.Background(), 4)
 	})
-	if m.Name != "biz_checkout_active_carts" {
-		t.Fatalf("name: got %q", m.Name)
-	}
-	if m.Unit != bizmetric.UnitItem {
-		t.Fatalf("unit: got %q, want %q", m.Unit, bizmetric.UnitItem)
-	}
-	g, ok := m.Data.(metricdata.Gauge[int64])
-	if !ok {
-		t.Fatalf("data: got %T, want Gauge[int64]", m.Data)
-	}
 	// Gauge — последнее записанное значение, не сумма записей.
-	if got := g.DataPoints[0].Value; got != 4 {
-		t.Fatalf("value: got %d, want 4", got)
+	if s.Kind != metrictest.Gauge || s.Unit != bizmetric.UnitItem || s.Value != 4 {
+		t.Fatalf("got %v (%s, unit %q), want gauge in %q with value 4", s, s.Kind, s.Unit, bizmetric.UnitItem)
 	}
 }
 
 func TestUpDownCounter(t *testing.T) {
-	m := collect(t, func(meter metric.Meter) {
+	s := recorded(t, "biz_checkout_carts_open", func(meter metric.Meter) {
 		c := bizmetric.UpDownCounter(meter, "checkout", "carts_open")
 		c.Add(context.Background(), 3)
 		c.Add(context.Background(), -1)
 	})
-	if m.Name != "biz_checkout_carts_open" {
-		t.Fatalf("name: got %q", m.Name)
-	}
-	if m.Unit != bizmetric.UnitItem {
-		t.Fatalf("unit: got %q, want %q", m.Unit, bizmetric.UnitItem)
-	}
-	sum, ok := m.Data.(metricdata.Sum[int64])
-	if !ok {
-		t.Fatalf("data: got %T, want Sum[int64]", m.Data)
-	}
-	if sum.IsMonotonic {
-		t.Fatal("up-down counter must not be monotonic")
-	}
-	if got := sum.DataPoints[0].Value; got != 2 {
-		t.Fatalf("value: got %d, want 2", got)
+	if s.Kind != metrictest.UpDownCounter || s.Unit != bizmetric.UnitItem || s.Value != 2 {
+		t.Fatalf("got %v (%s, unit %q), want up-down counter in %q with value 2", s, s.Kind, s.Unit, bizmetric.UnitItem)
 	}
 }
 

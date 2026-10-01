@@ -27,10 +27,7 @@ type instruments struct {
 // newInstruments зовётся при сборке middleware: инструмент берёт текущий
 // глобальный провайдер, а не первый провайдер процесса.
 func newInstruments() *instruments {
-	return newInstrumentsWithMeter(otelkit.Meter("httpkit"))
-}
-
-func newInstrumentsWithMeter(m metric.Meter) *instruments {
+	m := otelkit.Meter("httpkit")
 	return &instruments{
 		reqTotal: otelkit.Must(m.Int64Counter("http_requests_total",
 			metric.WithDescription("HTTP requests by method, route pattern and status"))),
@@ -78,10 +75,7 @@ func methodLabel(m string) string {
 // глобальный otel.Meter и дополняет server-спан: имя «METHOD /route», http.route,
 // request_id и client.address из ClientIP.
 func Metrics() func(http.Handler) http.Handler {
-	return metricsWith(newInstruments())
-}
-
-func metricsWith(instr *instruments) func(http.Handler) http.Handler {
+	instr := newInstruments()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			start := time.Now()

@@ -14,7 +14,7 @@ import (
 )
 
 func TestBusPublishSerializesOnce(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{}
 	bus := outboxkit.NewBus("orders", repo)
 
@@ -28,28 +28,28 @@ func TestBusPublishSerializesOnce(t *testing.T) {
 	if got := string(repo.inserted[0].payload); got != `{"id":7}` {
 		t.Fatalf("payload = %s, want {\"id\":7}", got)
 	}
-	want := map[string]string{"instance": "orders", "subject": "order.created", "status": "ok"}
-	if got := counterValue(collect(), "outbox_events_inserted_total", want); got != 1 {
-		t.Fatalf("inserted counter = %d, want 1", got)
+	want := []string{"instance", "orders", "subject", "order.created", "status", "ok"}
+	if got := collect().Value("outbox_events_inserted_total", want...); got != 1 {
+		t.Fatalf("inserted counter = %v, want 1", got)
 	}
 }
 
 func TestBusPublishInsertError(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	wantErr := errors.New("db down")
 	bus := outboxkit.NewBus("orders", &fakeRepo{insertErr: wantErr})
 
 	if err := bus.Publish(context.Background(), "order.created", struct{}{}); !errors.Is(err, wantErr) {
 		t.Fatalf("err = %v, want %v", err, wantErr)
 	}
-	attrs := map[string]string{"instance": "orders", "status": "error"}
-	if got := counterValue(collect(), "outbox_events_inserted_total", attrs); got != 1 {
-		t.Fatalf("error counter = %d, want 1", got)
+	attrs := []string{"instance", "orders", "status", "error"}
+	if got := collect().Value("outbox_events_inserted_total", attrs...); got != 1 {
+		t.Fatalf("error counter = %v, want 1", got)
 	}
 }
 
 func TestBusPublishMarshalError(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{}
 	bus := outboxkit.NewBus("orders", repo)
 
@@ -59,16 +59,16 @@ func TestBusPublishMarshalError(t *testing.T) {
 	if len(repo.inserted) != 0 {
 		t.Fatal("unserializable payload must not reach the store")
 	}
-	attrs := map[string]string{"instance": "orders", "status": "marshal_error"}
-	if got := counterValue(collect(), "outbox_events_inserted_total", attrs); got != 1 {
-		t.Fatalf("marshal_error counter = %d, want 1", got)
+	attrs := []string{"instance", "orders", "status", "marshal_error"}
+	if got := collect().Value("outbox_events_inserted_total", attrs...); got != 1 {
+		t.Fatalf("marshal_error counter = %v, want 1", got)
 	}
 }
 
 // JSON больше предела отвергается в транзакции домена: строку, которую брокер не примет,
 // воркер ретраил бы весь бюджет попыток, держа ordered-очередь.
 func TestBusPublishRejectsOversizedPayload(t *testing.T) {
-	collect := collectMetrics(t)
+	collect := metricsSince(t)
 	repo := &fakeRepo{}
 	bus := outboxkit.NewBus("orders", repo)
 
@@ -79,9 +79,9 @@ func TestBusPublishRejectsOversizedPayload(t *testing.T) {
 	if len(repo.inserted) != 0 {
 		t.Fatal("oversized payload must not reach the store")
 	}
-	attrs := map[string]string{"instance": "orders", "status": "payload_too_large"}
-	if got := counterValue(collect(), "outbox_events_inserted_total", attrs); got != 1 {
-		t.Fatalf("payload_too_large counter = %d, want 1", got)
+	attrs := []string{"instance", "orders", "status", "payload_too_large"}
+	if got := collect().Value("outbox_events_inserted_total", attrs...); got != 1 {
+		t.Fatalf("payload_too_large counter = %v, want 1", got)
 	}
 }
 

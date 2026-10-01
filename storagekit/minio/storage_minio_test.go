@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"runtime"
+	"slices"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -17,6 +18,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/storagekit"
 	skminio "git.stit.tech/stit-core/golibinfra/storagekit/minio"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 	"git.stit.tech/stit-core/golibinfra/testkit/storagetest"
 )
 
@@ -325,10 +327,10 @@ func TestStorage_SlowTailAfterCancelKeepsObject(t *testing.T) {
 }
 
 func TestStorage_EmitsMetrics(t *testing.T) {
+	before := metrictest.Collect(t)
 	st, _, _ := newStorage(t)
 	ctx := t.Context()
 
-	before := snapshot(t)
 	ref, err := st.Put(ctx, bytes.NewReader([]byte("m")), "image/png", 1)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
@@ -358,27 +360,19 @@ func TestStorage_EmitsMetrics(t *testing.T) {
 	if _, err := st.Stat(ctx, "missing.png"); err == nil {
 		t.Fatal("Stat of a missing key must fail")
 	}
-	after := snapshot(t)
+	d := metrictest.Collect(t).Sub(before)
 
-	for _, k := range []string{"put/ok", "get/ok", "stat/ok", "presign_get/ok", "presign_put/ok", "delete/ok", "stat/error"} {
-		if got := after.ops[k] - before.ops[k]; got != 1 {
-			t.Errorf("storage_ops_total{%s} delta = %d, want 1", k, got)
-		}
-	}
-	for _, op := range []string{"put", "get", "stat", "delete", "presign_get", "presign_put"} {
-		if after.durations[op] <= before.durations[op] {
-			t.Errorf("storage_op_duration_seconds{op=%s} was not recorded", op)
+	for _, k := range [][2]string{{"put", "ok"}, {"get", "ok"}, {"stat", "ok"}, {"presign_get", "ok"}, {"presign_put", "ok"}, {"delete", "ok"}, {"stat", "error"}} {
+		if got := d.Get(t, "storage_ops_total", "op", k[0], "result", k[1]); got.Kind != metrictest.Counter || got.Value != 1 {
+			t.Errorf("storage_ops_total: %v (%s), want counter delta 1", got, got.Kind)
 		}
 	}
 	// F7: дефолтные бакеты SDK (мс) для метрики в секундах кладут всё в одну корзину.
 	wantBounds := []float64{0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10, 30}
-	got := after.buckets["put"]
-	if len(got) != len(wantBounds) {
-		t.Fatalf("histogram bounds = %v, want %v", got, wantBounds)
-	}
-	for i, b := range wantBounds {
-		if got[i] != b {
-			t.Fatalf("histogram bounds = %v, want %v", got, wantBounds)
+	for _, op := range []string{"put", "get", "stat", "delete", "presign_get", "presign_put"} {
+		dur := d.Get(t, "storage_op_duration_seconds", "op", op)
+		if dur.Kind != metrictest.Histogram || dur.Unit != "s" || dur.Count == 0 || !slices.Equal(dur.Bounds, wantBounds) {
+			t.Errorf("storage_op_duration_seconds: %v (%s, unit %q, bounds %v), want histogram in s on the common buckets", dur, dur.Kind, dur.Unit, dur.Bounds)
 		}
 	}
 }

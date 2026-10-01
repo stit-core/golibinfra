@@ -22,10 +22,7 @@ type observeHook struct {
 }
 
 func newObserveHook() *observeHook {
-	return newObserveHookWith(otelkit.Meter("cachekit"), otelkit.Tracer("cachekit"))
-}
-
-func newObserveHookWith(m metric.Meter, tr trace.Tracer) *observeHook {
+	m := otelkit.Meter("cachekit")
 	return &observeHook{
 		commands: otelkit.Must(m.Int64Counter("cache_commands_total",
 			metric.WithDescription("Redis commands by name and result (ok|miss|error)"))),
@@ -33,7 +30,7 @@ func newObserveHookWith(m metric.Meter, tr trace.Tracer) *observeHook {
 			metric.WithDescription("Redis command round-trip duration"),
 			metric.WithUnit("s"),
 			otelkit.DurationBuckets())),
-		tracer: tr,
+		tracer: otelkit.Tracer("cachekit"),
 	}
 }
 
