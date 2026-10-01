@@ -106,10 +106,12 @@ ctx → ошибка сразу). Время жизни подписки — `Su
 
 ### Проверка стримов публикатора
 
-`CheckStreams` (интерфейс `StreamChecker`) берёт `ListStreams` с фильтром subject: сервер
-отдаёт стримы, чьи subjects пересекаются с фильтром, а накрыть его целиком должен subject
-одного из них (`SubjectMatches` с фильтром в роли subject) — иначе `ErrNoStream` с фильтром в
-тексте. У `disabledStreamBus` — `ErrJetStreamDisabled`. Это отдельный интерфейс, а не метод
+`CheckStreams` (интерфейс `StreamChecker`) сначала берёт `AccountInfo`: сервер без JetStream
+отвечает `ErrJetStreamNotEnabled` — это `ErrJetStreamDisabled`, а на публикацию он даёт ту же
+`no response from stream`, что subject без стрима. Затем — `ListStreams` с фильтром subject:
+сервер отдаёт стримы, чьи subjects пересекаются с фильтром, а накрыть его целиком должен
+subject одного из них (`SubjectMatches` с фильтром в роли subject) — иначе `ErrNoStream` с
+фильтром в тексте. У `disabledStreamBus` — `ErrJetStreamDisabled`. Это отдельный интерфейс, а не метод
 `StreamBus`: фейки шины (`testkit/natstest`) стримов не знают, и их потребители проверку
 пропускают.
 

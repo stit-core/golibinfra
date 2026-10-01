@@ -15,6 +15,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
+	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
 func TestStreamBus_Disabled(t *testing.T) {
@@ -56,6 +57,23 @@ func TestStreamBus_CheckStreams(t *testing.T) {
 	}
 	if err := checker.CheckStreams(ctx); err != nil {
 		t.Errorf("CheckStreams() with JetStream enabled = %v", err)
+	}
+}
+
+// Сервер без JetStream на публикацию отвечает «нет ответа от стрима», как subject без стрима;
+// различает их CheckStreams — для публикатора это выключенный JetStream.
+func TestStreamBus_CheckStreamsServerWithoutJetStream(t *testing.T) {
+	fix := testkit.StartNATS(t)
+	sb, err := natskit.NewStreamBus(connect(t, fix.URL), logkit.Nop(), jsConfig())
+	if err != nil {
+		t.Fatalf("NewStreamBus without streams: %v", err)
+	}
+	ctx := context.Background()
+	if err := sb.PublishStream(ctx, "orders.created", []byte(`{}`)); !errors.Is(err, jetstream.ErrNoStreamResponse) {
+		t.Fatalf("PublishStream = %v, want ErrNoStreamResponse", err)
+	}
+	if err := sb.(natskit.StreamChecker).CheckStreams(ctx); !errors.Is(err, natskit.ErrJetStreamDisabled) {
+		t.Fatalf("CheckStreams = %v, want ErrJetStreamDisabled", err)
 	}
 }
 

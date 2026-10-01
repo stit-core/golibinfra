@@ -22,7 +22,8 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// ErrJetStreamDisabled — обращение к StreamBus при NATS_JETSTREAM_ENABLED=false.
+// ErrJetStreamDisabled — JetStream выключен: NATS_JETSTREAM_ENABLED=false (любой метод
+// StreamBus) или сервер без JetStream (CheckStreams).
 var ErrJetStreamDisabled = errors.New("natskit: jetstream is disabled")
 
 // ErrNoStream — subject'ы не накрыты ни одним стримом JetStream: публикация в них не получит PubAck.
@@ -74,8 +75,9 @@ func (m StreamMsg) spec() PublishSpec {
 // StreamChecker — проверка стримов публикатора на старте; её реализует StreamBus natskit
 // (natskit.New, Module), фейки шины — нет.
 type StreamChecker interface {
-	// CheckStreams — JetStream включён (иначе ErrJetStreamDisabled) и каждый filter — subject
-	// или фильтр с `*`, `>` — целиком накрыт subject'ами одного стрима (иначе ErrNoStream).
+	// CheckStreams — JetStream включён в конфиге и на сервере (иначе ErrJetStreamDisabled) и
+	// каждый filter — subject или фильтр с `*`, `>` — целиком накрыт subject'ами одного стрима
+	// (иначе ErrNoStream); сервер недоступен — его ошибка.
 	CheckStreams(ctx context.Context, filters ...string) error
 }
 
@@ -311,8 +313,16 @@ func parseRetention(s string) (jetstream.RetentionPolicy, error) {
 	}
 }
 
-// CheckStreams — стрим, который накрывает каждый filter целиком (StreamChecker).
+// CheckStreams — JetStream сервера и стрим, который накрывает каждый filter целиком
+// (StreamChecker): сервер без JetStream на публикацию отвечает «нет ответа от стрима», как
+// subject без стрима, а информацию аккаунта не отдаёт.
 func (b *jsBus) CheckStreams(ctx context.Context, filters ...string) error {
+	if _, err := b.js.AccountInfo(ctx); err != nil {
+		if errors.Is(err, jetstream.ErrJetStreamNotEnabled) || errors.Is(err, jetstream.ErrJetStreamNotEnabledForAccount) {
+			return fmt.Errorf("%w: server: %w", ErrJetStreamDisabled, err)
+		}
+		return fmt.Errorf("natskit: jetstream account info: %w", err)
+	}
 	for _, filter := range filters {
 		if err := b.covered(ctx, filter); err != nil {
 			return err

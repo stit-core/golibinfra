@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"slices"
 	"strconv"
 
 	"github.com/nats-io/nats.go"
@@ -63,10 +64,11 @@ func (t streamTransport) msgID(id int64) string {
 }
 
 func (t streamTransport) Publish(ctx context.Context, m OutMsg) error {
-	return unavailable(t.sb.PublishStream(ctx, m.Subject, m.Payload,
+	err := t.sb.PublishStream(ctx, m.Subject, m.Payload,
 		natskit.WithMsgID(t.msgID(m.ID)),
 		natskit.WithMetricSubject(t.metricSubject),
-	))
+	)
+	return unavailable(err, t.jetStreamDown(ctx, err))
 }
 
 func (t streamTransport) PublishBatch(ctx context.Context, msgs []OutMsg) ([]error, error) {
@@ -80,15 +82,26 @@ func (t streamTransport) PublishBatch(ctx context.Context, msgs []OutMsg) ([]err
 		}
 	}
 	results, err := t.sb.PublishStreamBatch(ctx, sm)
+	down := t.jetStreamDown(ctx, results...)
 	for i := range results {
-		results[i] = unavailable(results[i])
+		results[i] = unavailable(results[i], down)
 	}
-	return results, unavailable(err)
+	return results, unavailable(err, down)
+}
+
+// jetStreamDown — ошибка проверки JetStream шины (StreamChecker), если публикация получила
+// «нет ответа от стрима»: так отвечает и subject без стрима, и сервер без JetStream.
+func (t streamTransport) jetStreamDown(ctx context.Context, errs ...error) error {
+	checker, ok := t.sb.(natskit.StreamChecker)
+	if !ok || !slices.ContainsFunc(errs, func(err error) bool { return errors.Is(err, jetstream.ErrNoStreamResponse) }) {
+		return nil
+	}
+	return checker.CheckStreams(ctx)
 }
 
 // brokerDown — ошибки брокера целиком, а не строки: соединение, JetStream, таймаут PubAck,
-// дедлайн тика. «Нет стрима для subject» сюда не входит: это строка или конфиг, а стримы
-// subject'ов инстанса проверяет старт.
+// дедлайн тика. «Нет ответа от стрима» при живом JetStream сюда не входит: это строка или
+// конфиг, а стримы subject'ов инстанса проверяет старт.
 var brokerDown = []error{
 	natskit.ErrJetStreamDisabled, context.Canceled, context.DeadlineExceeded,
 	nats.ErrConnectionClosed, nats.ErrConnectionDraining, nats.ErrConnectionReconnecting,
@@ -98,9 +111,14 @@ var brokerDown = []error{
 	jetstream.ErrJetStreamPublisherClosed, jetstream.ErrServerShutdown,
 }
 
-func unavailable(err error) error {
+// unavailable оборачивает сбой брокера в ErrUnavailable; jsDown — ошибка проверки JetStream
+// при «нет ответа от стрима» (jetStreamDown).
+func unavailable(err, jsDown error) error {
 	if err == nil {
 		return nil
+	}
+	if jsDown != nil && errors.Is(err, jetstream.ErrNoStreamResponse) {
+		return fmt.Errorf("%w: %w: %w", ErrUnavailable, err, jsDown)
 	}
 	for _, down := range brokerDown {
 		if errors.Is(err, down) {

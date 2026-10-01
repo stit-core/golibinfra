@@ -60,7 +60,7 @@ func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error)
 type StreamChecker interface {
 	CheckStreams(ctx context.Context, filters ...string) error
 }
-var ErrJetStreamDisabled error // NATS_JETSTREAM_ENABLED=false: любой метод StreamBus
+var ErrJetStreamDisabled error // NATS_JETSTREAM_ENABLED=false — любой метод; сервер без JetStream — CheckStreams
 var ErrNoStream error          // CheckStreams: фильтр не накрыт целиком ни одним стримом
 
 type StreamMsg struct {
@@ -340,8 +340,10 @@ if checker, ok := sb.(natskit.StreamChecker); ok { // фейки шины стр
 
 Фильтр (subject или фильтр с `*`, `>`) накрыт, если subject одного стрима накрывает каждый
 подходящий под него subject: пересечения мало — стрим `ORDERS.created` фильтр `ORDERS.>` не
-накрывает. Без фильтров метод проверяет только, что JetStream включён. `outboxkit.Module` и
-`outboxkit.Instance` зовут его в `OnStart`.
+накрывает. Сначала метод спрашивает у сервера информацию аккаунта: сервер без JetStream на
+публикацию отвечает «нет ответа от стрима», как subject без стрима, и только так их различить;
+без фильтров проверка этим и ограничена. `outboxkit.Module` и `outboxkit.Instance` зовут его в
+`OnStart`, транспорт outbox — на «нет ответа от стрима».
 
 ## DLQ / NAK
 

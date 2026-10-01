@@ -135,3 +135,38 @@ func TestStreamTransport_BrokerDownIsUnavailable(t *testing.T) {
 		}
 	}
 }
+
+// checkedBus — errBus со StreamChecker: проверка JetStream отвечает down.
+type checkedBus struct {
+	errBus
+	down error
+}
+
+func (b checkedBus) CheckStreams(context.Context, ...string) error { return b.down }
+
+// «Нет ответа от стрима» дают и subject без стрима, и сервер без JetStream: транспорт спрашивает
+// шину о JetStream, и только её отказ — сбой брокера.
+func TestStreamTransport_NoStreamResponse(t *testing.T) {
+	jsOff := fmt.Errorf("%w: server: %w", natskit.ErrJetStreamDisabled, jetstream.ErrJetStreamNotEnabled)
+	noStream := errBus{item: jetstream.ErrNoStreamResponse}
+	cases := map[string]struct {
+		bus  natskit.StreamBus
+		down bool
+	}{
+		"сервер без JetStream":           {checkedBus{noStream, jsOff}, true},
+		"JetStream жив — нет стрима":     {checkedBus{noStream, nil}, false},
+		"шина без StreamChecker":         {noStream, false},
+		"отказ по сообщению не уточняют": {checkedBus{errBus{item: nats.ErrMaxPayload}, jsOff}, false},
+	}
+	ctx := context.Background()
+	msgs := []outboxkit.OutMsg{{ID: 1, Subject: "order.created"}}
+	for name, tc := range cases {
+		tr := outboxkit.NewStreamTransport(tc.bus)
+		if err := tr.Publish(ctx, msgs[0]); errors.Is(err, outboxkit.ErrUnavailable) != tc.down {
+			t.Errorf("%s: Publish = %v, want unavailable=%v", name, err, tc.down)
+		}
+		if results, _ := tr.PublishBatch(ctx, msgs); len(results) != 1 || errors.Is(results[0], outboxkit.ErrUnavailable) != tc.down {
+			t.Errorf("%s: PublishBatch results = %v, want unavailable=%v", name, results, tc.down)
+		}
+	}
+}

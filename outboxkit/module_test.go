@@ -17,6 +17,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
+	"git.stit.tech/stit-core/golibinfra/testkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
@@ -327,6 +328,43 @@ func TestOutbox_StreamsCheckedOnStart(t *testing.T) {
 				t.Fatalf("start err = %v, want %v naming instance %s", err, tc.want, tc.name)
 			}
 		})
+	}
+}
+
+// Сервер NATS без JetStream при NATS_JETSTREAM_ENABLED=true: старт падает, а публикация — сбой
+// брокера, не попытка строки, иначе очередь ушла бы в dead за бюджет попыток.
+func TestOutbox_ServerWithoutJetStream(t *testing.T) {
+	fix := testkit.StartNATS(t)
+	t.Setenv("NATS_URL", fix.URL)
+	t.Setenv("NATS_JETSTREAM_ENABLED", "true")
+	ncfg, err := natskit.NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	client, err := natskit.New("zz", ncfg, logkit.Nop())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer client.Close()
+	ctx := context.Background()
+
+	app := fx.New(fx.NopLogger, deps(&fakeRepo{}, client.Stream(), outboxkit.Config{BatchSize: 10, Interval: time.Second}),
+		scheduler(), outboxkit.Module)
+	if err := app.Start(ctx); !errors.Is(err, natskit.ErrJetStreamDisabled) {
+		t.Fatalf("start err = %v, want ErrJetStreamDisabled", err)
+	}
+	_ = app.Stop(ctx)
+
+	for _, mode := range []outboxkit.PublishMode{outboxkit.PublishBatch, outboxkit.PublishOrdered} {
+		repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "orders.created")}}
+		w, _ := newWorker(repo, outboxkit.NewStreamTransport(client.Stream()),
+			outboxkit.Config{BatchSize: 10, PublishMode: mode, MaxAttempts: 1})
+		if err := w.Run(ctx); !errors.Is(err, outboxkit.ErrUnavailable) {
+			t.Fatalf("%s: tick err = %v, want ErrUnavailable", mode, err)
+		}
+		if fs := repo.recordedFailures(); len(fs) != 0 {
+			t.Fatalf("%s: failures = %+v, want none: JetStream off is a broker outage", mode, fs)
+		}
 	}
 }
 

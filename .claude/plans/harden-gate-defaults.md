@@ -62,9 +62,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
     bruteforcekit без `locked_idx` и outboxkit без снятия колонки → `down 2 must restore …`; `M/hgd/s4/`
 - [x] **AC6** — `make envdoc-check` сверяет дефолты тегов с таблицами доков, требует строку таблицы
   на каждый тег, обходит все каталоги с Go-кодом (включая `internal/` и каталоги без README); поле
-  без тега в структуре с тегами — ошибка. Проверка:
-  `M/kits-audit/api-docs/scripts/envdoc-inject.sh <worktree>` → 7 из 7 ожидаемо красных красные;
-  `gate_inject.py --only G32` → пойман
+  без тега в структуре с тегами — ошибка. Проверка: `M/kits-audit/api-docs/scripts/envdoc-inject.sh
+  <worktree>` → 7 из 7 ожидаемо красных красные; `gate_inject.py --only G32` → пойман
   - Подтверждено: на кандидате S5 `envdoc-inject.sh` — E1–E6, E8 красные, E0, E7 зелёные; G32 и
     GH04 (дефолт `HTTP_DOCS_ENABLED` перевёрнут в коде) пойманы (`M/hgd/s5/`)
 - [x] **AC7** — При схеме безопасности в графе — ошибка старта с именем операции или маршрута:
@@ -94,19 +93,19 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Подтверждено: на кандидате S8 H11, H12 PASS (HOPS=0 — адрес соединения, HOPS=1 — запись прокси),
     H11b — +15,7 MiB на 200 000 адресов (было 32,6); HO02 во всех 4 вариантах и HO04 PASS, сигналы —
     0 расхождений; `M/hgd2/s8_mutants.py` — 10 из 10 мутантов убиты
-- [x] **AC10** — По умолчанию `/docs`, `/openapi.*` и `/schemas/*` не отдаются; в ответах нет
-  `$schema` и `Link` с хостом из заголовков клиента. Проверка:
-  `httpkit-a/run.sh <rev> contract security` → H08, H14 PASS
+- [x] **AC10** — По умолчанию `/docs`, `/openapi.*` и `/schemas/*` не отдаются; в ответах нет `$schema`
+  и `Link` с хостом клиента. Проверка: `httpkit-a/run.sh <rev> contract security` → H08, H14 PASS
   - Подтверждено: на кандидате S9 H08 (docs вкл. и выкл.) и H14 PASS; прочие исходы групп contract,
     security, api, lifecycle — как на v1.2.0, кроме закрытых B1–B3; мутанты S9 — 2 из 2 убиты
 - [x] **AC11** — `OUTBOX_MAX_ATTEMPTS` по умолчанию конечен (бюджет ретраев — в доке); переход в dead
-  — ERROR `outboxkit: event dead` с instance, id, subject, attempts; выключенный JetStream — ошибка
-  старта outbox; сбой брокера на весь батч пишет `publish_error` и попыток не сжигает; payload
-  сверх предела отвергается в `Bus.Publish`. Проверка:
+  — ERROR `outboxkit: event dead` с instance, id, subject, attempts; выключенный JetStream (и на
+  сервере) — ошибка старта outbox; сбой брокера на весь батч пишет `publish_error` и попыток не
+  сжигает; payload сверх предела отвергается в `Bus.Publish`. Проверка:
   `M/kits-audit/correctness-security/run.sh <rev> outbox-nats` → E17 PASS;
   `M/kits-audit/fx-observability/run.sh <rev> obs` → KO17 PASS; тесты outboxkit с Docker → PASS
   - Подтверждено: на кандидате S10 E17 и KO17 PASS (прочие исходы `obs` и `compare.py` — как на
-    d62b2e6); тесты outboxkit и natskit с Docker — PASS; `M/hgd2/s10_mutants.py` — 28 из 28 убиты
+    d62b2e6); тесты outboxkit и natskit с Docker — PASS; `M/hgd2/s10_mutants.py` — 28 из 28 убиты;
+    фикс B2: сервер без JetStream — старт красный, тики без попыток (`fix-b2-probe.log`), мутанты 4/4
 
 ## Шаги
 ### Гейт
@@ -165,9 +164,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Проверка: `make gate-clean` → зелёный (`./...`) · Закрывает: — · Зависит от: S3, S4, S5, S8, S9, S10
 
 ## Решения
-- **Состав A.** Кроме high (KGATE-01…-04, KTST-01) и лесенки (KGATE-06) в A взяты KGATE-05 (тот же
-  хук), KGATE-11 (тексты гейта), KDOC-04 с KGATE-12 (партия 2 меняет дефолты). KGATE-07…-10 и
-  сигналы KGATE-13 — партия 3.
+- **Состав A.** Кроме high (KGATE-01…-04, KTST-01) и лесенки (KGATE-06) — KGATE-05 (тот же хук), KGATE-11
+  (тексты), KDOC-04 с KGATE-12 (дефолты партии 2); KGATE-07…-10 и сигналы KGATE-13 — партия 3.
 - **S1, Docker** — `RequireDocker` и `minioFixture` пропускают только под `-short`, без Docker —
   `t.Fatal` без переключателя (skip озеленял `test-full` и `test-int` шаблона, G26); `check` — рецепт
   по `GATE_STEPS`, шаг — свой `make`: первый красный останавливает, `-j` не гонит integration рядом
@@ -228,8 +226,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   читает тот же ключ; `ClientIPFrom(ctx)` — для bruteforcekit и аудита; `ClientIP(r, trustProxy)` удалена.
 - **B2, лимитер и спан.** Предел — константа 100 000 bucket'ов (≈17 MiB), сверх — общий bucket до
   выметания: без env и LRU. Имя server-спана и `client.address` ставит `Metrics` в defer (HO02,
-  HO04); форматтер otelhttp оставлен — при `r.Pattern` он зовётся после `Metrics` с тем же именем.
-  Новую строку Warn контракт `expected-signals-httpkit.json` получил из доки (оригинал — `orig/`).
+  HO04); форматтер otelhttp оставлен — при `r.Pattern` он зовётся после `Metrics` с тем же именем;
+  строка Warn — в `expected-signals-httpkit.json` из доки.
 - **B3, `$schema`.** `$schema` и `Link` не ставятся вовсе: `humaConfig.CreateHooks = nil` — единственный
   хук `DefaultConfig` и есть link-трансформер; поле не нужно контракту ошибок, отражает
   `X-Forwarded-Host` клиента, без docs ведёт в 404 (H08). `/schemas` остаётся частью docs. H01b
@@ -239,7 +237,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   — `publish_error` без `RecordFailures`. `OUTBOX_MAX_ATTEMPTS=25` (≈ 1 ч 24 мин), `0` — `ErrConfig`;
   `-1` — без предела: never-drop биллинга `ai-gateway`, как `NATS_MAX_RECONNECTS=-1`. Dead — ERROR
   после коммита, ключ `err`, как у natskit; логгер — аргумент `New`/`NewWorker`, у модулей — граф.
-- **B3, старт и payload.** Выключенный JetStream — ошибка старта, как у `SubscribeOnStart`;
+- **B3, старт и payload.** Выключенный JetStream — ошибка старта, как у `SubscribeOnStart`; на сервере
+  (валидатор B) — `CheckStreams` спрашивает `AccountInfo`, транспорт на «нет ответа от стрима» — тоже;
   `WithSubjects` — старт сверяет фильтры со стримами (`natskit.StreamChecker` опционален: фейки без
   него), `Publish` вне них — ошибка; опция необязательна (шаблон — в `events.OutboxFor`), дефолт
   `<name>.>` — магия имени. Предел тела 512 KiB: воркер публикует JSONB (до 1,5× JSON), 1 000 000 в
@@ -257,7 +256,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
 закрыты (N4 — S11). S6–S10 сделаны, валидатор этапа — FAIL (`M/validation-harden-gate-defaults-B.md`):
-B1 закрыт; дальше B2, неблокирующие (JSONB, makefile, guard, литерал, флак httpclient), перепроверка, S11.
+B1, B2 и литерал в аннотации закрыты; дальше JSONB, makefile, guard, флак httpclient, перепроверка, S11.
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой
@@ -285,15 +284,16 @@ B1 закрыт; дальше B2, неблокирующие (JSONB, makefile, g
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` — `t.Fatalf`, а не skip →
   integration-прогон потребителя без Docker красный; без Docker — только `go test -short`.
 - Breaking — outboxkit: `New`, `NewWorker` принимают `logkit.Logger` (`Module`, `Instance` — из графа);
-  `OUTBOX_MAX_ATTEMPTS` по умолчанию 25, `0` — ошибка конфига; выключенный JetStream — ошибка
-  старта; JSON больше `OUTBOX_MAX_PAYLOAD_BYTES` (512 KiB) — `ErrPayloadTooLarge` → `New(…, cfg,
-  log)`, `OUTBOX_MAX_ATTEMPTS=0` → `-1`, `NATS_JETSTREAM_ENABLED=true`, крупное тело — ссылкой.
+  `OUTBOX_MAX_ATTEMPTS` по умолчанию 25, `0` — ошибка конфига, литерал `MaxAttempts: 0` — 25; JetStream,
+  выключенный в конфиге или на сервере, — ошибка старта; JSON больше `OUTBOX_MAX_PAYLOAD_BYTES`
+  (512 KiB) — `ErrPayloadTooLarge` → `New(…, cfg, log)`, «без предела» (env `0` и литерал) — `-1`,
+  `NATS_JETSTREAM_ENABLED=true` и JetStream на сервере, крупное тело — ссылкой.
 - Поведение — outboxkit: сбой брокера целиком попыток не тратит (`publish_error`); dead — ERROR
   `outboxkit: event dead`; откат 0002 `TableMigrations` — no-op (версия 1 уже с `next_attempt_at`),
   у таблицы-зеркала без колонки откат её оставляет (nullable, старому коду не мешает).
 - Изменения — outboxkit: `WithSubjects` (стримы — на старте), `ErrSubjectNotDeclared`,
   `ErrPayloadTooLarge`, `ErrUnavailable`, статусы `payload_too_large`, `undeclared_subject`;
-  natskit: `StreamChecker`, `ErrNoStream`, `SubjectMatches` для фильтров.
+  natskit: `StreamChecker` (сервер — `AccountInfo`), `ErrNoStream`, `SubjectMatches` для фильтров.
 - Изменения — testkit: `MigrationLadder(t, WithMigrations(...))` — лесенка up → down → up по
   версиям, down до нуля и up со сверкой схемы для своих источников миграций.
 - Гейт: `make check` и `make gate-clean` — unit и integration (Docker), лесенка kit-owned миграций;
