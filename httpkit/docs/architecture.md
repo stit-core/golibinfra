@@ -71,8 +71,8 @@ fx выполняет `OnStart` в порядке добавления хуко�
 - `WithMiddleware(mw...)` / значение `httpkit.Middlewares` в графе — chi-middleware
   потребителя в порядке слайса (первый — внешний); в `Module` они встают
   **внутрь** цепочки кита, поэтому их panic ловит `Recovery`, а их ответы попадают
-  в метрики и access-log. Значение одно на граф: зависимые middleware (tenant после
-  client-IP) упорядочивает приложение, а не порядок сборки графа.
+  в метрики и access-log. Значение одно на граф: зависимые middleware (аудит после
+  tenant) упорядочивает приложение, а не порядок сборки графа.
 - `WithHumaConfig(fn)` / значение `httpkit.HumaConfigs` в графе — правки
   `huma.Config` до создания API (`Servers`, `DocsRenderer`, `Transformers`, свои
   `OnAddOperation`) в порядке слайса, после правок кита: хук потребителя видит
@@ -91,20 +91,21 @@ chi применяет middleware в порядке регистрации: пе
 | # | Middleware | Условие | Зачем именно здесь |
 |---|---|---|---|
 | 1 | `RequestID` | всегда | `X-Request-ID` в ctx до всего остального: он попадает в каждую строку лога и в атрибут спана |
-| 2 | `OTel` | всегда | server-span и входящий `traceparent`; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log |
-| 3 | `AccessLog` | всегда | строка на запрос с `route`, `status`, `bytes`, `duration_ms` |
-| 4 | `Metrics` | всегда | RED на chi route-pattern; ниже него — всё, что может ответить клиенту |
-| 5 | `Recovery` | всегда | ловит panic из всего, что ниже: 500 + `http_panics_total`; `http.ErrAbortHandler` пробрасывает |
-| 6 | `SecurityHeaders` | всегда | заголовки на любой ответ, включая 429 и 413 |
-| 7 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
-| 8 | `RateLimit` | если `RateLimit.RPS > 0` | per-IP bucket; дешёвый отказ до тяжёлой работы |
-| 9 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом |
-| 10 | `Idempotency` | если в DI есть `IdempotencyStore` | дедуп write-запросов по `Idempotency-Key` |
-| 11 | middleware потребителя | значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
+| 2 | `ClientIP` | всегда | IP клиента в ctx (`ClientIPFrom`, `HTTP_TRUST_PROXY_HOPS`) до спана: ключ лимитера, `client.address`, аудит и антибрутфорс видят один адрес; `r.WithContext` выше `OTel` не трогает объект запроса otelhttp |
+| 3 | `OTel` | всегда | server-span и входящий `traceparent`; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log |
+| 4 | `AccessLog` | всегда | строка на запрос с `route`, `status`, `bytes`, `duration_ms` |
+| 5 | `Metrics` | всегда | RED на chi route-pattern; имя спана и `client.address`; ниже него — всё, что может ответить клиенту |
+| 6 | `Recovery` | всегда | ловит panic из всего, что ниже: 500 + `http_panics_total`; `http.ErrAbortHandler` пробрасывает |
+| 7 | `SecurityHeaders` | всегда | заголовки на любой ответ, включая 429 и 413 |
+| 8 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
+| 9 | `RateLimit` | если `RateLimit.RPS > 0` | bucket на клиента (IPv6 — по `/64`); дешёвый отказ до тяжёлой работы |
+| 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом |
+| 11 | `Idempotency` | если в DI есть `IdempotencyStore` | дедуп write-запросов по `Idempotency-Key` |
+| 12 | middleware потребителя | значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 
 `HumaAuth` — отдельный слой на `huma.API`.
 
-Почему так: `RequestID` и `OTel` первыми, чтобы контекст запроса был полным у
+Почему так: `RequestID`, `ClientIP` и `OTel` первыми, чтобы контекст запроса был полным у
 всех остальных. `AccessLog` и `Metrics` — **над** `Recovery`, `CORS` и
 `RateLimit`: иначе panic-запросы (самые тяжёлые 500-е), 429 и preflight
 отвечали бы выше них и не попадали ни в `http_requests_total`, ни в access-log.

@@ -76,7 +76,8 @@ func methodLabel(m string) string {
 }
 
 // Metrics эмитит http_requests_total и http_request_duration_seconds через
-// глобальный otel.Meter и дополняет server-спан route и request_id.
+// глобальный otel.Meter и дополняет server-спан: имя «METHOD /route», http.route,
+// request_id и client.address из ClientIP.
 func Metrics() func(http.Handler) http.Handler {
 	return metricsWith(newInstruments())
 }
@@ -90,9 +91,18 @@ func metricsWith(instr *instruments) func(http.Handler) http.Handler {
 			defer func() {
 				route := routeLabel(r)
 				if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+					// Имя — здесь, а не форматтером otelhttp: тот видит маршрут, только если до
+					// роутера дошёл его объект запроса, а middleware с r.WithContext его заменяет.
+					if route != "unmatched" {
+						span.SetName(methodLabel(r.Method) + " " + route)
+					}
 					attrs := []attribute.KeyValue{semconv.HTTPRoute(route)}
 					if id := RequestIDFrom(r.Context()); id != "" {
 						attrs = append(attrs, attribute.String("request_id", id))
+					}
+					// otelhttp берёт client.address из X-Forwarded-For клиента.
+					if ip := ClientIPFrom(r.Context()); ip != "" {
+						attrs = append(attrs, semconv.ClientAddress(ip))
 					}
 					span.SetAttributes(attrs...)
 				}

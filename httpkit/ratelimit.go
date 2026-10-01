@@ -1,13 +1,14 @@
 package httpkit
 
 import (
-	"net"
 	"net/http"
-	"strings"
+	"net/netip"
 	"sync"
 	"time"
 
 	"golang.org/x/time/rate"
+
+	"git.stit.tech/stit-core/golibinfra/internal/clientip"
 )
 
 // RateLimitConfig — token-bucket на клиента; RPS = 0 выключает limiter.
@@ -15,14 +16,16 @@ type RateLimitConfig struct {
 	// RPS = 0 выключает limiter.
 	RPS   int `envconfig:"HTTP_RATE_LIMIT_RPS" default:"100"`
 	Burst int `envconfig:"HTTP_RATE_LIMIT_BURST" default:"200"`
-	// TrustProxy — брать IP клиента из X-Forwarded-For / X-Real-IP; только за
-	// собственным reverse-proxy, иначе заголовок подделывается.
-	TrustProxy bool `envconfig:"HTTP_RATE_LIMIT_TRUST_PROXY" default:"false"`
 }
 
 const (
 	limiterIdleTTL    = 5 * time.Minute
 	limiterSweepEvery = time.Minute
+	// limiterMaxClients — потолок bucket'ов (≈170 B каждый): поток новых адресов не растит
+	// память без предела, сверх него новые клиенты делят один bucket до выметания.
+	limiterMaxClients = 100_000
+	// limiterIPv6Prefix — свёртка IPv6, как у bruteforcekit по умолчанию: /64 — один клиент.
+	limiterIPv6Prefix = 64
 )
 
 type limiterEntry struct {
@@ -30,14 +33,16 @@ type limiterEntry struct {
 	lastSeen time.Time
 }
 
-// rateLimiter — bucket на IP клиента; простаивающие записи выметаются, чтобы
-// скан адресов не растил память без ограничений.
+// rateLimiter — bucket на ключ клиента; простаивающие записи выметаются, а их число
+// ограничено limiterMaxClients.
 type rateLimiter struct {
-	cfg RateLimitConfig
-	now func() time.Time
+	cfg        RateLimitConfig
+	now        func() time.Time
+	maxClients int
 
 	mu        sync.Mutex
-	buckets   map[string]*limiterEntry
+	buckets   map[netip.Addr]*limiterEntry
+	overflow  *rate.Limiter
 	lastSweep time.Time
 }
 
@@ -45,14 +50,19 @@ func newRateLimiter(cfg RateLimitConfig, now func() time.Time) *rateLimiter {
 	if cfg.Burst <= 0 {
 		cfg.Burst = cfg.RPS
 	}
-	return &rateLimiter{cfg: cfg, now: now, buckets: map[string]*limiterEntry{}, lastSweep: now()}
+	return &rateLimiter{
+		cfg: cfg, now: now, maxClients: limiterMaxClients,
+		buckets:   map[netip.Addr]*limiterEntry{},
+		overflow:  rate.NewLimiter(rate.Limit(cfg.RPS), cfg.Burst),
+		lastSweep: now(),
+	}
 }
 
-func (l *rateLimiter) allow(ip string) bool {
+func (l *rateLimiter) allow(key netip.Addr) bool {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	t := l.now()
-	e, ok := l.buckets[ip]
+	e, ok := l.buckets[key]
 	if !ok {
 		if t.Sub(l.lastSweep) >= limiterSweepEvery {
 			for k, v := range l.buckets {
@@ -62,8 +72,11 @@ func (l *rateLimiter) allow(ip string) bool {
 			}
 			l.lastSweep = t
 		}
+		if len(l.buckets) >= l.maxClients {
+			return l.overflow.AllowN(t, 1)
+		}
 		e = &limiterEntry{l: rate.NewLimiter(rate.Limit(l.cfg.RPS), l.cfg.Burst)}
-		l.buckets[ip] = e
+		l.buckets[key] = e
 	}
 	e.lastSeen = t
 	return e.l.AllowN(t, 1)
@@ -75,35 +88,8 @@ func (l *rateLimiter) size() int {
 	return len(l.buckets)
 }
 
-// ClientIP — IP клиента для лимитера, аудита и антибрутфорса. С trustProxy
-// берётся **правое** значение последнего заголовка X-Forwarded-For — его
-// дописал доверенный прокси ($proxy_add_x_forwarded_for), тогда как всё левее
-// прислал сам клиент; значение должно парситься как IP, иначе — X-Real-IP,
-// иначе — RemoteAddr.
-func ClientIP(r *http.Request, trustProxy bool) string {
-	if trustProxy {
-		// Прокси, который добавляет свой X-Forwarded-For вместо замены, оставляет
-		// первым заголовок клиента: доверять можно только последнему.
-		if xff := r.Header.Values("X-Forwarded-For"); len(xff) > 0 {
-			parts := strings.Split(xff[len(xff)-1], ",")
-			if ip := strings.TrimSpace(parts[len(parts)-1]); net.ParseIP(ip) != nil {
-				return ip
-			}
-		}
-		if rip := r.Header.Values("X-Real-IP"); len(rip) > 0 {
-			if ip := strings.TrimSpace(rip[len(rip)-1]); net.ParseIP(ip) != nil {
-				return ip
-			}
-		}
-	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
-}
-
-// RateLimit отвечает 429 с Retry-After, когда клиент исчерпал свой bucket.
+// RateLimit отвечает 429 с Retry-After, когда клиент исчерпал свой bucket. Клиент — IP из
+// ClientIP (без него — адрес соединения), IPv6 — по /64.
 func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 	if cfg.RPS <= 0 {
 		return func(next http.Handler) http.Handler { return next }
@@ -114,7 +100,11 @@ func RateLimit(cfg RateLimitConfig) func(http.Handler) http.Handler {
 func rateLimitWith(l *rateLimiter, instr *instruments) func(http.Handler) http.Handler {
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if !l.allow(ClientIP(r, l.cfg.TrustProxy)) {
+			addr := clientip.From(r.Context())
+			if !addr.IsValid() {
+				addr = remoteAddr(r)
+			}
+			if !l.allow(clientip.Key(addr, limiterIPv6Prefix)) {
 				instr.rateLimited.Add(r.Context(), 1)
 				writeAPIError(r.Context(), w, Error("RATE_LIMITED", http.StatusTooManyRequests, "rate limit exceeded"))
 				return

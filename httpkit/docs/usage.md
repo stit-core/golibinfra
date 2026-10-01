@@ -5,7 +5,8 @@
 - **Сервер**: `NewServer(cfg, opts...) *Server`; опции `WithLogger`,
   `WithSecuritySchemes`, `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes`. Методы:
   `Router()`, `API()`/`BindAPI()`, `CheckRoutes()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
-- **Middleware** (net/http): `RequestID`, `OTel(quietPaths...)`, `Recovery(log)`,
+- **Middleware** (net/http): `RequestID`, `ClientIP(log, trustProxyHops)`,
+  `OTel(quietPaths...)`, `Recovery(log)`,
   `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
   `AccessLog(log, quietPaths...)`, `Metrics()`,
   `Idempotency(cfg, store, log, opts...)`. huma-уровень: `HumaAuth(log, extract)`.
@@ -17,7 +18,7 @@
 - **Health**: `RegisterHealth(api, log, probeTimeout, probes...)`, `Probe`
   (= `healthkit.Probe`).
 - **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
-  `HeaderIdempotentReplayed`, `ClientIP`, `IsMaxBodyError`, `NewMemoryStore`,
+  `HeaderIdempotentReplayed`, `ClientIPFrom`, `IsMaxBodyError`, `NewMemoryStore`,
   `NewConfig`, `Config.Validate`, `ErrConfig`.
 
 ## Сервер через fx Module
@@ -194,16 +195,16 @@ HTTP_CORS_EXPOSE_HEADERS="X-Request-ID,Location,Retry-After,Idempotent-Replayed"
 
 HTTP_RATE_LIMIT_RPS=200
 HTTP_RATE_LIMIT_BURST=400
-HTTP_RATE_LIMIT_TRUST_PROXY=true          # ровно один доверенный nginx/traefik
+HTTP_TRUST_PROXY_HOPS=1                   # один доверенный прокси (Traefik/nginx)
 ```
 
-За reverse-proxy без `TrustProxy` все клиенты приходят с одного IP и делят
-один bucket; с `TrustProxy` IP берётся из правого значения `X-Forwarded-For` —
-того, что дописал прокси. Без прокси перед сервисом включать нельзя. Тот же
-адрес для аудита и антибрутфорса:
+За reverse-proxy с `HTTP_TRUST_PROXY_HOPS=0` все клиенты приходят с адреса прокси и
+делят один bucket (строка Warn подсказывает настройку); с `N` IP клиента — N-я справа
+запись `X-Forwarded-For`, которую дописали прокси. Без прокси перед сервисом — только
+`0`. Тот же адрес — для аудита и антибрутфорса, свой middleware не нужен:
 
 ```go
-ip := httpkit.ClientIP(r, cfg.RateLimit.TrustProxy)
+ip := httpkit.ClientIPFrom(ctx) // ClientIP цепочки кладёт его до OTel
 ```
 
 ## Auth
@@ -275,8 +276,8 @@ Middleware потребителя — одно значение `httpkit.Middlew
 явный:
 
 ```go
-fx.Provide(func(cfg httpkit.Config, t *tenantMiddleware) httpkit.Middlewares {
-    return httpkit.Middlewares{clientIP(cfg.RateLimit.TrustProxy), t.Handle} // tenant — после client-IP
+fx.Provide(func(t *tenantMiddleware, a *auditMiddleware) httpkit.Middlewares {
+    return httpkit.Middlewares{t.Handle, a.Handle} // аудит видит tenant
 })
 
 fx.Supply(httpkit.HumaConfigs{ // правки huma.Config — в порядке слайса, после кита
@@ -321,7 +322,7 @@ func stream(w http.ResponseWriter, r *http.Request) {
 
 ```go
 s := httpkit.NewServer(cfg, httpkit.WithLogger(log))
-s.Router().Use(httpkit.RequestID(), httpkit.OTel(cfg.QuietPaths...),
+s.Router().Use(httpkit.RequestID(), httpkit.ClientIP(log, cfg.TrustProxyHops), httpkit.OTel(cfg.QuietPaths...),
     httpkit.AccessLog(log, cfg.QuietPaths...), httpkit.Metrics(), httpkit.Recovery(log))
 api := s.BindAPI() // после Use
 api.UseMiddleware(httpkit.HumaAuth(log, extract)) // до регистрации: без него Security не проверяется

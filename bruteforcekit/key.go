@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+
+	"git.stit.tech/stit-core/golibinfra/internal/clientip"
 )
 
 // ErrInvalidKey — пустой или слишком длинный subject, пустой либо неразбираемый ip.
@@ -36,15 +38,6 @@ func (c Config) NormalizeKey(subject, ip string) (string, string, error) {
 	if err != nil {
 		return "", "", fmt.Errorf("%w: ip %q is not an IP address", ErrInvalidKey, ip)
 	}
-	// Зона (`fe80::1%eth0`) значима только на хосте отправителя.
-	addr = addr.Unmap().WithZone("")
-
-	if addr.Is6() && c.IPv6Prefix < FullIPv6Prefix {
-		prefix, err := addr.Prefix(c.IPv6Prefix)
-		if err != nil {
-			return "", "", fmt.Errorf("%w: ip %q: %w", ErrInvalidKey, ip, err)
-		}
-		return subject, prefix.Addr().String(), nil
-	}
-	return subject, addr.String(), nil
+	// Та же свёртка, что у ключа лимитера httpkit: один клиент — один ключ на весь сервис.
+	return subject, clientip.Key(addr, c.IPv6Prefix).String(), nil
 }

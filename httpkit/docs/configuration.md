@@ -20,6 +20,7 @@
 | `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `true` | `false` убирает `/docs`, `/openapi.json`, `/openapi.yaml`, `/schemas` |
 | `HTTP_READY_PROBE_TIMEOUT` | `ReadyProbeTimeout` | `time.Duration` | `5s` | потолок одной пробы `/ready`; `> 0` |
 | `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана |
+| `HTTP_TRUST_PROXY_HOPS` | `TrustProxyHops` | `int` | `0` | сколько доверенных прокси перед сервисом дописывают `X-Forwarded-For` (§ IP клиента); `>= 0` |
 | — | `CORS` | `CORSConfig` | — | вложенный |
 | — | `RateLimit` | `RateLimitConfig` | — | вложенный |
 | — | `MaxBody` | `MaxBodyConfig` | — | вложенный |
@@ -41,27 +42,36 @@ No-op при пустом `Origins`. Конкретный origin эхается 
 | `HTTP_CORS_MAX_AGE` | `MaxAge` | `int` | `600` | `Access-Control-Max-Age` (сек); `>= 0` |
 | `HTTP_CORS_ALLOW_CREDENTIALS` | `AllowCredentials` | `bool` | `false` | `Access-Control-Allow-Credentials: true`; несовместим с `*` (ошибка `Validate`) |
 
+## IP клиента
+
+`ClientIP` (в цепочке `Module` — сразу после `RequestID`, до `OTel`) кладёт IP клиента в ctx:
+`httpkit.ClientIPFrom(ctx)` — один адрес для лимитера, `client.address` server-спана,
+`bruteforcekit` и аудита. Каждый доверенный прокси дописывает адрес своего собеседника в
+конец `X-Forwarded-For` (`$proxy_add_x_forwarded_for` у nginx, так же Traefik), а всё левее
+прислал сам клиент:
+
+- `HTTP_TRUST_PROXY_HOPS=0` — сервис без прокси: адрес соединения, заголовки не читаются;
+  пришедший `X-Forwarded-For` — одна строка Warn (за прокси без настройки все клиенты делят
+  его адрес, а с ним bucket лимитера и ключ антибрутфорса);
+- `1` — один прокси (Traefik инфры): правая запись; `2` — CDN → nginx: вторая справа.
+
+Записи всех заголовков `X-Forwarded-For` идут по порядку; цепочка короче `N` или запись — не
+IP: адрес соединения. `X-Real-IP` не читается: прокси, который ставит только его, настраивают
+дописывать `X-Forwarded-For`. Адрес — в канонической форме (`::ffff:203.0.113.7` →
+`203.0.113.7`, `2001:DB8::1` → `2001:db8::1`).
+
 ## RateLimitConfig
 
-Token-bucket на IP клиента (`golang.org/x/time/rate`). Превышение → `429
-RATE_LIMITED` с `Retry-After: 1` и `application/problem+json`. Простаивающие bucket'ы
-выметаются (5 минут без запросов), память ограничена активными клиентами.
+Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP из `ClientIP` (без него в
+цепочке — адрес соединения), IPv6 — по подсети `/64`, как у `bruteforcekit`. Превышение →
+`429 RATE_LIMITED` с `Retry-After: 1` и `application/problem+json`. Простаивающие bucket'ы
+выметаются (5 минут без запросов); bucket'ов не больше 100 000 (≈17 MiB) — сверх предела
+новые клиенты до выметания делят один общий bucket.
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `HTTP_RATE_LIMIT_RPS` | `RPS` | `int` | `100` | запросов в секунду на IP; `0` — off |
+| `HTTP_RATE_LIMIT_RPS` | `RPS` | `int` | `100` | запросов в секунду на клиента; `0` — off |
 | `HTTP_RATE_LIMIT_BURST` | `Burst` | `int` | `200` | ёмкость bucket; `0` → равна `RPS` |
-| `HTTP_RATE_LIMIT_TRUST_PROXY` | `TrustProxy` | `bool` | `false` | IP берётся из **правого** значения последнего `X-Forwarded-For`, затем `X-Real-IP` |
-
-`TrustProxy` рассчитан на топологию «ровно один доверенный прокси»:
-nginx/traefik дописывают реальный IP в конец `X-Forwarded-For`
-(`$proxy_add_x_forwarded_for`), а всё, что левее, прислал клиент. Клиент вправе
-прислать и **свой** заголовок `X-Forwarded-For`, поэтому берётся правое значение
-**последнего** из них (так же с `X-Real-IP`) — прокси, который добавляет
-заголовок вместо замены, тоже безопасен. Значение должно парситься как IP,
-иначе берётся `X-Real-IP`, иначе `RemoteAddr`. Ту же
-логику отдаёт `httpkit.ClientIP(r, trustProxy)` — используйте её в антибрутфорсе
-и аудите, чтобы ключ клиента был один на весь сервис.
 
 ## MaxBodyConfig
 
@@ -105,7 +115,8 @@ nginx/traefik дописывают реальный IP в конец `X-Forwarde
 
 ## Правила Validate
 
-- `Addr` не пуст; таймауты `>= 0`; `ShutdownTimeout > 0`; `ReadyProbeTimeout > 0`.
+- `Addr` не пуст; таймауты `>= 0`; `ShutdownTimeout > 0`; `ReadyProbeTimeout > 0`;
+  `TrustProxyHops >= 0`.
 - `APITitle` и `APIVersion` не пусты.
 - `RateLimit.RPS`, `RateLimit.Burst`, `MaxBody.MaxBytes`, `CORS.MaxAge` `>= 0`.
 - `Idempotency`: `Header` не пуст, `TTL`, `ReserveTTL`, `MaxBodyBytes`,

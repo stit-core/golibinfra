@@ -32,13 +32,15 @@ Panic-запросы, 429 и preflight 204 попадают в `http_requests_to
 
 ## Спаны
 
-`OTel` стоит вторым в цепочке (после `RequestID`): `otelhttp` открывает
+`OTel` стоит третьим в цепочке (после `RequestID` и `ClientIP`): `otelhttp` открывает
 server-span и извлекает входящий `traceparent`, а все последующие middleware,
 включая `AccessLog` и `Recovery`, работают внутри спана. Имя спана —
-`METHOD /route/{param}`: форматтер читает chi-паттерн, а otelhttp вызывает его
-повторно после роутинга, когда паттерн уже известен. `Metrics` добавляет на спан
-`http.route` и `request_id`. Собственные RED-метрики `otelhttp` выключены, чтобы
-не дублировать `http_requests_total` другим словарём.
+`METHOD /route/{param}`: его ставит `Metrics` по chi-паттерну после роутинга, в том
+числе когда middleware ниже `OTel` (свой или `Idempotency` с extractor'ом) заменил
+объект запроса; без маршрута — `METHOD`. `Metrics` добавляет на спан `http.route`,
+`request_id` и `client.address` — IP из `ClientIP` вместо `X-Forwarded-For`, который
+прислал клиент. Собственные RED-метрики `otelhttp` выключены, чтобы не дублировать
+`http_requests_total` другим словарём.
 
 Пути из `HTTP_QUIET_PATHS` (по умолчанию `/health`, `/ready`) спан не открывают:
 пробы оркестратора идут каждые несколько секунд и трейсы им не нужны.
@@ -67,3 +69,5 @@ server-span и извлекает входящий `traceparent`, а все по
   `http server stopped` (Error) — падение `Serve`, после которого приложение
   гасится.
 - `http server error` (Warn) — ошибки net/http из `http.Server.ErrorLog`.
+- `x-forwarded-for ignored: HTTP_TRUST_PROXY_HOPS=0, client ip is the peer address` (Warn,
+  один раз) с `peer` — `ClientIP`: пришёл `X-Forwarded-For`, а доверенных прокси 0.

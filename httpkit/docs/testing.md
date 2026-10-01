@@ -75,8 +75,9 @@ rec := httptest.NewRecorder()
 h.ServeHTTP(rec, req)
 ```
 
-Для `RateLimit` задайте `req.RemoteAddr` (или `X-Forwarded-For` с `TrustProxy`,
-где ключом станет **правое** значение), чтобы запросы попали в один bucket.
+Для `RateLimit` задайте `req.RemoteAddr` (без `ClientIP` в цепочке ключ — адрес
+соединения; с `ClientIP(log, hops)` и `X-Forwarded-For` — запись прокси), чтобы запросы
+попали в один bucket; адреса одной IPv6 `/64` — тоже один bucket.
 
 Строки `AccessLog` проверяются логгером в буфер:
 

@@ -354,6 +354,25 @@ func TestModule_Middlewares(t *testing.T) {
 	}
 }
 
+// IP клиента — в ctx хендлера стандартной цепочкой: за HTTP_TRUST_PROXY_HOPS прокси — их запись
+// X-Forwarded-For, левее — то, что прислал клиент.
+func TestModule_ClientIPInContext(t *testing.T) {
+	t.Setenv("HTTP_TRUST_PROXY_HOPS", "1")
+	var got string
+	srv := startApp(t, fx.Invoke(func(api huma.API) {
+		huma.Get(api, "/whoami", func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+			got = httpkit.ClientIPFrom(ctx)
+			return nil, nil //nolint:nilnil // тело ответа не нужно
+		})
+	}))
+	if resp := do(t, srv, http.MethodGet, "/whoami", nil, "X-Forwarded-For: 6.6.6.6, 203.0.113.7"); resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("/whoami: %d", resp.StatusCode)
+	}
+	if got != "203.0.113.7" {
+		t.Fatalf("ClientIPFrom = %q, want the proxy-appended 203.0.113.7", got)
+	}
+}
+
 // N6 валидатора: правки huma.Config потребителя идут в порядке слайса
 // httpkit.HumaConfigs и после правок кита — хук потребителя видит лимит тела.
 func TestModule_HumaConfigs(t *testing.T) {

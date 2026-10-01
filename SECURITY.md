@@ -29,10 +29,10 @@ golibinfra — общая lib, на которую завязаны бизнес
 - **`httpkit`** — слабые дефолты и обходы middleware: SecurityHeaders, CORS,
   RateLimit, MaxBody, идемпотентность (scope ключа), нейтрализация 5xx (текст
   ошибки хендлера наружу не уходит — только код, причина в логе).
-  `HTTP_RATE_LIMIT_TRUST_PROXY=true` берёт **правое** значение `X-Forwarded-For` —
-  то, что дописал прокси; топология подразумевает ровно один доверенный прокси
-  перед сервисом. С `false` (дефолт) считается `RemoteAddr`. Тот же выбор — в
-  `httpkit.ClientIP(r, trustProxy)`, который сервис отдаёт в `bruteforcekit`.
+  IP клиента (`httpkit.ClientIPFrom(ctx)`, ключ лимитера, `client.address` спана,
+  адрес для `bruteforcekit` и аудита) — адрес соединения или, при
+  `HTTP_TRUST_PROXY_HOPS=N`, N-я справа запись `X-Forwarded-For`, которую дописали
+  доверенные прокси; всё левее прислал клиент, `X-Real-IP` не читается.
 - **`oidckit`** — BFF-контур: санитайзинг `return_to` (open redirect), привязка
   callback к браузеру, проверка `iss`/`aud`/`azp`/`exp`/`nonce`, PKCE, cookie-сессия
   (`__Host-`-имена, `Secure`, `SameSite`).

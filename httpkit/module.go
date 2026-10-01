@@ -85,10 +85,10 @@ func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe)
 	return nil
 }
 
-// Порядок цепочки: RequestID и OTel первыми (request_id и trace_id в ctx у
-// всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight
-// попадали в RED-метрики и access-log; middleware потребителя — внутри всей
-// цепочки кита.
+// Порядок цепочки: RequestID, ClientIP и OTel первыми (request_id, IP клиента и
+// trace_id в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и
+// preflight попадали в RED-метрики и access-log; middleware потребителя — внутри
+// всей цепочки кита.
 func newServer(in serverIn) (*Server, error) {
 	cfg := in.Config
 	if err := cfg.Validate(); err != nil {
@@ -101,6 +101,7 @@ func newServer(in serverIn) (*Server, error) {
 
 	mws := []func(http.Handler) http.Handler{
 		RequestID(),
+		ClientIP(in.Log, cfg.TrustProxyHops),
 		OTel(cfg.QuietPaths...),
 		AccessLog(in.Log, cfg.QuietPaths...),
 		Metrics(),

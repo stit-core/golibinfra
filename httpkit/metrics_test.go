@@ -181,6 +181,54 @@ func TestOTel_SpanNameIsRoutePattern(t *testing.T) {
 	}
 }
 
+// KOBS-11, KOBS-13: имя спана — маршрут и тогда, когда middleware между OTel и роутером
+// заменяет объект запроса (r.WithContext); client.address — IP из ClientIP, а не
+// X-Forwarded-For клиента.
+func TestOTel_SpanNameAndClientAddressBehindConsumerMiddleware(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	type key struct{}
+	r := chi.NewRouter()
+	r.Use(RequestID(), ClientIP(logkit.Nop(), 0), OTel(), Metrics())
+	r.Use(func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			next.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), key{}, "v")))
+		})
+	})
+	r.Get("/items/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	req := httptest.NewRequest(http.MethodGet, "/items/7", nil)
+	req.RemoteAddr = "192.0.2.10:5555"
+	req.Header.Set("X-Forwarded-For", "6.6.6.6")
+	r.ServeHTTP(httptest.NewRecorder(), req)
+
+	spans := recorder.Ended()
+	if len(spans) != 1 || spans[0].Name() != "GET /items/{id}" {
+		t.Fatalf("span names = %v, want [GET /items/{id}]", spanNames(spans))
+	}
+	var clientAddress string
+	for _, a := range spans[0].Attributes() {
+		if a.Key == "client.address" {
+			clientAddress = a.Value.AsString()
+		}
+	}
+	if clientAddress != "192.0.2.10" {
+		t.Fatalf("client.address = %q, want the ClientIP address 192.0.2.10", clientAddress)
+	}
+}
+
+func spanNames(spans []sdktrace.ReadOnlySpan) []string {
+	names := make([]string, 0, len(spans))
+	for _, s := range spans {
+		names = append(names, s.Name())
+	}
+	return names
+}
+
 func TestMetrics_SpanCarriesRequestID(t *testing.T) {
 	recorder := tracetest.NewSpanRecorder()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))

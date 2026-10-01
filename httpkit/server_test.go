@@ -41,6 +41,7 @@ func TestConfig_Validate(t *testing.T) {
 		{name: "negative write timeout", mutate: func(c *Config) { c.WriteTimeout = -time.Second }, wantErr: true},
 		{name: "zero shutdown timeout", mutate: func(c *Config) { c.ShutdownTimeout = 0 }, wantErr: true},
 		{name: "zero ready probe timeout", mutate: func(c *Config) { c.ReadyProbeTimeout = 0 }, wantErr: true},
+		{name: "negative trust proxy hops", mutate: func(c *Config) { c.TrustProxyHops = -1 }, wantErr: true},
 		{name: "empty api title", mutate: func(c *Config) { c.APITitle = "" }, wantErr: true},
 		{name: "empty api version", mutate: func(c *Config) { c.APIVersion = "" }, wantErr: true},
 		{name: "negative rps", mutate: func(c *Config) { c.RateLimit.RPS = -1 }, wantErr: true},

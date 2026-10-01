@@ -3,7 +3,8 @@
 HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) поверх
 [chi](https://github.com/go-chi/chi) с готовой middleware-цепочкой и единым
 контрактом ошибок. Один `Server` несёт `*chi.Mux` (транспорт) и `huma.API`
-(типобезопасные операции + OpenAPI). Из коробки: `RequestID`, `OTel`,
+(типобезопасные операции + OpenAPI). Из коробки: `RequestID`, `ClientIP` (IP клиента в ctx —
+`ClientIPFrom`, доверие прокси — `HTTP_TRUST_PROXY_HOPS`), `OTel`,
 `AccessLog`, `Metrics`, `Recovery`, `SecurityHeaders`, `CORS`, `RateLimit`,
 `MaxBody`, опц. `Idempotency`, `HumaAuth`. Любой ответ-ошибка — `APIError`
 (`application/problem+json`: `title`, `status`, `detail`, машинный `code`,
@@ -63,7 +64,8 @@ app.Run()
 
 ```go
 s := httpkit.NewServer(cfg, httpkit.WithLogger(log))
-s.Router().Use(httpkit.RequestID(), httpkit.OTel(), httpkit.AccessLog(log), httpkit.Metrics(), httpkit.Recovery(log))
+s.Router().Use(httpkit.RequestID(), httpkit.ClientIP(log, cfg.TrustProxyHops), httpkit.OTel(),
+    httpkit.AccessLog(log), httpkit.Metrics(), httpkit.Recovery(log))
 api := s.BindAPI()
 httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout, pgkit.Probe(db))
 huma.Get(api, "/ping", handler)

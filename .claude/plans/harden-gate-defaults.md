@@ -20,8 +20,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   дефект есть), тяжёлые прогоны — последовательно.
 - **Гейт** (S1–S5, образец — шаблон): `GATE_STEPS` с integration и guard в `Makefile`,
   `scripts/gate-clean.sh`, pre-push, deny и guard `.claude/`, `testkit.MigrationLadder`, `scripts/envdoc`.
-- **Код до B2–B3.** `ClientIP` и `HTTP_RATE_LIMIT_TRUST_PROXY` служат только лимитеру
-  (`httpkit/ratelimit.go`), `HTTP_DOCS_ENABLED` по умолчанию `true` (`httpkit/server.go`), у outbox
+- **Код до B3.** `HTTP_DOCS_ENABLED` по умолчанию `true` (`httpkit/server.go`), у outbox
   `OUTBOX_MAX_ATTEMPTS=0` — без предела (`outboxkit/config.go`).
 - **Потребитель** — шаблон, `fix-reference-code` S9 (bump v1.3.0): снимает `publicOperations`,
   client-IP middleware и `identity.WithIP`. Полный Handoff шаблону — в `harden-authn-release`.
@@ -93,12 +92,15 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Подтверждено: на кандидате S7 HT01 PASS — T14 401/401, T22 413/413, T23 и T25 закрыты с обеих
     сторон (500 у `NewAPI` без `WithAuth`, 401 и ошибка старта у `Module`), T24 — `handler error` с
     `WithLogger`; `M/hgd2/s7_mutants.py` — 7 из 7 мутантов `NewAPI` убиты
-- [ ] **AC9** — `httpkit.ClientIPFrom(ctx)` отдаёт IP, который стандартная цепочка кладёт до OTel;
+- [x] **AC9** — `httpkit.ClientIPFrom(ctx)` отдаёт IP, который стандартная цепочка кладёт до OTel;
   одна настройка доверия прокси служит лимитеру, ctx и `client.address` спана; клиент не выбирает
   адрес заголовками; IPv6 ограничен по /64 той же функцией `internal/`, что у bruteforcekit; память
   лимитера ограничена; имя server-спана — маршрут и при middleware потребителя с `r.WithContext`.
   Проверка: `httpkit-a/run.sh <rev> security` → H11, H12 PASS; `httpkit-b/run.sh <rev> exp` →
   HO02, HO04 PASS
+  - Подтверждено: на кандидате S8 H11, H12 PASS (HOPS=0 — адрес соединения, HOPS=1 — запись прокси),
+    H11b — +15,7 MiB на 200 000 адресов (было 32,6); HO02 во всех 4 вариантах и HO04 PASS, сигналы —
+    0 расхождений; `M/hgd2/s8_mutants.py` — 10 из 10 мутантов убиты
 - [ ] **AC10** — По умолчанию `/docs`, `/openapi.*` и `/schemas/*` не отдаются; в ответах нет
   `$schema` и `Link` с хостом из заголовков клиента. Проверка:
   `httpkit-a/run.sh <rev> contract security` → H08, H14 PASS
@@ -146,9 +148,11 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: S6
   - Сделано: `NewAPI(t, register, opts...)` — `HumaAuth` до маршрутов, `CheckRoutes`,
     `httpkit.NewConfig()`; `WithAuth`, `WithConfig`, `WithLogger`, `WithSecuritySchemes`; доки
-- [ ] **S8** — B2: IP клиента в ctx и одна настройка доверия прокси, канонический ключ клиента,
+- [x] **S8** — B2: IP клиента в ctx и одна настройка доверия прокси, канонический ключ клиента,
   предел памяти лимитера, `client.address` и имя server-спана (KSEC-09, KSEC-10, KOBS-11, KOBS-13)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S6
+  - Сделано: `ClientIP(log, hops)` до OTel, `ClientIPFrom`, `HTTP_TRUST_PROXY_HOPS`; `internal/clientip`
+    у лимитера и bruteforcekit; предел bucket'ов; имя спана и `client.address` — в `Metrics`; доки
 - [ ] **S9** — B3 в httpkit: docs выключены по умолчанию, `$schema` и `Link` сняты, у `handlertest` —
   тот же дефолт (KSEC-11)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S7
@@ -221,15 +225,18 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   — 500 `AUTH_NOT_CONFIGURED` (fail-closed), а не провал теста. `register` получает API сервера с
   реестром (у обёртки `humatest` нет `OperationDocumenter`); конфиг — `httpkit.NewConfig()`, как у
   сервера. HT01: A получает опциями то, что B — из графа, T24 и T25 сравниваются.
-- **B2, доверие прокси.** Одна настройка `HTTP_TRUST_PROXY_HOPS` вместо булевой
-  `HTTP_RATE_LIMIT_TRUST_PROXY`: `0` — адрес соединения, `N` — N-я справа запись `X-Forwarded-For`,
-  `X-Real-IP` не читается. Булева не говорит, какой заголовок ставит прокси и сколько ступеней
-  (H12: XFF клиента побеждал `X-Real-IP` прокси; за CDN → nginx все клиенты делили ключ edge).
-- **B2, IP.** IP — в ctx рядом с RequestID, до OTel, в канонической форме (`netip`, IPv4-mapped →
-  IPv4). Ключ лимитера и bruteforcekit — одна свёртка IPv6 до /64 в `internal/` (H11: 100 из 100
-  при `Burst=2`). При `HOPS=0` и пришедшем XFF — один WARN на процесс: за Traefik без настройки все
-  клиенты делят bucket и ключ антибрутфорса (H12 INFO). Имя server-спана ставит `Metrics` по
-  маршруту chi — от `r.Pattern` объекта otelhttp не зависит (HO02).
+- **B2, доверие прокси.** `HTTP_TRUST_PROXY_HOPS` вместо `HTTP_RATE_LIMIT_TRUST_PROXY`: `0` — адрес
+  соединения, `N` — N-я справа запись всех заголовков `X-Forwarded-For`; цепочка короче `N` или не IP
+  — адрес соединения, `X-Real-IP` не читается (H12: XFF клиента побеждал `X-Real-IP` прокси). При `0`
+  и пришедшем XFF — одна строка Warn на middleware (за Traefik без настройки — один bucket на всех).
+- **B2, IP.** `httpkit.ClientIP(log, hops)` — после `RequestID`, до `OTel`; ключ ctx и свёртка —
+  `internal/clientip` (`Canonical`, `Key`): ею ключуют лимитер (/64) и bruteforcekit, auditkit (B4)
+  читает тот же ключ. `ClientIPFrom(ctx) string` — для bruteforcekit и аудита; функция
+  `ClientIP(r, trustProxy)` удалена — один способ.
+- **B2, лимитер и спан.** Предел — константа 100 000 bucket'ов (≈17 MiB), сверх — общий bucket до
+  выметания: без env и LRU. Имя server-спана и `client.address` ставит `Metrics` в defer (HO02,
+  HO04); форматтер otelhttp оставлен — при `r.Pattern` он зовётся после `Metrics` с тем же именем.
+  Новую строку Warn контракт `expected-signals-httpkit.json` получил из доки (оригинал — `orig/`).
 - **B3, `$schema`.** `$schema` и `Link` не ставятся вовсе (link-трансформер huma снят): поле не нужно
   контракту ошибок, отражает `X-Forwarded-Host` клиента, при выключенных docs ведёт в 404 (H08);
   `openapi.json` потребителей меняется — Handoff.
@@ -248,8 +255,6 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   `scripts/tools/test.sh:21-22` («testkit пропустит тесты без Docker») неверен;
   `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...),
   testkit.WithMigrationsDir(...))` — один способ.
-- httpkit: `HTTP_RATE_LIMIT_TRUST_PROXY` удалён → `HTTP_TRUST_PROXY_HOPS` (за одним прокси — 1); IP
-  клиента — `httpkit.ClientIPFrom(ctx)`, свой middleware не нужен.
 - httpkit: `HTTP_DOCS_ENABLED` по умолчанию `false`; `$schema` и `Link` в ответах нет →
   `openapi.json` перегенерировать.
 - outboxkit: `OUTBOX_MAX_ATTEMPTS` конечен (после бюджета — dead, вернуть — `ReviveDead`);
@@ -257,7 +262,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
-закрыты (N4 — S11). S6 (B1) и S7 (handlertest) сделаны; дальше — S8 (B2: IP клиента в ctx).
+закрыты (N4 — S11). S6 (B1), S7 (handlertest), S8 (B2) сделаны; дальше — S9 (B3: docs выключены).
 Эксперименты — `M/hgd/`, `M/hgd2/`; правки материалов аудита — «Решения».
 
 Заготовка аннотации v1.3.0 по сделанному:
@@ -271,7 +276,14 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   (`CheckRoutes`) → защищённая операция без `WithAuth` — 500 `AUTH_NOT_CONFIGURED`, свой `HumaAuth`
   в `register` не действует — `handlertest.WithAuth(extract)`; конфиг — `httpkit.NewConfig()` (свой
   — `WithConfig`); `register` получает API сервера, а не `humatest.TestAPI`.
-- Изменения — httpkit: `Public`, `PublicRoutes`/`WithPublicRoutes`, `Server.CheckRoutes`, `ErrRoutes`;
+- Breaking — httpkit: `HTTP_RATE_LIMIT_TRUST_PROXY` и `httpkit.ClientIP(r, trustProxy)` удалены →
+  `HTTP_TRUST_PROXY_HOPS` (за одним прокси — 1, за CDN → nginx — 2), IP клиента —
+  `httpkit.ClientIPFrom(ctx)`, свой middleware IP не нужен; `X-Real-IP` не читается.
+- Поведение — httpkit: ключ лимитера — IPv6 по `/64`, bucket'ов не больше 100 000 (сверх — общий);
+  имя server-спана — маршрут и за middleware с `r.WithContext`; `client.address` — IP из `ClientIP`;
+  `X-Forwarded-For` при `HTTP_TRUST_PROXY_HOPS=0` — одна строка Warn.
+- Изменения — httpkit: `Public`, `PublicRoutes`/`WithPublicRoutes`, `Server.CheckRoutes`, `ErrRoutes`,
+  `ClientIP(log, hops)`, `ClientIPFrom`; bruteforcekit сворачивает IPv6 той же функцией, что лимитер;
   handlertest: `WithAuth`, `WithConfig`, `WithLogger` (строка `handler error` в тесте хендлера),
   `WithSecuritySchemes`.
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест

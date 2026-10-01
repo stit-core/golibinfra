@@ -1,5 +1,5 @@
 // Package httpkit — HTTP-сервер на huma/v2 + chi с готовой middleware-цепочкой
-// (RequestID, OTel, AccessLog, Metrics, Recovery, SecurityHeaders, CORS,
+// (RequestID, ClientIP, OTel, AccessLog, Metrics, Recovery, SecurityHeaders, CORS,
 // RateLimit, MaxBody, опц. Idempotency), health/readiness и контрактом ошибок
 // APIError (problem+json). Эмитит http_requests_total, http_request_duration_seconds,
 // http_panics_total, http_max_body_rejections_total, http_idempotency_total,
@@ -40,12 +40,15 @@ type Config struct {
 	// ReadyProbeTimeout — потолок одной пробы /ready.
 	ReadyProbeTimeout time.Duration `envconfig:"HTTP_READY_PROBE_TIMEOUT" default:"5s"`
 	// QuietPaths — пути без Info-строки access-log и без server-спана.
-	QuietPaths  []string `envconfig:"HTTP_QUIET_PATHS" default:"/health,/ready"`
-	CORS        CORSConfig
-	RateLimit   RateLimitConfig
-	MaxBody     MaxBodyConfig
-	Security    SecurityHeadersConfig
-	Idempotency IdempotencyConfig
+	QuietPaths []string `envconfig:"HTTP_QUIET_PATHS" default:"/health,/ready"`
+	// TrustProxyHops — сколько доверенных прокси перед сервисом дописывают X-Forwarded-For
+	// (ClientIP): 0 — IP клиента — адрес соединения.
+	TrustProxyHops int `envconfig:"HTTP_TRUST_PROXY_HOPS" default:"0"`
+	CORS           CORSConfig
+	RateLimit      RateLimitConfig
+	MaxBody        MaxBodyConfig
+	Security       SecurityHeadersConfig
+	Idempotency    IdempotencyConfig
 }
 
 // ErrConfig — невалидный конфиг httpkit; оборачивается в ошибку старта.
@@ -63,6 +66,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: ShutdownTimeout must be > 0", ErrConfig)
 	case c.ReadyProbeTimeout <= 0:
 		return fmt.Errorf("%w: ReadyProbeTimeout must be > 0", ErrConfig)
+	case c.TrustProxyHops < 0:
+		return fmt.Errorf("%w: TrustProxyHops must be >= 0", ErrConfig)
 	case c.APITitle == "" || c.APIVersion == "":
 		return fmt.Errorf("%w: APITitle and APIVersion are required", ErrConfig)
 	case c.RateLimit.RPS < 0 || c.RateLimit.Burst < 0:

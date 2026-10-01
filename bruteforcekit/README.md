@@ -114,11 +114,11 @@ func (s *AuthService) Login(ctx context.Context, email, ip, password string) err
 }
 ```
 
-`ip` берётся из транспорта — `httpkit.ClientIP(r, trustProxy)`:
+`ip` берётся из транспорта — `httpkit.ClientIPFrom(ctx)`:
 
 ```go
-ip := httpkit.ClientIP(r, cfg.TrustProxy)
-if err := auth.Login(r.Context(), email, ip, password); err != nil {
+ip := httpkit.ClientIPFrom(ctx)
+if err := auth.Login(ctx, email, ip, password); err != nil {
     if errors.Is(err, bruteforcekit.ErrInvalidKey) || errors.Is(err, bruteforcekit.ErrInTx) {
         /* баг проводки, 500 */
     }
@@ -131,11 +131,11 @@ if err := auth.Login(r.Context(), email, ip, password); err != nil {
 заголовка, атакующий подставляет новый IP на каждую попытку, каждая попытка
 попадает в новую строку и блокировка не наступает никогда.
 
-- **Источник — только доверенный адрес.** `httpkit.ClientIP(r, trustProxy)`
-  отдаёт peer-адрес соединения, а правое значение `X-Forwarded-For` — лишь при
-  `trustProxy = true`, то есть когда сервис стоит **за** доверенным прокси
-  (флаг `TrustProxy` конфига `httpkit`). Публичный сервис без прокси обязан
-  оставлять `trustProxy = false`.
+- **Источник — только доверенный адрес.** `httpkit.ClientIPFrom(ctx)` отдаёт
+  peer-адрес соединения, а запись `X-Forwarded-For` — лишь при
+  `HTTP_TRUST_PROXY_HOPS=N` конфига `httpkit`, то есть когда сервис стоит **за** N
+  доверенными прокси: берётся N-я справа запись, которую дописали они. Публичный
+  сервис без прокси оставляет `0`.
 - **Канонизация — на стороне кита.** `Config.NormalizeKey` приводит адрес к
   канонической форме (`netip`): `::1` и `0:0:0:0:0:0:0:1`, `2001:DB8::1` и
   `2001:db8::1`, `::ffff:203.0.113.7` и `203.0.113.7` — один бакет счётчика;
@@ -144,7 +144,7 @@ if err := auth.Login(r.Context(), email, ip, password); err != nil {
   поэтому по умолчанию (`BRUTEFORCE_IPV6_PREFIX=64`) все адреса одной `/64`
   попадают в общий бакет, и перебор адресов подсети не обходит блокировку;
   `128` (`FullIPv6Prefix`) ведёт счётчик на полный адрес. На IPv4 параметр не
-  влияет.
+  влияет. Ту же свёртку `/64` делает ключ лимитера `httpkit`.
 - **Пустой или неразбираемый `ip` — ошибка.** `Attempt` и `RecordSuccess`
   возвращают `bruteforcekit.ErrInvalidKey`, не выполняя запрос:
   «ip забыли передать» — баг проводки, а не бакет `""` на все адреса subject'а.
