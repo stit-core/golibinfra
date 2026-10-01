@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"testing"
 
@@ -255,6 +256,22 @@ func TestNewAPI_ServerConfig(t *testing.T) {
 	if tb.fatals == 0 {
 		t.Fatal("an invalid WithConfig must fail the test")
 	}
+}
+
+// Дефолт docs — как у сервера: карта API выключена, WithConfig её включает.
+func TestNewAPI_DocsLikeServer(t *testing.T) {
+	t.Setenv("HTTP_DOCS_ENABLED", "")
+	if err := os.Unsetenv("HTTP_DOCS_ENABLED"); err != nil {
+		t.Fatal(err)
+	}
+	handlertest.AssertAPIError(t, handlertest.NewAPI(t, registerPut).Get("/openapi.json"), http.StatusNotFound, "NOT_FOUND")
+
+	cfg, err := httpkit.NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.DocsEnabled = true
+	handlertest.AssertStatus(t, handlertest.NewAPI(t, registerPut, handlertest.WithConfig(cfg)).Get("/openapi.json"), http.StatusOK)
 }
 
 // Логгер — как у сервера: причина 5xx — строкой handler error с request_id ответа.

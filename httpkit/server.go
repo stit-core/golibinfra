@@ -35,8 +35,8 @@ type Config struct {
 	ShutdownTimeout   time.Duration `envconfig:"HTTP_SHUTDOWN_TIMEOUT" default:"15s"`
 	APITitle          string        `envconfig:"HTTP_API_TITLE" default:"API"`
 	APIVersion        string        `envconfig:"HTTP_API_VERSION" default:"0.1.0"`
-	// DocsEnabled=false убирает /docs, /openapi.* и /schemas с сервера.
-	DocsEnabled bool `envconfig:"HTTP_DOCS_ENABLED" default:"true"`
+	// DocsEnabled=true отдаёт /docs, /openapi.* и /schemas без аутентификации — карту API.
+	DocsEnabled bool `envconfig:"HTTP_DOCS_ENABLED" default:"false"`
 	// ReadyProbeTimeout — потолок одной пробы /ready.
 	ReadyProbeTimeout time.Duration `envconfig:"HTTP_READY_PROBE_TIMEOUT" default:"5s"`
 	// QuietPaths — пути без Info-строки access-log и без server-спана.
@@ -193,6 +193,9 @@ func (s *Server) BindAPI() huma.API {
 		return s.api
 	}
 	humaConfig := huma.DefaultConfig(s.cfg.APITitle, s.cfg.APIVersion)
+	// Единственный хук DefaultConfig — $schema в теле и Link в ответе: ссылка с хостом из
+	// X-Forwarded-Host клиента, контракту ошибок не нужна, без docs ведёт в 404.
+	humaConfig.CreateHooks = nil
 	if !s.cfg.DocsEnabled {
 		humaConfig.DocsPath, humaConfig.OpenAPIPath, humaConfig.SchemasPath = "", "", ""
 	}

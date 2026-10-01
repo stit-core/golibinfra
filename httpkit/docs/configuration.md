@@ -17,7 +17,7 @@
 | `HTTP_SHUTDOWN_TIMEOUT` | `ShutdownTimeout` | `time.Duration` | `15s` | дедлайн graceful-shutdown на `OnStop`; `> 0` |
 | `HTTP_API_TITLE` | `APITitle` | `string` | `API` | title в OpenAPI; не пуст |
 | `HTTP_API_VERSION` | `APIVersion` | `string` | `0.1.0` | version в OpenAPI; не пуст |
-| `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `true` | `false` убирает `/docs`, `/openapi.json`, `/openapi.yaml`, `/schemas` |
+| `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `false` | `true` отдаёт `/docs`, `/openapi.json`, `/openapi.yaml`, `/schemas` без аутентификации — карта всех операций; для dev и внутреннего контура |
 | `HTTP_READY_PROBE_TIMEOUT` | `ReadyProbeTimeout` | `time.Duration` | `5s` | потолок одной пробы `/ready`; `> 0` |
 | `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана |
 | `HTTP_TRUST_PROXY_HOPS` | `TrustProxyHops` | `int` | `0` | сколько доверенных прокси перед сервисом дописывают `X-Forwarded-For` (§ IP клиента); `>= 0` |

@@ -28,10 +28,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   `BREAKING CHANGE:`.
 
 ## Не входит
-- Партия 3 (v1.4.0): `archkit`, medium и minor вне этих планов, доки — `backlog.md`, триггер
-  «партия 3».
-- B4–B8, high из D, кандидаты C и релиз v1.3.0 — `harden-authn-release`.
-- Правки шаблона и шлюзов — по аннотации тега.
+- Партия 3 (v1.4.0) — `backlog.md`, триггер «партия 3»; B4–B8, high из D, кандидаты C и релиз
+  v1.3.0 — `harden-authn-release`; правки шаблона и шлюзов — по аннотации тега.
 
 ## Критерии приёмки
 Проверки — в своём worktree на HEAD; `gate_inject.py` — это
@@ -47,14 +45,12 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   сужают и не глушат гейт: `make check` отказывается запускаться или проверяет всё; `gate-clean` и
   pre-push окружение вызывающего не наследуют. Проверка:
   `gate_inject.py --only G14,G15,G16,G17,G18,G19,G20,G24` → все пойманы
-  - Подтверждено: на кандидате S2 все восемь пойманы (G17–G19 — отказ guard'а); вручную `-n`,
-    `-q`, `-t`, `MAKE=`, `SHELL=`, `.SHELLFLAGS=`, `MAKEFILES`, `GOFLAGS` в `GOENV` → отказ;
-    `make -k check`, `MAKEFLAGS=i scripts/gate-clean.sh` с нарушением → rc=2 (`M/hgd/s2/`)
+  - Подтверждено: на кандидате S2 все восемь пойманы (G17–G19 — отказ guard'а); `-n -q -t`, `MAKE=`,
+    `SHELL=`, `.SHELLFLAGS=`, `MAKEFILES`, `GOFLAGS` в `GOENV` → отказ; `make -k check` → rc=2
 - [x] **AC3** — Вердикт lint не зависит от чужого checkout'а: кеш golangci-lint — внутри checkout'а,
   у `gate-clean` — свой холодный. Проверка: сценарий L3 `lint_cache_probe.sh` через `make lint` в
   двух worktree → во втором настоящее нарушение красное
-  - Подтверждено: `M/hgd/lint_cache_make_probe.sh <rev>` (L3 через `make lint`, общий кеш в
-    окружении) → в W2 нарушение красное; `GOLANGCI_DIFF_PROCESSOR_PATCH` lint не глушит
+  - Подтверждено: `M/hgd/lint_cache_make_probe.sh <rev>` (L3 через `make lint`) → в W2 красное
 - [x] **AC4** — Push проходит гейт: pre-push гоняет `make check` на пушимом коммите при чистом
   дереве; неактивный pre-push роняет `make check` с подсказкой `make hooks`; обходы хуков из сессии
   Claude заблокированы; CLAUDE.md, README, CONTRIBUTING и скиллы `/plan`, `/release` описывают этот
@@ -73,9 +69,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   без тега в структуре с тегами — ошибка. Проверка:
   `M/kits-audit/api-docs/scripts/envdoc-inject.sh <worktree>` → 7 из 7 ожидаемо красных красные;
   `gate_inject.py --only G32` → пойман
-  - Подтверждено: на кандидате S5 `envdoc-inject.sh` — E1–E6, E8 красные, E0, E7 зелёные; G32
-    пойман; GH04 (дефолт `HTTP_DOCS_ENABLED` перевёрнут в коде) — красный; 239 переменных
-    сходятся с доками (`M/hgd/s5/`)
+  - Подтверждено: на кандидате S5 `envdoc-inject.sh` — E1–E6, E8 красные, E0, E7 зелёные; G32 и
+    GH04 (дефолт `HTTP_DOCS_ENABLED` перевёрнут в коде) пойманы (`M/hgd/s5/`)
 - [x] **AC7** — При схеме безопасности в графе — ошибка старта с именем операции или маршрута:
   операция без `Security` и без `httpkit.Public` (в том числе скрытая и в группе huma), дубль
   METHOD+path, сырой маршрут chi или `Adapter().Handle` мимо реестра без объявления публичным,
@@ -101,9 +96,11 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Подтверждено: на кандидате S8 H11, H12 PASS (HOPS=0 — адрес соединения, HOPS=1 — запись прокси),
     H11b — +15,7 MiB на 200 000 адресов (было 32,6); HO02 во всех 4 вариантах и HO04 PASS, сигналы —
     0 расхождений; `M/hgd2/s8_mutants.py` — 10 из 10 мутантов убиты
-- [ ] **AC10** — По умолчанию `/docs`, `/openapi.*` и `/schemas/*` не отдаются; в ответах нет
+- [x] **AC10** — По умолчанию `/docs`, `/openapi.*` и `/schemas/*` не отдаются; в ответах нет
   `$schema` и `Link` с хостом из заголовков клиента. Проверка:
   `httpkit-a/run.sh <rev> contract security` → H08, H14 PASS
+  - Подтверждено: на кандидате S9 H08 (docs вкл. и выкл.) и H14 PASS; прочие исходы групп contract,
+    security, api, lifecycle — как на v1.2.0, кроме закрытых B1–B3; мутанты S9 — 2 из 2 убиты
 - [ ] **AC11** — `OUTBOX_MAX_ATTEMPTS` по умолчанию конечен (бюджет ретраев — в доке); переход в dead
   — ERROR `outboxkit: event dead` с instance, id, subject, attempts; выключенный JetStream — ошибка
   старта outbox; сбой брокера на весь батч пишет `publish_error` и попыток не сжигает; payload
@@ -153,9 +150,11 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S6
   - Сделано: `ClientIP(log, hops)` до OTel, `ClientIPFrom`, `HTTP_TRUST_PROXY_HOPS`; `internal/clientip`
     у лимитера и bruteforcekit; предел bucket'ов; имя спана и `client.address` — в `Metrics`; доки
-- [ ] **S9** — B3 в httpkit: docs выключены по умолчанию, `$schema` и `Link` сняты, у `handlertest` —
+- [x] **S9** — B3 в httpkit: docs выключены по умолчанию, `$schema` и `Link` сняты, у `handlertest` —
   тот же дефолт (KSEC-11)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S7
+  - Сделано: `HTTP_DOCS_ENABLED=false`, `CreateHooks` huma сняты (link-трансформер); handlertest —
+    через `httpkit.NewConfig()`; доки
 - [ ] **S10** — B3 в outbox: конечный `OUTBOX_MAX_ATTEMPTS`, dead-переход в лог (KOBS-05), выключенный
   JetStream и сбой батча (KAPI-03), subject'ы инстанса без покрывающего стрима — ошибка старта, а
   не строки без PubAck (находка шаблона, его `TestBoot`), предел payload (E17), бюджет ретраев в
@@ -237,9 +236,10 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   выметания: без env и LRU. Имя server-спана и `client.address` ставит `Metrics` в defer (HO02,
   HO04); форматтер otelhttp оставлен — при `r.Pattern` он зовётся после `Metrics` с тем же именем.
   Новую строку Warn контракт `expected-signals-httpkit.json` получил из доки (оригинал — `orig/`).
-- **B3, `$schema`.** `$schema` и `Link` не ставятся вовсе (link-трансформер huma снят): поле не нужно
-  контракту ошибок, отражает `X-Forwarded-Host` клиента, при выключенных docs ведёт в 404 (H08);
-  `openapi.json` потребителей меняется — Handoff.
+- **B3, `$schema`.** `$schema` и `Link` не ставятся вовсе: `humaConfig.CreateHooks = nil` — единственный
+  хук `DefaultConfig` и есть link-трансформер; поле не нужно контракту ошибок, отражает
+  `X-Forwarded-Host` клиента, без docs ведёт в 404 (H08). `/schemas` остаётся частью docs. H01b
+  (скрытая защищённая операция без extractor'а) правлен под S6: ошибка старта вместо 500.
 - **B3, outbox.** Попытка — неудача публикации строки; сбой брокера на весь батч (соединение,
   JetStream выключен в рантайме) пишет `publish_error` и попыток не сжигает — иначе простой брокера
   дольше бюджета массово уводит очередь в dead. Выключенный JetStream — ошибка старта, как у
@@ -255,23 +255,20 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   `scripts/tools/test.sh:21-22` («testkit пропустит тесты без Docker») неверен;
   `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...),
   testkit.WithMigrationsDir(...))` — один способ.
-- httpkit: `HTTP_DOCS_ENABLED` по умолчанию `false`; `$schema` и `Link` в ответах нет →
-  `openapi.json` перегенерировать.
 - outboxkit: `OUTBOX_MAX_ATTEMPTS` конечен (после бюджета — dead, вернуть — `ReviveDead`);
   выключенный JetStream — ошибка старта; payload сверх предела — ошибка `Publish`.
 
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
-закрыты (N4 — S11). S6 (B1), S7 (handlertest), S8 (B2) сделаны; дальше — S9 (B3: docs выключены).
+закрыты (N4 — S11). S6–S9 (B1, handlertest, B2, B3 httpkit) сделаны; дальше — S10 (B3 outbox).
 Эксперименты — `M/hgd/`, `M/hgd2/`; правки материалов аудита — «Решения».
 
 Заготовка аннотации v1.3.0 по сделанному:
-- Breaking — httpkit: при схеме безопасности в графе операция без `Security` и без `httpkit.Public`
-  (пустой `Security` не публичен, в том числе у скрытой), схема `Security` вне `components` и
-  маршрут мимо `huma.Register` вне `httpkit.PublicRoutes` — ошибка старта `ErrRoutes`; дубль
-  METHOD+path и `Public` с `Security` — тоже, и без схем; скрытая операция с `Security` без
-  extractor'а — ошибка старта; дубль имени схемы, схема без `Scheme`, дубль имени пробы — ошибка
-  графа `ErrConfig` → открытые операции — `httpkit.Public(op)`, сырые маршруты — `PublicRoutes`.
+- Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой
+  `Security` не публичен; и скрытая), схема `Security` вне `components`, маршрут мимо `huma.Register`
+  вне `PublicRoutes`, а всегда — дубль METHOD+path, `Public` с `Security`, скрытая операция с
+  `Security` без extractor'а — ошибка старта; дубль имени схемы или пробы, схема без `Scheme` —
+  ошибка графа → открытые операции — `httpkit.Public(op)`, сырые маршруты — `PublicRoutes`.
 - Breaking — testkit/handlertest: `NewAPI` ставит `HumaAuth` до маршрутов и проверяет маршруты
   (`CheckRoutes`) → защищённая операция без `WithAuth` — 500 `AUTH_NOT_CONFIGURED`, свой `HumaAuth`
   в `register` не действует — `handlertest.WithAuth(extract)`; конфиг — `httpkit.NewConfig()` (свой
@@ -282,6 +279,9 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - Поведение — httpkit: ключ лимитера — IPv6 по `/64`, bucket'ов не больше 100 000 (сверх — общий);
   имя server-спана — маршрут и за middleware с `r.WithContext`; `client.address` — IP из `ClientIP`;
   `X-Forwarded-For` при `HTTP_TRUST_PROXY_HOPS=0` — одна строка Warn.
+- Breaking — httpkit: `HTTP_DOCS_ENABLED` по умолчанию `false` (`/docs`, `/openapi.*`, `/schemas` —
+  только с `true`); `$schema` в телах и `Link` в ответах нет, схемы ответов в OpenAPI без `$schema`
+  → `openapi.json` перегенерировать, `HTTP_DOCS_ENABLED=true` — только dev; handlertest — тот же дефолт.
 - Изменения — httpkit: `Public`, `PublicRoutes`/`WithPublicRoutes`, `Server.CheckRoutes`, `ErrRoutes`,
   `ClientIP(log, hops)`, `ClientIPFrom`; bruteforcekit сворачивает IPv6 той же функцией, что лимитер;
   handlertest: `WithAuth`, `WithConfig`, `WithLogger` (строка `handler error` в тесте хендлера),

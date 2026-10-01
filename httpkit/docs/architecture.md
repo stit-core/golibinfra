@@ -81,7 +81,8 @@ fx выполняет `OnStart` в порядке добавления хуко�
   `Security`, выставленный хуком потребителя.
 - `WithPublicRoutes(paths...)` / значение `httpkit.PublicRoutes` в графе — пути chi
   маршрутов мимо `huma.Register`, открытых без аутентификации (§ Аутентификация).
-- `HTTP_DOCS_ENABLED=false` — сервис без `/docs` и `/openapi.*`.
+- `HTTP_DOCS_ENABLED=true` — `/docs`, `/openapi.*` и `/schemas` (по умолчанию их нет: это карта
+  всех операций без аутентификации).
 
 ## Конвейер middleware и порядок
 
@@ -166,6 +167,8 @@ WebSocket-upgrade. Повторное оборачивание того же wri
   `429 RATE_LIMITED`, `500 INTERNAL`, `503 UNAVAILABLE` (прочие статусы — текст
   статуса: `502 BAD_GATEWAY`).
 - `request_id` равен `X-Request-ID` ответа и полю `request_id` строк лога запроса.
+- Других полей нет: `$schema` в теле и `Link` в ответе huma не ставит — его link-трансформер
+  снят (ссылка строилась из `X-Forwarded-Host` клиента и без docs вела в 404).
 - `errors[]` — ошибки мест запроса `{location, code, message}`: у валидации huma
   (`code` — `INVALID`) и у `422 IDEMPOTENCY_KEY_REUSED` (`header.Idempotency-Key`).
   Значение поля клиенту не возвращается: в нём бывает пароль. Сообщения huma,

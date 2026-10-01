@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -370,6 +371,37 @@ func TestModule_ClientIPInContext(t *testing.T) {
 	}
 	if got != "203.0.113.7" {
 		t.Fatalf("ClientIPFrom = %q, want the proxy-appended 203.0.113.7", got)
+	}
+}
+
+// B3: по умолчанию карта API (/docs, /openapi.*, /schemas) не отдаётся, а в ответах нет $schema
+// и Link — ни с хостом из X-Forwarded-Host клиента, ни мёртвых при выключенных docs.
+func TestModule_DocsOffByDefaultAndNoSchemaLinks(t *testing.T) {
+	t.Setenv("HTTP_DOCS_ENABLED", "")
+	if err := os.Unsetenv("HTTP_DOCS_ENABLED"); err != nil {
+		t.Fatal(err)
+	}
+	for docs, want := range map[string]int{"": http.StatusNotFound, "true": http.StatusOK} {
+		t.Run("HTTP_DOCS_ENABLED="+docs, func(t *testing.T) {
+			if docs != "" {
+				t.Setenv("HTTP_DOCS_ENABLED", docs)
+			}
+			srv := startApp(t)
+			for _, path := range []string{"/openapi.json", "/openapi.yaml", "/docs", "/schemas/HealthBody.json"} {
+				if resp := get(t, srv, path); resp.StatusCode != want {
+					t.Errorf("GET %s = %d, want %d", path, resp.StatusCode, want)
+				}
+			}
+			for _, path := range []string{"/health", "/nowhere"} {
+				resp := do(t, srv, http.MethodGet, path, nil, "X-Forwarded-Host: evil.example", "Forwarded: host=evil.example")
+				if body := bodyString(t, resp); strings.Contains(body, "$schema") || strings.Contains(body, "evil.example") {
+					t.Errorf("GET %s body carries a schema link: %s", path, body)
+				}
+				if link := resp.Header.Get("Link"); link != "" {
+					t.Errorf("GET %s Link = %q, want none", path, link)
+				}
+			}
+		})
 	}
 }
 
