@@ -15,6 +15,9 @@
   httpkit (KAPI-06, KAPI-07, KTST-07, KFX-01, KFX-10). Триггер: партия 3.
 - **url-secrets** — общий `redactURL` в `internal/` для URL и DSN в ошибках, логах и спанах; спаны и
   ошибки httpclient без query (KDOC-02, KSEC-03). Триггер: партия 3.
+- **outbox-payload-jsonb** — предел тела по представлению хранилища: `octet_length(($n::jsonb)::text)`
+  в `pgstore.Insert` с пределом из конфига — числа в экспоненте раздувают JSONB многократно
+  (валидатор B этапа B1–B3, N1). Триггер: партия 3.
 - **outbox-order-trace** — `ordered` по моменту вставки; trace-context события в строке outbox;
   label `subject` и имя producer-спана — шаблоном, не сырым subject (KCOR-02, KOBS-02, KOBS-03,
   KOBS-04). Триггер: партия 3.
@@ -29,6 +32,12 @@
   заголовка, `BindAPI` под мьютексом (KCOR-09…-12, KSEC-13…-15, KAPI-09). Триггер: партия 3.
 - **httpkit-auth-edge** — extractor видит схему операции; `traceparent`/`baggage` клиента на краю не
   принимаются; один вызов extractor'а на запрос (KSEC-08, KSEC-12, KFX-11). Триггер: партия 3.
+- **httpkit-routes-edge** — проверка старта: маршрут, добавленный после неё (`OnStart` позже хука
+  сервера), `Security` со схемой вне `components` без схем в графе (OpenAPI невалиден), свой
+  `Router().NotFound` — строка доки; тесты схемы через `HumaConfigs` и имени спана `unmatched`, мутант
+  `claim` без сверки пути (валидатор B этапа B1–B3: A4, N7, N8, N11, f1-07). Триггер: партия 3.
+- **httpkit-xff-port** — запись `ip:port` доверенного прокси в `X-Forwarded-For` даёт адрес соединения:
+  разбирать `AddrPort` (валидатор B этапа B1–B3, N9). Триггер: партия 3.
 - **httpkit-signals-gate** — тест контракта сигналов httpkit в гейте (6 метрик, labels, unit,
   access-log), `unmatched` только для неизвестных маршрутов, негативные тесты `Idempotency` (hk-ctr-05)
   и хелперов handlertest, конкурентные тесты лимитера (KGATE-13, KTST-11, KOBS-12). Триггер: партия 3.
@@ -37,6 +46,9 @@
   `MemoryCache`, таймеры clockkit (KTST-03, KTST-04, KTST-05, KDOC-08). Триггер: партия 3.
 - **tests-mutants** — убить 7 выживших мутантов (jwks ×4, `RecordSuccess` bruteforcekit, `OnStop`
   cachekit, `Reset` clockkit) и тест таймаута healthkit с дедлайном (KTST-02). Триггер: партия 3.
+- **gate-hook-paths** — pre-push зовёт `scripts/gate-clean.sh` из рабочего дерева: правка скрипта
+  выключает гейт push — гонять версию из пушимого коммита (KGATE-08); ложные отказы guard на
+  `find -name pre-push`, `awk`/`sort`/`cp` из хука (валидатор B этапа B1–B3). Триггер: партия 3.
 - **gate-rules** — forbidigo/contextcheck и запрет `:latest` в гейте, пути гейта в «Сначала
   спросить» и сверка набора линтеров, commit-msg и apidiff в `/release`, версии тулов (KGATE-07…-10).
   Триггер: партия 3.

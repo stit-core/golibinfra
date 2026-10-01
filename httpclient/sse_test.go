@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -471,32 +472,36 @@ func TestSSE_HeaderTimeoutRaceHasNoThirdOutcome(t *testing.T) {
 	}
 }
 
-// endGate держит OnEnd спана стрима до release: тест видит, что сделано до конца спана.
+// endGate держит OnEnd первого спана стрима до release: тест видит, что сделано до конца
+// спана; следующие спаны проходят сразу.
 type endGate struct {
+	once           sync.Once
 	ended, release chan struct{}
 }
 
-func (g endGate) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
+func (g *endGate) OnStart(context.Context, sdktrace.ReadWriteSpan) {}
 
-func (g endGate) OnEnd(s sdktrace.ReadOnlySpan) {
+func (g *endGate) OnEnd(s sdktrace.ReadOnlySpan) {
 	if s.Name() != "httpclient.Stream GET" {
 		return
 	}
-	close(g.ended)
-	<-g.release
+	g.once.Do(func() {
+		close(g.ended)
+		<-g.release
+	})
 }
 
-func (endGate) Shutdown(context.Context) error   { return nil }
-func (endGate) ForceFlush(context.Context) error { return nil }
+func (*endGate) Shutdown(context.Context) error   { return nil }
+func (*endGate) ForceFlush(context.Context) error { return nil }
 
 // Закрытый Events() — конец стрима, уже записанный в метрику и спан: потребитель, который
 // по нему снимает метрики, видит status="200/sse".
 func TestSSE_RecordedBeforeEventsClose(t *testing.T) {
-	gate := endGate{ended: make(chan struct{}), release: make(chan struct{})}
+	gate := &endGate{ended: make(chan struct{}), release: make(chan struct{})}
 	defer close(gate.release)
-	prev := otel.GetTracerProvider()
 	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(gate)))
-	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	// Прежний провайдер — глобальный делегат, вернуть его нельзя: гейт ушёл бы в чужие тесты.
+	t.Cleanup(func() { otel.SetTracerProvider(sdktrace.NewTracerProvider()) })
 
 	stream := openStream(t, sseClient(t), sseServer(t, "data: x\n\n").URL)
 	if _, ok := <-stream.Events(); !ok {

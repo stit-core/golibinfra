@@ -194,7 +194,7 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - **N3** — deny `*--no-veri*` ловит флаг в кавычках и алиасе; guard по пути `git-hooks` или `pre-push`
   пускает только чтение — readers, git без правки дерева, `sed` без `-i`, `bash -n`, запуск хука — и без
   записи перенаправлением (валидатор B: `cp`, `ln`, `truncate`, `>`, `sed -i`); `M/hgd2/fixb_guard.py`.
-- **Флак httpclient** (валидатор B, бэклог партии 3) — `record()` до `close(Events())`; тест держит `OnEnd`.
+- **Флак httpclient** (валидатор B) — `record()` до `close(Events())`; тест: `OnEnd` под `sync.Once`, Cleanup — новый провайдер.
 - **B1, реестр.** API сервера — `huma.OperationDocumenter`: `DocumentOperation` видит каждую операцию,
   в том числе `Hidden` и из групп (`OnAddOperation` скрытых не видит). Проверка — экспортируемый
   `Server.CheckRoutes()` (`ErrRoutes`): `Module` — на OnStart, `handlertest` — S7, без fx —
@@ -254,8 +254,8 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 
 ## Где мы сейчас
 Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
-закрыты (N4 — S11). S6–S10 сделаны, валидатор этапа — FAIL (`M/validation-harden-gate-defaults-B.md`):
-B1, B2 и неблокирующие (литерал, JSONB, makefile, guard, флак httpclient) закрыты; дальше перепроверка, S11.
+закрыты (N4 — S11). S6–S10 сделаны; по валидатору B (`M/validation-harden-gate-defaults-B.md`) B1, B2,
+N1–N6, N10 и тест SSE перепроверки закрыты, N7–N9, N11 — бэклог; дальше перепроверка, S11.
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой
