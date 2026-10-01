@@ -23,10 +23,6 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   client-IP middleware и `identity.WithIP`. Полный Handoff шаблону — в `harden-authn-release`.
 - **Правила шага:** доки кита — тем же коммитом (`make envdoc-check`); breaking — `!`, `BREAKING CHANGE:`.
 
-## Не входит
-- Партия 3 (v1.4.0) — `backlog.md`, триггер «партия 3»; B4–B8, high из D, кандидаты C и релиз
-  v1.3.0 — `harden-authn-release`; правки шаблона и шлюзов — по аннотации тега.
-
 ## Критерии приёмки
 Проверки — в своём worktree на HEAD; `gate_inject.py` — это
 `M/kits-audit/tests-gate/gate_inject.py --repo <worktree> --base <rev> --only …`.
@@ -104,7 +100,6 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
     фикс B2: сервер без JetStream — старт красный, тики без попыток (`fix-b2-probe.log`), мутанты 4/4
 
 ## Шаги
-### Гейт
 - [x] **S1** — `make check` с integration и обязательным Docker: testkit без Docker вне `-short` —
   FAIL, timing-тест logkit — вне гейта, `gate-clean` наследует (KGATE-01, KTST-01)
   - Проверка: AC1 → выполнен · Закрывает: AC1 · Зависит от: —
@@ -126,7 +121,6 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Проверка: AC6 → выполнен · Закрывает: AC6 · Зависит от: S1
   - Сделано: `scripts/envdoc` вместо `envdoc-check.sh`, инъекции — `TestCheck`, дефолты в доках
 
-### httpkit и outbox: B1–B3
 - [x] **S6** — B1: реестр всех операций huma, пометка `httpkit.Public`, проверки старта из AC7 — с
   сырыми маршрутами chi (бэклог `httpkit-auth-bypass`) и значениями групп (KFX-09 с KFX-07)
   - Проверка: AC7 → выполнен; `go test -race ./httpkit/ ./oidckit/ ./hubkit/...` → PASS ·
@@ -154,10 +148,10 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   - Сделано: `OUTBOX_MAX_ATTEMPTS=25` (`-1` — без предела), `OUTBOX_MAX_PAYLOAD_BYTES`, лог dead,
     `ErrUnavailable` без траты попытки, `natskit.StreamChecker` на старте, `WithSubjects`; доки
 
-### Итог
-- [ ] **S11** — Итог плана: эксперименты аудита по закрытым находкам на HEAD — PASS (таблица — в «Где
+- [x] **S11** — Итог плана: эксперименты аудита по закрытым находкам на HEAD — PASS (таблица — в «Где
   мы сейчас»), `make gate-clean` зелёный, Handoff перенесён в `harden-authn-release`, план удалён
   - Проверка: `make gate-clean` → зелёный (`./...`) · Закрывает: — · Зависит от: S3, S4, S5, S8, S9, S10
+  - Сделано: эксперименты на `f028099` — PASS, `make gate-clean` зелёный; Handoff и удаление — закрытие
 
 ## Решения
 - **Состав A.** Кроме high (KGATE-01…-04, KTST-01) и лесенки (KGATE-06) — KGATE-05 (тот же хук), KGATE-11
@@ -183,8 +177,6 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   не разобрать. Переменная — envconfig-тег или литерал `os.Getenv`/`LookupEnv` (кроме `allow.txt`),
   строка таблицы — в доках каталога пакета или выше, дефолт — в бэктиках, без `default` — `—` с
   пояснением или нуль; инъекции E0–E8, G32, G01 — `TestCheck`; natskit `Config.Instance` — `ignored`.
-- **`gate_inject.py`** — `s_plan` (G11, G20) ломает любой активный план; G21 запускает хук, который
-  запустил бы git (`$(git rev-parse --git-path hooks)/pre-push`), со stdin `git push` (N1).
 - **N1** — pre-push гоняет `scripts/gate-clean.sh <коммит>` на каждом пушимом коммите: gitignored-файл
   рабочего дерева не прячет поломку, «чистое дерево» и «= HEAD» не нужны, удаление ref'а — без гейта.
 - **N2** — `--eval` — строка `gate_bad` (`--eval=` видно в `MAKEFLAGS` до чтения Makefile); второй
@@ -207,8 +199,9 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
   и после `humachi.New`; объявление — путь в `httpkit.PublicRoutes` (как `Middlewares`; без метода:
   `Mount` — на все методы), лишняя строка — ошибка. Дубль имени схемы, схема без `Name`/`Scheme` —
   `ErrConfig` уже в `fx.New` (HX05 — `app.Err()`); дубль имени пробы — `ErrConfig` `registerHealth`.
-- **B1, эксперименты.** H15 (подтесты B1), HX10, HX11 — под «ошибку старта с именем», HX11b — со схемой
-  в графе; подтест H15 «AdminKey принимает Bearer» — KSEC-08 (партия 3, `httpkit-auth-edge`), красный.
+- **Эксперименты аудита.** H15 (подтесты B1), HX10, HX11 — под «ошибку старта с именем», HX11b — со схемой
+  в графе, H15 «AdminKey принимает Bearer» — KSEC-08 (п3, `httpkit-auth-edge`); `gate_inject.py` (N4):
+  `s_plan` ломает временный план; G21 — хук, который запустил бы git: нет хука — не поймано, поймано — с упавшим тестом.
 - **B1, подмена хендлера** (валидатор B). Адаптер реестра ставит операции хендлер типа `opHandler` (по
   METHOD+path: группа документирует копию); маршрут на пути операции с чужим хендлером — ошибка всегда,
   раньше операции — при её `Handle`. Маршрут после проверки — доки: роутер наружу — `*chi.Mux`.
@@ -253,9 +246,16 @@ B1–B3 шаблона с уточнениями аудита: явные пуб
 - `events.OutboxFor` — `outboxkit.WithSubjects(name+".>")` (бэклог шаблона `publisher-stream-check`).
 
 ## Где мы сейчас
-Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
-закрыты (N4 — S11). S6–S10 сделаны; по валидатору B (`M/validation-harden-gate-defaults-B.md`) B1, B2,
-N1–N6, N10 и тест SSE перепроверки закрыты, N7–N9, N11 — бэклог; дальше перепроверка, S11.
+План выполнен: S1–S10 — PASS валидаторов A и B (`M/validation-harden-gate-defaults-{A,B}.md`), S11 — ниже
+(протокол — `M/s11-harden-gate-defaults.md`); следующее — закрытие и `harden-authn-release`.
+
+| Находка | Эксперимент на `f028099` (прочие исходы — как в базе) | Итог |
+|---|---|---|
+| KGATE-01…-03, -05, -06, KTST-01 | `gate_inject.py` — 31 из 32 (G04 — KGATE-08, п3); 29 из 29 мутантов integration — `make test-full` | PASS |
+| KGATE-04, -11, KDOC-04 + KGATE-12, KGATE-13 | `lintcache` — L1–L5 красные через `make lint`; тексты ↔ `GATE_STEPS`; `envdoc-inject.sh` 7 из 7, G10, G32, GH04, GH08 | PASS |
+| B1 и `httpkit-auth-bypass`, KFX-09 + -07, KTST-08, -09 | H15 (B1), HX05, HX05b, HX10, HX11, HX11b, HT01; зонд B1 — A1–A3, A1b | PASS |
+| KSEC-09…-11, KOBS-11, -13, docs | H08, H11, H11b (+15,7 MiB на 200 000 адресов), H12, H14; HO02 ×4, HO04 | PASS |
+| KAPI-03, KOBS-05, E17, KDOC-09, флак SSE | claimsB, зонд D2 и D5; KO17; E17; бюджет 1 ч 23 мин 31 с; `ssemetric` 0/300 | PASS |
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — httpkit: при схеме в графе операция без `Security` и без `httpkit.Public` (пустой
