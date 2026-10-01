@@ -1,20 +1,20 @@
 ---
-status: blocked
+status: in-progress
 parent: go-backend-template:audit-program
-blocked-by: harden-gate-defaults — первая половина партии 2 (гейт и B1–B3) идёт раньше
+blocked-by: —
 ---
 
 # harden-authn-release — партия 2, часть 2: сессии и токены authnkit, аудит и метрики, high и C, релиз v1.3.0
 
 ## Цель
-Вторая половина партии 2 (после `harden-gate-defaults`). Пункты шаблона B4–B8: аудит из ctx,
+Вторая половина партии 2. Пункты шаблона B4–B8: аудит из ctx,
 одноразовые токены и сессии refresh в authnkit, `testkit/metrictest`, `config` без ctx. Затем high
 базового аудита (natskit, httpclient) и кандидаты C: остановка httpkit с `/ready` 503, iss/aud и
 ротация JWT, атрибуты logkit без slog. Итог — аннотированный тег `v1.3.0`, на который шаблон
 переходит в `fix-reference-code` S9 без обходов.
 
 ## Контекст
-- **Порядок.** После `harden-gate-defaults`: в `main` уже гейт с integration и лесенкой миграций,
+- **Порядок.** В `main` уже гейт с integration и лесенкой миграций,
   B1–B3, ключ IP клиента в `internal/`; его Handoff переносится сюда при закрытии. Программа, метод
   и push — `go-backend-template/.claude/plans/audit-program.md`; партии — `M/replan-golibinfra.md`
   §6; находки — `M/kits-audit/summary.md` и отчёты углов (`M` — `/home/mm/.cache/stit-audit-program/`).
@@ -239,7 +239,10 @@ blocked-by: harden-gate-defaults — первая половина партии 
   dev.
 - **Метрики.** Бизнес-метрики (S11) проверяются через `testkit/metrictest`.
 - **Тесты.** Лесенка `cmd/migrate/migrate_test.go` может перейти на хелпер testkit (иначе —
-  `repair-harness` S7). В `scripts/tools/test.sh`: testkit без Docker вне `-short` — FAIL.
+  `repair-harness` S7: `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...), …)`).
+  `scripts/tools/test.sh:21-22` — testkit без Docker вне `-short` — FAIL, обход
+  `TestDockerRequired` (`cmd/migrate/migrate_test.go`) лишний. `events.OutboxFor` —
+  `outboxkit.WithSubjects(name+".>")` (бэклог шаблона `publisher-stream-check`).
 - **env для INFRA-HANDOFF:**
   - `HTTP_RATE_LIMIT_TRUST_PROXY` → `HTTP_TRUST_PROXY_HOPS`;
   - `JWT_REFRESH_TTL` → `SESSION_*`;
@@ -247,11 +250,12 @@ blocked-by: harden-gate-defaults — первая половина партии 
   - конечный `OUTBOX_MAX_ATTEMPTS`;
   - `HTTP_SHUTDOWN_TIMEOUT` и `HTTP_SHUTDOWN_DRAIN_DELAY`, бюджет ретраев `NATS_JS_*`.
 
-**Аннотация v1.3.0:** строки Breaking, Поведение и Изменения — из шагов обоих планов и Handoff
-`harden-gate-defaults`. Шлюзам на v0.39.0 — цепочка аннотаций; `config` без ctx → убрать
+**Аннотация v1.3.0:** первая половина (гейт, B1–B3) — заготовка в материалах программы
+`/home/mm/.cache/stit-audit-program/annotation-v1.3.0.md`; вторая — по шагам этого плана в «Где мы
+сейчас». Шлюзам на v0.39.0 — цепочка аннотаций; `config` без ctx → убрать
 `fx.Provide(context.Background)`.
 
 ## Где мы сейчас
-Ждёт `harden-gate-defaults` (status: blocked). После его закрытия — `in-progress`, следующий шаг —
-S1 (инструменты метрик от текущего провайдера). Не доделано планировщиком: `M/kits-audit/summary.md`
-не записан (харнесс не даёт субагенту писать файл-сводку) — текст сводки в его отчёте дирижёру.
+Первая половина партии 2 (`harden-gate-defaults`: гейт, B1–B3) закрыта, её аннотация — в
+материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. Следующий шаг — S1 (инструменты
+метрик от текущего провайдера).
