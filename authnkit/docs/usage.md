@@ -49,6 +49,10 @@ type UsedCodeStore interface {
 }
 func NewMemoryUsedCodeStore(opts ...UsedCodeStoreOption) *MemoryUsedCodeStore
 
+// Одноразовые токены
+func NewToken() string               // 256 бит из crypto/rand, hex (64 символа)
+func HashToken(token string) string  // SHA-256 в hex — для хранения и поиска
+
 // RBAC
 type Permission string
 func NewRegistry() *Registry
@@ -213,6 +217,27 @@ func (r redisUsedCodes) MarkUsed(ctx context.Context, key string, ttl time.Durat
 Ключ кит считает сам (SHA-256 от секрета и кода), TTL — длина окна с учётом
 `Skew`. Ошибка store → `(false, error)`: пускать ли пользователя при
 недоступном хранилище, решает потребитель.
+
+## Одноразовые токены
+
+Ссылка сброса пароля, подтверждение email, refresh-сессия — токен из
+`NewToken`: 256 бит из `crypto/rand` в hex. Пользователь получает токен, база
+хранит `HashToken(token)` (SHA-256): утечка таблицы не даёт действующих токенов.
+Медленный хеш не нужен — у токена полная энтропия.
+
+```go
+tok := authnkit.NewToken()
+_, err := db.Exec(ctx, `INSERT INTO password_resets (user_id, token_hash, expires_at) VALUES ($1, $2, $3)`,
+	userID, authnkit.HashToken(tok), expiresAt)
+// письмо с tok; при погашении — поиск по хешу и условный UPDATE в одной транзакции:
+// UPDATE password_resets SET used_at = NOW() WHERE token_hash = $1 AND used_at IS NULL AND expires_at > NOW()
+```
+
+Поиск — по хешу в SQL владельца таблицы (`WHERE token_hash = $1`); если хеш
+сравнивается в памяти — `subtle.ConstantTimeCompare`. Погашение — условным
+`UPDATE … WHERE used_at IS NULL`: из параллельных запросов побеждает один. Hex
+длиной 64 logkit маскирует по умолчанию, base64url — нет: свой формат токена
+не заводите.
 
 ## RBAC
 

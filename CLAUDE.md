@@ -78,7 +78,7 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - **Данные и messaging:** `pgkit` (pgx pool + миграции + Transactor), `natskit`
   (NATS/JetStream), `outboxkit` (transactional outbox), `cachekit` (Redis +
   idempotency store), `storagekit` (S3/MinIO), `auditkit`, `bruteforcekit`.
-- **Auth и интеграции:** `authnkit` (Argon2id/JWT/TOTP/RBAC), `oidckit` (OIDC BFF),
+- **Auth и интеграции:** `authnkit` (Argon2id/JWT/TOTP/одноразовые токены/RBAC), `oidckit` (OIDC BFF),
   `hubkit` (SDK хаба stit: sso/issuer/client/sync/projection/hubclaims), `anthropickit`
   (клиент Anthropic с `Usage`+`Cost`), `amocrmkit` (транспорт к amoCRM).
 - **Тесты:** `testkit` (testcontainers, лесенка миграций `MigrationLadder`) + сабпакеты

@@ -2,10 +2,10 @@
 
 Криптографически-корректные кирпичики для аутентификации: `Hasher` поверх
 Argon2id, JWT sign/verify на HS256 с типом токена (`HS256JWT`, go-jose),
-TOTP-генератор по RFC 6238 (`TOTPGenerator`) и in-process RBAC-реестр
-(`Registry`). Кит даёт только примитивы — конкретные auth-flow'ы (login,
-refresh, выдача/ротация токенов, MFA enrollment, хранение секретов) живут на
-стороне потребителя. Observability-by-default: эмитит исход верификаций
+TOTP-генератор по RFC 6238 (`TOTPGenerator`), одноразовые непрозрачные токены
+(`NewToken`, `HashToken`) и in-process RBAC-реестр (`Registry`). Кит даёт только
+примитивы — конкретные auth-flow'ы (login, refresh, выдача/ротация токенов, MFA
+enrollment, хранение секретов) живут на стороне потребителя. Observability-by-default: эмитит исход верификаций
 JWT/TOTP и время хэширования/проверки пароля.
 
 ## Импорт
@@ -61,7 +61,13 @@ func main() {
 		// в access-контуре предъявили refresh-токен
 	}
 
-	// 3. RBAC: реестр ролей (старт приложения) → проверка права.
+	// 3. Одноразовый токен (ссылка сброса, подтверждение email): в письмо — токен,
+	// в базу — только хеш; поиск — по хешу.
+	resetToken := authnkit.NewToken()           // 64 hex = 256 бит, logkit маскирует
+	resetHash := authnkit.HashToken(resetToken) // SHA-256 в hex — колонка с индексом
+	_ = resetHash
+
+	// 4. RBAC: реестр ролей (старт приложения) → проверка права.
 	roles := authnkit.NewRegistry()
 	roles.Register("admin", "articles:read", "articles:write")
 	_ = roles.Has("admin", authnkit.Permission("articles:write")) // true

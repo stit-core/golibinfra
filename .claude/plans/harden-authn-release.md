@@ -58,9 +58,10 @@ blocked-by: —
   перетираются; `audittest` ведёт себя так же. Проверка:
   `go test -race ./auditkit/... ./testkit/audittest/` → PASS
   - Подтверждено: PASS — `TestEntry_Enrich`, pgstore с Docker, `audittest` за middleware httpkit
-- [ ] **AC3** — authnkit выдаёт одноразовый токен: 256 бит из `crypto/rand`, hex. Для хранения —
+- [x] **AC3** — authnkit выдаёт одноразовый токен: 256 бит из `crypto/rand`, hex. Для хранения —
   SHA-256 токена. logkit маскирует такой токен по умолчанию. Проверка:
   `go test -race -run Token ./authnkit/ ./logkit/` → PASS
+  - Подтверждено: PASS; токен в base64url (мутант) — `TestRedact_OneTimeTokenOfAuthnkit` красный
 - [ ] **AC4** — `authnkit/session` управляет сессиями refresh:
   - вход выдаёт сессию;
   - обновление ротирует токен атомарно: из N параллельных обновлений одним токеном успешно одно;
@@ -124,8 +125,9 @@ blocked-by: —
   так же
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: —
   - Сделано: `auditkit.Entry.Enrich` — его зовут `pgstore.Store.Log` и `audittest.Recorder.Log`
-- [ ] **S4** — B5: одноразовые токены в authnkit — генерация и хеш
+- [x] **S4** — B5: одноразовые токены в authnkit — генерация и хеш
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Зависит от: —
+  - Сделано: `authnkit.NewToken() string` и `HashToken(token) string`, рецепт погашения в доке
 - [ ] **S5** — B6: `authnkit/session` и `authnkit/session/pgstore`:
   - выдача, ротация, отзыв цепочки, `RevokeAll`, `Revoke`, абсолютный срок;
   - kit-owned миграция, проверка схемы на старте, очистка через timerkit, метрики;
@@ -187,7 +189,8 @@ blocked-by: —
   `Entry.Enrich(ctx)`: своя реализация `Logger` зовёт его так же, до `Validate`.
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его по умолчанию, base64url — нет (бэклог
   `logkit-redact-gaps`). SHA-256, а не Argon2id: у токена полная энтропия. Поиск — по хешу в SQL
-  владельца таблицы, сравнение в памяти — `subtle`.
+  владельца таблицы, сравнение в памяти — `subtle`. `NewToken` без ошибки: `crypto/rand.Read`
+  с Go 1.24 её не возвращает.
 - **Сессии, устройство.**
   - Раскладка: `authnkit/session` — API, конфиг, метрики; `authnkit/session/pgstore` — хранилище,
     миграции, `Module`, очистка; `testkit/sessiontest` — фейк и набор `Run(t, newStore)`, по
@@ -273,8 +276,8 @@ blocked-by: —
 
 ## Где мы сейчас
 Первая половина партии 2 (`harden-gate-defaults`: гейт, B1–B3) закрыта, её аннотация — в
-материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S3 сделаны; следующий шаг — S4
-(одноразовые токены). Хвост для S8: под нагрузкой гейта `TestStreamBus_SubscriptionUnsubscribe`
+материалах (Handoff). Сводка аудита — `M/kits-audit/summary.md`. S1–S4 сделаны; следующий шаг — S5
+(`authnkit/session`). Хвост для S8: под нагрузкой гейта `TestStreamBus_SubscriptionUnsubscribe`
 получил доставку после `Unsubscribe` (1 прогон из 4, отдельно 8 из 8 PASS), а дока обещает «снимает
 интерес сразу».
 
@@ -287,3 +290,5 @@ blocked-by: —
 - Поведение — auditkit: пустые `IP` и `RequestID` записи `pgstore.Store` и `audittest.Recorder`
   берут из ctx (`httpkit.ClientIP`, `RequestID`; request-id — и grpckit) → ручные значения в
   `Entry` убрать; изменения — `Entry.Enrich(ctx)` для своей реализации `Logger`.
+- Изменения — authnkit: `NewToken()` (256 бит hex) и `HashToken` (SHA-256) → `pkg/tokens`
+  шаблона заменить.

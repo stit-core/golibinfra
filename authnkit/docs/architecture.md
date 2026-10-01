@@ -13,12 +13,13 @@ authnkit/
 ├── jwt.go           JWTSigner/JWTParser: HS256JWT (подпись/разбор токена, go-jose)
 ├── totp.go          TOTPGenerator (RFC 6238, обёртка pquerna/otp) + UsedCodeStore
 ├── usedcode.go      MemoryUsedCodeStore (однократность кода в одной реплике)
+├── token.go         NewToken / HashToken (одноразовые непрозрачные токены)
 ├── permissions.go   RBAC: Permission / Registry (экземплярный реестр)
 ├── metrics.go       OTel-инструменты (создаются в конструкторах через internal/otelkit)
 └── module.go        fx.Module + envconfig-конструкторы
 ```
 
-## Четыре примитива
+## Примитивы
 
 ### Hashing — Argon2id
 
@@ -114,6 +115,15 @@ WHY тип токена внутри кита: `SignAccess`/`SignRefresh` раз
 закрывает это через `UsedCodeStore` (ключ — SHA-256 от секрета и кода, TTL —
 длина окна с учётом `Skew`): `MemoryUsedCodeStore` для одной реплики, обёртка
 над `cachekit.Cache.SetNX` — для нескольких. Голый `Verify` состояния не хранит.
+
+### Одноразовые токены
+
+`NewToken` — 32 байта `crypto/rand` в hex: 256 бит энтропии, 64 символа без
+алфавита URL-кодирования. Hex выбран под маски logkit: цепочку из ≥ 32 hex-символов
+дефолтный набор маскирует в любом значении лога, base64url — нет. `HashToken` —
+SHA-256 в hex: перебор полной энтропии невозможен, поэтому Argon2id здесь только
+тратил бы CPU, а детерминированный хеш даёт поиск по индексу. Хранение и
+погашение — у владельца таблицы (условный `UPDATE`).
 
 ### RBAC — экземплярный реестр прав
 
