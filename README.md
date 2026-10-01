@@ -317,9 +317,11 @@ makefile (`-f`), `GOFLAGS` (env или `go env -w`) и подменой
 Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь
 `make check` на каждом пушимом коммите в свежем worktree, как `make gate-clean`, — без
 make-окружения вызывающего, незакоммиченных правок и gitignored-файлов; без активного
-pre-push `make check` красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
-(`git push --no-verify`); из сессии Claude Code его и смену `core.hooksPath`
-блокирует `.claude/hooks/guard-bash.sh`.
+pre-push `make check` красный (`hooks-check`, подсказка — `make hooks`). Обход — только
+руками человека (`git push --no-verify`). Из сессии Claude Code удобные обходы блокируют
+deny `.claude/settings.json` (`--no-veri…` где угодно в команде, в том числе в кавычках и
+алиасе) и `.claude/hooks/guard-bash.sh` (`git commit -n`, смена `core.hooksPath`, `chmod`,
+`rm`, `mv` по `scripts/git-hooks`) — страховка от удобного обхода, а не от обфускации.
 
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),

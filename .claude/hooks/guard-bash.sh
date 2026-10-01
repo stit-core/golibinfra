@@ -3,9 +3,11 @@
 # exit 2 блокирует вызов, stderr уходит Claude.
 #
 # Блокирует: git commit с -n; git с --no-veri… (любая подкоманда); core.hooksPath в команде с git
-# (прочитать — git config --list). Команда проверяется построчно; тела heredoc — данные (сообщение
-# коммита может упоминать флаги); флаги в строках в кавычках не ищутся. Это страховка от
-# «удобного» обхода, а не от обфускации. Ослабить сам гейт окружением не даёт make check.
+# (прочитать — git config --list); chmod, rm, mv (и git rm/mv) по scripts/git-hooks. Команда
+# проверяется построчно; тела heredoc — данные (сообщение коммита может упоминать флаги); флаги
+# в строках в кавычках не ищутся — `--no-veri…` где угодно в команде держит deny
+# .claude/settings.json. Это страховка от «удобного» обхода, а не от обфускации. Ослабить сам
+# гейт окружением не даёт make check.
 set -uo pipefail
 
 block() {
@@ -29,6 +31,17 @@ text=$(printf '%s\n' "$cmd" | awk '
 re_git='(^|[^[:alnum:]_.-])git([[:space:]]|$)'
 [[ $(printf '%s' "$text" | tr '[:upper:]' '[:lower:]') == *core.hookspath* && $text =~ $re_git ]] &&
     block "core.hooksPath"
+
+# Неисполняемый или удалённый хук git молча пропускает. Слова — с кавычками: путь в кавычках
+# команду не прячет; команда — первое слово после присваиваний, sudo, env, command и git.
+while read -r -a words; do
+    i=0
+    while ((i < ${#words[@]})) && [[ ${words[i]} == *=* || ${words[i]} =~ ^(sudo|env|command|git)$ ]]; do
+        i=$((i + 1))
+    done
+    case "${words[i]-}" in chmod | */chmod | rm | */rm | mv | */mv) ;; *) continue ;; esac
+    [[ "${words[*]:i+1}" == *git-hooks* ]] && block "${words[i]##*/} scripts/git-hooks"
+done <<<"$(printf '%s' "$text" | sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' | tr ';&|()`' '\n\n\n\n\n\n')"
 
 # Флаги git ищем вне кавычек, по сегментам: строки (с учётом `\` в конце) и части между
 # ; & | ( ) и обратными кавычками.

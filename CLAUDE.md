@@ -195,8 +195,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - `http.DefaultClient` без таймаута и `context.Background()` в обработчике, где
   доступен контекст запроса: первый вешает вызов без предела, второй теряет отмену,
   дедлайн и трейс запроса.
-- Обходить хуки и гейт: `--no-verify`, `git commit -n`, смена `core.hooksPath` — из сессии
-  Claude их блокируют `permissions.deny` и хук `.claude/hooks/guard-bash.sh`
+- Обходить хуки и гейт: `--no-verify`, `git commit -n`, смена `core.hooksPath`, `chmod`/`rm`/`mv`
+  хука — из сессии Claude их блокируют `permissions.deny` и хук `.claude/hooks/guard-bash.sh`
   (`.claude/settings.json`); красный гейт чинят, а не обходят.
 
 ## Forward-only

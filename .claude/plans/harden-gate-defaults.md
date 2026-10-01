@@ -262,6 +262,8 @@ blocked-by: —
 - **N2** — `--eval` — строка `gate_bad` (`--eval=` видно в `MAKEFLAGS` до чтения Makefile); второй
   makefile ловит пререквизит `gate-makefiles` у `check` и `gate-clean`: рецепт `-f extra.mk` подменяет,
   а пререквизиты правил складываются, `$(error)` не глушат `-k`/`SHELL` (`M/hgd2/n2_probe.sh`).
+- **N3** — deny `*--no-veri*` ловит флаг в кавычках и алиасе; guard — `chmod`/`rm`/`mv` (и `git rm`/`mv`)
+  по `scripts/git-hooks`: неисполняемый или удалённый хук git молча пропускает (`M/hgd2/n3_guard.py`).
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`. Строки аннотации v1.3.0:
