@@ -21,12 +21,11 @@ blocked-by: —
   `tests-gate.md` (KGATE, KTST), `httpkit-a.md`, `httpkit-b.md`, `correctness-security.md`,
   `fx-observability.md`, `api-docs.md`. Эксперименты — `run.sh` углов: тест утверждает желаемое,
   FAIL — дефект есть; тяжёлые прогоны — последовательно.
-- **Гейт сейчас.** `Makefile:15`: `check` гоняет `test -short`, integration — ручной `test-full`;
-  `PKGS`, `GO`, `GOFLAGS`, `A`, `-i` сужают или глушат гейт (G14–G20, G24); кеш golangci-lint общий;
-  `.githooks/pre-push` проверяет рабочее дерево, а в рабочем клоне путь хуков — несуществующий
-  `scripts/git-hooks`; `testkit.RequireDocker` (`testkit/testkit.go:90`) без Docker — skip.
-  Образец — гейт шаблона: `gate_bad` и `GATE` в `Makefile`, `scripts/git-hooks/pre-push`,
-  `scripts/tools/lint.sh:38`, `.claude/settings.json`, `.claude/hooks/guard-bash.sh`.
+- **Гейт.** `make check` — шаги `GATE_STEPS` с integration и guard `gate_bad` (`Makefile`),
+  `scripts/gate-clean.sh`, `scripts/git-hooks/pre-push`, `.claude/settings.json` с
+  `.claude/hooks/guard-bash.sh` (S1–S3). Down-миграции китов не исполняет ни один тест (KGATE-06),
+  `scripts/envdoc-check.sh` сверяет только имена (KDOC-04). Образец — гейт шаблона (`Makefile`,
+  `scripts/git-hooks/`, `scripts/tools/`, `.claude/hooks/guard-bash.sh`).
 - **httpkit на v1.2.0.** Старт проверяет только `Security` без extractor'а, по `OpenAPI().Paths` —
   скрытых операций не видит (`httpkit/module.go:124-178`). `ClientIP` и
   `HTTP_RATE_LIMIT_TRUST_PROXY` служат только лимитеру (`httpkit/ratelimit.go:13-104`).
@@ -71,11 +70,16 @@ blocked-by: —
     окружении) → в W2 нарушение красное, путь своего checkout'а;
     `GOLANGCI_DIFF_PROCESSOR_PATCH` из окружения lint не глушит; у `gate-clean` кеш — `.cache/`
     свежего worktree
-- [ ] **AC4** — Push проходит гейт: pre-push гоняет `make check` на пушимом коммите при чистом
+- [x] **AC4** — Push проходит гейт: pre-push гоняет `make check` на пушимом коммите при чистом
   дереве; неактивный pre-push роняет `make check` с подсказкой `make hooks`; обходы хуков из сессии
   Claude заблокированы; CLAUDE.md, README, CONTRIBUTING и скиллы `/plan`, `/release` описывают этот
   гейт. Проверка: `gate_inject.py --only G21,G31` → оба пойманы; `make check` при неактивном
   pre-push → FAIL
+  - Подтверждено: на кандидате S3 G21 (грязное дерево — отказ хука) и G31 (push в bare, падающий
+    тест — красный `make check`, ref не ушёл) пойманы; контроль — чистый зелёный HEAD пушится;
+    не-HEAD ref и `MAKEFLAGS=i git push` с падающим тестом — отказ; `make check` в репо без
+    `make hooks` → FAIL `hooks-check` с подсказкой; guard — `M/hgd/guard_cases.py`, 84 случая → 0
+    расхождений; логи — `M/hgd/s3/`
 - [ ] **AC5** — Каждый kit-owned источник миграций (auditkit, bruteforcekit, outboxkit с
   `TableMigrations`) проходит в `make check` лесенку up → down до нуля → up со сверкой схемы
   хелпером testkit, которым потом пользуется шаблон. Проверка: `gate_inject.py --only G28` и тот же
@@ -128,11 +132,15 @@ blocked-by: —
     итог `✓ check clean (./...)`; кеш `$(CURDIR)/.cache/golangci-lint` (`override`, `.gitignore`);
     `gate-clean` без make-окружения вызывающего; тексты CLAUDE.md, README, CONTRIBUTING. AC2, AC3
     → выполнены
-- [ ] **S3** — Рабочие хуки: `scripts/git-hooks/pre-push` по образцу шаблона (чистое дерево, пушимый
+- [x] **S3** — Рабочие хуки: `scripts/git-hooks/pre-push` по образцу шаблона (чистое дерево, пушимый
   коммит = HEAD, окружение гейта вычищено), `make hooks` туда, `make check` требует активный
   pre-push, `.claude/settings.json` с deny и guard обходов, тексты обвязки (KGATE-03, KGATE-05,
   KGATE-11)
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S2
+  - Сделано: `.githooks/pre-push` → `scripts/git-hooks/pre-push` (чистое дерево, refs = HEAD,
+    `env -u MAKEFLAGS…`), `make hooks` туда, шаг `hooks-check` первым в `check`;
+    `.claude/settings.json` и `guard-bash.sh`; тексты CLAUDE.md, README, CONTRIBUTING, `/plan`,
+    `/release`. AC4 → выполнен
 - [ ] **S4** — Хелпер лесенки миграций в testkit и её тест на каждый kit-owned источник (KGATE-06)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: S1
 - [ ] **S5** — Строгий `envdoc-check`: дефолты, строки таблиц, все каталоги с Go-кодом, поля без
@@ -228,7 +236,20 @@ blocked-by: —
   шаблона, а не `env -i`: прогону нужны `DOCKER_HOST`, прокси и `GOPATH`, а сужающее гейт отсекает
   guard или под-make.
 - **`gate_inject.py`** — G11 и G20 ломали удалённый `harden-kits.md`; `s_plan` берёт любой активный
-  план, смысл инъекции тот же (правка в материалах аудита).
+  план, смысл инъекции тот же. G21 запускает хук, который запустил бы git
+  (`$(git rev-parse --git-path hooks)/pre-push`). Правки — в материалах аудита.
+- **S3, без `SKIP_PREPUSH`** — обход pre-push один: `git push --no-verify` руками человека;
+  второй рубильник в окружении не нужен (шаблон убирает приглашение к нему — `repair-harness` S1),
+  у guard нет его ветки.
+- **S3, `hooks-check`** — первый шаг `check`: git берёт хуки из `scripts/git-hooks` этого
+  checkout'а, `pre-push` исполняемый. Путь хуков в общем конфиге относительный, поэтому у каждого
+  worktree — свой хук: `gate-clean` и worktree валидатора шаг проходят.
+- **S3, `.claude/settings.json`** — deny `--no-verify` и разрушительных команд, которые программа
+  запрещает (`push --force`, `reset --hard`, `checkout --`, `clean -f`, `rm -rf`), чтение и правка
+  `*.pem`/`*.key`; allow-листа нет — это настройка пользователя. Guard — копия шаблона без ветки
+  `SKIP_PREPUSH`.
+- **S3, pre-commit** не заводится: строка `/plan` про pre-commit исправлена (KGATE-11), формат
+  планов держит `plan-check` в `make check`, а значит и в pre-push.
 
 ## Handoff
 При закрытии плана — в Handoff `harden-authn-release`. Строки аннотации v1.3.0:
@@ -247,9 +268,9 @@ blocked-by: —
   выключенный JetStream — ошибка старта; payload сверх предела — ошибка `Publish`.
 
 ## Где мы сейчас
-S1 и S2 закрыты: `make check` гоняет integration (Docker обязателен, ≈1,5 мин), всегда на `./...`,
-окружение его не сужает, кеш lint — в `.cache/` checkout'а. Следующий шаг — S3 (pre-push в
-`scripts/git-hooks/`, `make check` требует активный хук, `.claude/settings.json` с guard'ом).
+S1–S3 закрыты: `make check` гоняет integration (Docker обязателен, ≈1,5 мин), всегда на `./...`,
+окружение его не сужает, кеш lint — в `.cache/` checkout'а; push проходит pre-push (`make hooks`),
+без активного хука `make check` красный. Следующий шаг — S4 (хелпер лесенки миграций в testkit).
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест

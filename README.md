@@ -295,8 +295,8 @@ go get git.stit.tech/stit-core/golibinfra@vX.Y.Z && go mod tidy
 
 ```bash
 make tools        # golangci-lint + govulncheck пиненных версий
-make hooks        # core.hooksPath=.githooks: pre-push гоняет make check
-make check        # fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
+make hooks        # один раз: core.hooksPath=scripts/git-hooks — pre-push гоняет make check
+make check        # hooks-check + fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
 make test-full    # unit + integration (testcontainers: Postgres/NATS/Redis/MinIO) -race; без Docker — FAIL
 make test         # быстрый цикл: unit -short -race, без контейнеров
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
@@ -308,6 +308,13 @@ make gate-clean   # make check в чистом worktree от HEAD — перед
 `PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-n`/`-q`/`-t`, `GOFLAGS` (env или
 `go env -w`) и подменой `MAKE`/`SHELL`/`MAKEFILES` гейт не запускается. Кеш
 golangci-lint — свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
+
+Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) пускает только
+чистое дерево и пушимый коммит = HEAD (тег — тоже на HEAD) и гоняет весь
+`make check` без make-окружения вызывающего; без активного pre-push `make check`
+красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
+(`git push --no-verify`); из сессии Claude Code его и смену `core.hooksPath`
+блокирует `.claude/hooks/guard-bash.sh`.
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),
 `make test-timing` (timing-тест logkit: под нагрузкой флакает, поэтому вне гейта).

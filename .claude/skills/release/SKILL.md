@@ -23,8 +23,8 @@ description: Выпустить новую версию golibinfra — make gate
 
 1. **Gate на чистом дереве.** `make gate-clean` — `make check` (с integration,
    нужен Docker) в worktree от HEAD: ловит незакоммиченные и gitignored-файлы, от
-   которых зависит сборка. Красное → не релизим. `make hooks` держит тот же
-   `make check` на pre-push.
+   которых зависит сборка. Красное → не релизим. Push тега и `main` проходит
+   pre-push (`make hooks`): чистое дерево, пушимое — HEAD, тот же `make check`.
 2. **Версия (semver по форме, политика — `README.md § Версионирование`).**
    Совместимость между minor'ами `v1` не гарантируется: **breaking-изменения идут
    minor'ом** (`vX.Y+1.0`) и обязаны быть перечислены в аннотации тега с шагом

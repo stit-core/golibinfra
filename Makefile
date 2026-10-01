@@ -14,7 +14,7 @@ unexport GOLANGCI_DIFF_PROCESSOR_PATCH GOLANGCI_LINT_CACHEPROG
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
+.PHONY: help check hooks-check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
 
 help: ## Список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -22,7 +22,7 @@ help: ## Список целей
 # Шаги гейта — по очереди, каждый своим make: первый красный останавливает check. PKGS, GO и A
 # шагам не доходят ни из окружения, ни из командной строки: гейт проверяет всё дерево.
 override GATE_PKGS  := ./...
-override GATE_STEPS := fmt-check vet lint test-full build tidy-check vuln envdoc-check plan-check
+override GATE_STEPS := hooks-check fmt-check vet lint test-full build tidy-check vuln envdoc-check plan-check
 override GATE       := $(MAKE) --no-print-directory PKGS=$(GATE_PKGS) GO=go A=
 
 # check и gate-clean не запускаются там, где сказали бы «clean», не проверив всё: -i глушит
@@ -37,9 +37,22 @@ $(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускает�
 endif
 endif
 
-check: ## Канонический gate: fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
+check: ## Канонический gate: хуки, fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
 	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(GATE) $$step; done
 	@echo "✓ check clean ($(GATE_PKGS))"
+
+# Пуш без гейта никто не видит, поэтому неактивный pre-push — красный check, а не предупреждение.
+hooks-check: ## pre-push активен: git берёт хуки из scripts/git-hooks (иначе — make hooks)
+	@active=$$(cd "$$(git rev-parse --git-path hooks)" 2>/dev/null && pwd -P); \
+	if [ "$$active" != "$$(cd scripts/git-hooks && pwd -P)" ]; then \
+		echo "FAIL: pre-push не активен — git берёт хуки из $$(git rev-parse --git-path hooks); запусти make hooks"; \
+		exit 1; \
+	fi; \
+	if [ ! -x scripts/git-hooks/pre-push ]; then \
+		echo "FAIL: scripts/git-hooks/pre-push не исполняемый — git его пропустит (chmod +x)"; \
+		exit 1; \
+	fi; \
+	echo "OK: pre-push активен (scripts/git-hooks)"
 
 fmt: ## Форматирование (gofumpt через golangci-lint)
 	golangci-lint fmt $(PKGS)
@@ -97,8 +110,8 @@ fuzz: ## Короткий прогон каждого Fuzz-таргета (FUZZT
 gate-clean: ## `make check` в чистом worktree HEAD: без make-окружения вызывающего, с холодным кешем lint
 	scripts/gate-clean.sh
 
-hooks: ## Включить .githooks (pre-push = make check)
-	git config core.hooksPath .githooks
+hooks: ## Включить хуки scripts/git-hooks: pre-push гоняет make check на чистом HEAD
+	git config core.hooksPath scripts/git-hooks
 
 tools: ## Установить golangci-lint и govulncheck пиненных версий
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)

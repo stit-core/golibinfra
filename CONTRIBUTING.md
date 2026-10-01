@@ -51,16 +51,17 @@
 
 ```bash
 make tools        # один раз: golangci-lint + govulncheck пиненных версий
-make hooks        # один раз: core.hooksPath=.githooks, pre-push гоняет make check
-make check        # fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
+make hooks        # один раз: core.hooksPath=scripts/git-hooks, pre-push гоняет make check
+make check        # hooks-check + fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
 make test         # быстрый цикл: unit -short -race, без контейнеров
 ```
 
 Зелёный `make check` — gate пройден. Он гоняет и integration-тесты
 (testcontainers), поэтому нужен Docker: без него integration-тест падает, а не
-пропускается. Что именно он запускает — в `Makefile` (цели можно вызывать по
-отдельности: `make lint`, `make test-full`, …; подмножество пакетов для них —
-`PKGS=./<kit>/...`, `check` его не видит); есть ещё `make coverage`,
+пропускается; без `make hooks` он красный — push идёт через тот же гейт (pre-push
+пускает только чистый HEAD). Что именно он запускает — в `Makefile` (цели можно
+вызывать по отдельности: `make lint`, `make test-full`, …; подмножество пакетов
+для них — `PKGS=./<kit>/...`, `check` его не видит); есть ещё `make coverage`,
 `make bench`, `make fuzz` и `make test-timing` (timing-тест logkit, вне гейта).
 
 - Новый kit → собственный `README.md` кита (+ `docs/` у сложного), строка-индекс
