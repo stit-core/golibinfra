@@ -21,10 +21,8 @@ blocked-by: —
   `tests-gate.md` (KGATE, KTST), `httpkit-a.md`, `httpkit-b.md`, `correctness-security.md`,
   `fx-observability.md`, `api-docs.md`. Эксперименты — `run.sh` углов: тест утверждает желаемое,
   FAIL — дефект есть; тяжёлые прогоны — последовательно.
-- **Гейт.** `make check` — шаги `GATE_STEPS` с integration и guard `gate_bad` (`Makefile`),
-  `scripts/gate-clean.sh`, `scripts/git-hooks/pre-push`, `.claude/settings.json` с
-  `.claude/hooks/guard-bash.sh`, лесенка `testkit.MigrationLadder`, `scripts/envdoc` (S1–S5).
-  Образец — гейт шаблона (`Makefile`, `scripts/git-hooks/`, `scripts/tools/`).
+- **Гейт** (S1–S5, образец — шаблон): `GATE_STEPS` с integration и guard в `Makefile`,
+  `scripts/gate-clean.sh`, pre-push, deny и guard `.claude/`, `testkit.MigrationLadder`, `scripts/envdoc`.
 - **httpkit на v1.2.0.** Старт проверяет только `Security` без extractor'а, по `OpenAPI().Paths` —
   скрытых операций не видит (`httpkit/module.go:124-178`). `ClientIP` и
   `HTTP_RATE_LIMIT_TRUST_PROXY` служат только лимитеру (`httpkit/ratelimit.go:13-104`).
@@ -175,19 +173,6 @@ blocked-by: —
 - **Состав A.** Кроме high (KGATE-01…-04, KTST-01) и плановой лесенки (KGATE-06) в A взяты KGATE-05
   (тот же хук), KGATE-11 (тексты того же гейта) и KDOC-04 с KGATE-12 (аудит рекомендовал их в A:
   партия 2 меняет дефолты). KGATE-07…-10 и сигналы KGATE-13 — партия 3.
-- **Docker.** `RequireDocker` пропускает только под `-short`; недоступный Docker — `t.Fatal`, без
-  переключателя: skip делал зелёными и `test-full`, и `test-int` шаблона (G26). `make test` —
-  быстрый `-short`, `make check` и `test-full` — полный прогон. Timing-тест
-  `TestRedact_CostOfRecordWithoutSecrets` — отдельной целью: под нагрузкой соседних агентов флакает.
-- **Гейт и окружение** — как у шаблона: `gate_bad`, под-make с фиксированными `PKGS=./... GO=go A=`,
-  пустые `GOFLAGS`/`MAKEFLAGS`. Кеш линтера — `$(CURDIR)/.cache/golangci-lint` (в `.gitignore`).
-- **Хуки** — в `scripts/git-hooks/`: так устроен шаблон, и рабочий клон уже указывает туда.
-  Неактивный pre-push — FAIL `make check`: пуш без гейта никто не видел (G31).
-- **Лесенка** — хелпер testkit (имя — на выбор, например `testkit/migratetest.Ladder(t, sources...)`):
-  Postgres из testkit, up → снимок схемы из `pg_catalog` → down до нуля (остаются таблицы версий) →
-  up → снимок совпал. Принимает `pgkit.Source`, поэтому годится шаблону.
-- **`envdoc-check`** — скрипт или Go-тест в гейте, на выбор, без новых зависимостей; инъекции E1–E8
-  и G32 — его тесты.
 - **B1, реестр.** Реестр — `huma.OperationDocumenter` на API кита: huma зовёт `DocumentOperation`
   для каждой операции, в том числе `Hidden` и из групп (`huma.go:813-817`, `group.go:101-111`), а
   `OnAddOperation` скрытых не видит (`huma.go:816`). Проверка — одна функция для старта `Module` и
@@ -216,46 +201,39 @@ blocked-by: —
   `SubscribeOnStart`. Предел payload по умолчанию — 1 MiB (`max_payload` NATS), превышение — ошибка
   `Bus.Publish` в транзакции домена (E17: 2 MiB держали ordered-очередь). Бюджет ретраев по
   умолчанию — не меньше часа, пересчёт `configuration.md` (KDOC-09).
-- **S1** — `check` — рецепт по списку `GATE_STEPS`, шаг — свой `make`: первый красный
-  останавливает прогон, `-j` не гонит integration рядом с lint. Timing-тест — opt-in
-  `GOLIBINFRA_TIMING` в самом тесте и `make test-timing`: vet и lint видят тест, Makefile не связан
-  с его именем. `minioFixture` без контейнера вне `-short` — `t.Fatal`, не skip (правка рядом).
-- **S2, guard** — у `check` и `gate-clean`: `-i -n -q -t`, `MAKE`, `SHELL`, `.SHELLFLAGS`,
-  `MAKEFILES` из env или командной строки и непустой `go env GOFLAGS` — отказ до первого шага;
-  `PKGS`, `GO`, `A` и свои `GATE*` не отказывают, а не доходят до шагов (`override` и аргументы
-  под-make). `-k` пропускается: первый красный шаг всё равно останавливает `check` с кодом 2.
-- **S2, кеш lint** — `override`, а не `?=`: значение из окружения снова сделало бы кеш общим.
-  `GOLANGCI_DIFF_PROCESSOR_PATCH` (оставляет в отчёте только замечания патча) и
-  `GOLANGCI_LINT_CACHEPROG` (чужой кеш) в шаги не экспортируются.
-- **S2, `gate-clean`** — `env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS -u MAKEFILES`, как pre-push
-  шаблона, а не `env -i`: прогону нужны `DOCKER_HOST`, прокси и `GOPATH`, а сужающее гейт отсекает
-  guard или под-make.
+- **S1, Docker** — `RequireDocker` пропускает только под `-short`, недоступный Docker — `t.Fatal` без
+  переключателя: skip делал зелёными `test-full` и `test-int` шаблона (G26); `minioFixture` — так же.
+  `make test` — быстрый `-short`; `check` — рецепт по `GATE_STEPS`, шаг — свой `make`: первый красный
+  останавливает прогон, `-j` не гонит integration рядом с lint. Timing-тест logkit под нагрузкой
+  флакает — opt-in `GOLIBINFRA_TIMING` в тесте и `make test-timing`.
+- **S2, guard** (как у шаблона) — у `check` и `gate-clean`: `-i -n -q -t`, `MAKE`, `SHELL`,
+  `.SHELLFLAGS`, `MAKEFILES` из env или командной строки и непустой `go env GOFLAGS` — отказ до
+  первого шага; `PKGS`, `GO`, `A`, `GATE*` до шагов не доходят (`override`, под-make с
+  `PKGS=./... GO=go A=`); `-k` пропускается: первый красный шаг всё равно даёт код 2.
+- **S2, кеш lint и `gate-clean`** — кеш — `override` `$(CURDIR)/.cache/golangci-lint` (`?=` из env
+  снова сделал бы его общим), `GOLANGCI_DIFF_PROCESSOR_PATCH` и `GOLANGCI_LINT_CACHEPROG` в шаги не
+  экспортируются. `gate-clean` — `env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS -u MAKEFILES`, а не
+  `env -i`: прогону нужны `DOCKER_HOST`, прокси и `GOPATH`.
 - **`gate_inject.py`** — G11 и G20 ломали удалённый `harden-kits.md`; `s_plan` берёт любой активный
   план, смысл инъекции тот же. G21 запускает хук, который запустил бы git
   (`$(git rev-parse --git-path hooks)/pre-push`). Правки — в материалах аудита.
-- **S3** — без `SKIP_PREPUSH`: обход один, `git push --no-verify` руками человека (шаблон убирает
-  приглашение к второму — `repair-harness` S1); guard — копия шаблона без этой ветки.
-  `hooks-check` — первый шаг: git берёт хуки из `scripts/git-hooks` этого checkout'а (путь в общем
-  конфиге относительный — у worktree свой хук), `pre-push` исполняемый. `settings.json` — deny
-  `--no-verify` и запрещённых программой разрушительных команд, `*.pem`/`*.key`; allow-листа нет.
-  pre-commit не заводится: строка `/plan` про него исправлена (KGATE-11).
-- **S4, лесенка по версиям** — `testkit.MigrationLadder(t, opts...)` в корне testkit (Docker, как
-  `Start*`; сабпакеты — без Docker): каждая версия up → down → up со снимком `pg_catalog`, затем
-  down до нуля и up. «Всё вниз — всё вверх» не видит down, не вернувший схему своего up, если
-  следующий down сносит таблицу (мутация bruteforcekit 0002), а шаблон держит лесенку по версиям
-  (`cmd/migrate/migrate_test.go`) — хелпер не слабее. Источники и образ — опциями `Start*`;
-  расширения не сравниваются, как у шаблона.
-- **S5, `envdoc`** — Go-команда `scripts/envdoc` (`go run` в `make envdoc-check`, `go/ast`, без
-  зависимостей): вложенные конфиги и поля без тегов grep'ом не разобрать. Переменная —
-  envconfig-тег или литерал `os.Getenv`/`LookupEnv` (кроме стандартных из `allow.txt`), её строка
-  таблицы — в доках каталога пакета или выше. Ячейка дефолта — значение в бэктиках, без
-  `default`-тега — `—` с пояснением или нулевое значение (`""`, `false`, `0`); «пусто», `nil`,
-  «нет, обязательна» приведены к канону. Инъекции E0–E8, G32, G01 — тест `TestCheck` на копии
-  репо в памяти. natskit `Config.Instance` — `ignored:"true"` (дока: «из ENV не читается»).
-- **S4, `TableMigrations`** — откат 0002 стал no-op: версия 1 — уже вся `SchemaSQL` с
-  `next_attempt_at`, снятие колонки не возвращало схему версии 1 (`down 2 must restore`); у
-  зеркала без колонки откат её оставляет. hubkit/projection — тоже kit-owned источник, лесенка и
-  ему (правки рядом).
+- **S3, хуки** — в `scripts/git-hooks/`, как у шаблона (рабочий клон уже указывает туда); обход один
+  — `git push --no-verify` руками человека, без `SKIP_PREPUSH` (шаблон его снимает — `repair-harness`
+  S1). `hooks-check` — первый шаг: неактивный или неисполняемый pre-push — FAIL (G31); путь в общем
+  конфиге относительный — у worktree свой хук. `settings.json` — deny обходов, разрушительных команд
+  и `*.pem`/`*.key`, allow-листа нет; pre-commit не заводится (строка `/plan` исправлена, KGATE-11).
+- **S4, лесенка** — `testkit.MigrationLadder(t, opts...)` в корне testkit (Docker, как `Start*`),
+  принимает `pgkit.Source` — годится шаблону: каждая версия up → down → up со снимком `pg_catalog`,
+  затем down до нуля и up. «Всё вниз — всё вверх» не видит down, не вернувший схему своего up, если
+  следующий down сносит таблицу (мутация bruteforcekit 0002); расширения не сравниваются.
+- **S4, `TableMigrations`** — откат 0002 — no-op: версия 1 — уже вся `SchemaSQL` с `next_attempt_at`
+  (`down 2 must restore`); у зеркала без колонки откат её оставляет. hubkit/projection — тоже
+  kit-owned, лесенка и ему.
+- **S5, `envdoc`** — Go-команда `scripts/envdoc` (`go/ast`, без зависимостей): вложенные конфиги и поля
+  без тегов grep'ом не разобрать. Переменная — envconfig-тег или литерал `os.Getenv`/`LookupEnv`
+  (кроме `allow.txt`), строка таблицы — в доках каталога пакета или выше; дефолт — в бэктиках, без
+  `default` — `—` с пояснением или нулевое значение. Инъекции E0–E8, G32, G01 — тест `TestCheck`.
+  natskit `Config.Instance` — `ignored:"true"` (дока: «из ENV не читается»).
 - **N1** — pre-push гоняет `scripts/gate-clean.sh <коммит>` на каждом пушимом коммите: gitignored-файл
   рабочего дерева не прячет поломку, «чистое дерево» и «= HEAD» не нужны, удаление ref'а гейт не
   гоняет (`M/hgd2/n1_probe.sh`); G21 `gate_inject.py` подаёт хуку stdin `git push`.
@@ -266,10 +244,13 @@ blocked-by: —
   по `scripts/git-hooks`: неисполняемый или удалённый хук git молча пропускает (`M/hgd2/n3_guard.py`).
 
 ## Handoff
-При закрытии плана — в Handoff `harden-authn-release`. Строки аннотации v1.3.0:
-- testkit: без Docker вне `-short` — `t.Fatal`, не skip → без Docker integration гоняется только с
-  `-short`; хелпер лесенки миграций — для своих источников.
-- outboxkit: откат 0002 `TableMigrations` — no-op (версия 1 уже с `next_attempt_at`).
+При закрытии плана — в Handoff `harden-authn-release`: заготовка аннотации v1.3.0 из «Где мы сейчас»,
+строки несделанных шагов и пункты шаблону ниже.
+- Шаблону после bump (`fix-reference-code` S9): обход `TestDockerRequired`
+  (`cmd/migrate/migrate_test.go:21-31`) лишний — testkit без Docker сам FAIL; комментарий
+  `scripts/tools/test.sh:21-22` («testkit пропустит тесты без Docker») неверен;
+  `TestAppMigrationsRoundtrip` → `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...),
+  testkit.WithMigrationsDir(...))` — один способ.
 - httpkit: при схеме в графе публичная операция — `httpkit.Public(op)`, пустой `Security` не
   публичен; сырой маршрут chi объявляется публичным; дубль METHOD+path, схема вне `components`,
   дубли имён схем и проб — ошибка старта.
@@ -283,17 +264,17 @@ blocked-by: —
   выключенный JetStream — ошибка старта; payload сверх предела — ошибка `Publish`.
 
 ## Где мы сейчас
-Этап «Гейт» (S1–S5) закрыт: `make check` гоняет integration (Docker обязателен, ≈1,5 мин), всегда
-на `./...`, окружение его не сужает, кеш lint — в `.cache/` checkout'а; push проходит pre-push
-(`make hooks`); лесенка держит kit-owned миграции; `envdoc-check` сверяет имена и дефолты. Дальше —
-валидатор этапа, затем S6 (B1: реестр операций и `httpkit.Public`). Эксперименты этапа — `M/hgd/`,
-правки `gate_inject.py` — «Решения».
+Этап «Гейт» (S1–S5) — PASS валидатора (`M/validation-harden-gate-defaults-A.md`), его N1–N3 и N5
+закрыты (N4 — S11). Дальше — S6 (B1: реестр операций и `httpkit.Public`). Эксперименты — `M/hgd/`,
+`M/hgd2/`; правки материалов аудита — «Решения».
 
 Заготовка аннотации v1.3.0 по сделанному:
 - Breaking — testkit: `RequireDocker` и `Start*` без Docker вне `-short` обрывают тест
-  (`t.Fatalf`), а не пропускают → без Docker гонять только `go test -short`; integration-гейт
-  потребителя без Docker красный.
-- Поведение — outboxkit: откат 0002 `TableMigrations` — no-op (версия 1 уже с `next_attempt_at`).
+  (`t.Fatalf`), а не пропускают → без Docker integration-прогон потребителя (`-tags=integration`,
+  без `-short`) красный; без Docker гонять только `go test -short`.
+- Поведение — outboxkit: откат 0002 `TableMigrations` — no-op (версия 1 уже с `next_attempt_at`);
+  у таблицы-зеркала без колонки откат её оставляет (nullable, старому коду не мешает).
 - Изменения — testkit: `MigrationLadder(t, WithMigrations(...))` — лесенка up → down → up по
   версиям, down до нуля и up со сверкой схемы для своих источников миграций.
-- Гейт: `make gate-clean` — unit и integration (Docker), лесенка kit-owned миграций.
+- Гейт: `make check` и `make gate-clean` — unit и integration (Docker), лесенка kit-owned миграций;
+  pre-push — тот же гейт на каждом пушимом коммите в свежем worktree.
