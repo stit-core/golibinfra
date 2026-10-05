@@ -166,13 +166,16 @@ const UnitSeconds = "s"
 
 ## Тестирование
 
-Запись бизнес-метрики проверяет `testkit/metrictest`: снимок до действия,
-дельта после — тип, unit, labels и значение серии.
+Хелперы получают `Meter` аргументом, поэтому запись бизнес-метрики проверяет
+провайдер теста `testkit/metrictest`: сервис в тесте получает его `Meter`, снимок
+видит только записи теста — тип, unit, labels и значение серии, без дельт и
+параллельно с другими тестами.
 
 ```go
-before := metrictest.Collect(t)
+p := metrictest.NewProvider()
+svc := NewService(NewMetrics(p.Meter("test"))) // в приложении Meter приходит из графа
 svc.Login(ctx, creds)
-s := metrictest.Collect(t).Sub(before).Get(t, "biz_auth_login_attempts_total", "result", "ok")
+s := p.Collect(t).Get(t, "biz_auth_login_attempts_total", "result", "ok")
 // s.Kind == metrictest.Counter, s.Unit == bizmetric.UnitEvent, s.Value == 1
 ```
 

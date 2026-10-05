@@ -136,26 +136,44 @@ func TestPublishesEvent(t *testing.T) {
 }
 ```
 
-Метрики — `metrictest`. Импорт пакета ставит глобальный `MeterProvider` с
-`ManualReader`, один на процесс: тест, подменивший провайдер, роняет `Collect`.
-Тест снимает `before` и сравнивает дельту; серия несёт имя, тип, unit, labels и
-значение, `Collisions` находит разные инструменты с одним именем в Prometheus:
+Метрики — `metrictest`. Путь выбирает то, откуда код под тестом берёт `Meter`:
+
+- **`Meter` передают** (бизнес-метрики сервиса: `Meter` из графа, провайдер
+  `telemetry`) — провайдер теста `NewProvider()`. Код получает его `Meter`, снимок
+  `p.Collect(t)` видит только записи этого провайдера: без дельт, в параллельных
+  подтестах и при повторе прогона (`-count`). Глобальный провайдер `NewProvider` не
+  трогает.
+- **Код пишет в глобальный провайдер** (киты, `otel.Meter`) — провайдер процесса.
+  Его ставит первый `metrictest.Collect`, а не импорт пакета: тест снимает `before`
+  до действия и сравнивает дельту `Sub`.
 
 ```go
-func TestLoginCounted(t *testing.T) {
-	before := metrictest.Collect(t)
+func TestLogin_RecordsOutcome(t *testing.T) {
+	t.Parallel()
+	p := metrictest.NewProvider()
+	svc := NewService(NewMetrics(p.Meter("test"))) // Meter, который сервис получает из графа
 	if err := svc.Login(ctx, creds); err != nil {
 		t.Fatal(err)
 	}
-	s := metrictest.Collect(t).Sub(before).Get(t, "biz_auth_logins_total", "result", "ok")
+	s := p.Collect(t).Get(t, "biz_auth_login_attempts_total", "result", "ok")
 	if s.Kind != metrictest.Counter || s.Value != 1 {
-		t.Fatalf("logins: %v (%s), want counter delta 1", s, s.Kind)
+		t.Fatalf("logins: %v (%s), want counter 1", s, s.Kind)
 	}
 }
 ```
 
-Дельта видит записи всего процесса, поэтому тест метрик не идёт параллельно с
-тестами тех же серий (`t.Parallel`) или разводит их своими labels.
+Boot-тест графа с `telemetry` подменяет `MeterProvider` в `*telemetry.Providers`
+провайдером теста (`fx.Decorate`, поле `p.MeterProvider`): метрики доменов попадают
+в снимок, только если домены берут `Meter` у провайдера telemetry. Глобальный
+провайдер в таком бинаре ставит `telemetry.Init`, а не metrictest, поэтому проверка
+«граф поставил глобальный провайдер» остаётся честной; `metrictest.Collect` туда не
+зовут — `telemetry.Init` после первого `Collect` подменяет провайдер процесса, и
+следующий `Collect` падает.
+
+Серия несёт имя, тип, unit, labels и значение; `Get` — серия с ровно этими labels,
+`Find`/`Value` — labels как фильтр, `Collisions` — разные инструменты с одним именем
+в Prometheus. Дельта провайдера процесса видит записи всего процесса: такой тест не
+идёт параллельно с тестами тех же серий (`t.Parallel`) или разводит их своими labels.
 
 ## Конфигурация
 
@@ -194,7 +212,7 @@ helper'ов, ENV-переопределений образов нет тоже. 
 
 Соглашение об именах: `<kit без суффикса kit>test` (`auditkit` → `audittest`,
 `outboxkit` → `outboxtest`). Исключения обслуживают не один кит: `handlertest` —
-huma-хендлеры поверх `httpkit`, `metrictest` — метрики всех китов и `bizmetric`.
+huma-хендлеры поверх `httpkit`, `metrictest` — метрики всех китов и бизнес-метрики сервиса.
 
 | Сабпакет | Обслуживает | Что даёт |
 | --- | --- | --- |
@@ -206,7 +224,7 @@ huma-хендлеры поверх `httpkit`, `metrictest` — метрики в
 | [`handlertest`](handlertest/) | `httpkit` (huma) | `NewAPI` поднимает `humatest.TestAPI` (алиас `API`) поверх API сервера `httpkit` — контракт ошибок как в проде (`request_id`, `Retry-After`, 404/405, коды `ErrorMap.Declare` в OpenAPI), `HumaAuth` до маршрутов (без `WithAuth` защищённая операция — `500 AUTH_NOT_CONFIGURED`), проверка маршрутов старта `Module`, конфиг `httpkit.NewConfig()` (docs, как у сервера, по умолчанию выключены); опции `WithAuth`, `WithConfig`, `WithLogger`, `WithSecuritySchemes`; `DecodeAPIError` → `httpkit.APIError`, `AssertStatus`, `AssertAPIError` (статус, problem+json, `code`, `request_id` = `X-Request-ID`). |
 | [`hubtest`](hubtest/) | `hubkit` | `NewIssuer(t)`/`NewCustomerIssuer(t)` — ES256-ключи + JWKS на `httptest`: `EmployeeToken`, `CustomerToken`, `Sign`, `SignHS256`, `Rotate`/`RotateKeepingPrevious`, опции токена (`WithExpiry`, `WithoutClaim`, `WithKID`, …); `SSOConfig`, `Verifier`, `Extractor`, `WithEmployee`/`WithCustomer` для ctx; in-memory порты синка `Feed`/`Projection`/`Cursors`. |
 | [`logtest`](logtest/) | `logkit` | `Capture`/`CaptureAt` — `logkit.Logger`, копящий записи в памяти: `Entries`, `Find`, `FindFunc`, `Has`, `Reset`; `Entry.Str`/`Entry.Value` читают поля записи. |
-| [`metrictest`](metrictest/) | метрики китов и `bizmetric` | `Collect` — снимок серий процесса (импорт ставит глобальный `MeterProvider` с `ManualReader`; подменённый провайдер — падение `Collect`); `Snapshot.Sub` — дельта (gauge — текущее значение), `Get` — серия с ровно этими labels, `Find`/`Value` — labels как фильтр, `All`; `Series{Scope, Name, Kind, Unit, Labels, Value, Count, Bounds}`; `Collisions` и `PromName` — имена после трансляции в Prometheus (`UnderscoreEscapingWithSuffixes`). |
+| [`metrictest`](metrictest/) | метрики китов и бизнес-метрики сервиса | `NewProvider` — провайдер теста для кода, которому передают `Meter` (поле `MeterProvider` — подмена провайдера `telemetry`), его `Collect` — снимок только его серий; `Collect` — снимок провайдера процесса, глобального `MeterProvider` китов (ставит первый вызов; подмена после него — падение `Collect`); `Snapshot.Sub` — дельта (gauge — текущее значение), `Get` — серия с ровно этими labels, `Find`/`Value` — labels как фильтр, `All`; `Series{Scope, Name, Kind, Unit, Labels, Value, Count, Bounds}`; `Collisions` и `PromName` — имена после трансляции в Prometheus (`UnderscoreEscapingWithSuffixes`). |
 | [`natstest`](natstest/) | `natskit` | `Recorder` — in-memory `natskit.Bus`/`StreamBus` с синхронной доставкой подписчикам: `Publish`/`PublishStream`/`PublishStreamBatch`, `Subscribe`/`SubscribeQueue`/`SubscribeStream`, запросы `Published`/`PublishedOn`/`Subscriptions`/`HandlerErrors`, инжекторы `Deliver` (сообщение «из шины») и `SetPublishError` + `Reset`. |
 | [`oidctest`](oidctest/) | `oidckit` | `New(t)` поднимает stub OIDC-провайдера (discovery, JWKS, `/authorize`, `/token`, RS256/ES256): `SetClaims`, `SetStatus`, `SetTokenBody`, `SetDiscoveryOverride`, `Hits`, `LastAuthorize`; токены для негативных тестов — `IDToken`, `IDTokenWithKID`, `IDTokenHS256`, `IDTokenUnsigned`. |
 | [`outboxtest`](outboxtest/) | `outboxkit` | `Recorder` — in-memory `outboxkit.Publisher`: `Publish` вне транзакции (`pgkit.InTx`) отвечает `outboxkit.ErrNoTx` и событие не копит, как pgstore с `OUTBOX_REQUIRE_TX=true`; запросы `All`/`Published`/`Last`/`Count` + `Reset`. |
@@ -217,7 +235,8 @@ huma-хендлеры поверх `httpkit`, `metrictest` — метрики в
 ## Observability
 
 testkit ничего не эмитит: ни метрик, ни спанов, ни логов через `logkit`;
-`metrictest` только ставит при импорте глобальный `MeterProvider` процесса теста.
+`metrictest` только ставит первым `Collect` глобальный `MeterProvider` процесса теста
+(`NewProvider` глобальный провайдер не трогает).
 Контейнерные helper'ы и fake'и сообщают о проблемах только через `t.Fatalf` /
 возвращаемые значения. Диагностика testcontainers идёт в `t.Log` — видна с `-v`
 и при падении теста, а не в общий stderr. Это тестовый код — он не часть рантайма

@@ -85,8 +85,9 @@ err = pgkit.MigrateDown(ctx, pg.DSN, src)               // один шаг на�
 
 ## Рецепт: проверка метрик пула
 
-`InstrumentPool` пишет в глобальный Meter — тест читает его через
-`testkit/metrictest` (провайдер процесса ставит импорт пакета):
+`InstrumentPool` пишет в глобальный Meter — тест читает его через провайдер
+процесса `testkit/metrictest` (его ставит первый `Collect`; статистику пула
+инструменты читают в момент снимка):
 
 ```go
 reg := pgkit.InstrumentPool(pool, pgkit.RolePrimary)

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"testing"
 
-	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/metric"
 	"go.opentelemetry.io/otel/metric/noop"
 
@@ -58,13 +57,13 @@ func TestMustName(t *testing.T) {
 	}
 }
 
-// recorded — серия name, записанная record через глобальный провайдер (metrictest).
-// Scope — имя теста: одноимённые инструменты разных тестов не сливаются.
+// recorded — серия name, которую record записал в Meter провайдера теста: хелперы
+// получают Meter аргументом, как бизнес-метрики сервиса.
 func recorded(t *testing.T, name string, record func(metric.Meter)) metrictest.Series {
 	t.Helper()
-	before := metrictest.Collect(t)
-	record(otel.Meter(t.Name()))
-	return metrictest.Collect(t).Sub(before).Get(t, name)
+	p := metrictest.NewProvider()
+	record(p.Meter("bizmetric/test"))
+	return p.Collect(t).Get(t, name)
 }
 
 func TestCounter(t *testing.T) {

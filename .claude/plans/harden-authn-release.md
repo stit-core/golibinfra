@@ -18,11 +18,8 @@ blocked-by: —
   B1–B3, ключ IP клиента в `internal/`; его Handoff переносится сюда при закрытии. Программа, метод
   и push — `go-backend-template/.claude/plans/audit-program.md`; партии — `M/replan-golibinfra.md`
   §6; находки — `M/kits-audit/summary.md` и отчёты углов (`M` — `/home/mm/.cache/stit-audit-program/`).
-- **Потребитель** — шаблон, `fix-reference-code` S9 и его Handoff: сессии на `authnkit/session`
-  (ротация, отзыв цепочки, `CanLogin` в Refresh, абсолютный срок, отзыв всех сессий в транзакции
-  смены статуса, `seed-admin`); снять `pkg/tokens`, client-IP middleware, `publicOperations`, ручные
-  IP и RequestID аудита; S11 — бизнес-метрики с проверкой записи; S2 — `App` читает envconfig
-  напрямую, потому что `config.Load` требует ctx.
+- **Потребитель** — шаблон: `fix-reference-code` S9 (сессии, токены, IP, аудит, `config` без ctx) и
+  S11 (бизнес-метрики с проверкой записи); что он снимает и меняет на bump — «Handoff».
 - **Код китов:**
   - authnkit: `authnkit/module.go:26` — `NewHS256JWT` без iss/aud, хотя опции есть;
   - natskit: `natskit/jetstream.go:545-599`, `natskit/config.go:50-52`;
@@ -41,11 +38,11 @@ blocked-by: —
 
 ## Критерии приёмки
 - [x] **AC1** — Инструменты китов пишут в текущий глобальный `MeterProvider`, в том числе в
-  тестовый. `testkit/metrictest` проверяет запись метрики (имя, тип, unit, labels, значение) и
-  отсутствие коллизий имён после трансляции в Prometheus. Проверка:
-  `go test -race ./testkit/metrictest/` → PASS; `M/kits-audit/fx-observability/run.sh <rev> obs-provider`
-  → KO09 PASS; `M/kits-audit/httpkit-b/run.sh <rev> exp` → HO06 PASS
-  - Подтверждено: metrictest PASS (пара KOBS-01 — коллизия); KO09, HO06 → PASS на S1 и S2
+  тестовый. `testkit/metrictest` проверяет запись метрики (имя, тип, unit, labels, значение) китов и
+  кода с переданным `Meter` (параллельно, без глобального провайдера) и коллизии имён в Prometheus.
+  Проверка: `go test -race ./testkit/metrictest/` → PASS; `M/kits-audit/fx-observability/run.sh <rev>
+  obs-provider` → KO09 PASS; `M/kits-audit/httpkit-b/run.sh <rev> exp` → HO06 PASS
+  - Подтверждено: metrictest PASS (коллизия KOBS-01, параллельные `NewProvider`); KO09, HO06 → PASS
 - [x] **AC2** — Запись аудита без `RequestID` или `IP` получает их из ctx запроса, явные значения не
   перетираются; `audittest` ведёт себя так же. Проверка:
   `go test -race ./auditkit/... ./testkit/audittest/` → PASS
@@ -110,8 +107,8 @@ blocked-by: —
   logkit, timerkit, auditkit и bruteforcekit (pgstore), storagekit/minio, httpkit
   - Проверка: AC1 (KO09, HO06) → PASS · Закрывает: AC1 · Зависит от: —
   - Сделано: инструменты в конструкторах; KO09, HO06 → PASS; `TestInstrumentsAreNotPackageLevel`
-- [x] **S2** — B7: `testkit/metrictest` — один провайдер на процесс, дельты, проверка коллизий имён.
-  Обвязка метрик в тестах китов переведена на него (KTST-06)
+- [x] **S2** — B7: `testkit/metrictest` — провайдер процесса для китов и провайдер теста для
+  переданного `Meter`, дельты, проверка коллизий имён. Обвязка метрик в тестах китов — на нём (KTST-06)
   - Проверка: AC1 → выполнен; `make check` → зелёный · Закрывает: AC1 · Зависит от: S1
   - Сделано: metrictest; на нём 17 из 20 файлов обвязки (кроме `internal/otelkit`, `telemetry`)
 - [x] **S3** — B4: auditkit берёт `RequestID` и `IP` из ctx, если в записи пусто; `audittest` —
@@ -171,12 +168,14 @@ blocked-by: —
 - **Инструменты метрик** — в конструкторах через `otelkit.Meter` (и трейсер timerkit): делегат OTel
   привязывает пакетный инструмент к первому провайдеру процесса (KO09, HO06). Регресс держит
   статический тест `internal/otelkit`: тест второго провайдера противоречит metrictest.
-- **metrictest.** Провайдер — один на процесс, его ставит импорт пакета (`init`): измерения до
-  первого `Collect` не теряются, подмена провайдера роняет `Collect`; тесты сравнивают дельты.
-  `Get` — ровно эти labels, `Find`/`Value` — фильтр; `Sub` оставляет новую серию и с нулём, gauge —
-  текущим значением. Коллизии — своя трансляция (подмножество `UnderscoreEscapingWithSuffixes`,
-  сверена с otlptranslator v1.0.0 на 1292 кейсах вне репо). Переведены и киты вне объёма; свой
-  провайдер — у `internal/otelkit` и `telemetry`: их тесты проверяют связку с SDK.
+- **metrictest.** Путь — по источнику `Meter`, у каждого один способ. Переданный (бизнес-метрики,
+  провайдер telemetry в boot-тесте) — `NewProvider()`: провайдер теста, снимок без дельт, параллельно
+  и при `-count`; фильтр scope не нужен. Глобальный (киты) — провайдер процесса, его ставит первый
+  `Collect`, не импорт: иначе импорт ради `NewProvider` делал пустой проверку «граф поставил
+  глобальный провайдер» и менял делегат OTel под тестом; цена — записи до первого `Collect` не видны.
+  Подмена после первого `Collect` роняет его. `Get` — ровно эти labels, `Find`/`Value` — фильтр;
+  `Sub` оставляет новую серию и с нулём, gauge — текущим. Коллизии — своя трансляция
+  `UnderscoreEscapingWithSuffixes`. Свой провайдер — у `internal/otelkit` и `telemetry` (связка с SDK).
 - **Аудит.** `Entry.Enrich(ctx)` ядра auditkit зовут pgstore, `audittest` и свой `Logger` до
   `Validate`. Ключ IP — из `internal/`, auditkit не импортирует httpkit.
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его, base64url — нет (`logkit-redact-gaps`).
@@ -249,7 +248,10 @@ blocked-by: —
 - **Конфиг.** `App` (Cookie) можно читать через `config.Load(&cfg, config.Env())` без ctx.
 - **OpenAPI.** `openapi.json` перегенерировать: `$schema` снят; `HTTP_DOCS_ENABLED=true` — только в
   dev.
-- **Метрики.** Бизнес-метрики (S11) проверяются через `testkit/metrictest`.
+- **Метрики.** Хелперы `counted`/`counter` и свой `ManualReader` → `metrictest.NewProvider()`:
+  подтесты `auth`, `verification` — `NewMetrics(p.Meter("test"))`, `p.Collect(t).Get(t, name, "result",
+  …)`; `TestBoot` — `tapped.MeterProvider = p.MeterProvider` в `fx.Decorate`, `IsType` глобального
+  провайдера остаётся (`NewProvider` его не ставит, `metrictest.Collect` в этом бинаре падает).
 - **Тесты.** Лесенка `cmd/migrate/migrate_test.go` может перейти на хелпер testkit (иначе —
   `repair-harness` S7: `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...), …)`).
   `scripts/tools/test.sh:21-22` — testkit без Docker вне `-short` — FAIL, обход
@@ -268,18 +270,18 @@ blocked-by: —
 `fx.Provide(context.Background)`.
 
 ## Где мы сейчас
-Первая половина партии 2 (`harden-gate-defaults`) закрыта, её аннотация — в материалах (Handoff).
-Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`): B1 и B2 в
-`testkit/metrictest` (Meter, переданный графом, и повтор прогонов), неблокирующие N1–N5. Следующее —
-круг фиксов по отчёту, перепроверка, затем S8 (natskit). Хвост для S8:
+Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`). Круг фиксов:
+B1 (переданный `Meter` — `NewProvider`) — сделан; дальше B2 (повтор прогонов), N1–N5, перепроверка
+валидатором, затем S8 (natskit). Хвост для S8:
 `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
 (1 прогон из 4), а дока обещает «снимает интерес сразу».
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
   инструменты берут глобальный провайдер при сборке объекта, а не первый провайдер процесса.
-- Изменения — `testkit/metrictest`: запись метрик в тестах (провайдер ставит импорт, дельты,
-  `Get`/`Find`/`Value`, коллизии имён в Prometheus) — для бизнес-метрик потребителя.
+- Изменения — `testkit/metrictest`: `NewProvider()` — провайдер теста для кода с переданным `Meter`
+  (бизнес-метрики, подмена провайдера telemetry в boot-тесте); `Collect` — провайдер процесса китов
+  (ставит первый вызов), дельты `Sub`, `Get`/`Find`/`Value`, коллизии имён в Prometheus.
 - Поведение — auditkit: пустые `IP` и `RequestID` записи `pgstore` и `audittest` берут из ctx
   (httpkit; request-id — и grpckit) → ручные значения убрать; своему `Logger` — `Entry.Enrich(ctx)`.
 - Изменения — authnkit: `NewToken()` (256 бит hex) и `HashToken` (SHA-256) → вместо `pkg/tokens`.

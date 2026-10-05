@@ -174,11 +174,12 @@ func TestRun_CancellationIsNotAnError(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(t.Context())
 	cancel()
+	before := counterValue(t, "hub_sync_errors_total", resource)
 	if err := e.Run(ctx); err != nil {
 		t.Fatalf("Run on cancelled ctx = %v, want nil", err)
 	}
-	if got := counterValue(t, "hub_sync_errors_total", resource); got != -1 {
-		t.Fatalf("hub_sync_errors_total = %d, want no series", got)
+	if got := counterValue(t, "hub_sync_errors_total", resource); got != before {
+		t.Fatalf("hub_sync_errors_total = %d, want unchanged %d", got, before)
 	}
 }
 

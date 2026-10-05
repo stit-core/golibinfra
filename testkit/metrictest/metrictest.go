@@ -1,6 +1,6 @@
-// Package metrictest — проверка метрик в тестах: один глобальный MeterProvider на
-// процесс с ManualReader, снимки и дельты серий, коллизии имён после трансляции в
-// Prometheus.
+// Package metrictest — проверка метрик в тестах: провайдер теста для кода, которому
+// передают Meter, провайдер процесса (глобальный MeterProvider) для китов, снимки и
+// дельты серий, коллизии имён после трансляции в Prometheus.
 package metrictest
 
 import (
@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"unicode"
 
@@ -67,35 +68,52 @@ func (s Series) key() string {
 	return b.String()
 }
 
-// Snapshot — серии процесса на момент Collect или их разница (Sub).
+// Snapshot — серии провайдера на момент Collect или их разница (Sub).
 type Snapshot struct {
 	series []Series
 }
 
-var (
-	provider *sdkmetric.MeterProvider
-	reader   *sdkmetric.ManualReader
-)
-
-// Провайдер ставится при импорте пакета, до TestMain и тестов: измерения китов не
-// теряются, даже если тест снимает метрики только после действий.
-func init() {
-	reader = sdkmetric.NewManualReader()
-	provider = sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader))
-	otel.SetMeterProvider(provider)
+// Provider — MeterProvider с ManualReader, чьи серии снимает Collect. Свой у теста
+// (NewProvider): код под тестом получает его Meter или сам провайдер, записи других
+// тестов и прошлых прогонов (-count) в снимок не попадают.
+type Provider struct {
+	*sdkmetric.MeterProvider
+	reader *sdkmetric.ManualReader
 }
 
-// Collect снимает все серии процесса. Глобальный MeterProvider с ManualReader
-// ставит импорт пакета — один на процесс: тест, подменивший провайдер, роняет
-// Collect с объяснением. Снимок видит записи всего процесса: тест, сравнивающий
-// дельты, не идёт параллельно с тестами тех же серий.
+// NewProvider — провайдер теста; глобальный MeterProvider OTel он не трогает.
+func NewProvider() *Provider {
+	reader := sdkmetric.NewManualReader()
+	return &Provider{MeterProvider: sdkmetric.NewMeterProvider(sdkmetric.WithReader(reader)), reader: reader}
+}
+
+var (
+	process = NewProvider()
+	install sync.Once
+)
+
+// Collect снимает серии провайдера процесса — глобального MeterProvider, в который
+// пишут киты. Его ставит первый Collect, а не импорт пакета: инструменты, созданные
+// раньше от глобального провайдера OTel, делегат переносит на него, записи до первого
+// Collect не видны — тест снимает before до действия. Подмена глобального провайдера
+// после первого Collect (telemetry.Init, otel.SetMeterProvider) роняет Collect: в
+// таком бинаре метрики проверяют через NewProvider. Снимок видит записи всего
+// процесса: тест, сравнивающий дельты, не идёт параллельно с тестами тех же серий.
 func Collect(t testing.TB) Snapshot {
 	t.Helper()
-	if otel.GetMeterProvider() != provider {
-		t.Fatalf("metrictest: глобальный MeterProvider подменён — провайдер один на процесс, его ставит metrictest")
+	install.Do(func() { otel.SetMeterProvider(process.MeterProvider) })
+	if otel.GetMeterProvider() != process.MeterProvider {
+		t.Fatalf("metrictest: глобальный MeterProvider подменён после первого Collect (telemetry.Init, otel.SetMeterProvider) — " +
+			"провайдер процесса один; Meter, переданный коду, проверяет NewProvider")
 	}
+	return process.Collect(t)
+}
+
+// Collect снимает серии провайдера.
+func (p *Provider) Collect(t testing.TB) Snapshot {
+	t.Helper()
 	var rm metricdata.ResourceMetrics
-	if err := reader.Collect(context.Background(), &rm); err != nil {
+	if err := p.reader.Collect(context.Background(), &rm); err != nil {
 		t.Fatalf("metrictest: collect: %v", err)
 	}
 	var out []Series

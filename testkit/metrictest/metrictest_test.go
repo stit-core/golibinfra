@@ -2,6 +2,7 @@ package metrictest
 
 import (
 	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -12,9 +13,17 @@ import (
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 )
 
-// early создан при инициализации переменных пакета, до init с установкой
-// провайдера: делегат OTel обязан перенести его на провайдер metrictest.
+// early создан при инициализации переменных пакета, до первого Collect: делегат OTel
+// обязан перенести его на провайдер процесса.
 var early, _ = otel.Meter("metrictest/early").Int64Counter("metrictest_early_total")
+
+// atStart — глобальный MeterProvider после инициализации пакетов, до тестов.
+var atStart metric.MeterProvider
+
+func TestMain(m *testing.M) {
+	atStart = otel.GetMeterProvider()
+	os.Exit(m.Run())
+}
 
 type stop struct{}
 
@@ -44,6 +53,38 @@ func fatalOf(t *testing.T, fn func(testing.TB)) (msg string) {
 	}()
 	fn(tb)
 	return ""
+}
+
+// Импорт пакета глобальный провайдер не ставит: иначе в бинаре, где тесты берут
+// NewProvider, проверка «граф поставил глобальный MeterProvider» проходила бы на
+// провайдере metrictest.
+func TestImport_LeavesGlobalProvider(t *testing.T) {
+	if _, sdk := atStart.(*sdkmetric.MeterProvider); sdk {
+		t.Fatal("importing metrictest installed a global MeterProvider")
+	}
+}
+
+// Провайдер теста — свой у подтеста: параллельные подтесты одной метрики с одними
+// labels видят только свои записи, без дельт.
+func TestNewProvider_IsolatesParallelSubtests(t *testing.T) {
+	for _, result := range []string{"ok", "invalid", "invalid"} {
+		t.Run(result, func(t *testing.T) {
+			t.Parallel()
+			p := NewProvider()
+			if otel.GetMeterProvider() == p.MeterProvider {
+				t.Fatal("NewProvider installed itself as the global MeterProvider")
+			}
+			logins, err := p.Meter("metrictest/parallel").Int64Counter("parallel_logins_total")
+			if err != nil {
+				t.Fatal(err)
+			}
+			logins.Add(t.Context(), 1, metric.WithAttributes(attribute.String("result", result)))
+			got := p.Collect(t).Find("parallel_logins_total")
+			if len(got) != 1 || got[0].Labels["result"] != result || got[0].Value != 1 {
+				t.Fatalf("series of the subtest provider: %v, want only result=%s = 1", got, result)
+			}
+		})
+	}
 }
 
 func TestCollect_InstrumentCreatedBeforeInstall(t *testing.T) {
@@ -144,9 +185,12 @@ func TestGet_MissingSeriesFails(t *testing.T) {
 	}
 }
 
+// telemetry.Init в том же бинаре подменяет провайдер процесса: Collect падает, а не
+// читает провайдер, в который код больше не пишет.
 func TestCollect_ProviderReplacedFails(t *testing.T) {
+	Collect(t)
 	otel.SetMeterProvider(sdkmetric.NewMeterProvider())
-	defer otel.SetMeterProvider(provider)
+	defer otel.SetMeterProvider(process.MeterProvider)
 	if msg := fatalOf(t, func(tb testing.TB) { Collect(tb) }); !strings.Contains(msg, "подменён") {
 		t.Fatalf("replaced provider must fail Collect, got %q", msg)
 	}
