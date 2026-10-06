@@ -11,7 +11,7 @@ type CORSConfig struct {
 	// Origins пуст — CORS выключен. «*» разрешает любой origin (без credentials).
 	Origins []string `envconfig:"HTTP_CORS_ORIGINS"`
 	Methods []string `envconfig:"HTTP_CORS_METHODS" default:"GET,POST,PUT,PATCH,DELETE,OPTIONS"`
-	Headers []string `envconfig:"HTTP_CORS_HEADERS" default:"Authorization,Content-Type,X-Request-ID"`
+	Headers []string `envconfig:"HTTP_CORS_HEADERS" default:"Authorization,Content-Type,X-Request-ID,Idempotency-Key"`
 	// ExposeHeaders — заголовки ответа, видимые cross-origin JS.
 	ExposeHeaders    []string `envconfig:"HTTP_CORS_EXPOSE_HEADERS" default:"X-Request-ID,Location,Retry-After,Idempotent-Replayed"`
 	MaxAge           int      `envconfig:"HTTP_CORS_MAX_AGE" default:"600"`

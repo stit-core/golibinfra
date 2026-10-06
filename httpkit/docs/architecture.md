@@ -62,7 +62,8 @@ fx выполняет `OnStart` в порядке добавления хуко�
 1. `NewServer(cfg, log, opts...)` — проверка `Config` и схем, router + `*http.Server`, цепочка кита
    (таблица ниже) и middleware из `WithMiddleware` внутри неё. Эту же функцию зовёт `Module`.
 2. `router.Use(middleware...)` — до `BindAPI` можно добавить ещё middleware внутрь цепочки.
-3. `BindAPI()` — создаёт `huma.API` и ставит `HumaAuth` первым huma-middleware.
+3. `BindAPI()` — создаёт `huma.API` и ставит лимит тела операции и `HumaAuth` первыми
+   huma-middleware.
 4. `huma.Register` / `huma.Get`; `api.UseMiddleware(...)` для huma-уровня.
 
 `BindAPI` идемпотентен и безопасен из нескольких горутин, `API()` — алиас. `Module` соблюдает
@@ -101,15 +102,17 @@ chi применяет middleware в порядке регистрации: пе
 | 3 | `OTel` | всегда | server-span и входящий `traceparent`; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log |
 | 4 | `AccessLog` | всегда | строка на запрос с `route`, `status`, `bytes`, `duration_ms` |
 | 5 | `Metrics` | всегда | RED на chi route-pattern; имя спана и `client.address`; ниже него — всё, что может ответить клиенту |
-| 6 | `Recovery` | всегда | ловит panic из всего, что ниже: 500 + `http_panics_total`; `http.ErrAbortHandler` пробрасывает |
+| 6 | `Recovery` | всегда | ловит panic из всего, что ниже: 500 + `http_panics_total`; после записанного заголовка — обрыв соединения (`http.ErrAbortHandler`): усечённый ответ не выглядит полным; свой `http.ErrAbortHandler` хендлера пробрасывает |
 | 7 | `SecurityHeaders` | всегда | заголовки на любой ответ, включая 429 и 413 |
 | 8 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
 | 9 | `RateLimit` | если `RateLimit.RPS > 0` | bucket на клиента (IPv6 — по `/64`); дешёвый отказ до тяжёлой работы |
-| 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом |
-| 11 | `Idempotency` | если есть `IdempotencyStore` (`WithIdempotencyStore`, в графе — значение) | дедуп write-запросов по `Idempotency-Key` |
-| 12 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
+| 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом; лимит фиксируется на первом чтении — операция huma ставит свой `MaxBodyBytes` |
+| 11 | дедлайн запроса | если `RequestTimeout > 0` | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
+| 12 | HEAD как GET | всегда | HEAD без своего маршрута идёт в GET-маршрут (RFC 9110 §9.1), тело net/http не отправляет |
+| 13 | `Idempotency` | если есть `IdempotencyStore` (`WithIdempotencyStore`, в графе — значение) | дедуп write-запросов по `Idempotency-Key` |
+| 14 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 
-`HumaAuth` — отдельный слой на `huma.API`.
+`HumaAuth` и лимит тела операции — отдельный слой на `huma.API`.
 
 Почему так: `RequestID`, `ClientIP` и `OTel` первыми, чтобы контекст запроса был полным у
 всех остальных. `AccessLog` и `Metrics` — **над** `Recovery`, `CORS` и
@@ -169,8 +172,8 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 - `code` — стабильный машинный код: свой у операции (`404 USER_NOT_FOUND`) или
   общий кита по статусу — `400 BAD_REQUEST`, `401 UNAUTHORIZED`, `404 NOT_FOUND`,
   `405 METHOD_NOT_ALLOWED`, `413 BODY_TOO_LARGE`, `422 VALIDATION_FAILED`,
-  `429 RATE_LIMITED`, `500 INTERNAL`, `503 UNAVAILABLE` (прочие статусы — текст
-  статуса: `502 BAD_GATEWAY`).
+  `429 RATE_LIMITED`, `500 INTERNAL`, `503 UNAVAILABLE`, `503 REQUEST_TIMEOUT` (дедлайн
+  запроса; прочие статусы — текст статуса: `502 BAD_GATEWAY`).
 - `request_id` равен `X-Request-ID` ответа и полю `request_id` строк лога запроса.
 - Других полей нет: `$schema` в теле и `Link` в ответе huma не ставит — его link-трансформер
   снят (ссылка строилась из `X-Forwarded-Host` клиента и без docs вела в 404).
@@ -236,7 +239,10 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 Debug), `*APIError` от extractor'а сохраняет свой статус и код, а ошибка,
 обёрнутая в `httpkit.ErrAuthUnavailable` (JWKS/хаб/сессионный store недоступны),
 даёт `503 AUTH_UNAVAILABLE` — деградация зависимости не должна разлогинивать
-пользователя.
+пользователя. 401 несёт `WWW-Authenticate` (RFC 9110 §11.6.1) со схемами операции из
+`components`: `http` — своей схемой (`Bearer`, `Basic`), `oauth2` и `openIdConnect` —
+`Bearer`, `apiKey` — именем схемы; альтернативы — через запятую. Вызов считает хук кита
+`OnAddOperation`; у операции чужого API (`HumaAuth` на своём huma) — имена схем.
 
 Гейт fail-closed, проверка — на `OnStart` сервера, когда все Invoke уже
 зарегистрировали операции. Видит она каждую операцию `huma.Register`, в том числе
@@ -271,7 +277,9 @@ prod-адаптере chi, и на `testkit/handlertest`.
   и «боевой» запрос с одним ключом дают `422`, а не чужой ответ.
 - **Scope ключа** — аутентифицированный субъект (`httpkit.ContextWithSubject` в
   extractor'е), иначе хеш `Authorization` + `Cookie`. Субъект устойчив к ротации
-  короткоживущего токена между попытками.
+  короткоживущего токена между попытками. Запрос без субъекта и без обоих заголовков
+  идёт без дедупликации (`result=skipped`): scope анонимов общий, и сохранённый ответ
+  одного получил бы другой.
 - **Replay — после аутентификации.** Когда в графе есть `AuthExtractor`,
   middleware вызывает его до обращения к store: отозванная сессия с тем же
   заголовком сохранённый ответ не получает. Успешная проверка помечает ctx,
@@ -291,7 +299,9 @@ prod-адаптере chi, и на `testkit/handlertest`.
   `idempotency reservation expired before the response` и `result=skipped`. Panic
   в handler'е освобождает ключ через `defer`, иначе ретраи получали бы `409` до
   конца `ReserveTTL`.
-- Ответы `5xx` и ответы больше `MaxBodyBytes` не сохраняются. Ошибка store —
+- Ответы `5xx`, ответы больше `MaxBodyBytes` и «не выполнено, повторите» — `408`, `409`,
+  `425`, `429` — не сохраняются: повтор с тем же ключом исполняет запрос заново, а не
+  получает отказ на `HTTP_IDEMPOTENCY_TTL`. Ошибка store —
   строка `idempotency store failed` в логе и fail-open (`HTTP_IDEMPOTENCY_FAIL_CLOSED=true`
   → `503`).
 

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"slices"
 	"strings"
 	"testing"
 
@@ -100,8 +101,8 @@ func TestNewAPI_RouterErrors(t *testing.T) {
 	handlertest.AssertAPIError(t, api.Get("/nowhere"), http.StatusNotFound, "NOT_FOUND")
 	resp := api.Delete("/users/42")
 	handlertest.AssertAPIError(t, resp, http.StatusMethodNotAllowed, "METHOD_NOT_ALLOWED")
-	if allow := resp.Header().Values("Allow"); len(allow) != 1 || allow[0] != http.MethodGet {
-		t.Errorf("Allow = %v, want [GET]", allow)
+	if allow := resp.Header().Values("Allow"); !slices.Equal(allow, []string{http.MethodGet, http.MethodHead}) {
+		t.Errorf("Allow = %v, want [GET HEAD]", allow)
 	}
 }
 

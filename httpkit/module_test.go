@@ -369,11 +369,11 @@ func TestModule_IdempotencyStoreWiring(t *testing.T) {
 		}),
 	)
 
-	first := do(t, srv, http.MethodPost, "/orders", nil, "Idempotency-Key: k-1")
+	first := do(t, srv, http.MethodPost, "/orders", nil, "Idempotency-Key: k-1", "Authorization: Bearer alice")
 	if first.StatusCode != http.StatusCreated {
 		t.Fatalf("first: %d", first.StatusCode)
 	}
-	second := do(t, srv, http.MethodPost, "/orders", nil, "Idempotency-Key: k-1")
+	second := do(t, srv, http.MethodPost, "/orders", nil, "Idempotency-Key: k-1", "Authorization: Bearer alice")
 	if second.Header.Get("Idempotent-Replayed") != "true" {
 		t.Fatalf("second call must be replayed: %v", second.Header)
 	}

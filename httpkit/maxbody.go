@@ -1,9 +1,12 @@
 package httpkit
 
 import (
+	"context"
 	"errors"
+	"io"
 	"net/http"
 
+	"github.com/danielgtaylor/huma/v2"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 )
@@ -14,8 +17,10 @@ type MaxBodyConfig struct {
 	MaxBytes int64 `envconfig:"HTTP_MAX_BODY_BYTES" default:"1048576"`
 }
 
-// MaxBody ограничивает тело через http.MaxBytesReader: handler, прочитавший
-// больше лимита, получает *http.MaxBytesError, а ответ 413 засчитывается в метрику.
+// MaxBody ограничивает тело через http.MaxBytesReader: handler, прочитавший больше лимита,
+// получает *http.MaxBytesError, ответ — 413, и он засчитывается в метрику. Лимит фиксируется на
+// первом чтении тела: операция huma до него ставит свой MaxBodyBytes (хук кита — этот же лимит,
+// хук потребителя может его поднять).
 func MaxBody(cfg MaxBodyConfig) func(http.Handler) http.Handler {
 	if cfg.MaxBytes <= 0 {
 		return func(next http.Handler) http.Handler { return next }
@@ -24,9 +29,10 @@ func MaxBody(cfg MaxBodyConfig) func(http.Handler) http.Handler {
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			r.Body = http.MaxBytesReader(w, r.Body, cfg.MaxBytes)
+			body := &limitedBody{w: w, body: r.Body, limit: cfg.MaxBytes}
+			r.Body = body
 			ww := wrap(w)
-			next.ServeHTTP(ww, r)
+			next.ServeHTTP(ww, r.WithContext(context.WithValue(r.Context(), bodyLimitKey{}, body)))
 			if ww.status == http.StatusRequestEntityTooLarge {
 				instr.maxBodyRejections.Add(r.Context(), 1, metric.WithAttributes(
 					attribute.String("path", routeLabel(r)),
@@ -34,6 +40,38 @@ func MaxBody(cfg MaxBodyConfig) func(http.Handler) http.Handler {
 			}
 		})
 	}
+}
+
+type bodyLimitKey struct{}
+
+// limitedBody — тело запроса под http.MaxBytesReader с лимитом, который фиксируется на первом
+// чтении.
+type limitedBody struct {
+	w     http.ResponseWriter
+	body  io.ReadCloser
+	limit int64
+	r     io.Reader
+}
+
+func (b *limitedBody) Read(p []byte) (int, error) {
+	if b.r == nil {
+		b.r = b.body
+		if b.limit > 0 {
+			b.r = http.MaxBytesReader(b.w, b.body, b.limit)
+		}
+	}
+	return b.r.Read(p)
+}
+
+func (b *limitedBody) Close() error { return b.body.Close() }
+
+// operationBodyLimit — huma-middleware: тело операции ограничено её MaxBodyBytes, а не общим
+// лимитом MaxBody; не больше нуля — без предела, как у huma.
+func operationBodyLimit(ctx huma.Context, next func(huma.Context)) {
+	if b, ok := ctx.Context().Value(bodyLimitKey{}).(*limitedBody); ok && b.r == nil {
+		b.limit = ctx.Operation().MaxBodyBytes
+	}
+	next(ctx)
 }
 
 // IsMaxBodyError — helper для caller'ов, которые сами читают body.

@@ -33,6 +33,9 @@ type Config struct {
 	ReadHeaderTimeout time.Duration `envconfig:"HTTP_READ_HEADER_TIMEOUT" default:"10s"`
 	WriteTimeout      time.Duration `envconfig:"HTTP_WRITE_TIMEOUT" default:"30s"`
 	IdleTimeout       time.Duration `envconfig:"HTTP_IDLE_TIMEOUT" default:"60s"`
+	// RequestTimeout — дедлайн ctx запроса: не начатый к нему ответ — 503 problem+json, а не
+	// обрыв по WriteTimeout. Меньше WriteTimeout; отрицательный (-1s) — без дедлайна.
+	RequestTimeout time.Duration `envconfig:"HTTP_REQUEST_TIMEOUT" default:"25s"`
 	// ShutdownDrainDelay — пауза остановки, пока /ready отвечает 503, а listener ещё
 	// принимает запросы: балансировщик успевает вывести инстанс.
 	ShutdownDrainDelay time.Duration `envconfig:"HTTP_SHUTDOWN_DRAIN_DELAY" default:"0s"`
@@ -68,6 +71,14 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: Addr is empty", ErrConfig)
 	case c.ReadTimeout < 0 || c.ReadHeaderTimeout < 0 || c.WriteTimeout < 0 || c.IdleTimeout < 0:
 		return fmt.Errorf("%w: timeouts must be >= 0", ErrConfig)
+	case c.RequestTimeout == 0:
+		return fmt.Errorf("%w: HTTP_REQUEST_TIMEOUT must be > 0 or negative (-1s: no deadline)", ErrConfig)
+	case c.RequestTimeout > 0 && c.WriteTimeout > 0 && c.RequestTimeout >= c.WriteTimeout:
+		return fmt.Errorf("%w: HTTP_REQUEST_TIMEOUT (%s) must be less than HTTP_WRITE_TIMEOUT (%s): the 503 is written before the connection deadline",
+			ErrConfig, c.RequestTimeout, c.WriteTimeout)
+	case c.RequestTimeout > 0 && c.Idempotency.ReserveTTL <= c.RequestTimeout:
+		return fmt.Errorf("%w: HTTP_IDEMPOTENCY_RESERVE_TTL (%s) must be greater than HTTP_REQUEST_TIMEOUT (%s): the reservation outlives the request",
+			ErrConfig, c.Idempotency.ReserveTTL, c.RequestTimeout)
 	case c.ShutdownTimeout <= 0:
 		return fmt.Errorf("%w: ShutdownTimeout must be > 0", ErrConfig)
 	case c.ShutdownDrainDelay < 0:
@@ -254,7 +265,9 @@ func NewServer(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, er
 
 // chain — цепочка кита: RequestID, ClientIP и OTel первыми (request_id, IP клиента и trace_id
 // в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight попадали в
-// RED-метрики и access-log; middleware потребителя — внутри всей цепочки кита.
+// RED-метрики и access-log; дедлайн запроса — над Idempotency: она видит ответ хендлера, а не 503
+// дедлайна, и держит резерв, пока хендлер не вернётся; middleware потребителя — внутри всей
+// цепочки кита.
 func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) http.Handler {
 	mws := []func(http.Handler) http.Handler{
 		RequestID(),
@@ -267,6 +280,8 @@ func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) 
 		CORS(cfg.CORS),
 		RateLimit(cfg.RateLimit),
 		MaxBody(cfg.MaxBody),
+		deadline(cfg.RequestTimeout, log),
+		headAsGet,
 	}
 	if o.store != nil {
 		var idem []IdempotencyOption
@@ -278,9 +293,10 @@ func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) 
 	return append(mws, o.middleware...)
 }
 
-// BindAPI инициализирует huma.API поверх chi с HumaAuth первым huma-middleware; операции,
-// зарегистрированные на нём (и на его группах), проверяет CheckRoutes. Идемпотентен и
-// безопасен из нескольких горутин; middleware chi после него не регистрируются.
+// BindAPI инициализирует huma.API поверх chi с лимитом тела операции и HumaAuth первыми
+// huma-middleware; операции, зарегистрированные на нём (и на его группах), проверяет
+// CheckRoutes. Идемпотентен и безопасен из нескольких горутин; middleware chi после него не
+// регистрируются.
 func (s *Server) BindAPI() huma.API {
 	s.apiOnce.Do(s.bindAPI)
 	return s.api
@@ -307,8 +323,8 @@ func (s *Server) bindAPI() {
 	for _, fn := range s.opts.humaConfig {
 		fn(&humaConfig)
 	}
-	// Описание ошибок — после хуков потребителя: их Security тоже объявляет 401.
-	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors)
+	// Описание ошибок и вызов 401 — после хуков потребителя: их Security тоже объявляет 401.
+	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors, authChallenge)
 	consumer := routeHandlers(s.router)
 	api := humachi.New(s.router, humaConfig)
 	s.docsRoutes = map[string]bool{}
@@ -319,7 +335,7 @@ func (s *Server) bindAPI() {
 	}
 	s.api = &registry{API: api}
 	s.api.adapter = &opAdapter{Adapter: api.Adapter(), router: s.router, reg: s.api}
-	s.api.UseMiddleware(HumaAuth(s.opts.extract, s.log))
+	s.api.UseMiddleware(operationBodyLimit, HumaAuth(s.opts.extract, s.log))
 }
 
 func (s *Server) registry() *registry {
@@ -437,7 +453,7 @@ func responseHeader(hc huma.Context) http.Header {
 }
 
 // methodNotAllowed — 405 маршрутизатора с problem+json и Allow: свой обработчик
-// chi не выставляет Allow сам, поэтому методы маршрута ищутся заново.
+// chi не выставляет Allow сам, поэтому методы маршрута ищутся заново; у GET — и HEAD (headAsGet).
 func methodNotAllowed(router chi.Routes) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.RawPath
@@ -447,10 +463,30 @@ func methodNotAllowed(router chi.Routes) http.HandlerFunc {
 		for _, m := range knownMethods {
 			if router.Match(chi.NewRouteContext(), m, path) {
 				w.Header().Add("Allow", m)
+				if m == http.MethodGet && !router.Match(chi.NewRouteContext(), http.MethodHead, path) {
+					w.Header().Add("Allow", http.MethodHead)
+				}
 			}
 		}
 		writeAPIError(r.Context(), w, Error("METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed, "method not allowed"))
 	}
+}
+
+// headAsGet маршрутизирует HEAD без своего маршрута как GET (RFC 9110 §9.1): тело ответа на HEAD
+// net/http не отправляет.
+func headAsGet(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if rctx := chi.RouteContext(r.Context()); r.Method == http.MethodHead && rctx != nil {
+			path := r.URL.RawPath
+			if path == "" {
+				path = r.URL.Path
+			}
+			if !rctx.Routes.Match(chi.NewRouteContext(), http.MethodHead, path) {
+				rctx.RouteMethod = http.MethodGet
+			}
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // logkitHandler — мост stdlib log → logkit: net/http пишет ошибки соединений

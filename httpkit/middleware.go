@@ -4,8 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"net/http"
 	"runtime/debug"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -80,8 +83,9 @@ func RequestID() func(http.Handler) http.Handler {
 	}
 }
 
-// Recovery переводит panic в 500; http.ErrAbortHandler пробрасывает дальше —
-// это штатный способ оборвать соединение.
+// Recovery переводит panic в 500; после записанного заголовка — отправляет начатое и паникует
+// http.ErrAbortHandler: net/http обрывает соединение, и усечённый ответ не выглядит полным. Свой
+// http.ErrAbortHandler хендлера пробрасывает дальше.
 func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
 	instr := newInstruments()
 	return func(next http.Handler) http.Handler {
@@ -102,9 +106,13 @@ func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
 				instr.panicsTotal.Add(r.Context(), 1, metric.WithAttributes(
 					attribute.String("path", routeLabel(r)),
 				))
-				if !ww.wroteHeader {
-					writeAPIError(r.Context(), ww, neutral(http.StatusInternalServerError, nil))
+				if ww.wroteHeader {
+					// Начатый ответ уходит клиенту и обрывается: без Flush net/http закрыл бы
+					// соединение до заголовков, и сбой выглядел бы сетевой ошибкой до ответа.
+					ww.Flush()
+					panic(http.ErrAbortHandler)
 				}
+				writeAPIError(r.Context(), ww, neutral(http.StatusInternalServerError, nil))
 			}()
 			next.ServeHTTP(ww, r)
 		})
@@ -177,8 +185,9 @@ const codeUnauthorized = "UNAUTHORIZED"
 var ErrAuthNotConfigured = errors.New("httpkit: auth not configured")
 
 // HumaAuth проверяет операции с непустым Operation().Security: extractor кладёт
-// личность в ctx операции; без extractor'а такая операция закрыта (500). Работает
-// на любом huma-адаптере (chi в проде, humatest в тестах потребителя).
+// личность в ctx операции; без extractor'а такая операция закрыта (500). 401 несёт
+// WWW-Authenticate по схемам операции. Работает на любом huma-адаптере (chi в проде, humatest в
+// тестах потребителя).
 func HumaAuth(extract AuthExtractor, log logkit.Logger) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		if len(ctx.Operation().Security) == 0 || authDone(ctx.Context()) {
@@ -192,11 +201,64 @@ func HumaAuth(extract AuthExtractor, log logkit.Logger) func(huma.Context, func(
 		}
 		newCtx, err := extract(requestFrom(ctx))
 		if err != nil {
-			writeHumaAPIError(ctx, authError(ctx.Context(), log, err))
+			e := authError(ctx.Context(), log, err)
+			if c := operationChallenge(ctx.Operation()); e.Status == http.StatusUnauthorized && c != "" {
+				ctx.SetHeader("WWW-Authenticate", c)
+			}
+			writeHumaAPIError(ctx, e)
 			return
 		}
 		next(huma.WithContext(ctx, withAuthDone(newCtx)))
 	}
+}
+
+// challengeKey — ключ Operation.Metadata с вызовом WWW-Authenticate операции (authChallenge).
+const challengeKey = "httpkit.challenge"
+
+// authChallenge — хук OnAddOperation кита: вызов WWW-Authenticate для 401 операции по её схемам в
+// components (RFC 9110 §11.6.1).
+func authChallenge(oapi *huma.OpenAPI, op *huma.Operation) {
+	if len(op.Security) == 0 {
+		return
+	}
+	op.Metadata = maps.Clone(op.Metadata)
+	if op.Metadata == nil {
+		op.Metadata = map[string]any{}
+	}
+	op.Metadata[challengeKey] = challenge(oapi.Components.SecuritySchemes, op.Security)
+}
+
+// operationChallenge — вызов 401 операции: из хука кита, а у операции чужого API — по именам схем.
+func operationChallenge(op *huma.Operation) string {
+	if c, ok := op.Metadata[challengeKey].(string); ok {
+		return c
+	}
+	return challenge(nil, op.Security)
+}
+
+// challenge — схемы аутентификации требований операции без повторов: http — своя (`Bearer`,
+// `Basic`), oauth2 и openIdConnect — `Bearer`, прочие (apiKey) и схема вне components — её имя.
+func challenge(schemes map[string]*huma.SecurityScheme, security []map[string][]string) string {
+	var out []string
+	for _, alt := range security {
+		for _, name := range slices.Sorted(maps.Keys(alt)) {
+			c := name
+			if s := schemes[name]; s != nil {
+				switch s.Type {
+				case "http":
+					if s.Scheme != "" {
+						c = strings.ToUpper(s.Scheme[:1]) + s.Scheme[1:]
+					}
+				case "oauth2", "openIdConnect":
+					c = "Bearer"
+				}
+			}
+			if !slices.Contains(out, c) {
+				out = append(out, c)
+			}
+		}
+	}
+	return strings.Join(out, ", ")
 }
 
 // authError переводит ошибку extractor'а в APIError и логирует причину: наружу

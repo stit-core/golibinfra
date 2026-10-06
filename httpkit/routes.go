@@ -56,12 +56,18 @@ type registry struct {
 }
 
 // DocumentOperation запоминает операцию и добавляет в OpenAPI нескрытую — как huma без
-// OperationDocumenter.
+// OperationDocumenter. Скрытой huma не зовёт хуки OnAddOperation — их зовёт реестр: лимит тела,
+// правки потребителя и вызов 401 у неё те же, что у видимой.
 func (r *registry) DocumentOperation(op *huma.Operation) {
 	r.ops = append(r.ops, op)
 	r.pending = append(r.pending, op)
+	oapi := r.OpenAPI()
 	if !op.Hidden {
-		r.OpenAPI().AddOperation(op)
+		oapi.AddOperation(op)
+		return
+	}
+	for _, hook := range oapi.OnAddOperation {
+		hook(oapi, op)
 	}
 }
 

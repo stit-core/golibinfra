@@ -12,6 +12,7 @@ import (
 	"io"
 	"maps"
 	"net/http"
+	"slices"
 	"sync"
 	"time"
 
@@ -76,6 +77,10 @@ var replayHeaders = []string{"Content-Type", "Location", "ETag", "Content-Langua
 
 // HeaderIdempotentReplayed помечает ответ, воспроизведённый из store.
 const HeaderIdempotentReplayed = "Idempotent-Replayed"
+
+// notExecuted — ответы «не выполнено, повторите позже»: повтор с тем же ключом исполняет запрос
+// заново, а не получает сохранённый отказ на HTTP_IDEMPOTENCY_TTL.
+var notExecuted = []int{http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests}
 
 const memorySweepEvery = time.Minute
 
@@ -213,10 +218,10 @@ func storeCtx(parent context.Context, timeout time.Duration) (context.Context, c
 }
 
 // Idempotency воспроизводит ответ на повтор POST/PUT/PATCH с тем же ключом.
-// Ключ scope'ится субъектом (или Authorization и Cookie клиента); повтор с
-// другим телом, путём, query или методом — 422, параллельный повтор — 409.
-// Кэшируются только ответы < 500. Ошибка store — строка лога и fail-open, если
-// не задан FailClosed.
+// Ключ scope'ится субъектом (или Authorization и Cookie клиента), запрос без них идёт без
+// дедупликации; повтор с другим телом, путём, query или методом — 422, параллельный повтор —
+// 409. Кэшируются только ответы < 500, кроме 408, 409, 425 и 429. Ошибка store — строка лога и
+// fail-open, если не задан FailClosed.
 func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger, opts ...IdempotencyOption) func(http.Handler) http.Handler {
 	var o idempotencyOptions
 	for _, opt := range opts {
@@ -264,6 +269,12 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				r = r.WithContext(withAuthDone(authCtx))
 			}
 			ctx := r.Context()
+			// Без credentials scope ключа у всех анонимов общий: сохранённый ответ одного получил бы другой.
+			if SubjectFrom(ctx) == "" && r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == "" {
+				outcome(ctx, "skipped")
+				next.ServeHTTP(w, r)
+				return
+			}
 
 			body, tooBig, err := bufferBody(r, cfg.MaxBodyBytes)
 			if err != nil {
@@ -340,7 +351,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 			next.ServeHTTP(ww, r)
 			settled = true
 
-			if ww.status >= http.StatusInternalServerError || ww.overflow {
+			if ww.status >= http.StatusInternalServerError || ww.overflow || slices.Contains(notExecuted, ww.status) {
 				release()
 				outcome(ctx, "skipped")
 				return

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -203,8 +204,8 @@ func TestErrorContract(t *testing.T) {
 			name: "метод", method: http.MethodDelete, path: "/mapped", status: http.StatusMethodNotAllowed, code: "METHOD_NOT_ALLOWED",
 			check: func(t *testing.T, resp *http.Response, _ contractBody) {
 				t.Helper()
-				if allow := resp.Header.Values("Allow"); len(allow) != 1 || allow[0] != http.MethodGet {
-					t.Errorf("405 must list the route methods in Allow: %v", allow)
+				if allow := resp.Header.Values("Allow"); !slices.Equal(allow, []string{http.MethodGet, http.MethodHead}) {
+					t.Errorf("405 must list the route methods in Allow (HEAD — with GET): %v", allow)
 				}
 			},
 		},

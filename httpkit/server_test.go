@@ -17,6 +17,7 @@ import (
 func validConfig() Config {
 	return Config{
 		Addr:              ":0",
+		RequestTimeout:    10 * time.Second,
 		ShutdownTimeout:   time.Second,
 		ReadyProbeTimeout: time.Second,
 		APITitle:          "t",

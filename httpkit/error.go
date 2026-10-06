@@ -31,7 +31,7 @@ type APIError struct {
 	Title     string       `json:"title" doc:"HTTP status text"`
 	Status    int          `json:"status" doc:"HTTP status code"`
 	Detail    string       `json:"detail,omitempty" doc:"Human-readable explanation of this occurrence; may be absent, and a 5xx never carries its internal cause"`
-	Code      string       `json:"code" doc:"Stable machine-readable error code. Operation codes are listed in the response description; generic ones include VALIDATION_FAILED, BAD_REQUEST, UNAUTHORIZED, NOT_FOUND, METHOD_NOT_ALLOWED, BODY_TOO_LARGE, RATE_LIMITED, INTERNAL, UNAVAILABLE"`
+	Code      string       `json:"code" doc:"Stable machine-readable error code. Operation codes are listed in the response description; generic ones include VALIDATION_FAILED, BAD_REQUEST, UNAUTHORIZED, NOT_FOUND, METHOD_NOT_ALLOWED, BODY_TOO_LARGE, RATE_LIMITED, INTERNAL, UNAVAILABLE, REQUEST_TIMEOUT"`
 	RequestID string       `json:"request_id,omitempty" doc:"Request ID (X-Request-ID); the server logs carry the same ID"`
 	Errors    []FieldError `json:"errors,omitempty" doc:"What is wrong in the request, field by field"`
 
@@ -154,9 +154,13 @@ func neutral(status int, cause error) *APIError {
 }
 
 // newError — huma.NewError кита: 5xx нейтральна, 4xx несёт msg и ошибки полей
-// без эха значения (в нём бывает пароль).
+// без эха значения (в нём бывает пароль); *http.MaxBytesError в причине — 413.
 func newError(status int, msg string, errs ...error) huma.StatusError {
 	cause := errors.Join(errs...)
+	// Тело сверх лимита MaxBody huma читает как ошибку чтения (500), а это превышение лимита.
+	if IsMaxBodyError(cause) {
+		return Error(codeForStatus(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge, "request body is too large")
+	}
 	if status >= http.StatusInternalServerError {
 		if cause == nil {
 			return neutral(status, errors.New(msg))

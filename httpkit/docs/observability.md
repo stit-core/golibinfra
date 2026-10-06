@@ -63,6 +63,8 @@ server-span и извлекает входящий `traceparent`, а все по
   `HumaAuth`.
 - `idempotency store failed` (Warn) с `op` (`get`, `reserve`, `set`, `release`), `err` и
   `fail_closed` — `Idempotency`; тот же отказ считает `http_idempotency_total{result="error"}`.
+- `request deadline exceeded` (Warn) с `timeout` — дедлайн запроса: ответ не начат,
+  клиенту ушёл `503 REQUEST_TIMEOUT` ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)).
 - `idempotency reservation expired before the response` (Warn) с `reserve_ttl` —
   `Idempotency`: handler шёл дольше `HTTP_IDEMPOTENCY_RESERVE_TTL`, ответ не сохранён
   (`http_idempotency_total{result="skipped"}`).

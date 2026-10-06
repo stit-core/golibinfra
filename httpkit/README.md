@@ -6,11 +6,13 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 (типобезопасные операции + OpenAPI). Из коробки: `RequestID`, `ClientIP` (IP клиента в ctx —
 `ClientIPFrom`, доверие прокси — `HTTP_TRUST_PROXY_HOPS`), `OTel`,
 `AccessLog`, `Metrics`, `Recovery`, `SecurityHeaders`, `CORS`, `RateLimit`,
-`MaxBody`, опц. `Idempotency`, `HumaAuth`. Любой ответ-ошибка — `APIError`
-(`application/problem+json`: `title`, `status`, `detail`, машинный `code`,
-`request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный маршрут и
-метод, лимиты, panic; 5xx — без текста причины (она в логе с тем же
-`request_id`), 429 — с `Retry-After`. При схеме безопасности в графе открытость
+`MaxBody` (поднятый лимит операции поднимает и его), дедлайн запроса
+(`HTTP_REQUEST_TIMEOUT`), HEAD на GET-маршрутах, опц. `Idempotency`, `HumaAuth`. Любой
+ответ-ошибка — `APIError` (`application/problem+json`: `title`, `status`, `detail`,
+машинный `code`, `request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный
+маршрут и метод, лимиты, дедлайн, panic; 5xx — без текста причины (она в логе с тем же
+`request_id`), 429 — с `Retry-After`, 401 — с `WWW-Authenticate`; panic после начала
+ответа обрывает соединение. При схеме безопасности в графе открытость
 операции явная — `Security` или `httpkit.Public`; дубли маршрутов (и маршрут мимо huma на
 пути операции), забытая пометка и маршрут мимо huma — ошибка старта (`CheckRoutes`). `/health` и `/ready` (по пробам из
 fx-группы `healthkit.probes`; panic пробы — проба `down`) регистрируются автоматически.

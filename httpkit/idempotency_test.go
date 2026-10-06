@@ -368,6 +368,7 @@ func TestIdempotency_QueryOrderDoesNotMatter(t *testing.T) {
 	for _, target := range []string{"/orders?b=2&a=1", "/orders?a=1&b=2"} {
 		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{}`))
 		req.Header.Set("Idempotency-Key", "k1")
+		req.Header.Set("Authorization", "Bearer alice")
 		h.ServeHTTP(httptest.NewRecorder(), req)
 	}
 	if calls.Load() != 1 {
@@ -501,6 +502,50 @@ func TestIdempotency_ExpiredReservationIsNotOverwritten(t *testing.T) {
 	}
 	if stored, _ := store.Set(context.Background(), skey, retry, []byte("rec"), time.Minute); !stored {
 		t.Fatal("the retry lost its reservation")
+	}
+}
+
+// Регрессия KCOR-10 (H16): ответ «не выполнено, повторите» не сохраняется — повтор с тем же
+// ключом исполняет запрос заново, а не получает отказ на сутки.
+func TestIdempotency_NotExecutedResponsesAreNotStored(t *testing.T) {
+	for _, status := range []int{http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests} {
+		t.Run(strconv.Itoa(status), func(t *testing.T) {
+			var calls atomic.Int32
+			h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+				if calls.Add(1) == 1 {
+					w.WriteHeader(status)
+					return
+				}
+				w.WriteHeader(http.StatusCreated)
+			}))
+			first := httptest.NewRecorder()
+			h.ServeHTTP(first, postWithKey("k1", `{}`))
+			second := httptest.NewRecorder()
+			h.ServeHTTP(second, postWithKey("k1", `{}`))
+			if first.Code != status || second.Code != http.StatusCreated || calls.Load() != 2 {
+				t.Fatalf("first %d, retry %d, calls %d; want %d, then a fresh 201", first.Code, second.Code, calls.Load(), status)
+			}
+		})
+	}
+}
+
+// Регрессия KSEC-14 (H16): запрос без credentials идёт без дедупликации — у анонимов общий scope
+// ключа, и сохранённый ответ одного получил бы другой.
+func TestIdempotency_AnonymousRequestsAreNotDeduplicated(t *testing.T) {
+	var calls atomic.Int32
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
+	for _, remote := range []string{"198.51.100.1:1000", "203.0.113.2:2000"} {
+		req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{}`))
+		req.RemoteAddr = remote
+		req.Header.Set("Idempotency-Key", "1")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		if rec.Header().Get(HeaderIdempotentReplayed) != "" {
+			t.Fatalf("anonymous client %s got a replayed response", remote)
+		}
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("handler calls = %d, want 2", calls.Load())
 	}
 }
 

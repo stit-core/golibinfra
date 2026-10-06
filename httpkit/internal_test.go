@@ -211,3 +211,13 @@ func TestModule_DeadListenerShutsDownApp(t *testing.T) {
 		t.Fatalf("the terminal error must reach the log: %s", buf.String())
 	}
 }
+
+// Регрессия KCOR-09: тело сверх лимита MaxBody, которое huma прочла как ошибку чтения, — 413
+// BODY_TOO_LARGE, а не 500.
+func TestNewError_MaxBytesErrorIs413(t *testing.T) {
+	err := newError(http.StatusInternalServerError, "cannot read request body", &http.MaxBytesError{Limit: 1024})
+	e, ok := err.(*APIError)
+	if !ok || e.Status != http.StatusRequestEntityTooLarge || e.Code != "BODY_TOO_LARGE" {
+		t.Fatalf("newError = %#v, want 413 BODY_TOO_LARGE", err)
+	}
+}

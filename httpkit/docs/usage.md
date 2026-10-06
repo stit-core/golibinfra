@@ -128,7 +128,8 @@ func (e *LockedError) RetryAfter() time.Duration { return e.Wait }
 `Content-Type`, `Location`, `ETag`, `Content-Language`, `Content-Disposition`,
 `Cache-Control`; тело ошибки — с `request_id` исходного запроса). Тот же ключ с другим методом, путём, query или телом → `422
 IDEMPOTENCY_KEY_REUSED`; параллельный повтор, пока первый выполняется → `409
-IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` не сохраняются, запрос или ответ больше
+IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` и «не выполнено, повторите» (`408`, `409`, `425`,
+`429`) не сохраняются — повтор исполняет запрос заново; запрос или ответ больше
 `MaxBodyBytes` идёт без идемпотентности, ошибка store — строка лога
 `idempotency store failed` и fail-open (метрика `result=error`) или `503` при
 `HTTP_IDEMPOTENCY_FAIL_CLOSED=true`.
@@ -139,7 +140,8 @@ IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` не сохраняются, зап
 
 **Без валидных credentials дедупликации нет.** Extractor зовётся на каждом
 write-запросе с ключом, независимо от `Operation().Security`; его ошибка даёт
-`result=skipped` и сквозной проход. Публичная write-операция (`httpkit.Public`) с
+`result=skipped` и сквозной проход. Без extractor'а так же идёт запрос без субъекта,
+`Authorization` и `Cookie`: у анонимов общий scope ключа. Публичная write-операция (`httpkit.Public`) с
 анонимным клиентом выполняется столько раз, сколько раз пришёл запрос, — закрывайте
 такие операции `Security` или не опирайтесь на `Idempotency-Key` в их контракте.
 
@@ -387,17 +389,19 @@ func stream(w http.ResponseWriter, r *http.Request) {
 ```
 
 Для долгих стримов задайте `HTTP_WRITE_TIMEOUT=0` (или продлевайте дедлайн через
-`ResponseController.SetWriteDeadline`). На остановке поток держит соединение до
-дедлайна `HTTP_SHUTDOWN_TIMEOUT`, затем ctx запроса отменяется — и у WebSocket на
-захваченном соединении: обработчик, который слушает `r.Context()`, завершается
-сам.
+`ResponseController.SetWriteDeadline`). Дедлайн запроса `HTTP_REQUEST_TIMEOUT` поток
+SSE не получает, если клиент шлёт `Accept: text/event-stream` (`EventSource` шлёт),
+и upgrade WebSocket тоже; поток без этого заголовка ctx отменит на дедлайне. На
+остановке поток держит соединение до дедлайна `HTTP_SHUTDOWN_TIMEOUT`, затем ctx
+запроса отменяется — и у WebSocket на захваченном соединении: обработчик, который
+слушает `r.Context()`, завершается сам.
 
 ## Прямой запуск без fx
 
 ```go
 s, err := httpkit.NewServer(cfg, log, httpkit.WithAuthExtractor(extract)) // цепочка кита, как у Module
 if err != nil { /* невалидный Config или схема — ErrConfig */ }
-api := s.BindAPI() // HumaAuth — первым huma-middleware: Security проверяется extractor'ом
+api := s.BindAPI() // HumaAuth — среди первых huma-middleware: Security проверяется extractor'ом
 httpkit.RegisterHealth(api, cfg.ReadyProbeTimeout, log)
 huma.Register(api, httpkit.Public(huma.Operation{Method: http.MethodGet, Path: "/ping"}), pingHandler)
 if err := s.CheckRoutes(); err != nil { /* операции и маршруты — как на старте Module */ }
