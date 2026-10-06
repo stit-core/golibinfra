@@ -55,28 +55,46 @@ func TestNewStore_ValidatesConfig(t *testing.T) {
 	}
 }
 
-// Отзыв всех сессий идёт в транзакции смены статуса пользователя: откат смены
-// оставляет сессии живыми, коммит — закрывает.
-func TestStore_RevokeAllJoinsTransaction(t *testing.T) {
+// Issue, Revoke и RevokeAll идут в транзакции из ctx: откат вызывающего (смены
+// статуса пользователя) отменяет вход, выход и отзыв всех сессий, коммит — фиксирует.
+func TestStore_WritesJoinTransaction(t *testing.T) {
 	pg, db := startDB(t)
 	tx := pg.Transactor(t)
 	s := newStore(t, db, clockkit.Real{})
 	ctx := t.Context()
+	errRollback := errors.New("rollback")
+	rolledBack := func(write func(context.Context) error) {
+		t.Helper()
+		err := tx.WithTx(ctx, func(txCtx context.Context) error {
+			if err := write(txCtx); err != nil {
+				return err
+			}
+			return errRollback
+		})
+		if !errors.Is(err, errRollback) {
+			t.Fatalf("WithTx = %v, want the rollback error", err)
+		}
+	}
+
+	var lost session.Token
+	rolledBack(func(txCtx context.Context) error {
+		var err error
+		lost, err = s.Issue(txCtx, "tx-user")
+		return err
+	})
+	if _, err := s.Rotate(ctx, lost.Value); !errors.Is(err, session.ErrInvalid) {
+		t.Fatalf("Rotate of a token issued in a rolled back transaction = %v, want ErrInvalid", err)
+	}
+
 	tok, err := s.Issue(ctx, "tx-user")
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-
-	errRollback := errors.New("rollback")
-	err = tx.WithTx(ctx, func(txCtx context.Context) error {
-		if err := s.RevokeAll(txCtx, "tx-user"); err != nil {
-			return err
-		}
-		return errRollback
-	})
-	if !errors.Is(err, errRollback) {
-		t.Fatalf("WithTx = %v, want the rollback error", err)
+	rolledBack(func(txCtx context.Context) error { return s.Revoke(txCtx, tok.Value) })
+	if tok, err = s.Rotate(ctx, tok.Value); err != nil {
+		t.Fatalf("Rotate after a rolled back Revoke: %v", err)
 	}
+	rolledBack(func(txCtx context.Context) error { return s.RevokeAll(txCtx, "tx-user") })
 	if tok, err = s.Rotate(ctx, tok.Value); err != nil {
 		t.Fatalf("Rotate after a rolled back RevokeAll: %v", err)
 	}
@@ -108,6 +126,8 @@ func TestStore_StoresTokenHash(t *testing.T) {
 	}
 }
 
+// Очистка удаляет сессии с истёкшим абсолютным сроком; отозванная сессия живёт до
+// своего срока, и повтор её токена после очистки — всё ещё ErrReused.
 func TestStore_CleanupDeletesExpiredSessions(t *testing.T) {
 	_, db := startDB(t)
 	clock := clockkit.NewTickable(testStart)
@@ -125,6 +145,16 @@ func TestStore_CleanupDeletesExpiredSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
+	reused, err := s.Issue(ctx, "cleanup-user")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, err := s.Rotate(ctx, reused.Value); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if _, err := s.Rotate(ctx, reused.Value); !errors.Is(err, session.ErrReused) {
+		t.Fatalf("second Rotate of one token = %v, want ErrReused", err)
+	}
 	clock.Advance(40 * time.Minute) // абсолютный срок первой сессии прошёл, у свежей токен жив
 
 	before := metrictest.Collect(t)
@@ -139,11 +169,14 @@ func TestStore_CleanupDeletesExpiredSessions(t *testing.T) {
 		Scan(&sessions, &tokens); err != nil {
 		t.Fatalf("count: %v", err)
 	}
-	if sessions != 1 || tokens != 1 {
-		t.Fatalf("after Cleanup: %d sessions, %d tokens; want only the fresh session and its token", sessions, tokens)
+	if sessions != 2 || tokens != 3 {
+		t.Fatalf("after Cleanup: %d sessions, %d tokens; want the fresh and the revoked session with 1 and 2 tokens", sessions, tokens)
 	}
 	if _, err := s.Rotate(ctx, fresh.Value); err != nil {
 		t.Fatalf("Rotate of the live session after Cleanup: %v", err)
+	}
+	if _, err := s.Rotate(ctx, reused.Value); !errors.Is(err, session.ErrReused) {
+		t.Fatalf("reuse of a revoked session's token after Cleanup = %v, want ErrReused", err)
 	}
 }
 
@@ -179,6 +212,7 @@ func TestStore_Metrics(t *testing.T) {
 	if err := s.Revoke(ctx, b.Value); err != nil {
 		t.Fatalf("Revoke: %v", err)
 	}
+	_, _ = s.Rotate(pgkit.WithTestTx(ctx), c.Value) // error: ErrInTx
 	clock.Advance(time.Hour)
 	_, _ = s.Rotate(ctx, c.Value) // expired
 	if err := s.RevokeAll(ctx, "metrics-user"); err != nil {
@@ -197,6 +231,7 @@ func TestStore_Metrics(t *testing.T) {
 		{"authn_session_rotations_total", []string{"result", "reused"}, 1},
 		{"authn_session_rotations_total", []string{"result", "invalid"}, 2},
 		{"authn_session_rotations_total", []string{"result", "expired"}, 1},
+		{"authn_session_rotations_total", []string{"result", "error"}, 1},
 		{"authn_session_revoked_total", []string{"reason", "reused"}, 1},
 		{"authn_session_revoked_total", []string{"reason", "logout"}, 1},
 		{"authn_session_revoked_total", []string{"reason", "all"}, 1},

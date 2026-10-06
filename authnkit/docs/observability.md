@@ -59,6 +59,10 @@ Meter: `git.stit.tech/stit-core/golibinfra/authnkit/session`. Пишет хра�
 Рост `reused` — признак кражи refresh-токенов или клиента, который обновляет
 параллельно: алерт на него ставится первым.
 
+Счётчики пишутся в момент вызова: `Issue` и `RevokeAll` в транзакции, которую
+вызывающий потом откатил, оставляют `issued_total{result="ok"}` и
+`revoked_total{reason="all"}` — коммита кит не видит.
+
 ## Что эмитится, а что нет
 
 - `Hash`, `Verify` и `VerifyDummy` пишут гистограмму **на каждый вызов**,

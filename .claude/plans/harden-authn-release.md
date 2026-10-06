@@ -163,8 +163,6 @@ blocked-by: —
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S3, S6, S7, S8, S9, S10, S11, S12
 
 ## Решения
-- **Порядок.** metrictest (S1–S2) — первым: им проверяют метрики сессий (S5) и коллизии httpclient
-  (S9). Остальное — по replan §6: B4–B8, затем high, затем C.
 - **Инструменты метрик** — в конструкторах через `otelkit.Meter` (и трейсер timerkit): делегат OTel
   привязывает пакетный инструмент к первому провайдеру процесса (KO09, HO06). Регресс держит
   статический тест `internal/otelkit`: тест второго провайдера противоречит metrictest.
@@ -232,13 +230,15 @@ blocked-by: —
 - **Токены.** `pkg/tokens` → генерация и хеш из authnkit. Погашение — своим условным `UPDATE`.
 - **Сессии.** `refresh_sessions`, репозиторий сессий и адаптеры `SignRefresh`/`ParseRefresh` →
   `authnkit/session`:
-  - в граф — `session/pgstore.Module`, его миграции — источник `cmd/migrate`;
+  - в граф — `session/pgstore.Module` (и `timerkit.Module`), его миграции — источник `cmd/migrate`;
   - `refresh_sessions` удаляется новой миграцией с `-- infra-handoff:`; при выкатке все входят
     заново один раз;
   - `RevokeAll` — в транзакции блокировки, удаления, смены роли, смены и сброса пароля, в
     `seed-admin`;
   - `Rotate` — вне транзакции; `CanLogin` — после него; `session.ErrReused` (`*ReusedError`:
-    subject, сессия) → аудит `refresh_reused`.
+    subject, сессия) → аудит `refresh_reused`;
+  - окна прощения нет: параллельный refresh одним токеном отзывает сессию — клиент обновляет
+    сессию последовательно, это — в описании операции refresh в `openapi.json`.
 - **IP.** `authgate.ClientIP` и `identity.WithIP` → `httpkit.ClientIPFrom(ctx)`; за Traefik —
   `HTTP_TRUST_PROXY_HOPS=1`.
 - **Публичные операции.** `publicOperations` и `TestHTTPOperations` → `httpkit.Public(op)` в
@@ -272,10 +272,9 @@ blocked-by: —
 `fx.Provide(context.Background)`.
 
 ## Где мы сейчас
-Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`). Круг фиксов:
-B1 (переданный `Meter` — `NewProvider`) и B2 (повтор прогонов) — сделаны; дальше N1–N5, перепроверка
-валидатором, затем S8 (natskit). Хвост для S8:
-`TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
+Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`); круг фиксов B1,
+B2, N1–N3 (и N6–N8) сделан, дальше N4, N5, перепроверка валидатором, затем S8 (natskit). Хвост для
+S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
 (1 прогон из 4), а дока обещает «снимает интерес сразу».
 
 Заготовка аннотации второй половины v1.3.0:
@@ -285,12 +284,13 @@ B1 (переданный `Meter` — `NewProvider`) и B2 (повтор прог
   (бизнес-метрики, подмена провайдера telemetry в boot-тесте); `Collect` — провайдер процесса китов
   (ставит первый вызов), дельты `Sub`, `Get`/`Find`/`Value`, коллизии имён в Prometheus.
 - Поведение — auditkit: пустые `IP` и `RequestID` записи `pgstore` и `audittest` берут из ctx
-  (httpkit; request-id — и grpckit) → ручные значения убрать; своему `Logger` — `Entry.Enrich(ctx)`.
+  (httpkit; request-id — и grpckit) → ручные значения убрать, тест `Entry` целиком под ctx запроса
+  видит их; своему `Logger` — `Entry.Enrich(ctx)`.
 - Изменения — authnkit: `NewToken()` (256 бит hex) и `HashToken` (SHA-256) → вместо `pkg/tokens`.
 - Breaking — authnkit: `SignRefresh`, `ParseRefresh`, `TokenTypeRefresh`, `DefaultRefreshTTL`,
-  `JWTConfig.RefreshTTL` (`JWT_REFRESH_TTL`) удалены → refresh — `authnkit/session`:
-  `session/pgstore.Module` + `fx.Provide(session.NewConfig)`, `pgstore.Migrations` в мигратор (без
-  них — `ErrSchema` на старте), env `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`,
+  `JWTConfig.RefreshTTL` (`JWT_REFRESH_TTL`) удалены → refresh — `authnkit/session`: в граф
+  `session/pgstore.Module` (с `timerkit.Module`) и `session.NewConfig`, `pgstore.Migrations` — в
+  мигратор (без них `ErrSchema` на старте), env `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`,
   `SESSION_CLEANUP_INTERVAL`; старые refresh-JWT недействительны — вход заново один раз.
 - Изменения — `authnkit/session`: `Store` (`Rotate` вне транзакции, `RevokeAll` в транзакции из
   ctx), `Token`, `ReusedError`; `session/pgstore`: `NewStore`, `WithClock`, `CheckSchema`,

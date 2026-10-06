@@ -32,16 +32,17 @@ func TestStore_CheckSchema(t *testing.T) {
 		t.Fatalf("version table %s: CheckSchema reads schema_migrations_authnkit_session", pgstore.Migrations.VersionTable())
 	}
 
-	for name, fix := range map[string]string{
-		"dirty":  `UPDATE schema_migrations_authnkit_session SET dirty = true`,
-		"behind": `UPDATE schema_migrations_authnkit_session SET version = 0, dirty = false`,
-		"empty":  `DELETE FROM schema_migrations_authnkit_session`,
+	// Срез, а не map: поломки копятся, и dirty проверяется на последней версии, до остальных.
+	for _, c := range []struct{ name, fix, want string }{
+		{"dirty", `UPDATE schema_migrations_authnkit_session SET dirty = true`, "is dirty"},
+		{"behind", `UPDATE schema_migrations_authnkit_session SET version = 0, dirty = false`, "the kit needs"},
+		{"empty", `DELETE FROM schema_migrations_authnkit_session`, "no migration applied"},
 	} {
-		if _, err := db.Exec(ctx, fix); err != nil {
-			t.Fatalf("%s: %v", name, err)
+		if _, err := db.Exec(ctx, c.fix); err != nil {
+			t.Fatalf("%s: %v", c.name, err)
 		}
-		if err := s.CheckSchema(ctx); !errors.Is(err, pgstore.ErrSchema) {
-			t.Errorf("%s version table: CheckSchema = %v, want ErrSchema", name, err)
+		if err := s.CheckSchema(ctx); !errors.Is(err, pgstore.ErrSchema) || !strings.Contains(err.Error(), c.want) {
+			t.Errorf("%s version table: CheckSchema = %v, want ErrSchema with %q", c.name, err, c.want)
 		}
 	}
 }

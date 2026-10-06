@@ -273,8 +273,9 @@ var reused *session.ReusedError
 switch {
 case errors.As(err, &reused):
 	// повтор использованного токена: сессия уже отозвана — аудит reused.Subject
+	return errLoginAgain
 case errors.Is(err, session.ErrInvalid), errors.Is(err, session.ErrExpired):
-	// войти заново
+	return errLoginAgain
 case err != nil:
 	return err
 }
