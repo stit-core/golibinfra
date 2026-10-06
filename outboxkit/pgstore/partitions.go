@@ -59,6 +59,15 @@ func monthStart(t time.Time) time.Time {
 	return time.Date(u.Year(), u.Month(), 1, 0, 0, 0, 0, time.UTC)
 }
 
+// CheckSchema сверяет схему таблицы с источником её миграций (Migrations у NewStore,
+// TableMigrations у NewStoreFor): без миграций — pgkit.ErrSchema с именем источника.
+func (s *Store) CheckSchema(ctx context.Context) error {
+	if err := pgkit.CheckSchema(ctx, s.db, s.src); err != nil {
+		return fmt.Errorf("outboxkit/pgstore: table %s: %w", s.table, err)
+	}
+	return nil
+}
+
 // EnsurePartitions создаёт партиции текущего и monthsAhead следующих месяцев;
 // идемпотентна и не падает, когда ту же партицию параллельно создаёт другой
 // процесс (хук и keeper-job на старте, вторая реплика).

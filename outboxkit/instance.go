@@ -178,6 +178,7 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 			func(ob *Outbox, _ pgkit.Migrated) []timerkit.Job { return ob.Jobs() },
 			fx.ParamTags(tag, `optional:"true"`),
 		),
+		fx.Invoke(fx.Annotate(checkSchema, fx.ParamTags(``, tag, `optional:"true"`))),
 		fx.Invoke(fx.Annotate(registerInstanceGauges, fx.ParamTags(``, tag))),
 		fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) { checkStreams(lc, sb, name, o.subjects) }),
 	)
@@ -206,6 +207,21 @@ func checkStreams(lc fx.Lifecycle, sb natskit.StreamBus, name string, subjects [
 	lc.Append(fx.Hook{OnStart: func(ctx context.Context) error {
 		if err := checker.CheckStreams(ctx, subjects...); err != nil {
 			return fmt.Errorf("outboxkit: instance %s: %w", name, err)
+		}
+		return nil
+	}})
+}
+
+// checkSchema вешает на старт проверку схемы хранилища (SchemaChecker); зависимость от
+// pgkit.Migrated ставит её после миграций.
+func checkSchema(lc fx.Lifecycle, o *Outbox, _ pgkit.Migrated) {
+	checker, ok := o.repo.(SchemaChecker)
+	if !ok {
+		return
+	}
+	lc.Append(fx.Hook{OnStart: func(ctx context.Context) error {
+		if err := checker.CheckSchema(ctx); err != nil {
+			return fmt.Errorf("outboxkit: instance %s: %w", o.name, err)
 		}
 		return nil
 	}})

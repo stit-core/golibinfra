@@ -63,7 +63,6 @@ func NewConfig() (Config, error) // SESSION_*
 func CheckSubject(subject string) error
 func pgstore.NewStore(cfg session.Config, db *pgkit.DB, opts ...pgstore.Option) (*pgstore.Store, error)
 func pgstore.WithClock(c clockkit.Clock) pgstore.Option
-func (s *pgstore.Store) CheckSchema(ctx context.Context) error // pgstore.ErrSchema
 func (s *pgstore.Store) Cleanup(ctx context.Context) error
 var pgstore.Module, pgstore.Migrations
 
@@ -296,7 +295,8 @@ err = tx.WithTx(ctx, func(ctx context.Context) error {
 В fx — `pgstore.Module` (нужны `pgkit.Module`, `timerkit.Module` и
 `fx.Provide(session.NewConfig)`); его миграции — источник `pgstore.Migrations`
 для `pgkit.MigrateModule` или отдельной команды миграций: без них старт падает
-(`pgstore.ErrSchema`). CLI без fx — `pgstore.NewStore(cfg, db)`.
+(`pgkit.ErrSchema`, проверка `pgkit.CheckSchemaOnStart`). CLI без fx — `pgstore.NewStore(cfg, db)`,
+схему сверяет `pgkit.CheckSchema(ctx, db, pgstore.Migrations)`.
 
 ## RBAC
 

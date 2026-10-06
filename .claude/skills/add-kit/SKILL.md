@@ -41,9 +41,10 @@ description: Завести в golibinfra новый kit по конвенция
      образы с конкретным тегом, никогда `:latest`).
    - `module_test.go` — fx-тест графа: `fx.ValidateApp(...)` с минимальным набором
      провайдеров (тот же, что в README кита).
-   - Свои миграции (`pgkit.Source`, embed в `<kit>/pgstore/migrations`) — тест
-     `TestMigrations_Ladder` на каждый источник: `testkit.MigrationLadder` проверяет,
-     что down каждой версии возвращает схему к её up.
+   - Свои миграции (`pgkit.Source`, embed в `<kit>/pgstore/migrations`) — в `Module`
+     `pgkit.SupplyMigrations(src)` и `pgkit.CheckSchemaOnStart(src)` (без миграций хранилище
+     не стартует) и тест `TestMigrations_Ladder` на каждый источник:
+     `testkit.MigrationLadder` проверяет, что down каждой версии возвращает схему к её up.
 3. **Конфиг (если есть env-параметры).** Структура с `envconfig`-тегами — это
    **public API** (порядок тегов: `envconfig` первым, затем `default`).
    `NewConfig() (Config, error)` читает ENV ридером `internal/envconf` (`envconf.Load`,

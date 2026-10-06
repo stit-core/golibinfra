@@ -64,7 +64,7 @@ func TestKitSchemaJobsStartAfterMigrations(t *testing.T) {
 				fx.Supply(
 					pgkit.NewDB(nil),
 					pgkit.PoolConfig{DSN: "postgres://u@127.0.0.1:1/d?connect_timeout=1"},
-					pgkit.MigrateRunnerConfig{Timeout: 5 * time.Second},
+					pgkit.MigrateRunnerConfig{Timeout: 5 * time.Second, LockTimeout: 5 * time.Second},
 				),
 				pgkit.SupplyMigrations(pgkit.Source{Name: "zz", FS: fstest.MapFS{
 					"m/0001_zz.up.sql": {Data: []byte("SELECT 1;")},

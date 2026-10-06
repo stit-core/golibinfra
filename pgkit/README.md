@@ -25,9 +25,10 @@ import "git.stit.tech/stit-core/golibinfra/pgkit"
 
 ```go
 fx.New(
+    logkit.Module,       // логгер пула: WARN, если остановку держит занятое соединение
     pgkit.Module,        // *pgxpool.Pool, *pgkit.DB, pgkit.Transactor, *pgkit.ReadWriteDB
     pgkit.MigrateModule, // миграции китов (группа pgkit.migrations) + PG_MIGRATIONS_PATH в OnStart
-    fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig),
+    fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, logkit.NewConfig),
     healthkit.ProvideProbe(pgkit.Probe), // SELECT 1 в /ready
 
     fx.Invoke(func(db *pgkit.DB, tx pgkit.Transactor) {
@@ -70,9 +71,16 @@ caller (`NewPoolConfig`/`NewMigrateRunnerConfig` или App-структура) 
 - `Validate` у всех трёх конфигов валит старт с `pgkit.ErrConfig`, а не первый
   запрос.
 - Ошибка `fn` из `WithTx` не оборачивается; ошибка отката присоединяется через
-  `errors.Join` и никогда не подменяет причину.
+  `errors.Join` и никогда не подменяет причину. Вложенный `WithTxOptions` идёт во внешней
+  транзакции, а строже её (изоляция выше или `ReadOnly` внутри `ReadWrite`) —
+  `pgkit.ErrNestedTxStricter`.
 - Миграции идут под advisory-lock'ом: из одновременно стартующих инстансов
-  применяет ровно один. Дедлайн ожидания у прямых `MigrateUp*` ставит
-  вызывающий, у `MigrateModule` — `PG_MIGRATE_TIMEOUT`.
+  применяет ровно один. Дедлайн прогона у прямых `MigrateUp*` ставит
+  вызывающий, у `MigrateModule` — `PG_MIGRATE_TIMEOUT`; он прерывает и идущий оператор.
+  Оператор миграции ждёт блокировку не дольше lock timeout (`PG_MIGRATE_LOCK_TIMEOUT`) и столько
+  же держит за собой запросы к таблице.
 - Хук `OnStart`, которому нужна схема, зависит от `pgkit.Migrated`, а не от
-  позиции модуля в `fx.New`.
+  позиции модуля в `fx.New`. Хранилище кита со своими миграциями сверяет их на старте
+  (`pgkit.CheckSchemaOnStart`): без миграций — `pgkit.ErrSchema` с именем источника.
+- Остановка пула ждёт занятые соединения две трети остатка бюджета `OnStop`, затем пишет WARN
+  с их числом: треть остаётся хукам после пула.

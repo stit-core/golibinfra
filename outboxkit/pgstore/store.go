@@ -28,6 +28,7 @@ var tableNameRe = regexp.MustCompile(`^[a-z][a-z0-9_]{0,62}$`)
 type Store struct {
 	db              *pgkit.DB
 	table           string
+	src             pgkit.Source
 	requireTx       bool
 	retentionMonths int
 	clock           clockkit.Clock
@@ -47,6 +48,7 @@ var (
 	_ outboxkit.BacklogReporter = (*Store)(nil)
 	_ outboxkit.DeadReviver     = (*Store)(nil)
 	_ outboxkit.Maintainer      = (*Store)(nil)
+	_ outboxkit.SchemaChecker   = (*Store)(nil)
 )
 
 // StoreOption — опция конструктора Store.
@@ -74,9 +76,10 @@ func WithClock(c clockkit.Clock) StoreOption {
 	}
 }
 
-// NewStore строит Store на таблицу DefaultTable (single-instance путь, fx Module).
+// NewStore строит Store на таблицу DefaultTable (single-instance путь, fx Module); схема —
+// источник Migrations.
 func NewStore(db *pgkit.DB, opts ...StoreOption) *Store {
-	s, _ := newStore(db, DefaultTable, opts...) // DefaultTable валиден по построению
+	s, _ := newStore(db, DefaultTable, Migrations, opts...) // DefaultTable валиден по построению
 	return s
 }
 
@@ -84,18 +87,19 @@ func NewStore(db *pgkit.DB, opts ...StoreOption) *Store {
 // outbox-инстансов в одном приложении (таблица на инстанс). Имя валидируется;
 // схему кастомной таблицы накатывает caller (TableMigrations/SchemaSQL).
 func NewStoreFor(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error) {
-	return newStore(db, table, opts...)
-}
-
-func newStore(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error) {
 	if !tableNameRe.MatchString(table) {
 		return nil, fmt.Errorf("outboxkit/pgstore: invalid table name %q", table)
 	}
+	return newStore(db, table, TableMigrations(table), opts...)
+}
+
+func newStore(db *pgkit.DB, table string, src pgkit.Source, opts ...StoreOption) (*Store, error) {
 	const cols = `id, created_at, subject, payload, attempts,
     (next_attempt_at IS NULL OR next_attempt_at <= NOW()) AS due`
 	s := &Store{
 		db:        db,
 		table:     table,
+		src:       src,
 		clock:     clockkit.Real{},
 		insertSQL: fmt.Sprintf(`INSERT INTO %s (subject, payload, created_at) VALUES ($1, $2, NOW())`, table),
 		// batch пропускает строки, ждущие backoff; ordered их не перескакивает

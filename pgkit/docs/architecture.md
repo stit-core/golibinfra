@@ -83,8 +83,13 @@ type Transactor interface {
 Поведение `WithTx` / `WithTxOptions`:
 
 - **Вложенность.** Если `ctx` уже несёт транзакцию, вызов просто выполняет
-  `fn(ctx)` в той же транзакции — без `BEGIN`/`COMMIT` и без savepoint. Опции
-  вложенного `WithTxOptions` игнорируются: действуют опции внешней транзакции.
+  `fn(ctx)` в той же транзакции — без `BEGIN`/`COMMIT` и без savepoint, под опциями
+  внешней. Вложенный `WithTxOptions` строже внешней (изоляция выше — `RepeatableRead` или
+  `Serializable` внутри `ReadCommitted`, `Serializable` внутри `RepeatableRead`; `ReadOnly`
+  внутри `ReadWrite`) — `ErrNestedTxStricter` до `fn`: код, защищающий инвариант изоляцией
+  или режимом, молча потерял бы защиту. Слабее или равный — участвует; пустой уровень —
+  дефолт Postgres, `ReadCommitted`, как и `ReadUncommitted`. Маркер `WithTestTx` опций не
+  несёт и не проверяется.
 - **Изоляция.** `WithTx` открывает транзакцию с `pgx.TxOptions{IsoLevel:
   pgx.ReadCommitted}`; `WithTxOptions` — с переданными опциями (`Serializable`,
   `ReadOnly`, `Deferrable`).
@@ -169,8 +174,8 @@ WHY не одна общая таблица: golang-migrate ведёт един�
 затем пропускает или повторно применяет чужие файлы. Таблица на источник делает
 каждый источник независимым `append-only`-логом.
 
-`MigrateUp` / `MigrateDown` (один шаг) / `MigrateVersion` работают с одним
-источником. Внутри: `source/iofs` читает `fs.FS` напрямую (без временных
+`MigrateUp(ctx, dsn, lockTimeout, src)` / `MigrateDown` (один шаг) / `MigrateVersion`
+работают с одним источником. Внутри: `source/iofs` читает `fs.FS` напрямую (без временных
 каталогов), драйвер `database/pgx/v5` через `WithInstance` поверх `*sql.DB` из
 `pgx/v5/stdlib` — на wire работает pgx, поэтому DSN может быть и URL, и
 keyword/value, а `lib/pq` в зависимости не приходит. Соединение мигратора
@@ -178,13 +183,33 @@ keyword/value, а `lib/pq` в зависимости не приходит. Со
 коннекта из дедлайна `ctx`. Пустой источник (нет `*.sql`) — ошибка: это почти
 всегда неверный путь.
 
-golang-migrate не принимает `ctx`, поэтому дедлайн вызывающего ограничивает
-коннект и ожидание lock'а, но не прерывает уже идущий SQL-оператор: прерванный
-процессом прогон оставляет версию `dirty=true`.
+**Блокировки и дедлайн.** У соединения мигратора `lock_timeout` = `lockTimeout` (> 0;
+`MigrateVersion` схему не меняет и его не ставит): DDL, упёршийся в чужую транзакцию, ждёт
+блокировку не дольше него. WHY: ALTER в очереди за блокировкой держит за собой всех
+читателей таблицы, и без предела одна долгая транзакция останавливает таблицу на всё своё
+время. golang-migrate исполняет операторы на `context.Background()`, поэтому дедлайн `ctx`
+доходит до них cancel request'ом серверу на каждую сессию мигратора — с повтором до конца
+прогона, чтобы оператор, начатый уже после дедлайна (между миграциями), тоже не дошёл до
+конца. Обрыв сокета не годится: оператор, ждущий блокировку, сокет не читает и продолжил бы
+ждать. `GracefulStop` golang-migrate не годится: его флаг читают две горутины без
+синхронизации, и остановка между миграциями теряется. Ошибка прерванного прогона несёт
+`ctx.Err()` (`errors.Is(err, context.DeadlineExceeded)`). Упавшая на lock timeout или
+дедлайне миграция оставляет версию `dirty=true`, как любой упавший файл.
+
+**Проверка схемы на старте (`schema.go`).** `CheckSchema(ctx, db, src)` сверяет таблицу
+версий источника с его последней миграцией (тем же разбором имён, что у golang-migrate):
+нет таблицы, ни одной версии, версия ниже или `dirty` — `ErrSchema` с именем источника и
+подсказкой «примените через `MigrateModule` или команду миграций».
+`CheckSchemaOnStart(src)` вешает её на `OnStart` после optional `Migrated` с `*DB` из
+графа — так хранилища китов (`auditkit`, `bruteforcekit`, `authnkit/session`) не стартуют
+без своих миграций; `outboxkit/pgstore` сверяет схему таблицы перед созданием партиций, а
+`outboxkit.Instance` — через `SchemaChecker` своего хранилища. WHY: легитимна сборка без
+`MigrateModule` (миграции накатывает отдельная команда), и без проверки забытый источник
+проявился бы `42P01` на первой записи в проде.
 
 ### Advisory-lock (`migrate_lock.go`)
 
-`MigrateUpAll(ctx, dsn, sources...)` применяет источники **по порядку** под одним
+`MigrateUpAll(ctx, dsn, lockTimeout, sources...)` применяет источники **по порядку** под одним
 сессионным advisory-lock'ом `pg_advisory_lock` (ключ — FNV-1a от строки
 `golibinfra-migrate`) на отдельном соединении; lock снимается в `defer`. Имена
 источников проверяются на уникальность. WHY: при нескольких инстансах сервиса,
@@ -192,8 +217,9 @@ golang-migrate не принимает `ctx`, поэтому дедлайн вы
 на advisory-lock и находят схему уже применённой, а не гонятся за неё.
 
 Ожидание lock'а ограничено дедлайном `ctx`: `pg_advisory_lock` сам ждёт
-бесконечно, поэтому дедлайн — единственный выход из очереди. У прямых
-`MigrateUp*` его ставит вызывающий, у `MigrateModule` — `PG_MIGRATE_TIMEOUT`
+бесконечно, поэтому дедлайн — единственный выход из очереди; `lockTimeout` к этому
+соединению не относится — инстансы ждут мигрирующего, а не падают через секунды. У прямых
+`MigrateUp*` дедлайн ставит вызывающий, у `MigrateModule` — `PG_MIGRATE_TIMEOUT`
 (и `fx.StartTimeout` сверху). Инстанс, не дождавшийся lock'а, падает на старте
 и уходит в рестарт — схему он не применяет.
 
@@ -206,8 +232,8 @@ golang-migrate не принимает `ctx`, поэтому дедлайн вы
 `MigrateModule` в `OnStart` собирает группу, сортирует источники по имени (порядок
 fx-группы не определён), добавляет последним каталог приложения из
 `PG_MIGRATIONS_PATH` (если он не пуст) и вызывает `MigrateUpAll` под
-`PG_MIGRATE_TIMEOUT`. Приложение идёт последним, потому что его схема может
-ссылаться на таблицы китов.
+`PG_MIGRATE_TIMEOUT` с `PG_MIGRATE_LOCK_TIMEOUT`. Приложение идёт последним, потому что его
+схема может ссылаться на таблицы китов.
 
 `OnStart`-хуки fx выполняются в порядке регистрации, а он зависит от порядка
 модулей в `fx.New`. Чтобы схема не зависела от этого порядка, `MigrateModule`
@@ -226,9 +252,9 @@ type params struct {
 }
 ```
 
-Так сделано в `outboxkit/pgstore` (создание партиций). `optional:"true"` нужен,
-чтобы приложение, накатывающее миграции отдельным шагом CI, собиралось без
-`MigrateModule`.
+Так сделано в `outboxkit/pgstore` (создание партиций) и в `CheckSchemaOnStart`.
+`optional:"true"` нужен, чтобы приложение, накатывающее миграции отдельным шагом CI,
+собиралось без `MigrateModule`.
 
 ## Read-replica (`replica.go`)
 
@@ -264,7 +290,12 @@ WHY роутинг — explicit, а не автоматический: kit не 
 
 - `newPoolWithLifecycle` — primary `*pgxpool.Pool`: `NewPool` + `InstrumentPool(pool,
   RolePrimary)` + `OnStop`-хук (снимает регистрацию метрик, закрывает пул и
-  отменяет его контекст).
+  отменяет его контекст). `Close` ждёт возврата каждого занятого соединения, поэтому хук
+  ждёт его две трети остатка бюджета остановки, затем пишет WARN `pgkit: pool close is still
+  waiting for acquired connections` (`role`, `acquired_conns`) и возвращает `nil`. WHY:
+  забытая транзакция не должна съесть бюджет хуков после пула — fx не зовёт хук, когда ctx
+  остановки истёк, и телеметрия потеряла бы финальный экспорт; треть остатка — то же
+  правило, что у `httpkit`.
 - `NewDB` — фасад `*DB` поверх пула.
 - `NewPoolTransactor` под интерфейсом `Transactor` (`fx.As`).
 - `newReadWriteDB` — `*ReadWriteDB`; `ReplicaConfig` берётся как
@@ -278,7 +309,8 @@ WHY роутинг — explicit, а не автоматический: kit не 
 Метрики идут в глобальный `otel.Meter` (`internal/otelkit`): без
 `MeterProvider` инструменты — no-op, `Module` при этом поднимается. Config'и
 `Module` не provide'ит — это делает caller (App-структура или
-`fx.Provide(pgkit.NewPoolConfig)`), единообразно с остальными китами.
+`fx.Provide(pgkit.NewPoolConfig)`), единообразно с остальными китами; логгер —
+`logkit.Logger` из графа.
 `MigrateModule` — отдельный модуль (см. выше), ему нужны `PoolConfig` и
 `MigrateRunnerConfig` (`pgkit.NewMigrateRunnerConfig`), а провайдит он
 `pgkit.Migrated`.

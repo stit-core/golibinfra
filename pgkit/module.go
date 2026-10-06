@@ -3,15 +3,18 @@ package pgkit
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // Module — граф пула primary: *pgxpool.Pool, *DB, Transactor и *ReadWriteDB.
-// Config'и provide'ит caller (App-структура или fx.Provide(pgkit.NewPoolConfig)).
+// Config'и provide'ит caller (App-структура или fx.Provide(pgkit.NewPoolConfig)), логгер —
+// logkit.Module.
 var Module = fx.Module("pgkit",
 	fx.Provide(
 		newPoolWithLifecycle,
@@ -41,8 +44,8 @@ func NewReplicaConfig() (ReplicaConfig, error) {
 	return c, c.Validate()
 }
 
-func newPoolWithLifecycle(lc fx.Lifecycle, cfg PoolConfig) (*pgxpool.Pool, error) {
-	return openPool(lc, cfg, RolePrimary)
+func newPoolWithLifecycle(lc fx.Lifecycle, cfg PoolConfig, log logkit.Logger) (*pgxpool.Pool, error) {
+	return openPool(lc, cfg, RolePrimary, log)
 }
 
 // replicaParams: ReplicaConfig опционален — сервис без реплики не обязан его
@@ -54,6 +57,7 @@ type replicaParams struct {
 	Master  *DB
 	Pool    PoolConfig
 	Replica ReplicaConfig `optional:"true"`
+	Log     logkit.Logger
 }
 
 func newReadWriteDB(p replicaParams) (*ReadWriteDB, error) {
@@ -69,14 +73,14 @@ func newReadWriteDB(p replicaParams) (*ReadWriteDB, error) {
 		return nil, err
 	}
 
-	pool, err := openPool(p.LC, repPoolCfg, RoleReplica)
+	pool, err := openPool(p.LC, repPoolCfg, RoleReplica, p.Log)
 	if err != nil {
 		return nil, fmt.Errorf("pgkit: replica: %w", err)
 	}
 	return NewReadWriteDB(p.Master, NewDB(pool)), nil
 }
 
-func openPool(lc fx.Lifecycle, cfg PoolConfig, role string) (*pgxpool.Pool, error) {
+func openPool(lc fx.Lifecycle, cfg PoolConfig, role string, log logkit.Logger) (*pgxpool.Pool, error) {
 	ctx, cancel := context.WithCancel(context.Background())
 
 	pool, err := NewPool(ctx, cfg)
@@ -87,12 +91,35 @@ func openPool(lc fx.Lifecycle, cfg PoolConfig, role string) (*pgxpool.Pool, erro
 	reg := InstrumentPool(pool, role)
 
 	lc.Append(fx.Hook{
-		OnStop: func(_ context.Context) error {
+		OnStop: func(ctx context.Context) error {
+			defer cancel()
 			err := reg.Unregister()
-			pool.Close()
-			cancel()
+			// Close ждёт возврата каждого занятого соединения: забытая транзакция не должна съесть
+			// бюджет остановки хуков после пула (телеметрия), поэтому им остаётся треть.
+			closed := make(chan struct{})
+			go func() {
+				pool.Close()
+				close(closed)
+			}()
+			wait, stop := stopShare(ctx)
+			defer stop()
+			select {
+			case <-closed:
+			case <-wait.Done():
+				log.Warn(ctx, "pgkit: pool close is still waiting for acquired connections",
+					"role", role, "acquired_conns", pool.Stat().AcquiredConns())
+			}
 			return err
 		},
 	})
 	return pool, nil
+}
+
+// stopShare — две трети остатка бюджета остановки: треть остаётся хукам после этого.
+func stopShare(ctx context.Context) (context.Context, context.CancelFunc) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return context.WithCancel(ctx)
+	}
+	return context.WithTimeout(ctx, time.Until(deadline)*2/3)
 }

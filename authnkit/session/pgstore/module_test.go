@@ -82,12 +82,12 @@ func TestModule_ChecksSchemaOnStart(t *testing.T) {
 
 	bare := app()
 	err := bare.Start(t.Context())
-	if !errors.Is(err, pgstore.ErrSchema) || !strings.Contains(err.Error(), "pgstore.Migrations") {
-		t.Fatalf("Start without migrations = %v, want ErrSchema with a hint", err)
+	if !errors.Is(err, pgkit.ErrSchema) || !strings.Contains(err.Error(), `source "authnkit_session"`) {
+		t.Fatalf("Start without migrations = %v, want pgkit.ErrSchema naming the source", err)
 	}
 	_ = bare.Stop(context.Background())
 
-	migrated := app(fx.Supply(pgkit.MigrateRunnerConfig{Timeout: time.Minute}), pgkit.MigrateModule)
+	migrated := app(fx.Supply(pgkit.MigrateRunnerConfig{Timeout: time.Minute, LockTimeout: time.Minute}), pgkit.MigrateModule)
 	if err := migrated.Start(t.Context()); err != nil {
 		t.Fatalf("Start with pgkit.MigrateModule: %v", err)
 	}

@@ -108,6 +108,81 @@ func TestWithTxOptions_IsolationAndNesting(t *testing.T) {
 	}
 }
 
+// Вложенный вызов идёт во внешней транзакции: строже её (изоляция выше или ReadOnly внутри
+// ReadWrite) — ErrNestedTxStricter до fn, а не молча потерянная защита (KCOR-07). Слабее или
+// равный — участвует; маркер WithTestTx опций не знает и не проверяется.
+func TestWithTxOptions_NestedStricterIsAnError(t *testing.T) {
+	_, tr, _ := startPool(t, 2)
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	ro := pgx.TxOptions{AccessMode: pgx.ReadOnly}
+	tests := []struct {
+		name          string
+		outer, nested pgx.TxOptions
+		want          string
+	}{
+		{
+			"serializable in read committed",
+			pgx.TxOptions{IsoLevel: pgx.ReadCommitted},
+			pgx.TxOptions{IsoLevel: pgx.Serializable},
+			"outer read committed read write, nested serializable read write",
+		},
+		{
+			"repeatable read in default",
+			pgx.TxOptions{},
+			pgx.TxOptions{IsoLevel: pgx.RepeatableRead},
+			"outer read committed read write, nested repeatable read read write",
+		},
+		{
+			"serializable in repeatable read",
+			pgx.TxOptions{IsoLevel: pgx.RepeatableRead},
+			pgx.TxOptions{IsoLevel: pgx.Serializable},
+			"outer repeatable read read write, nested serializable read write",
+		},
+		{
+			"read only in read write",
+			pgx.TxOptions{IsoLevel: pgx.Serializable},
+			pgx.TxOptions{IsoLevel: pgx.Serializable, AccessMode: pgx.ReadOnly},
+			"outer serializable read write, nested serializable read only",
+		},
+		{"read committed in serializable", pgx.TxOptions{IsoLevel: pgx.Serializable}, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, ""},
+		{"read uncommitted in default", pgx.TxOptions{}, pgx.TxOptions{IsoLevel: pgx.ReadUncommitted}, ""},
+		{"same repeatable read", pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, pgx.TxOptions{IsoLevel: pgx.RepeatableRead}, ""},
+		{"read write in read only", ro, pgx.TxOptions{IsoLevel: pgx.ReadCommitted}, ""},
+		{"read only in read only", ro, ro, ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ran := false
+			err := tr.WithTxOptions(ctx, tt.outer, func(ctx context.Context) error {
+				return tr.WithTxOptions(ctx, tt.nested, func(context.Context) error {
+					ran = true
+					return nil
+				})
+			})
+			if tt.want == "" {
+				if err != nil || !ran {
+					t.Fatalf("WithTxOptions = %v, ran=%v, want the nested call inside the outer transaction", err, ran)
+				}
+				return
+			}
+			if !errors.Is(err, pgkit.ErrNestedTxStricter) || !strings.Contains(err.Error(), tt.want) || ran {
+				t.Fatalf("WithTxOptions = %v, ran=%v, want ErrNestedTxStricter with %q before fn", err, ran, tt.want)
+			}
+		})
+	}
+
+	ran := false
+	err := tr.WithTxOptions(pgkit.WithTestTx(ctx), pgx.TxOptions{IsoLevel: pgx.Serializable}, func(context.Context) error {
+		ran = true
+		return nil
+	})
+	if err != nil || !ran {
+		t.Fatalf("WithTxOptions under WithTestTx = %v, ran=%v, want fn without the check", err, ran)
+	}
+}
+
 // Проглоченная в fn SQL-ошибка не даёт коммита: Postgres держит транзакцию
 // aborted, и Commit возвращает ErrTxCommitRollback.
 func TestWithTx_SwallowedSQLErrorFailsCommit(t *testing.T) {

@@ -73,15 +73,18 @@ src := pgkit.Source{Name: "src", Dir: "migrations", FS: fstest.MapFS{
     "migrations/0001_foo.down.sql": {Data: []byte(`DROP TABLE foo;`)},
 }}
 pg := testkit.StartPostgres(t, testkit.WithMigrations(src))
-// или вручную:
-err := pgkit.MigrateUp(ctx, pg.DSN, src)
+// или вручную (lock timeout: чужих сессий у контейнера теста нет):
+err := pgkit.MigrateUp(ctx, pg.DSN, time.Minute, src)
 v, dirty, err := pgkit.MigrateVersion(ctx, pg.DSN, src) // 1, false
-err = pgkit.MigrateDown(ctx, pg.DSN, src)               // один шаг назад
+err = pgkit.MigrateDown(ctx, pg.DSN, time.Minute, src)  // один шаг назад
 ```
 
 Регрессионный сценарий кита (`migrate_test.go`): к источнику добавляется
 файл `0002`, `MigrateUpAll` применяет его ровно один раз, версия приложения в
-`schema_migrations_app` не меняется.
+`schema_migrations_app` не меняется. Там же — ALTER под чужой блокировкой (lock timeout
+отпускает читателей таблицы) и дедлайн, прерывающий идущий оператор и оператор, начатый
+после дедлайна между миграциями. Проверку схемы хранилища кита (`CheckSchema`,
+`CheckSchemaOnStart`) — `schema_test.go`: без миграций старт падает с `ErrSchema`.
 
 ## Рецепт: проверка метрик пула
 

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"hash/fnv"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 )
@@ -16,11 +17,15 @@ func advisoryLockKey() int64 {
 	return int64(h.Sum64()) //nolint:gosec // intentional bit-reinterpret of FNV-1a hash into pg advisory-lock int64 key
 }
 
-// MigrateUpAll применяет источники по порядку под одним advisory-lock'ом:
-// из одновременно стартующих инстансов мигрирует ровно один.
-func MigrateUpAll(ctx context.Context, dsn string, sources ...Source) error {
+// MigrateUpAll применяет источники по порядку под одним advisory-lock'ом: из одновременно
+// стартующих инстансов мигрирует ровно один, остальные ждут его до дедлайна ctx. lockTimeout и
+// ctx у миграций — как у MigrateUp.
+func MigrateUpAll(ctx context.Context, dsn string, lockTimeout time.Duration, sources ...Source) error {
 	if len(sources) == 0 {
 		return nil
+	}
+	if err := checkLockTimeout(lockTimeout); err != nil {
+		return err
 	}
 	seen := make(map[string]struct{}, len(sources))
 	for _, src := range sources {
@@ -52,7 +57,7 @@ func MigrateUpAll(ctx context.Context, dsn string, sources ...Source) error {
 	}()
 
 	for _, src := range sources {
-		if err := MigrateUp(ctx, dsn, src); err != nil {
+		if err := MigrateUp(ctx, dsn, lockTimeout, src); err != nil {
 			return err
 		}
 	}

@@ -210,7 +210,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   кода, не пускает в доки переменные-призраки и поля конфига без тега.
 - Каждый багфикс — с регрессионным тестом; у `Module` кита — fx-тест
   (`fx.ValidateApp` с минимальным набором провайдеров); у каждого источника миграций
-  кита (`pgkit.Source`) — лесенка `testkit.MigrationLadder` (`TestMigrations_Ladder`).
+  кита (`pgkit.Source`) — лесенка `testkit.MigrationLadder` (`TestMigrations_Ladder`) и
+  проверка схемы на старте (`pgkit.CheckSchemaOnStart`).
 
 ### Сначала спросить пользователя
 - Смена конвенции имён метрик (`bizmetric`, `biz_*`) — на неё опираются все сервисы.

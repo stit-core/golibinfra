@@ -281,8 +281,10 @@ optional `pgkit.Migrated`: хук job'ов встаёт за миграциям�
 
 `pgstore.Migrations` — `pgkit.Source{Name: "bruteforcekit"}` (таблица версий
 `schema_migrations_bruteforcekit`) с `migrations/*.sql` (embed).
-`pgkit.MigrateModule` применяет его на старте автоматически; без fx —
-`pgkit.MigrateUpAll(ctx, dsn, pgstore.Migrations, ...)`. Таблица:
+`pgkit.MigrateModule` применяет его на старте автоматически, после чего `Module` сверяет
+схему (`pgkit.CheckSchemaOnStart`): источник не применён — старт падает с `pgkit.ErrSchema`
+и именем источника. Без fx — `pgkit.MigrateUpAll(ctx, dsn, cfg.LockTimeout,
+pgstore.Migrations, ...)`. Таблица:
 
 ```sql
 CREATE TABLE bruteforce_attempts (

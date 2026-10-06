@@ -242,6 +242,11 @@ at-least-once. Повтор в пределах окна
 регистрирует источник в `pgkit.MigrateModule`. Для кастомных таблиц
 (multi-instance) тот же набор даёт `pgstore.TableMigrations(table)` — со своей
 таблицей версий `schema_migrations_<table>`; его регистрирует `outboxkit.Instance`.
+На старте, после миграций, схема сверяется с источником (`Store.CheckSchema` →
+`pgkit.CheckSchema`): у `pgstore.Module` — перед созданием партиций, у `Instance` — через
+опциональный интерфейс хранилища `outboxkit.SchemaChecker`. Источник не применён — ошибка
+старта с `pgkit.ErrSchema`, именем таблицы и источника, а не `42P01` на первой публикации
+или DDL партиции.
 
 ## Single-instance vs multi-instance
 
@@ -256,7 +261,8 @@ id строки идёт как `Nats-Msg-Id`. Корректно, потому 
 таблице на домен): `pgstore.FactoryModule` + `outboxkit.Instance(name, table)` на
 каждый. `Instance` берёт из `outboxkit.RepositoryFactory` store и схему таблицы
 (в группу `pgkit.migrations`), собирает namespace'ный транспорт, drain- и
-maintenance-job'ы, backlog-gauge'и и проверку старта (стримы — с `WithSubjects`); `*Outbox`
+maintenance-job'ы, backlog-gauge'и и проверки старта (схема хранилища, стримы — с
+`WithSubjects`); `*Outbox`
 и `Publisher` провайдятся под fx-тегом `name:"<name>"`. Каждая per-domain таблица
 имеет собственный независимый `BIGSERIAL` — id повторяются между таблицами,
 поэтому `Msg-Id` намспейсится именем инстанса.

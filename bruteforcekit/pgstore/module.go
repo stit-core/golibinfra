@@ -11,7 +11,8 @@ import (
 )
 
 // Module — fx-вход кита: *Store как bruteforcekit.Guard и bruteforcekit.Cleaner,
-// миграции в группе pgkit.MigrateModule и cleanup-job в группе timerkit.JobsGroup.
+// миграции в группе pgkit.MigrateModule, проверка схемы в OnStart (после них, если модуль в
+// графе) и cleanup-job в группе timerkit.JobsGroup.
 // Нужны *pgkit.DB (pgkit.Module), bruteforcekit.Config (fx.Provide(bruteforcekit.NewConfig))
 // и timerkit.Module — без него граф не собирается.
 var Module = fx.Module(
@@ -28,6 +29,7 @@ var Module = fx.Module(
 		fx.ParamTags(``, ``, `optional:"true"`),
 	),
 	pgkit.SupplyMigrations(Migrations),
+	pgkit.CheckSchemaOnStart(Migrations),
 )
 
 // CleanupJob — периодическая чистка протухших строк с интервалом

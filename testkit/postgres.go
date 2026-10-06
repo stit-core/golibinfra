@@ -17,6 +17,7 @@ import (
 // PostgresImage — образ StartPostgres по умолчанию; переопределяется WithImage.
 const PostgresImage = "postgres:17-alpine"
 
+// migrateTimeout — дедлайн миграций фикстуры и их lock timeout: чужих сессий у контейнера теста нет.
 const migrateTimeout = 60 * time.Second
 
 // PostgresFixture — живой Postgres теста: DSN, handle контейнера и общий пул.
@@ -60,7 +61,7 @@ func StartPostgres(t testing.TB, opts ...Option) *PostgresFixture {
 	if len(o.sources) > 0 {
 		migCtx, cancel := context.WithTimeout(ctx, migrateTimeout)
 		defer cancel()
-		if err := pgkit.MigrateUpAll(migCtx, dsn, o.sources...); err != nil {
+		if err := pgkit.MigrateUpAll(migCtx, dsn, migrateTimeout, o.sources...); err != nil {
 			t.Fatalf("testkit: migrate up: %v", err)
 		}
 	}

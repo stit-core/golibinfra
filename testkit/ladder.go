@@ -55,23 +55,23 @@ func ladder(t testing.TB, dsn string, pool *pgxpool.Pool, src pgkit.Source) {
 	for _, v := range versions {
 		step := sourceUpTo(t, src, files, v)
 		before := schemaSnapshot(t, pool)
-		migrate(pgkit.MigrateUp(ctx, dsn, step), "up", v)
+		migrate(pgkit.MigrateUp(ctx, dsn, migrateTimeout, step), "up", v)
 		after := schemaSnapshot(t, pool)
-		migrate(pgkit.MigrateDown(ctx, dsn, step), "down", v)
+		migrate(pgkit.MigrateDown(ctx, dsn, migrateTimeout, step), "down", v)
 		sameSchema(t, before, schemaSnapshot(t, pool), fmt.Sprintf("%s: down %d must restore the schema it started from", src.Name, v))
-		migrate(pgkit.MigrateUp(ctx, dsn, step), "up after down", v)
+		migrate(pgkit.MigrateUp(ctx, dsn, migrateTimeout, step), "up after down", v)
 		sameSchema(t, after, schemaSnapshot(t, pool), fmt.Sprintf("%s: up %d after down must rebuild the same schema", src.Name, v))
 	}
 
 	top := schemaSnapshot(t, pool)
 	for _, v := range slices.Backward(versions) {
-		migrate(pgkit.MigrateDown(ctx, dsn, src), "down to zero at", v)
+		migrate(pgkit.MigrateDown(ctx, dsn, migrateTimeout, src), "down to zero at", v)
 	}
 	if version, _, err := pgkit.MigrateVersion(ctx, dsn, src); err != nil || version != 0 {
 		t.Fatalf("testkit: ladder %s: version after down to zero = %d, %v; want 0", src.Name, version, err)
 	}
 	sameSchema(t, base, schemaSnapshot(t, pool), src.Name+": down to zero must restore the schema before the source")
-	migrate(pgkit.MigrateUp(ctx, dsn, src), "up after down to zero, top", versions[len(versions)-1])
+	migrate(pgkit.MigrateUp(ctx, dsn, migrateTimeout, src), "up after down to zero, top", versions[len(versions)-1])
 	sameSchema(t, top, schemaSnapshot(t, pool), src.Name+": up after down to zero must rebuild the same schema")
 }
 

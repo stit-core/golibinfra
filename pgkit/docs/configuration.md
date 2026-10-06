@@ -67,25 +67,31 @@ lifetime/idle, `HealthCheck`, `ConnectTimeout`, `OTelTrace`, сессионны�
 
 ## `MigrateRunnerConfig` (`migrate_module.go`)
 
-Используется `MigrateModule` для прогона миграций на старте приложения.
+Параметры прогона миграций: `MigrateModule` на старте приложения и команда миграций
+потребителя (`MigrateUpAll(ctx, dsn, cfg.LockTimeout, …)` под `cfg.Timeout`).
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `PG_MIGRATIONS_PATH` | `Path` | `string` | `/migrations` | каталог с `*.up.sql`/`*.down.sql` приложения (источник `app`); `-` (пустая строка в `Path`) — у приложения нет своих миграций, применяются только источники китов |
-| `PG_MIGRATE_TIMEOUT` | `Timeout` | `time.Duration` | `2m` | лимит на ожидание advisory-lock'а **и** прогон всех миграций в `OnStart` |
+| `PG_MIGRATE_TIMEOUT` | `Timeout` | `time.Duration` | `2m` | лимит на ожидание advisory-lock'а **и** прогон всех миграций в `OnStart`; на дедлайне идущий оператор прерывается на сервере |
+| `PG_MIGRATE_LOCK_TIMEOUT` | `LockTimeout` | `time.Duration` | `5s` | `lock_timeout` соединения мигратора: столько оператор миграции ждёт блокировку таблицы — и столько же за ним стоят запросы к ней; не дождался — миграция падает |
 
 DSN для миграций `MigrateModule` берёт из `PoolConfig.DSN` (тот же `PG_DSN`).
 Он же становится таймаутом коннекта мигратора. `Validate` требует
-`PG_MIGRATE_TIMEOUT > 0` и `PG_MIGRATIONS_PATH` без окружающих пробелов;
-несуществующий или пустой каталог — ошибка старта.
+`PG_MIGRATE_TIMEOUT > 0`, `PG_MIGRATE_LOCK_TIMEOUT > 0` и `PG_MIGRATIONS_PATH` без
+окружающих пробелов; несуществующий или пустой каталог — ошибка старта.
+
+**Отказ миграции.** Дедлайн `PG_MIGRATE_TIMEOUT` и `PG_MIGRATE_LOCK_TIMEOUT` обрывают
+оператор, и миграция падает с версией `dirty=true`, как любой упавший файл: следующий
+старт требует ручной починки. Файл без явных `BEGIN`/`COMMIT` выполняется одной
+транзакцией и откатывается целиком — после проверки схемы версию возвращают на
+предыдущую (`force` CLI golang-migrate). Таймаут блокировки короче — меньше простой
+запросов к таблице на деплое, но чаще отказ рядом с долгой транзакцией.
 
 **`PG_MIGRATE_TIMEOUT` и `fx.StartTimeout`.** Хук `OnStart` работает под
 меньшим из двух дедлайнов, поэтому `fx.StartTimeout` (по умолчанию 15 с) должен
 покрывать `PG_MIGRATE_TIMEOUT` плюс остальной старт — иначе миграции обрывает
-fx, а не kit. golang-migrate не принимает `ctx`: по истечении дедлайна fx
-вернёт ошибку, но текущий SQL-оператор продолжит выполняться, и прерванная
-миграция остаётся `dirty=true` (следующий старт падает и требует ручной
-починки). Ставь `fx.StartTimeout` заведомо больше самой долгой миграции.
+fx, а не kit.
 
 ## Public API
 

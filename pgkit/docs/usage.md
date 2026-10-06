@@ -8,12 +8,13 @@
 
 `Module` provide'ит `*pgxpool.Pool`, `*pgkit.DB`, `pgkit.Transactor` и
 `*pgkit.ReadWriteDB`; lifecycle закрывает пул(ы) на shutdown. Config'и
-регистрирует caller.
+регистрирует caller, логгер берётся из графа (`logkit.Module`).
 
 ```go
 fx.New(
+    logkit.Module,
     pgkit.Module,
-    fx.Provide(pgkit.NewPoolConfig),
+    fx.Provide(pgkit.NewPoolConfig, logkit.NewConfig),
 
     fx.Invoke(func(db *pgkit.DB) {
         // db готов к Exec/Query/QueryRow
@@ -77,7 +78,9 @@ func (s *Service) Transfer(ctx context.Context, from, to int, amount int64) erro
 - Panic внутри `fn` → `Rollback` и re-panic: соединение возвращается в пул,
   panic ловит вызывающий слой (`httpkit`/`timerkit` recover'ят свои обработчики).
 - Вложенный вызов (когда `ctx` уже несёт транзакцию) участвует во внешней
-  транзакции, не открывая новую и не создавая savepoint.
+  транзакции, не открывая новую и не создавая savepoint. Вложенный `WithTxOptions` строже
+  внешней (изоляция выше или `ReadOnly` внутри `ReadWrite`) — `pgkit.ErrNestedTxStricter`:
+  нужна `Serializable` — открывай её снаружи, на границе операции.
 - `InTx(ctx) bool` — проверить, выполняется ли код внутри транзакции (нужно
   коду, обязанному быть атомарным с бизнес-записью, например outbox-insert). В
   тестах тот же гейт открывает `pgkit.WithTestTx(ctx)` — маркер без Postgres,
@@ -151,10 +154,12 @@ if pgkit.IsLockNotAvailable(err) {
 
 `MigrateModule` в `OnStart` под advisory-lock применяет источники китов из
 fx-группы `pgkit.migrations` (их регистрируют `Module` китов —
-`auditkit/pgstore`, `outboxkit/pgstore`, `bruteforcekit/pgstore` — и
-`outboxkit.Instance`), затем каталог приложения из `PG_MIGRATIONS_PATH`
-(default `/migrations`; `-` — у приложения своих миграций нет). DSN
-берётся из `PoolConfig`.
+`auditkit/pgstore`, `outboxkit/pgstore`, `bruteforcekit/pgstore`,
+`authnkit/session/pgstore` — и `outboxkit.Instance`), затем каталог приложения из
+`PG_MIGRATIONS_PATH` (default `/migrations`; `-` — у приложения своих миграций нет). DSN
+берётся из `PoolConfig`, предел ожидания блокировки — `PG_MIGRATE_LOCK_TIMEOUT`. Те же
+`Module` китов сверяют свою схему на старте после миграций: без `MigrateModule` и без
+применённых источников старт падает с `pgkit.ErrSchema`, а не первая запись.
 
 ```go
 fx.New(
@@ -196,12 +201,16 @@ pgkit.SupplyMigrations(pgkit.Source{Name: "billing", FS: billingFS, Dir: "migrat
 ### Программно
 
 ```go
-src := pgkit.DirSource(pgkit.AppSourceName, "./migrations")
-err := pgkit.MigrateUp(ctx, dsn, src)
-v, dirty, err := pgkit.MigrateVersion(ctx, dsn, src)
-err = pgkit.MigrateDown(ctx, dsn, src) // один шаг назад
+cfg, err := pgkit.NewMigrateRunnerConfig() // PG_MIGRATE_TIMEOUT, PG_MIGRATE_LOCK_TIMEOUT — как у MigrateModule
+ctx, cancel := context.WithTimeout(ctx, cfg.Timeout)
+defer cancel()
 
-err = pgkit.MigrateUpAll(ctx, dsn, auditpg.Migrations, outboxpg.Migrations, src) // под advisory-lock, по порядку
+src := pgkit.DirSource(pgkit.AppSourceName, "./migrations")
+err = pgkit.MigrateUp(ctx, dsn, cfg.LockTimeout, src)
+v, dirty, err := pgkit.MigrateVersion(ctx, dsn, src)
+err = pgkit.MigrateDown(ctx, dsn, cfg.LockTimeout, src) // один шаг назад
+
+err = pgkit.MigrateUpAll(ctx, dsn, cfg.LockTimeout, auditpg.Migrations, outboxpg.Migrations, src) // под advisory-lock, по порядку
 ```
 
 `MigrateUp` молча игнорирует «нечего применять». `dirty=true` означает прерванную
@@ -210,9 +219,11 @@ err = pgkit.MigrateUpAll(ctx, dsn, auditpg.Migrations, outboxpg.Migrations, src)
 `x-migrations-table=schema_migrations_<name>` в DSN.
 
 **Дедлайн — ответственность вызывающего.** Прямые `MigrateUp*` уважают только
-`ctx`, который им передали: он ограничивает коннект и ожидание advisory-lock'а.
-`MigrateUpAll(context.Background(), …)` из CLI будет ждать lock бесконечно —
-оборачивай в `context.WithTimeout`.
+`ctx`, который им передали: он ограничивает коннект, ожидание advisory-lock'а и идущий
+оператор миграции. `MigrateUpAll(context.Background(), …)` из CLI будет ждать lock
+бесконечно — оборачивай в `context.WithTimeout`. `lockTimeout` (> 0) — `lock_timeout`
+операторов миграции: команда миграций берёт `cfg.LockTimeout`, чтобы семантика совпадала с
+`MigrateModule`.
 
 ## Read-replica
 

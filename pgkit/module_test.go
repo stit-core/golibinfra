@@ -3,17 +3,23 @@ package pgkit_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"testing/fstest"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 )
 
 func TestModule_WiresGraphAndClosesPoolOnStop(t *testing.T) {
@@ -28,6 +34,7 @@ func TestModule_WiresGraphAndClosesPoolOnStop(t *testing.T) {
 	app := fxtest.New(t,
 		fx.NopLogger,
 		fx.Supply(pg.PoolConfig()),
+		fx.Provide(logkit.Nop),
 		pgkit.Module,
 		healthkit.ProvideProbe(pgkit.Probe),
 		healthkit.ProvideProbe(pgkit.ReplicaProbe),
@@ -71,6 +78,56 @@ func TestModule_WiresGraphAndClosesPoolOnStop(t *testing.T) {
 	}
 }
 
+// Забытая транзакция не держит остановку пула до дедлайна: хук пула ждёт две трети бюджета,
+// пишет WARN с числом занятых соединений, и хук после пула (телеметрия) выполняется (KFX-04).
+func TestModule_StopWithAcquiredConnLeavesBudget(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	logs := logtest.Capture()
+	var (
+		pool     *pgxpool.Pool
+		ranAfter atomic.Bool
+	)
+	app := fx.New(
+		fx.NopLogger,
+		// Модуль раньше pgkit.Module: его хук добавлен раньше и гасится после пула.
+		fx.Module("after-pool", fx.Invoke(func(lc fx.Lifecycle) {
+			lc.Append(fx.Hook{OnStop: func(context.Context) error { ranAfter.Store(true); return nil }})
+		})),
+		fx.Supply(pg.PoolConfig()),
+		fx.Provide(func() logkit.Logger { return logs }),
+		pgkit.Module,
+		fx.Populate(&pool),
+	)
+	ctx := context.Background()
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("Begin: %v", err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+
+	stopCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	begin := time.Now()
+	err = app.Stop(stopCtx)
+	took := time.Since(begin)
+	if err != nil || !ranAfter.Load() {
+		t.Fatalf("Stop = %v after %v, hook after the pool ran = %v; want nil and the hook run", err, took, ranAfter.Load())
+	}
+	if took > 2500*time.Millisecond {
+		t.Fatalf("Stop took %v of a 3s budget: the pool hook ate the share of hooks after it", took)
+	}
+	warn, ok := logs.Find(slog.LevelWarn, "pgkit: pool close is still waiting for acquired connections")
+	if !ok || warn.Str("role") != pgkit.RolePrimary {
+		t.Fatalf("no WARN of the primary pool close: %+v", logs.Entries())
+	}
+	if n, _ := warn.Value("acquired_conns"); fmt.Sprint(n) != "1" {
+		t.Fatalf("acquired_conns = %v, want 1", n)
+	}
+}
+
 // ReplicaConfig не обязателен: Module поднимается и без него.
 func TestModule_WithoutReplicaConfig(t *testing.T) {
 	pg := testkit.StartPostgres(t)
@@ -78,6 +135,7 @@ func TestModule_WithoutReplicaConfig(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(pg.PoolConfig()),
+		fx.Provide(logkit.Nop),
 		pgkit.Module,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -100,6 +158,7 @@ func TestModule_ReplicaPoolAndProbe(t *testing.T) {
 			pg.PoolConfig(),
 			pgkit.ReplicaConfig{ReplicaDSN: pg.DSN, MaxConns: 2},
 		),
+		fx.Provide(logkit.Nop),
 		pgkit.Module,
 		fx.Invoke(func(r *pgkit.ReadWriteDB) { rw = r }),
 	)
@@ -131,6 +190,7 @@ func TestModule_InvalidReplicaConfigFailsStart(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(pg.PoolConfig(), pgkit.ReplicaConfig{ReplicaDSN: pg.DSN, MaxConns: -1}),
+		fx.Provide(logkit.Nop),
 		pgkit.Module,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -171,7 +231,7 @@ func TestMigrateModule_MigratedOrdersConsumerHooks(t *testing.T) {
 		consumerModule,
 		fx.Supply(
 			pgkit.PoolConfig{DSN: pg.DSN},
-			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute, LockTimeout: time.Minute},
 		),
 		pgkit.SupplyMigrations(pgkit.Source{Name: "d", FS: kit, Dir: "migrations"}),
 		pgkit.MigrateModule,
@@ -213,6 +273,7 @@ func TestModule_ReplicaMaxConnsBelowMinConnsNamesReplicaEnv(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(poolCfg, pgkit.ReplicaConfig{ReplicaDSN: pg.DSN, MaxConns: 1}),
+		fx.Provide(logkit.Nop),
 		pgkit.Module,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -238,7 +299,7 @@ func TestMigrateModule_FailedMigrationFailsStart(t *testing.T) {
 		fx.NopLogger,
 		fx.Supply(
 			pgkit.PoolConfig{DSN: pg.DSN},
-			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute, LockTimeout: time.Minute},
 		),
 		pgkit.SupplyMigrations(pgkit.Source{Name: "i", FS: broken, Dir: "migrations"}),
 		pgkit.MigrateModule,
@@ -260,7 +321,8 @@ func TestQuickStartGraphValidates(t *testing.T) {
 	t.Parallel()
 	err := fx.ValidateApp(
 		fx.NopLogger,
-		fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig),
+		fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, logkit.NewConfig),
+		logkit.Module,
 		pgkit.Module,
 		pgkit.MigrateModule,
 		healthkit.ProvideProbe(pgkit.Probe),

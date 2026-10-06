@@ -1,9 +1,11 @@
 package pgstore_test
 
 import (
+	"context"
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"go.uber.org/fx"
 
@@ -11,6 +13,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
+	"git.stit.tech/stit-core/golibinfra/testkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
@@ -85,5 +88,36 @@ func TestModule_RegistersJobAndMigrations(t *testing.T) {
 	}
 	if len(sources) != 1 || sources[0].Name != "bruteforcekit" {
 		t.Fatalf("migrations group = %+v, want one bruteforcekit source", sources)
+	}
+}
+
+// Без миграций кита старт падает с именем источника, а не первая проверка пароля (KX62); с
+// pgkit.MigrateModule проверка идёт после миграций.
+func TestModule_ChecksSchemaOnStart(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	app := func(extra ...fx.Option) *fx.App {
+		return fx.New(append([]fx.Option{
+			fx.NopLogger,
+			pgstore.Module,
+			fx.Supply(pg.PoolConfig(), config()),
+			scheduler(),
+			pgkit.Module,
+			fx.Invoke(func(bruteforcekit.Guard) {}),
+		}, extra...)...)
+	}
+
+	bare := app()
+	err := bare.Start(t.Context())
+	_ = bare.Stop(context.Background())
+	if !errors.Is(err, pgkit.ErrSchema) || !strings.Contains(err.Error(), `source "bruteforcekit"`) {
+		t.Fatalf("Start without migrations = %v, want pgkit.ErrSchema naming the source", err)
+	}
+
+	migrated := app(fx.Supply(pgkit.MigrateRunnerConfig{Timeout: time.Minute, LockTimeout: time.Minute}), pgkit.MigrateModule)
+	if err := migrated.Start(t.Context()); err != nil {
+		t.Fatalf("Start with pgkit.MigrateModule: %v", err)
+	}
+	if err := migrated.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop: %v", err)
 	}
 }

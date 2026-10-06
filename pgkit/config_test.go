@@ -81,11 +81,13 @@ func TestMigrateRunnerConfig_Validate(t *testing.T) {
 		cfg     pgkit.MigrateRunnerConfig
 		wantErr bool
 	}{
-		{name: "path and timeout", cfg: pgkit.MigrateRunnerConfig{Path: "/migrations", Timeout: 2 * time.Minute}},
-		{name: "empty path skips app source", cfg: pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute}},
-		{name: "zero timeout", cfg: pgkit.MigrateRunnerConfig{Path: "/migrations"}, wantErr: true},
-		{name: "negative timeout", cfg: pgkit.MigrateRunnerConfig{Path: "/m", Timeout: -time.Second}, wantErr: true},
-		{name: "padded path", cfg: pgkit.MigrateRunnerConfig{Path: " /migrations ", Timeout: time.Minute}, wantErr: true},
+		{name: "path and timeouts", cfg: pgkit.MigrateRunnerConfig{Path: "/migrations", Timeout: 2 * time.Minute, LockTimeout: 5 * time.Second}},
+		{name: "empty path skips app source", cfg: pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute, LockTimeout: time.Second}},
+		{name: "zero timeout", cfg: pgkit.MigrateRunnerConfig{Path: "/migrations", LockTimeout: time.Second}, wantErr: true},
+		{name: "negative timeout", cfg: pgkit.MigrateRunnerConfig{Path: "/m", Timeout: -time.Second, LockTimeout: time.Second}, wantErr: true},
+		{name: "zero lock timeout", cfg: pgkit.MigrateRunnerConfig{Path: "/m", Timeout: time.Minute}, wantErr: true},
+		{name: "negative lock timeout", cfg: pgkit.MigrateRunnerConfig{Path: "/m", Timeout: time.Minute, LockTimeout: -time.Second}, wantErr: true},
+		{name: "padded path", cfg: pgkit.MigrateRunnerConfig{Path: " /migrations ", Timeout: time.Minute, LockTimeout: time.Second}, wantErr: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -138,8 +140,8 @@ func TestNewConfigs_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewMigrateRunnerConfig: %v", err)
 	}
-	if (run != pgkit.MigrateRunnerConfig{Path: "/migrations", Timeout: 2 * time.Minute}) {
-		t.Fatalf("NewMigrateRunnerConfig() = %+v, want {/migrations 2m}", run)
+	if (run != pgkit.MigrateRunnerConfig{Path: "/migrations", Timeout: 2 * time.Minute, LockTimeout: 5 * time.Second}) {
+		t.Fatalf("NewMigrateRunnerConfig() = %+v, want {/migrations 2m 5s}", run)
 	}
 }
 

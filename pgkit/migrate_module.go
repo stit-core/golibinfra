@@ -12,12 +12,15 @@ import (
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
-// MigrateRunnerConfig — параметры прогона миграций в OnStart (MigrateModule).
+// MigrateRunnerConfig — параметры прогона миграций: MigrateModule и команда миграций потребителя.
 type MigrateRunnerConfig struct {
 	// Path — каталог миграций приложения; пустая строка (в ENV — «-») — своих миграций у
 	// приложения нет, применяются только источники китов.
 	Path    string        `envconfig:"PG_MIGRATIONS_PATH" default:"/migrations"`
 	Timeout time.Duration `envconfig:"PG_MIGRATE_TIMEOUT" default:"2m"`
+	// LockTimeout — lock_timeout соединения мигратора: столько оператор миграции ждёт
+	// блокировку и держит за собой очередь запросов к таблице.
+	LockTimeout time.Duration `envconfig:"PG_MIGRATE_LOCK_TIMEOUT" default:"5s"`
 }
 
 // Validate проверяет инварианты конфига; нарушение — ErrConfig.
@@ -27,6 +30,9 @@ func (c MigrateRunnerConfig) Validate() error {
 	}
 	if c.Timeout <= 0 {
 		return fmt.Errorf("%w: PG_MIGRATE_TIMEOUT must be > 0, got %s", ErrConfig, c.Timeout)
+	}
+	if c.LockTimeout <= 0 {
+		return fmt.Errorf("%w: PG_MIGRATE_LOCK_TIMEOUT must be > 0, got %s", ErrConfig, c.LockTimeout)
 	}
 	return nil
 }
@@ -82,7 +88,7 @@ func provideMigrated(p migrateParams) (Migrated, error) {
 			defer cancel()
 
 			sources := startupSources(p.Sources, p.Runner.Path)
-			if err := MigrateUpAll(ctx, p.Pool.DSN, sources...); err != nil {
+			if err := MigrateUpAll(ctx, p.Pool.DSN, p.Runner.LockTimeout, sources...); err != nil {
 				return fmt.Errorf("pgkit: migrate on start: %w", err)
 			}
 			return nil

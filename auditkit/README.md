@@ -107,11 +107,13 @@ err := audit.Log(ctx, auditkit.Entry{Action: "session.login", Resource: "session
 Таблицу `audit_log` создают миграции источника `pgstore.Migrations`
 (`pgkit.Source{Name: "auditkit"}`, таблица версий `schema_migrations_auditkit`).
 `pgstore.Module` кладёт его в fx-группу `pgkit.migrations`, и
-`pgkit.MigrateModule` применяет его на старте вместе с миграциями приложения.
-Без fx:
+`pgkit.MigrateModule` применяет его на старте вместе с миграциями приложения; после них
+`Module` сверяет схему (`pgkit.CheckSchemaOnStart`): источник не применён — старт падает с
+`pgkit.ErrSchema` и именем источника, а не первая запись аудита. Без fx (`cfg` —
+`pgkit.MigrateRunnerConfig`):
 
 ```go
-err := pgkit.MigrateUpAll(ctx, dsn, pgstore.Migrations, pgkit.DirSource(pgkit.AppSourceName, "./migrations"))
+err := pgkit.MigrateUpAll(ctx, dsn, cfg.LockTimeout, pgstore.Migrations, pgkit.DirSource(pgkit.AppSourceName, "./migrations"))
 ```
 
 ## Конфигурация

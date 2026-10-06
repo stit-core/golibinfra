@@ -113,6 +113,13 @@ type Maintainer interface {
 	MaintenanceJobs() []timerkit.Job
 }
 
+// SchemaChecker — опциональный интерфейс Repository: проверка схемы хранилища на старте
+// (pgstore.Store — таблица версий источника её миграций). Instance зовёт его в OnStart после
+// миграций: без них старт падает, а не первая запись.
+type SchemaChecker interface {
+	CheckSchema(ctx context.Context) error
+}
+
 // RepositoryFactory строит хранилище и схему именованной таблицы для Instance;
 // провайдит store-кит (`pgstore.FactoryModule`).
 type RepositoryFactory interface {

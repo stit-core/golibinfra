@@ -97,7 +97,9 @@ fx.New(
 накатывает на старте. Отдельно её не регистрируют — второй источник с тем же
 именем `MigrateModule` отвергает (`duplicate source name`). Без `MigrateModule`
 (миграции накатывает отдельный шаг) тот же источник передают в
-`pgkit.MigrateUpAll`.
+`pgkit.MigrateUpAll`. На старте инстанс сверяет схему таблицы с этим источником
+(`outboxkit.SchemaChecker` хранилища, после миграций): не применён — ошибка старта с
+именем инстанса и `pgkit.ErrSchema`, а не первая публикация.
 
 `WithSubjects` объявляет subject'ы событий инстанса — фильтры NATS. Старт проверяет, что
 JetStream включён и каждый фильтр целиком накрыт одним стримом (`NATS_JS_STREAM_NAMES=orders`
@@ -142,7 +144,8 @@ reg, err := orders.RegisterBacklogGauges() // Unregister на shutdown
 
 Схему кастомной таблицы накатывает caller — `pgstore.TableMigrations(table)` в
 `pgkit.MigrateUpAll`/`MigrateModule` либо `pgstore.SchemaSQL(table)` в
-собственной миграции приложения. В `log` воркер пишет переход строки в dead (`nil` —
+собственной миграции приложения; `store.CheckSchema(ctx)` сверяет таблицу с источником
+`TableMigrations(table)` (у `NewStore` — `Migrations`). В `log` воркер пишет переход строки в dead (`nil` —
 `logkit.Nop()`). Проверку стримов на старте ручная сборка делает сама —
 `natskit.StreamChecker` шины (рецепт — `natskit/docs/usage.md`).
 

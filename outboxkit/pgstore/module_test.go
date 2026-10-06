@@ -141,6 +141,48 @@ func TestModule_EnsuresPartitionsOnStart(t *testing.T) {
 	}
 }
 
+// Без миграций кита Module не стартует на проверке схемы с именем источника и таблицы, а не на
+// DDL партиции; Instance — так же, со своим источником (KX62).
+func TestModule_ChecksSchemaOnStart(t *testing.T) {
+	fix := testkit.StartPostgres(t)
+	db := fix.DB(t)
+	ctx := t.Context()
+
+	single := fx.New(
+		fx.NopLogger,
+		fx.Supply(db, pgstore.Config{}),
+		scheduler(),
+		pgstore.Module,
+	)
+	err := single.Start(ctx)
+	_ = single.Stop(context.Background())
+	if !errors.Is(err, pgkit.ErrSchema) || !strings.Contains(err.Error(), "table outbox") ||
+		!strings.Contains(err.Error(), `source "outboxkit"`) {
+		t.Fatalf("Module start without migrations = %v, want pgkit.ErrSchema naming the table and source", err)
+	}
+
+	instance := fx.New(
+		fx.NopLogger,
+		fx.Supply(db, pgstore.Config{}),
+		fx.Provide(
+			func() natskit.StreamBus { return &noopStreamBus{} },
+			func() pgkit.Transactor { return fix.Transactor(t) },
+			func() outboxkit.Config {
+				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxAttempts: 25, TickTimeout: 30 * time.Second, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
+			},
+		),
+		scheduler(),
+		pgstore.FactoryModule,
+		outboxkit.Instance("orders", "outbox_orders"),
+	)
+	err = instance.Start(ctx)
+	_ = instance.Stop(context.Background())
+	if !errors.Is(err, pgkit.ErrSchema) || !strings.Contains(err.Error(), "instance orders") ||
+		!strings.Contains(err.Error(), `source "outbox_orders"`) {
+		t.Fatalf("Instance start without migrations = %v, want pgkit.ErrSchema naming the instance and source", err)
+	}
+}
+
 func TestModule_RejectsInvalidConfig(t *testing.T) {
 	db, _, ctx := startStore(t)
 	app := fx.New(
@@ -191,7 +233,7 @@ func TestFactoryModule_InstanceOnCustomTable(t *testing.T) {
 			db,
 			pgstore.Config{RetentionMonths: 3, RequireTx: true},
 			pgkit.PoolConfig{DSN: fix.DSN},
-			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute, LockTimeout: time.Minute},
 		),
 		fx.Provide(
 			func() natskit.StreamBus { return &noopStreamBus{} },
@@ -200,10 +242,12 @@ func TestFactoryModule_InstanceOnCustomTable(t *testing.T) {
 				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxAttempts: 25, TickTimeout: 30 * time.Second, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
 			},
 		),
-		scheduler(),
-		pgkit.MigrateModule,
+		// Инстанс раньше MigrateModule и timerkit: проверку схемы и job'ы после миграций ставит
+		// pgkit.Migrated, а не позиция.
 		pgstore.FactoryModule,
 		outboxkit.Instance("orders", table),
+		pgkit.MigrateModule,
+		scheduler(),
 		fx.Invoke(fx.Annotate(func(p outboxkit.Publisher) { pub = p }, fx.ParamTags(`name:"orders"`))),
 		fx.Invoke(fx.Annotate(func(js []timerkit.Job) { jobs = js }, fx.ParamTags(`group:"timerkit.jobs"`))),
 	)
@@ -249,7 +293,7 @@ func TestModule_CombinesWithFactoryModule(t *testing.T) {
 			db,
 			pgstore.Config{RequireTx: true},
 			pgkit.PoolConfig{DSN: fix.DSN},
-			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute, LockTimeout: time.Minute},
 		),
 		fx.Provide(
 			func() natskit.StreamBus { return &noopStreamBus{} },
@@ -308,7 +352,7 @@ func TestTableMigrations_OverExistingTable(t *testing.T) {
 		t.Fatalf("legacy schema: %v", err)
 	}
 
-	if err := pgkit.MigrateUpAll(ctx, fix.DSN, pgstore.TableMigrations(table)); err != nil {
+	if err := pgkit.MigrateUpAll(ctx, fix.DSN, time.Minute, pgstore.TableMigrations(table)); err != nil {
 		t.Fatalf("MigrateUpAll: %v", err)
 	}
 	var exists bool
@@ -346,7 +390,7 @@ func TestModule_KeeperJobsWaitForMigrations(t *testing.T) {
 			db,
 			pgstore.Config{RetentionMonths: 3},
 			pgkit.PoolConfig{DSN: fix.DSN},
-			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
+			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute, LockTimeout: time.Minute},
 		),
 		pgkit.MigrateModule,
 	)

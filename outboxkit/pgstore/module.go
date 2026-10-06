@@ -131,11 +131,17 @@ type partitionParams struct {
 	Migrated pgkit.Migrated `optional:"true"`
 }
 
-// ensurePartitionsOnStart: партиции нужны с первого insert'а, а первый тик
-// keeper'а случится позже старта.
+// ensurePartitionsOnStart: партиции нужны с первого insert'а, а первый тик keeper'а случится
+// позже старта; без миграций старт падает на проверке схемы с именем источника, а не на DDL
+// партиции.
 func ensurePartitionsOnStart(p partitionParams) {
 	p.LC.Append(fx.Hook{
-		OnStart: func(ctx context.Context) error { return p.Store.EnsurePartitions(ctx, 1) },
+		OnStart: func(ctx context.Context) error {
+			if err := p.Store.CheckSchema(ctx); err != nil {
+				return err
+			}
+			return p.Store.EnsurePartitions(ctx, 1)
+		},
 	})
 }
 
