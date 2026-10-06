@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/internal/redact"
 )
 
 // Источник учётных данных S3.
@@ -128,10 +129,10 @@ func (c Config) Validate() error {
 	if c.PublicBaseURL != "" {
 		u, err := url.Parse(c.PublicBaseURL)
 		if err != nil {
-			return fmt.Errorf("%w: STORAGE_PUBLIC_BASE_URL %q: %w", ErrConfig, c.PublicBaseURL, err)
+			return fmt.Errorf("%w: STORAGE_PUBLIC_BASE_URL %q: %w", ErrConfig, redact.URL(c.PublicBaseURL), redact.ParseError(err))
 		}
-		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-			return fmt.Errorf("%w: STORAGE_PUBLIC_BASE_URL %q must be an absolute http(s) URL", ErrConfig, c.PublicBaseURL)
+		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
+			return fmt.Errorf("%w: STORAGE_PUBLIC_BASE_URL %q must be an absolute http(s) URL without credentials", ErrConfig, redact.URL(c.PublicBaseURL))
 		}
 	}
 	return nil
@@ -145,8 +146,9 @@ func (c Config) EndpointAddr() (addr string, secure bool, err error) {
 	if raw == "" {
 		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT is required", ErrConfig)
 	}
+	shown := redact.URL(raw)
 	if !strings.Contains(raw, "://") {
-		if err := validateHostPort(raw); err != nil {
+		if err := validateHostPort(raw, shown); err != nil {
 			return "", false, err
 		}
 		return raw, c.UseSSL, nil
@@ -154,38 +156,40 @@ func (c Config) EndpointAddr() (addr string, secure bool, err error) {
 
 	u, parseErr := url.Parse(raw)
 	if parseErr != nil {
-		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: %w", ErrConfig, raw, parseErr)
+		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: %w", ErrConfig, shown, redact.ParseError(parseErr))
 	}
 	if u.Scheme != "http" && u.Scheme != "https" {
-		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: scheme must be http or https", ErrConfig, raw)
+		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: scheme must be http or https", ErrConfig, shown)
 	}
 	if u.Host == "" || strings.Trim(u.Path, "/") != "" || u.RawQuery != "" || u.User != nil {
-		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: expected scheme://host[:port] without path, query or credentials", ErrConfig, raw)
+		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: expected scheme://host[:port] without path, query or credentials", ErrConfig, shown)
 	}
-	if err := validateHostPort(u.Host); err != nil {
+	if err := validateHostPort(u.Host, shown); err != nil {
 		return "", false, err
 	}
 	secure = u.Scheme == "https"
 	if c.UseSSL && !secure {
-		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q is http, but STORAGE_S3_USE_SSL is true", ErrConfig, raw)
+		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q is http, but STORAGE_S3_USE_SSL is true", ErrConfig, shown)
 	}
 	return u.Host, secure, nil
 }
 
-func validateHostPort(hostPort string) error {
+// validateHostPort проверяет `host[:port]` endpoint'а; shown — endpoint без секретов для текста
+// ошибки: разбор адреса цитирует ввод, а в нём бывают креды.
+func validateHostPort(hostPort, shown string) error {
 	host := hostPort
 	if strings.Contains(hostPort, ":") {
 		h, port, err := net.SplitHostPort(hostPort)
 		if err != nil {
-			return fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: expected host[:port]: %w", ErrConfig, hostPort, err)
+			return fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: expected host[:port]", ErrConfig, shown)
 		}
 		if port == "" {
-			return fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: empty port", ErrConfig, hostPort)
+			return fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: empty port", ErrConfig, shown)
 		}
 		host = h
 	}
 	if host == "" || strings.ContainsAny(hostPort, "/?#@ ") {
-		return fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: expected host[:port] without path, query or credentials", ErrConfig, hostPort)
+		return fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q: expected host[:port] without path, query or credentials", ErrConfig, shown)
 	}
 	return nil
 }

@@ -101,6 +101,7 @@ func (c *Client) Stream(req *http.Request) (*SSEStream, error) {
 		})
 	}
 	resp, err := c.streamC.Do(req.WithContext(streamCtx)) //nolint:bodyclose // тело живёт до SSEStream.Close; на ошибочных ветках — drain(resp)
+	err = withoutURLSecrets(err)
 	if deadline != nil {
 		deadline.Stop()
 	}

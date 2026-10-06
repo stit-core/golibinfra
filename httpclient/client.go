@@ -17,15 +17,14 @@ import (
 	"time"
 
 	"github.com/sony/gobreaker/v2"
-	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
-	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
+	"git.stit.tech/stit-core/golibinfra/internal/redact"
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 )
 
@@ -102,7 +101,7 @@ type BeforeAttemptFunc func(ctx context.Context, attempt int) error
 type Option func(*Client)
 
 // WithTransport подменяет базовый транспорт (TLS, proxy, тесты). Поверх него
-// всё равно ставится otelhttp.Transport. Транспорт у клиента один: второй
+// всё равно идут спан попытки и W3C trace-context. Транспорт у клиента один: второй
 // WithTransport — ErrConfig из New.
 func WithTransport(rt http.RoundTripper) Option {
 	return func(c *Client) {
@@ -139,7 +138,7 @@ type Client struct {
 }
 
 // New собирает клиент: невалидный конфиг и второй WithTransport — ErrConfig; применяет
-// опции по порядку и оборачивает транспорт в otelhttp — спаны попыток без его метрик.
+// опции по порядку и оборачивает транспорт спаном попытки с trace-context.
 func New(cfg Config, opts ...Option) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -158,9 +157,7 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	default:
 		return nil, fmt.Errorf("%w: WithTransport given %d times, the client has one base transport", ErrConfig, len(c.transports))
 	}
-	// Без метрик otelhttp: его http.client.request.duration в Prometheus сливается с гистограммой кита.
-	transport := otelhttp.NewTransport(&resendTransport{next: c.base},
-		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()))
+	transport := &attemptTransport{next: c.base, tracer: c.tracer}
 	c.c = &http.Client{Timeout: cfg.Timeout, Transport: transport, CheckRedirect: c.checkRedirect}
 	c.streamC = &http.Client{Transport: transport, CheckRedirect: c.checkRedirect}
 	c.hosts = newHostSet(cfg.MaxHosts)
@@ -266,6 +263,7 @@ func (c *Client) doWithRetry(req *http.Request, host string) (*http.Response, er
 
 		resp, err := c.c.Do(withResendCount(req, attempt))
 		if err != nil {
+			err = withoutURLSecrets(err)
 			// Отмена/дедлайн вызывающего — не провал upstream'а; таймаут одной
 			// попытки (Config.Timeout) при живом ctx повторяется.
 			if ctx.Err() != nil {
@@ -433,7 +431,7 @@ func (c *Client) startSpan(req *http.Request, name string) (context.Context, tra
 		trace.WithAttributes(
 			semconv.HTTPRequestMethodKey.String(req.Method),
 			semconv.ServerAddress(req.URL.Hostname()),
-			semconv.URLFull(redactedURL(req.URL)),
+			semconv.URLFull(redact.URL(req.URL.String())),
 		),
 	)
 }
@@ -451,10 +449,12 @@ func recordSpanResult(span trace.Span, resp *http.Response, err error) {
 	}
 }
 
-// redactedURL — url.full без query и user-info: секрет в query не должен
-// уезжать в трейс.
-func redactedURL(u *url.URL) string {
-	clean := *u
-	clean.User, clean.RawQuery, clean.ForceQuery, clean.Fragment, clean.RawFragment = nil, "", false, "", ""
-	return clean.String()
+// withoutURLSecrets — ошибка http.Client без секретов URL: *url.Error цитирует URL запроса (или
+// шага редиректа) с query и паролем; тип и причина для errors.As/Is остаются.
+func withoutURLSecrets(err error) error {
+	var urlErr *url.Error
+	if errors.As(err, &urlErr) {
+		urlErr.URL = redact.URL(urlErr.URL)
+	}
+	return err
 }

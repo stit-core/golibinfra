@@ -7,6 +7,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"git.stit.tech/stit-core/golibinfra/internal/redact"
 )
 
 // ErrConfig — sentinel невалидной конфигурации телеметрии.
@@ -20,7 +22,7 @@ const defaultExportTimeout = 10 * time.Second
 type Headers map[string]string
 
 // Decode разбирает OTEL_EXPORTER_OTLP_HEADERS в формате спецификации OTel: `k1=v1,k2=v2`,
-// значения в percent-encoding.
+// значения в percent-encoding. Ошибка называет ключ, но не значение: в значениях — токены.
 func (h *Headers) Decode(value string) error {
 	out := Headers{}
 	for pair := range strings.SplitSeq(value, ",") {
@@ -30,11 +32,11 @@ func (h *Headers) Decode(value string) error {
 		k, v, found := strings.Cut(pair, "=")
 		k = strings.TrimSpace(k)
 		if !found || k == "" {
-			return fmt.Errorf("%q: want key=value pairs separated by comma", pair)
+			return errors.New("want key=value pairs separated by comma")
 		}
 		decoded, err := url.PathUnescape(v)
 		if err != nil {
-			return fmt.Errorf("%q: %w", pair, err)
+			return fmt.Errorf("header %q: invalid percent-escape in the value", k)
 		}
 		out[k] = strings.TrimSpace(decoded)
 	}
@@ -107,10 +109,10 @@ func (c Config) Validate() error {
 func signalURL(endpoint, signalPath string) (string, error) {
 	u, err := url.Parse(endpoint)
 	if err != nil {
-		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: %w", ErrConfig, endpoint, err)
+		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: %w", ErrConfig, redact.URL(endpoint), redact.ParseError(err))
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: want a full URL like http(s)://host:port", ErrConfig, endpoint)
+		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: want a full URL like http(s)://host:port", ErrConfig, redact.URL(endpoint))
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/" + signalPath
 	return u.String(), nil

@@ -74,6 +74,7 @@ func TestSomething(t *testing.T) {
 | `TestSubscribeOnStart_SubscribesOnStartDrainsOnStop` | подписка — в `OnStart` после зависимостей, объявленных раньше, drain — в `OnStop` до их остановки (без Docker). |
 | `TestSubscribeOnStart_JetStreamDisabledFailsStart` | `ErrJetStreamDisabled` из stream-подписки валит старт (без Docker). |
 | `TestConn_ReconnectLogsRedactedURL` | пароль из `NATS_URL` не попадает в лог переподключения. |
+| `TestConn_ErrorsHideURLSecret` | пароль из `NATS_URL` без схемы и из неразбираемого URL не попадает в ошибку старта (без Docker). |
 | `TestConn_ReconnectsExhaustedIsLoggedAndUnhealthy` | исчерпание reconnect'ов — `error`-запись и `ErrConnectionClosed` у пробы. |
 | `TestClient_ProbeReflectsConnectionState` | проба зелёная на живом соединении и красная после `Close`. |
 | `TestNewConn_RejectsInvalidConfig` / `TestNewConn_AuthFiles` | невалидный URL и битый nkey-seed валят старт; пароль не попадает в текст ошибки. |

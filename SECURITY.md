@@ -40,16 +40,19 @@ golibinfra — общая lib, на которую завязаны бизнес
 - **`hubkit/sso` и `hubkit/issuer`** — верификация hub-сессии обоих контуров
   (обязательный `aud`, JWKS-кэш и grace вытесненного `kid`), выпуск ES256-сессий,
   rotating refresh с reuse-detection.
-- **`logkit`** — утечка секретов/PII в логи: redact-паттерны, дефолтный набор
-  (Bearer/Basic, JWT, API-ключи), редактирование userinfo в URL.
+- **`logkit`** — утечка секретов/PII в логи: redact-паттерны и дефолтный набор
+  (Bearer/Basic, JWT, API-ключи).
 - **`storagekit`** — presigned-ссылки (TTL, область действия), экранирование
   ключей в публичных URL, лимиты памяти на `Put`.
 - **`amocrmkit`** — HMAC-подпись amoJo, OAuth-обмен, allowlist хостов аккаунта
   (Bearer не уезжает на подменённый Drive-хост).
 - **`anthropickit`** — обращение с API-ключом; промпты и ответы не попадают в
   спаны и метрики.
-- **`pgkit` / `cachekit` / `natskit`** — инъекции и небезопасная сериализация,
-  утечка креденшелов из DSN/URL в логи и тексты ошибок.
+- **`pgkit` / `cachekit` / `natskit` / `storagekit` / `telemetry` / `httpclient`** — инъекции и
+  небезопасная сериализация, утечка креденшелов из DSN, URL и заголовков в логи, спаны и тексты
+  ошибок: userinfo и значения query URL — `xxxxx` (пароль DSN pgkit скрывает pgx), ошибки разбора
+  URL и `OTEL_EXPORTER_OTLP_HEADERS` не цитируют ввод. Путь URL остаётся как есть: секрет в пути
+  (вебхуки) — вне этой защиты.
 
 Вне скоупа: уязвимости в upstream-зависимостях (pgx, huma, chi, otel-go и т.д.) —
 их репортить их мейнтейнерам; здесь — только если наш код делает их

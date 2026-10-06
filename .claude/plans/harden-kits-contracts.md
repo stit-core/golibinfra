@@ -7,24 +7,21 @@ blocked-by: —
 # harden-kits-contracts — партия 3, часть 1: конфиг и формы API, данные, httpkit, секреты, дефолты
 
 ## Цель
-Первая половина партии 3 — тега v1.4.0, после которого каждый угол аудита китов ≥ 9 (выше minor
-ничего, эксперименты чисты): medium и minor углов 1–3 — ридер ENV, конфиги, форма API, pgkit, outbox,
-идемпотентность, httpkit, секреты, bruteforcekit, дефолты. Вторая половина и релиз — второй план.
+Первая половина партии 3 — тега v1.4.0, после которого каждый угол аудита китов ≥ 9 (выше minor ничего, эксперименты
+чисты): medium и minor углов 1–3 — ENV, конфиги, формы API, pgkit, outbox, идемпотентность, httpkit, секреты, дефолты.
 
 ## Контекст
 - **Программа** — `go-backend-template/.claude/plans/audit-program.md`; находки — `M/kits-audit/summary.md` («Как
   повторить аудит») и отчёты углов (`M` — `/home/mm/.cache/stit-audit-program/`).
 - **Состав партии 3:** 27 medium и 36 minor аудита, кандидаты C (длина пароля, retention `audit_log`), N1–N5
   `M/validation-release-v1.3.0.md`, заметка шаблона про subject длиннее 255 байт.
-- **Эксперименты** — `run.sh` углов в своём worktree на ревизии: FAIL — дефект есть; не собирается на новом API —
-  правка под API без смены смысла (оригинал — `M/exs8/orig/*.v130`); тяжёлые — по одному.
+- **Эксперименты** — `run.sh` углов в своём worktree: FAIL — дефект; правка под API без смены смысла (оригинал рядом).
 - **Потребитель** — шаблон: bump v1.4.0 в `repair-harness` S7 (Handoff — во втором плане).
 - **Правила шага:** README и `docs/` кита — тем же коммитом; breaking — `!`, `BREAKING CHANGE:` и строка заготовки
   аннотации; новых зависимостей нет; киты вне объёма правятся под API тем же коммитом.
 
 ## Не входит
-- Вторая половина партии 3 — `harden-tests-archkit-release`: fx (KFX-03, -05, -06, KOBS-08), сигналы
-  (и httpkit в гейте), фейки, мутанты, `archkit`, гейт, обвязка, доки, повтор экспериментов, релиз.
+- Вторая половина партии 3 — `harden-tests-archkit-release` (fx, сигналы, фейки, мутанты, `archkit`, гейт, релиз).
 - Хвосты — `backlog.md`; правки шаблона и шлюзов — по аннотации тега; push — дирижёр после PASS валидатора партии.
 
 ## Критерии приёмки
@@ -120,20 +117,20 @@ blocked-by: —
 - [x] **S8** — Контракт HTTP httpkit (KCOR-09, KCOR-10, KCOR-11, KSEC-13, KSEC-14, KSEC-15, KAPI-09)
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S7
   - Сделано: AC7 → PASS; мутанты `M/exc2/mut_s8.py` 27/27; под API: H16, `downStore` (S7), H35 — дедлайн
-- [x] **S9** — Край httpkit (KSEC-08, KFX-11, KSEC-12; N7–N9, N11, f1-07 валидатора B `harden-gate-defaults`; N4 v1.3.0)
+- [x] **S9** — Край httpkit (KSEC-08, KFX-11, KSEC-12; N7–N9, N11, f1-07 валидатора B `harden-gate-defaults`)
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: S8
   - Сделано: AC8 → PASS; мутанты `M/exc2/mut_s9.py` 12/12; под API: zzka2 (`bearerAuth`, H15, H18, H40, H52), zzhb
 
 ### Секреты и дефолты
-- [ ] **S10** — URL и DSN без секретов в ошибках, логах и спанах, `SECURITY.md` к факту (KDOC-02, KSEC-03)
+- [x] **S10** — URL и DSN без секретов в ошибках, логах и спанах, `SECURITY.md` к факту (KDOC-02, KSEC-03)
   - Проверка: `correctness-security/run.sh <rev> unit` → E03, E04 PASS; claims-C urlleak — чисто ·
     Закрывает: AC9 · Зависит от: S1
+  - Сделано: E03, E04 PASS, urlleak и claimsB redact чисты (`M/hkc3e/logs/s10-*`); мутанты `M/hkc3e/mut_s10.py` 14/14
 - [ ] **S11** — Маски logkit (бэклог `logkit-redact-gaps`, `logkit-redact-containers`, `-otpauth`)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S10
 - [ ] **S12** — bruteforcekit (KSEC-04, KSEC-07, бэклог `bruteforcekit-*`, заметка шаблона про 255 байт)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S4
-- [ ] **S13** — Входы и дефолты: S3, OTLP, пароль, аудит и его retention (KSEC-05, KCOR-06, кандидаты C;
-  N4 валидатора v1.3.0 — `session.Revoke` называет владельца)
+- [ ] **S13** — Входы и дефолты: S3, OTLP, пароль, аудит, retention (KSEC-05, KCOR-06, C; N4 v1.3.0 — `Revoke`)
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S4
 
 ### Итог
@@ -148,7 +145,7 @@ blocked-by: —
 - **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки или
   `ErrConfig` («без предела» у новых — `-1`); формат — и у выключенного; nil-опции игнорируются; тик outbox против
   простоя транзакции — при `pgkit.PoolConfig` в графе; `RedactConfig{}` безопасен.
-- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>` с проверкой типа, значение — `Supply<Thing>`;
+- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>`, `Provide<Thing>` с проверкой типа, значение — `Supply<Thing>`;
   конструктор — `(cfg, зависимости…, log, opts…)` (исключения — в CLAUDE.md); опции httpclient — значение `Options`
   (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после `Migrated` (KX61b).
 - **pgkit.** Мигратор — `lock_timeout` = `PG_MIGRATE_LOCK_TIMEOUT` (5 с) параметром `MigrateUp/Down/UpAll`, у
@@ -172,7 +169,7 @@ blocked-by: —
   `HTTP_REQUEST_TIMEOUT` 25s < `WriteTimeout`, `ReserveTTL` больше, `-1s` — выкл.; над `Idempotency` (H35): 503 с
   `Content-Length` и `Connection: close` (клиент дочитывает его, пока хендлер работает); ответ после дедлайна — 503 и
   в гонке с таймером, запись после 503 отбрасывается без ошибки — huma паникует на ней (B1 валидатора B); без
-  дедлайна — только GET с SSE или `Upgrade` (N5: заголовок клиента не снимает дедлайн с записи, POST-поток обрывается).
+  дедлайна — только GET с SSE или `Upgrade` (N5: заголовок клиента не снимает дедлайн с записи, POST-поток рвётся).
   CORS — `Idempotency-Key` в дефолте. panic после заголовка — Flush и `http.ErrAbortHandler`: иначе EOF (H06).
 - **Край httpkit.** Extractor — поле `SecuritySchemeEntry.Extract`; `HumaAuth(schemes, log)`: операция открыта,
   если прошла одна из её альтернатив целиком; `{}` — без credentials, последней (N2: личность и 503 бэкенда при
@@ -185,9 +182,10 @@ blocked-by: —
   `ParseAddrPort` (N9); `ContextWithClientIP` (N4). hubkit/sso — extractor своего cookie, oidckit — схема с `Extract`.
 - **Фикс этапа 2.** Тесты на выживших мутантов B (V1, V4, V6, V8, V11); backlog-gauge инстанса без шаблона — 0 у
   пустой очереди (N8); локальный предел payload outbox — вторая мера, не берём; KDOC-11 — S12 второго плана.
-- **Секреты в URL.** Один `redactURL` (из `natskit/conn.go`) в `internal/`: пароль userinfo, значения query, URL без
-  схемы (`user:pass@host`), пароль keyword-DSN. httpclient: атрибуты попытки — на свой спан с очищенным URL,
-  `*url.Error` — с очищенным URL (E03, E04); путь остаётся, README: секрет — не в пути.
+- **Секреты в URL.** `internal/redact.URL`: userinfo целиком и значения query — `xxxxx` (маркер pgx), фрагмент снят,
+  путь остаётся (README: секрет — не в пути); без схемы и неразбираемый — userinfo до последнего `@`; `ParseError` —
+  без цитаты ввода; keyword-DSN скрывает pgx. httpclient: свой спан попытки вместо otelhttp, `*url.Error` — с
+  очищенным URL (E03, E04); `STORAGE_PUBLIC_BASE_URL` с кредами — `ErrConfig`; ошибка OTLP-заголовков — с ключом.
 - **Маски logkit.** Схема слов ключа (`classifyWords`) остаётся. Словарь секретов дополняют `pass`, `sid`,
   `signature`, `refresh`, `tokens`; `code` — слово-код (прячет и числа) только с квалификатором (`passcode`,
   `verification_code`, `auth_code`…); голый `code` — код ошибки httpkit (`httpkit/server.go:350`), открыт; ключ,
@@ -211,12 +209,11 @@ blocked-by: —
 - **S1–S3.** `KEY=` — дефолт, пустое — `-`; App на `config.Env` — имена тегов; места — в Handoff второго плана.
 - **pgkit.** `cmd/migrate`: `MigrateUpAll`/`MigrateDown(ctx, dsn, cfg.LockTimeout, …)`; хранилища без миграций —
   ошибка старта (`cmd/migrate` шаблона их накатывает); `PG_MIGRATE_LOCK_TIMEOUT` (5 с).
-- **outbox.** Миграция 0003 (мигратор берёт её сам; своя копия `SchemaSQL` — колонка `trace_context JSONB`);
-  метрики без `subject` (дашборды — `WithMetricSubject`); предел тела — по JSONB.
+- **outbox.** Миграция 0003 (своя `SchemaSQL` — `trace_context JSONB`), метрики без `subject`, предел тела — JSONB.
 - **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate/module.go`); `handlertest.WithAuth` →
   `WithSecuritySchemes`: `handler_test.go` auth и user, `scripts/new-domain.sh:662`, `rules/tests-pipeline.md:47`,
   doc `identitytest.go:47`; `make gen` (`REQUEST_TIMEOUT` в `openapi.json`); `Security` из одних `{}` — `Public`.
-- **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` из `LockState`; обходы не нужны.
+- **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — `LockState`; без обходов.
 - **authnkit и auditkit.** Пароль длиннее 1 KiB — ошибка (DTO — свой `maxLength`); NUL и не-UTF-8 в аудите —
   `ErrInvalidEntry`; retention — env; владелец сессии из `Revoke` — автор аудита выхода.
 - **env для INFRA-HANDOFF:** `PG_MIGRATE_LOCK_TIMEOUT`, `HTTPCLIENT_MAX_HOSTS`, `HTTP_REQUEST_TIMEOUT` (меньше
@@ -225,7 +222,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап 1 принят (`M/validation-harden-kits-contracts-A.md`); этап 2 (S4–S9) закрыт, B1 и N1–N10 валидатора B
-(`M/validation-harden-kits-contracts-B.md`) — коммит `fix(httpkit)`, перепроверка — у валидатора. Следующий шаг — S10.
+(`M/validation-harden-kits-contracts-B.md`) — `3dea79c`, перепроверка — у валидатора. S10 сделан; следующий — S11.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
@@ -291,7 +288,10 @@ blocked-by: —
   (`make gen`); CORS пускает `Idempotency-Key`; panic после заголовка обрывает соединение; операцию открывает только
   альтернатива её схем целиком, `{}` — без credentials, последней (отказ бэкенда — 503); идемпотентность — после
   `HumaAuth`; trace-context клиента — ссылкой на новый корень, baggage — с `HTTP_TRUST_TRACE_CONTEXT`; `ip:port` в
-  X-Forwarded-For — его IP.
+  X-Forwarded-For — его IP. Секреты URL (S10): в ошибках, логах и спанах natskit, cachekit, storagekit, telemetry и
+  httpclient userinfo и значения query — `xxxxx`, фрагмента нет, ошибка разбора URL и `OTEL_EXPORTER_OTLP_HEADERS` не
+  цитирует ввод; `url.full` спанов httpclient — с именами параметров query; спан попытки httpclient — свой (`HTTP
+  <METHOD>` до заголовков ответа), не otelhttp; `STORAGE_PUBLIC_BASE_URL` с кредами — `ErrConfig`.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,
   `outboxkit.WithMetricSubject`, `Message.TraceParent`, `OutMsg.MetricSubject`/`TraceParent`, миграция outbox 0003;

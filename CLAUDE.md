@@ -93,7 +93,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   `internal/envconf` (ридер ENV — `New*Config` китов и `config.Env`),
   `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента,
   свёртка IPv6 — у лимитера httpkit и bruteforcekit),
-  `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`),
+  `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`), `internal/redact`
+  (URL без секретов — ошибки, логи и спаны natskit, cachekit, storagekit, telemetry, httpclient),
   `internal/grpcstatus` (классификация gRPC-кодов), `internal/grpclogkit`
   (мост grpclog → logkit). Общие helper'ы живут в `internal/`, наружу не
   экспортируются.

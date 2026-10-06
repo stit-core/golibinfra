@@ -136,3 +136,18 @@ func TestNewConn_AuthFiles(t *testing.T) {
 		t.Fatal("NewConn with broken credentials = nil, want connect error")
 	}
 }
+
+// Пароль NATS_URL не попадает в ошибку старта — и у адреса без схемы, и у неразбираемого URL.
+func TestConn_ErrorsHideURLSecret(t *testing.T) {
+	cfg := clientConfig("app:" + testPassword + "@127.0.0.1:1")
+	cfg.ConnectTimeout = time.Second
+	if _, err := natskit.NewConn(cfg, nil); err == nil || strings.Contains(err.Error(), testPassword) ||
+		!strings.Contains(err.Error(), "xxxxx@127.0.0.1:1") {
+		t.Fatalf("NewConn error = %v, want the address without the password", err)
+	}
+	cfg.URL = "nats://app:" + testPassword + "%zz@nats:4222"
+	if err := cfg.Validate(); !errors.Is(err, natskit.ErrConfig) || strings.Contains(err.Error(), testPassword) ||
+		strings.Contains(err.Error(), "%zz") {
+		t.Fatalf("Validate error = %v, want ErrConfig without the password", err)
+	}
+}

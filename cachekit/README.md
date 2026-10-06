@@ -61,7 +61,7 @@ fx.New(
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `REDIS_URL` | `URL` | `string` | `redis://localhost:6379/0` | Адрес Redis (`redis.ParseURL`); должен парситься |
+| `REDIS_URL` | `URL` | `string` | `redis://localhost:6379/0` | Адрес Redis (`redis.ParseURL`); должен парситься, ошибка разбора — с паролем `xxxxx` и без цитаты ввода |
 | `REDIS_KEY_PREFIX` | `KeyPrefix` | `string` | `""` | Префикс **всех** ключей кита, включая `tag:` и `idempotency:` |
 | `REDIS_POOL_SIZE` | `PoolSize` | `int` | `10` | Размер пула соединений; `>= 1`. Пулов два — с повторами и без (§ Инварианты): соединений до `2×REDIS_POOL_SIZE` |
 | `REDIS_MAX_RETRIES` | `MaxRetries` | `int` | `3` | Повторы `Get`, `Set`, `Delete`, тегов и `Ping` после сетевой ошибки; `-1` отключает, `>= -1`. `SetNX`, `GetDel`, `CompareAndDelete`, `CompareAndSet` не повторяются |

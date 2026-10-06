@@ -78,14 +78,14 @@ func (s *Service) Do(ctx context.Context) (err error) {
 | `OTEL_SERVICE_NAME` | `ServiceName` | `string` | — (**required**, если не `OTEL_SDK_DISABLED`) | `service.name` |
 | `OTEL_SERVICE_VERSION` | `ServiceVersion` | `string` | `dev` | `service.version` — semver / git short-sha |
 | `APP_ENV` | `Environment` | `string` | `dev` | `deployment.environment.name` — `prod` / `staging` / `smoke` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `OTLPEndpoint` | `string` | `http://localhost:4318` | базовый URL коллектора: `http://` — без TLS, `https://` — TLS; путь сохраняется, per-signal `/v1/<signal>` дописывается. `host:port` без схемы — ошибка конфигурации |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `OTLPEndpoint` | `string` | `http://localhost:4318` | базовый URL коллектора: `http://` — без TLS, `https://` — TLS; путь сохраняется, per-signal `/v1/<signal>` дописывается. `host:port` без схемы — ошибка конфигурации; в её тексте userinfo — `xxxxx` |
 | `OTEL_TRACES_SAMPLER_ARG` | `SampleRatio` | `float64` | `1.0` | доля сэмплируемых трейсов, `[0, 1]` (`ParentBased(TraceIDRatioBased)`) |
 | `OTEL_EXPORT_TIMEOUT` | `ExportTimeout` | `time.Duration` | `10s` | таймаут одного OTLP-запроса у всех трёх экспортёров и их процессоров |
 | `OTEL_TRACES_BATCH_DELAY` | `TraceBatchDelay` | `time.Duration` | `5s` | период сброса очереди batch-processor'а трейсов |
 | `OTEL_METRICS_INTERVAL` | `MetricInterval` | `time.Duration` | `10s` | период экспорта метрик (он же min-интервал чтения runtime memstats) |
 | `OTEL_LOGS_BATCH_DELAY` | `LogBatchDelay` | `time.Duration` | `1s` | период сброса очереди batch-processor'а логов |
 | `OTEL_TENANT` | `Tenant` | `string` | `""` | непустой выставляет resource-атрибуты `service.namespace` и `tenant` (одно значение); пусто — их нет |
-| `OTEL_EXPORTER_OTLP_HEADERS` | `OTLPHeaders` | `Headers` | — (без заголовков) | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения в percent-encoding) |
+| `OTEL_EXPORTER_OTLP_HEADERS` | `OTLPHeaders` | `Headers` | — (без заголовков) | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения в percent-encoding); ошибка разбора называет ключ, а не значение |
 | `OTEL_TOKEN` | `OTLPBearerToken` | `string` | `""` | `Authorization: Bearer <token>` к каждому OTLP-запросу; переопределяет `Authorization` из `OTEL_EXPORTER_OTLP_HEADERS` |
 
 `Validate` отвергает всегда, и при `OTEL_SDK_DISABLED=true`: `SampleRatio` вне `[0, 1]`,

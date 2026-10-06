@@ -120,10 +120,21 @@ func TestHeaders_Decode(t *testing.T) {
 			t.Errorf("Decode(%q) = %v, want %v", c.in, got, c.want)
 		}
 	}
-	for _, bad := range []string{"nokey", "=value", "a=%zz"} {
+	for _, bad := range []string{"nokey", "=value", "a=%zz", "authorization=Bearer s3cr%zz", "Bearer s3cret"} {
 		var got Headers
-		if err := got.Decode(bad); err == nil {
-			t.Errorf("Decode(%q) = nil, want error", bad)
+		if err := got.Decode(bad); err == nil || strings.Contains(err.Error(), "s3cr") {
+			t.Errorf("Decode(%q) = %v, want an error without the value", bad, err)
+		}
+	}
+}
+
+// Креды из OTLP-endpoint'а не попадают в текст ошибки конфига.
+func TestConfig_EndpointErrorHidesSecret(t *testing.T) {
+	for _, endpoint := range []string{"otlp://user:s3cret@collector:4318", "https://user:s3cr%zz@collector:4318"} {
+		c := validConfig()
+		c.OTLPEndpoint = endpoint
+		if err := c.Validate(); !errors.Is(err, ErrConfig) || strings.Contains(err.Error(), "s3cr") || !strings.Contains(err.Error(), "xxxxx@collector") {
+			t.Errorf("Validate(%q) = %v, want ErrConfig with the redacted endpoint", endpoint, err)
 		}
 	}
 }

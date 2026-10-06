@@ -141,8 +141,8 @@ func TestMetrics_SSEDialErrorRecorded(t *testing.T) {
 	}
 }
 
-// Метрики otelhttp клиент не эмитит: http.client.request.duration в Prometheus получил бы имя
-// гистограммы кита, и серии двух инструментов слились бы. Спаны попыток остаются (trace_test).
+// Метрик вне контракта кита нет: чужая http.client.request.duration в Prometheus получила бы имя
+// гистограммы кита, и серии двух инструментов слились бы. Спаны попыток — trace_test.
 func TestMetrics_NoOtelhttpMetricsNoNameCollisions(t *testing.T) {
 	before := metrictest.Collect(t)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

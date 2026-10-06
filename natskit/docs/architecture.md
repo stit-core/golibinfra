@@ -271,8 +271,8 @@ W3C trace-context (`traceparent`/`tracestate`) ездит вместе с соо
 `DrainTimeout` пробрасывается и в nats.go (`nats.DrainTimeout`), чтобы его
 внутренний drain укладывался в тот же бюджет.
 
-Любой логируемый URL проходит `redactURL`: userinfo (пароль или токен из
-`NATS_URL`) заменяется на `xxxxx`. `ClosedHandler` вне `Close` означает
+Любой логируемый URL проходит `redactURL` (`internal/redact` по каждому адресу списка): userinfo
+(пароль или токен из `NATS_URL`, и у адреса без схемы) заменяется на `xxxxx`. `ClosedHandler` вне `Close` означает
 исчерпание reconnect'ов — это `error`-запись с `LastError`, а `Healthy` с этого
 момента отдаёт `ErrConnectionClosed`, отличимый от временного `RECONNECTING`.
 

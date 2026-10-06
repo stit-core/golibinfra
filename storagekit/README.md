@@ -146,7 +146,7 @@ API`). Менять имена/типы полей или их `envconfig`-те�
 | `STORAGE_S3_PROBE_TIMEOUT` | `ProbeTimeout` | `time.Duration` | `5s` | Дедлайн health-пробы и стартовой проверки (`0` — только дедлайн вызывающего) |
 | `STORAGE_S3_PROBE_ON_START` | `ProbeOnStart` | `bool` | `true` | Fail-fast проверка бакета в `OnStart` |
 | `STORAGE_S3_URL_STYLE` | `URLStyle` | `string` | `path` | Форма публичного URL: `path` (`<base>/<bucket>/<key>`) или `virtual` (`<base>/<key>`) |
-| `STORAGE_PUBLIC_BASE_URL` | `PublicBaseURL` | `string` | — | База публичного URL (CDN или публичный хост бакета) |
+| `STORAGE_PUBLIC_BASE_URL` | `PublicBaseURL` | `string` | — | База публичного URL (CDN или публичный хост бакета), без кредов |
 
 `NewConfig()` читает ENV и вызывает `Validate()`; любая ошибка обёрнута в
 `ErrConfig` и валит старт приложения. Правила `Validate`:
@@ -161,7 +161,11 @@ API`). Менять имена/типы полей или их `envconfig`-те�
   {`path`, `virtual`}.
 - `STORAGE_S3_PART_SIZE` ∈ [5 MiB, 5 GiB]; `STORAGE_S3_MAX_RETRIES` ≥ 0;
   `STORAGE_S3_PROBE_TIMEOUT` ≥ 0.
-- `STORAGE_PUBLIC_BASE_URL`, если задан, — абсолютный http(s)-URL.
+- `STORAGE_PUBLIC_BASE_URL`, если задан, — абсолютный http(s)-URL без кредов: он уходит в каждую
+  публичную ссылку.
+
+Текст ошибки не цитирует креды endpoint'а и публичного URL: userinfo — `xxxxx`, и у адреса без
+схемы (`xxxxx@minio:9000`), ошибка разбора URL — без ввода.
 
 **Публичный URL ≠ endpoint.** `STORAGE_S3_ENDPOINT` — адрес, по которому в S3
 ходит сервис (часто внутренний хост кластера). `STORAGE_PUBLIC_BASE_URL` — адрес,

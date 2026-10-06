@@ -15,6 +15,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/internal/redact"
 )
 
 // ErrConfig — невалидный Config: сервис падает на старте, а не на первой команде.
@@ -58,7 +59,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: WriteTimeout < 0", ErrConfig)
 	}
 	if _, err := redis.ParseURL(c.URL); err != nil {
-		return fmt.Errorf("%w: URL: %w", ErrConfig, err)
+		return fmt.Errorf("%w: REDIS_URL %q: %w", ErrConfig, redact.URL(c.URL), redact.ParseError(err))
 	}
 	return nil
 }
@@ -170,7 +171,7 @@ func newRedisCache(cfg Config) (*redisCache, error) {
 	}
 	opts, err := redis.ParseURL(cfg.URL)
 	if err != nil {
-		return nil, fmt.Errorf("cachekit: parse redis url: %w", err)
+		return nil, fmt.Errorf("cachekit: parse redis url: %w", redact.ParseError(err))
 	}
 	opts.PoolSize = cfg.PoolSize
 	opts.MaxRetries = cfg.MaxRetries

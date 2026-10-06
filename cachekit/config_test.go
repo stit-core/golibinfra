@@ -3,6 +3,7 @@ package cachekit_test
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -61,6 +62,18 @@ func TestConfig_Validate(t *testing.T) {
 				t.Fatalf("NewRedisCache() = %v, want ErrConfig", err)
 			}
 		})
+	}
+}
+
+// Пароль REDIS_URL не попадает в ошибку конфига: неэкранированный `%` в пароле — частая ошибка
+// деплоя, а ошибка старта уходит в лог.
+func TestConfig_ErrorHidesURLSecret(t *testing.T) {
+	cfg := validConfig()
+	cfg.URL = "redis://:s3cr%zz@cache:6379/0"
+	err := cfg.Validate()
+	if !errors.Is(err, cachekit.ErrConfig) || strings.Contains(err.Error(), "s3cr") || strings.Contains(err.Error(), "%zz") ||
+		!strings.Contains(err.Error(), `"redis://xxxxx@cache:6379/0"`) {
+		t.Fatalf("Validate() = %v, want ErrConfig with the redacted URL", err)
 	}
 }
 

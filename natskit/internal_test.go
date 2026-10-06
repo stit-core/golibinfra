@@ -23,11 +23,12 @@ func TestRedactURL(t *testing.T) {
 		want string
 	}{
 		{"no userinfo", "nats://localhost:4222", "nats://localhost:4222"},
-		{"user and password", "nats://user:s3cret@nats:4222", "nats://" + redactedUserinfo + "@nats:4222"},
-		{"token", "nats://t0ken@nats:4222", "nats://" + redactedUserinfo + "@nats:4222"},
-		{"password with at", "nats://user:p@ss@nats:4222", "nats://" + redactedUserinfo + "@nats:4222"},
-		{"list", "nats://u:p@a:4222,nats://b:4222", "nats://" + redactedUserinfo + "@a:4222,nats://b:4222"},
+		{"user and password", "nats://user:s3cret@nats:4222", "nats://xxxxx@nats:4222"},
+		{"token", "nats://t0ken@nats:4222", "nats://xxxxx@nats:4222"},
+		{"password with at", "nats://user:p@ss@nats:4222", "nats://xxxxx@nats:4222"},
+		{"list", "nats://u:p@a:4222, nats://b:4222", "nats://xxxxx@a:4222,nats://b:4222"},
 		{"no scheme", "localhost:4222", "localhost:4222"},
+		{"no scheme with userinfo", "user:s3cret@nats:4222,t0ken@b:4222", "xxxxx@nats:4222,xxxxx@b:4222"},
 		{"empty", "", ""},
 	}
 	for _, tt := range tests {

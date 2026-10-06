@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/internal/redact"
 )
 
 // DefaultInstance — имя дефолтного (безымянного) инстанса в метриках и спанах.
@@ -218,7 +219,7 @@ func validateURL(raw string) error {
 		}
 		u, err := url.Parse(part)
 		if err != nil {
-			return fmt.Errorf("%w: NATS_URL %q: %w", ErrConfig, redactURL(raw), err)
+			return fmt.Errorf("%w: NATS_URL %q: %w", ErrConfig, redactURL(raw), redact.ParseError(err))
 		}
 		if !allowedSchemes[u.Scheme] {
 			return fmt.Errorf("%w: NATS_URL %q: unsupported scheme %q (nats, tls, ws, wss)", ErrConfig, redactURL(raw), u.Scheme)

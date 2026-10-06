@@ -10,6 +10,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"git.stit.tech/stit-core/golibinfra/internal/redact"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -19,10 +20,6 @@ var ErrClosed = errors.New("natskit: closed")
 // ErrConnectionClosed — соединение закрыто окончательно (исчерпаны reconnect'ы
 // или вызван Close); переподключения больше не будет. Отдаётся Healthy и Probe.
 var ErrConnectionClosed = errors.New("natskit: connection closed")
-
-// redactedUserinfo — заглушка вместо userinfo: в позиции пользователя живёт и
-// токен, поэтому имя пользователя тоже не логируется.
-const redactedUserinfo = "xxxxx"
 
 // Conn — соединение инстанса плюс реестр его подписок: Close дренит их и
 // дожидается обработчиков, прежде чем закрыть сокет.
@@ -284,20 +281,12 @@ func (c *Conn) onClosed(nc *nats.Conn) {
 	c.log.Error(context.Background(), "natskit: connection closed, reconnects exhausted", kv...)
 }
 
-// redactURL прячет userinfo в URL (или в списке URL через запятую): пароль и
-// токен из NATS_URL не должны попадать ни в логи, ни в текст ошибок.
+// redactURL — NATS_URL (список через запятую) без секретов: пароль и токен не попадают ни в логи,
+// ни в текст ошибок — и у адреса без схемы (`user:pass@host:4222`).
 func redactURL(raw string) string {
 	parts := strings.Split(raw, ",")
 	for i, part := range parts {
-		scheme, rest, ok := strings.Cut(strings.TrimSpace(part), "://")
-		if !ok {
-			continue
-		}
-		at := strings.LastIndex(rest, "@")
-		if at < 0 {
-			continue
-		}
-		parts[i] = scheme + "://" + redactedUserinfo + "@" + rest[at+1:]
+		parts[i] = redact.URL(strings.TrimSpace(part))
 	}
 	return strings.Join(parts, ",")
 }

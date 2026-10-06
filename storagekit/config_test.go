@@ -3,6 +3,7 @@ package storagekit_test
 import (
 	"errors"
 	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,25 @@ func validConfig() storagekit.Config {
 		ProbeTimeout:  5 * time.Second,
 		URLStyle:      storagekit.URLStylePath,
 		PublicBaseURL: "https://cdn.example.com",
+	}
+}
+
+// Креды из endpoint'а и публичного URL не попадают в текст ошибки конфига — ни у URL, ни у адреса
+// без схемы, ни у неразбираемого значения.
+func TestConfig_ErrorsHideURLSecrets(t *testing.T) {
+	for name, mutate := range map[string]func(*storagekit.Config){
+		"endpoint url":            func(c *storagekit.Config) { c.Endpoint = "http://AKIA:s3cret@minio:9000" },
+		"endpoint without scheme": func(c *storagekit.Config) { c.Endpoint = "AKIA:s3cret@minio:9000" },
+		"endpoint bad escape":     func(c *storagekit.Config) { c.Endpoint = "https://AKIA:s3cr%zz@minio:9000" },
+		"public url":              func(c *storagekit.Config) { c.PublicBaseURL = "https://u:s3cret@cdn.example.com" },
+		"public url bad escape":   func(c *storagekit.Config) { c.PublicBaseURL = "https://u:s3cr%zz@cdn.example.com" },
+	} {
+		cfg := validConfig()
+		mutate(&cfg)
+		err := cfg.Validate()
+		if !errors.Is(err, storagekit.ErrConfig) || strings.Contains(err.Error(), "s3cr") || !strings.Contains(err.Error(), "xxxxx@") {
+			t.Errorf("%s: Validate() = %v, want ErrConfig with the redacted value", name, err)
+		}
 	}
 }
 
@@ -67,6 +87,7 @@ func TestConfig_Validate(t *testing.T) {
 		{name: "negative probe timeout", wantErr: true, mutate: func(c *storagekit.Config) { c.ProbeTimeout = -time.Second }},
 		{name: "relative public base url", wantErr: true, mutate: func(c *storagekit.Config) { c.PublicBaseURL = "cdn.example.com" }},
 		{name: "unparsable public base url", wantErr: true, mutate: func(c *storagekit.Config) { c.PublicBaseURL = "https://cdn.example.com/%zz" }},
+		{name: "public base url with creds", wantErr: true, mutate: func(c *storagekit.Config) { c.PublicBaseURL = "https://u:p@cdn.example.com" }},
 		{name: "zero value", wantErr: true, mutate: func(c *storagekit.Config) { *c = storagekit.Config{} }},
 	}
 	for _, tt := range tests {

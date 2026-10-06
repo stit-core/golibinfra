@@ -4,10 +4,16 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"strconv"
 
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/codes"
+	"go.opentelemetry.io/otel/propagation"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
+	"git.stit.tech/stit-core/golibinfra/internal/redact"
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 )
 
@@ -35,15 +41,43 @@ func withResendCount(req *http.Request, attempt int) *http.Request {
 	return req.WithContext(context.WithValue(req.Context(), resendCountKey{}, attempt))
 }
 
-// resendTransport ставит http.request.resend_count на спан попытки: otelhttp
-// заводит спан на каждый RoundTrip, но номера попытки не знает.
-type resendTransport struct{ next http.RoundTripper }
+// attemptTransport — спан попытки (каждый RoundTrip, в том числе шаг редиректа) до заголовков
+// ответа и W3C trace-context в upstream; url.full — без секретов: спан otelhttp писал бы URL с
+// query целиком.
+type attemptTransport struct {
+	next   http.RoundTripper
+	tracer trace.Tracer
+}
 
-func (t *resendTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if n, _ := req.Context().Value(resendCountKey{}).(int); n > 0 {
-		trace.SpanFromContext(req.Context()).SetAttributes(semconv.HTTPRequestResendCount(n))
+func (t *attemptTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	attrs := []attribute.KeyValue{
+		semconv.HTTPRequestMethodKey.String(req.Method),
+		semconv.ServerAddress(req.URL.Hostname()),
+		semconv.URLFull(redact.URL(req.URL.String())),
 	}
-	return t.next.RoundTrip(req)
+	if port, err := strconv.Atoi(req.URL.Port()); err == nil {
+		attrs = append(attrs, semconv.ServerPort(port))
+	}
+	if n, _ := req.Context().Value(resendCountKey{}).(int); n > 0 {
+		attrs = append(attrs, semconv.HTTPRequestResendCount(n))
+	}
+	ctx, span := t.tracer.Start(req.Context(), "HTTP "+req.Method, trace.WithSpanKind(trace.SpanKindClient), trace.WithAttributes(attrs...))
+	defer span.End()
+	// RoundTripper не меняет запрос вызывающего: trace-context — в заголовки копии.
+	req = req.Clone(ctx)
+	otel.GetTextMapPropagator().Inject(ctx, propagation.HeaderCarrier(req.Header))
+	resp, err := t.next.RoundTrip(req)
+	switch {
+	case err != nil:
+		span.SetAttributes(semconv.ErrorTypeKey.String(fmt.Sprintf("%T", err)))
+		span.SetStatus(codes.Error, err.Error())
+	case resp.StatusCode >= http.StatusBadRequest:
+		span.SetAttributes(semconv.HTTPResponseStatusCode(resp.StatusCode))
+		span.SetStatus(codes.Error, http.StatusText(resp.StatusCode))
+	default:
+		span.SetAttributes(semconv.HTTPResponseStatusCode(resp.StatusCode))
+	}
+	return resp, err
 }
 
 // checkRedirect — политика редиректов обоих http.Client'ов клиента.

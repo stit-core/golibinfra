@@ -44,7 +44,8 @@ reconnect'а, ретрай без backoff'а). Поле без `default`-тег�
 
 Заданный путь проверяется на старте (`Validate`: файла нет — `ErrConfig`).
 Простые креды (`user:password`, токен) живут в `NATS_URL`; в логи и в тексты
-ошибок userinfo попадает как `nats://xxxxx@host:4222`.
+ошибок userinfo попадает как `nats://xxxxx@host:4222` (у адреса без схемы — `xxxxx@host:4222`),
+а ошибка разбора URL не цитирует ввод.
 
 ## Backpressure (`Config.Backpressure`)
 

@@ -2,8 +2,8 @@
 
 Исходящий HTTP-клиент для сервисов stit: retry с экспоненциальным backoff,
 circuit breaker на каждый upstream-хост (`sony/gobreaker/v2`), политика
-редиректов, SSE-стримы и OTel-инструментация (спан на вызов + спаны попыток
-через `otelhttp`, метрики, `X-Request-ID` из контекста). Один
+редиректов, SSE-стримы и OTel-инструментация (спан на вызов + спаны попыток с
+W3C trace-context, метрики, `X-Request-ID` из контекста; секреты URL — `xxxxx`). Один
 `*httpclient.Client` обслуживает много хостов: свой breaker и label `host` — у
 первых `HTTPCLIENT_MAX_HOSTS`, остальные идут без breaker'а с `host="other"`.
 
@@ -177,13 +177,10 @@ OTel-провайдеры (no-op без `MeterProvider`/`TracerProvider`).
 | `http_client_breaker_open` | Int64 UpDownCounter | `host` | `1`, пока breaker хоста открыт |
 | `httpclient.Do <METHOD>` | OTel span (client) | `http.request.method`, `server.address`, `url.full`, `http.response.status_code` | Спан на вызов: покрывает все попытки и паузы между ними |
 | `httpclient.Stream <METHOD>` | OTel span (client) | те же | Спан на весь стрим: закрывается вместе с потоком |
-| HTTP-спан попытки | OTel span (`otelhttp`) | + `http.request.resend_count` | Дочерний спан на каждую попытку, W3C trace-context в upstream |
+| `HTTP <METHOD>` | OTel span (client) | `http.request.method`, `server.address`, `server.port`, `url.full`, `http.response.status_code` или `error.type`, `http.request.resend_count` у повтора | Дочерний спан попытки и шага редиректа — до заголовков ответа; его W3C trace-context уходит в upstream (глобальный propagator) |
 
-Метрик otelhttp (`http.client.request.duration`, `http.client.request.body.size`)
-клиент не эмитит: в Prometheus первая получила бы имя
-`http_client_request_duration_seconds`, и серии двух гистограмм с разными бакетами
-и labels слились бы в одну метрику. Длительность попытки видна в её спане, число
-повторов — `http_client_retry_attempts_total`.
+`url.full` — без секретов: userinfo и значения query — `xxxxx`, фрагмента нет, путь — как есть.
+Длительность попытки видна в её спане, число повторов — `http_client_retry_attempts_total`.
 
 Значения `status`: код ответа (`200`, `503`), `breaker_open` при отказе открытой
 цепи, `error` для транспортных ошибок и отмены ctx. Для `Stream` `status` — код
@@ -251,8 +248,9 @@ var ErrConfig, ErrBreakerOpen, ErrTooManyRedirects, ErrCrossHostRedirect,
   исходящий вызов по адресу пользователя — держите для него отдельный `Client`
   (свой `NewConfigPrefixed`, `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`),
   валидируйте хост до вызова и не переиспользуйте клиент основных upstream'ов.
-- **Секреты не в query.** `url.full` уходит в спан вызова без query, но спан
-  попытки от `otelhttp` пишет полный URL — передавайте токены заголовками.
+- **Секрет — не в пути.** В спанах и в тексте ошибки (`*url.Error`) userinfo и значения query —
+  `xxxxx`, а путь остаётся как есть: токен в пути (вебхуки Slack, Telegram Bot API) уйдёт в
+  трейс — передавайте его заголовком или query.
 - **`X-Request-ID`** ставится из ctx только если вызывающий не задал свой заголовок.
 - **`Close()` не обязателен** при использовании `Module` (вешает `OnStop`); при
   ручной сборке закрывайте клиент сами — он держит собственный пул соединений
