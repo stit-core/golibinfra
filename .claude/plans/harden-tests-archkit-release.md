@@ -61,8 +61,9 @@ blocked-by: harden-kits-contracts — первая половина партии
   `api-docs/claims-A-exp/run.sh <wt>` (`fakes`, `logtest`, `clock`) → по докам
 - [ ] **AC4** — Тесты убивают мутантов базового аудита: выжили только эквивалентные (с причиной);
   регрессия таймаута healthkit — падение теста, а не зависание пакета; тест метрик amocrmkit ловит
-  смену типа инструмента. Проверка: `tests-gate/run-all.sh <rev> mutants`, `summarize.py` → выжили
-  только эквивалентные
+  смену типа инструмента; страж пакетных инструментов ловит то, что обещает `CLAUDE.md`. Проверка:
+  `tests-gate/run-all.sh <rev> mutants`, `summarize.py` → выжили только эквивалентные; мутанты
+  V-G2, V-J1b и зонды P-G4, P-G5 (`M/val-rel130/mut/`) → красные
 - [ ] **AC5** — Контракт сигналов httpkit и паритет handlertest держит `make check`; ответ известного
   маршрута до роутинга — с его маршрутом, `unmatched` — только неизвестному. Проверка:
   `httpkit-b/run.sh <rev> exp mut gate` → HO01 PASS, `compare.py` и `compare_logs.py` — 0,
@@ -124,7 +125,9 @@ blocked-by: harden-kits-contracts — первая половина партии
   `Cache`, таймеры clockkit (KTST-05, KDOC-08)
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Зависит от: S3
 - [ ] **S5** — Выжившие мутанты базового аудита убиты, таймаут healthkit с дедлайном, тип метрик
-  amocrmkit (KTST-02, R4 валидатора A `harden-authn-release`)
+  amocrmkit (KTST-02, R4 валидатора A `harden-authn-release`; N1, N2 валидатора v1.3.0 — страж:
+  `var f = func…` в `init()`, замыкание через хелпер, generic с двумя параметрами; первое значение
+  `JWT_AUDIENCE`)
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S4
 - [ ] **S6** — Сигналы httpkit в гейте: контракт сигналов `Module` против доки, `unmatched`, мутанты
   httpkit и handlertest (KGATE-13, KTST-11, KOBS-12)
@@ -241,5 +244,5 @@ blocked-by: harden-kits-contracts — первая половина партии
 ## Где мы сейчас
 План заведён; шаги не начаты — после `harden-kits-contracts`. S7 — после закрытия
 `fix-reference-code` шаблона (его правила раскладки к этому моменту стабильны): перед шагом сверить
-`git log -- internal/archtest` шаблона. Строки бэклога «партия 3», появившиеся после коммита плана,
-— в шаги. Следующий шаг — S1.
+`git log -- internal/archtest` шаблона. Строка бэклога `release-v130-tails` распределена: N1, N2 —
+S5 здесь, остальное — `harden-kits-contracts`. Следующий шаг — S1.

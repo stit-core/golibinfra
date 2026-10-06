@@ -19,8 +19,9 @@ blocked-by: —
   находки — `M/kits-audit/summary.md` (статус «п3», «Как повторить аудит») и отчёты углов в
   `M/kits-audit/` (`M` — `/home/mm/.cache/stit-audit-program/`).
 - **Состав партии 3:** 27 medium и 36 minor базового аудита, кандидаты C (длина пароля, retention
-  `audit_log`), хвосты валидаторов партии 2 и заметка шаблона (subject длиннее 255 байт) — строки
-  `backlog.md`, взятые этим планом и `harden-tests-archkit-release`.
+  `audit_log`), хвосты валидаторов партии 2 (последние — N1–N5 `M/validation-release-v1.3.0.md`)
+  и заметка шаблона (subject длиннее 255 байт) — строки `backlog.md`, взятые этим планом и
+  `harden-tests-archkit-release`.
 - **Эксперименты** — `run.sh` углов в своём worktree на ревизии: FAIL — дефект есть; не собирается
   на новом API — правка под API без смены смысла (оригинал — рядом, как `M/exs8/orig/`); тяжёлые —
   по одному.
@@ -60,9 +61,10 @@ blocked-by: —
 - [ ] **AC3** — Одна форма API: константы групп, хелперы регистрации, пробы, логгер и порядок
   параметров — по правилу «Решений»; обе опции httpclient срабатывают в заданном порядке; ошибка
   графа httpkit называет функцию кита; job'ы со схемой стартуют после миграций; test-хелперы внутри
-  китов — только исключения правила. Проверка: `fx-observability/run.sh <rev> fx fx-docker` → KX50,
-  KX61, KX61b PASS; `httpkit-b/run.sh <rev> exp` → в HX04 (a), (b) есть `httpkit.`; таблица
-  единообразия `api-docs.md` пересчитана → без ✗ KAPI-06, KAPI-07
+  китов — только исключения правила; README § Принципы — хранилища `pgstore` без неполного перечня.
+  Проверка: `fx-observability/run.sh <rev> fx fx-docker` → KX50, KX61, KX61b PASS;
+  `httpkit-b/run.sh <rev> exp` → в HX04 (a), (b) есть `httpkit.`; таблица единообразия
+  `api-docs.md` пересчитана → без ✗ KAPI-06, KAPI-07
 - [ ] **AC4** — pgkit и схемы китов: миграция под чужой блокировкой укладывается в дедлайн и держит
   читателей не дольше `lock_timeout`; `OnStop` пула уважает ctx; вложенная транзакция строже
   внешней — ошибка; хранилище кита без своих миграций не стартует и называет источник. Проверка:
@@ -88,8 +90,8 @@ blocked-by: —
 - [ ] **AC8** — Край httpkit: операцию открывает только её схема (Bearer не открывает `AdminKey`);
   extractor — один раз на запрос и при отказе бэкенда; `Security` со схемой вне `components` —
   ошибка старта и без схем в графе; trace-context и baggage клиента без явного доверия не
-  принимаются; `ip:port` в XFF даёт ip. Проверка: `httpkit-a/run.sh <rev> security` → H15, H18 PASS;
-  `httpkit-b/run.sh <rev> exp` → HX07 PASS
+  принимаются; `ip:port` в XFF даёт ip; тест кладёт IP клиента в ctx без middleware. Проверка:
+  `httpkit-a/run.sh <rev> security` → H15, H18 PASS; `httpkit-b/run.sh <rev> exp` → HX07 PASS
 - [ ] **AC9** — Секреты: пароль и токен из URL и DSN не попадают в ошибки, логи и спаны natskit,
   cachekit, storagekit, telemetry и httpclient; маски logkit по умолчанию прячут base64url-токены и
   ссылки с ними, пароль DSN, коды вне словаря, поля структур и map под указателем в `Any`, JSON в
@@ -105,8 +107,9 @@ blocked-by: —
 - [ ] **AC11** — Входы и дефолты: endpoint S3 без схемы — TLS; токен OTLP по `http://` не на loopback
   без явного разрешения — ошибка старта; пароль длиннее предела отвергается до Argon2id; NUL,
   не-UTF-8 и `Metadata` сверх предела в записи аудита — `ErrInvalidEntry`; retention `audit_log` —
-  job кита по явной настройке. Проверка: `correctness-security/run.sh <rev> unit pg` → E12 PASS, E08
-  — по «Решениям», E05 — отказ длинного пароля
+  job кита по явной настройке; отзыв сессии называет её владельца (аудит выхода с автором).
+  Проверка: `correctness-security/run.sh <rev> unit pg` → E12 PASS, E08 — по «Решениям», E05 —
+  отказ длинного пароля; `go test -race ./authnkit/... ./testkit/sessiontest/` с Docker → PASS
 
 ## Шаги
 ### Конфиг и формы API
@@ -114,7 +117,8 @@ blocked-by: —
   - Проверка: AC1 → выполнен · Закрывает: AC1 · Зависит от: —
 - [ ] **S2** — Конструкторы зовут `Validate`, одна семантика нулей и опций (KAPI-01, -05, -08, KCOR-12)
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: S1
-- [ ] **S3** — Одна форма API, опции httpclient значением (KAPI-06, KAPI-07, KTST-07, KFX-01, KFX-10)
+- [ ] **S3** — Одна форма API, опции httpclient значением (KAPI-06, KAPI-07, KTST-07, KFX-01, KFX-10;
+  N5 валидатора v1.3.0 — перечень хранилищ `pgstore` в README § Принципы)
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Зависит от: S2
 
 ### Данные и httpkit
@@ -130,7 +134,7 @@ blocked-by: —
 - [ ] **S8** — Контракт HTTP httpkit (KCOR-09, KCOR-10, KCOR-11, KSEC-13, KSEC-14, KSEC-15, KAPI-09)
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S7
 - [ ] **S9** — Край httpkit (KSEC-08, KFX-11, KSEC-12; N7, N8, N9, N11, f1-07 валидатора B
-  `harden-gate-defaults` — тесты и строки доки)
+  `harden-gate-defaults` — тесты и строки доки; N4 валидатора v1.3.0 — IP клиента в ctx для тестов)
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: S8
 
 ### Секреты и дефолты
@@ -141,7 +145,8 @@ blocked-by: —
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S10
 - [ ] **S12** — bruteforcekit (KSEC-04, KSEC-07, бэклог `bruteforcekit-*`, заметка шаблона про 255 байт)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S4
-- [ ] **S13** — Входы и дефолты: S3, OTLP, пароль, аудит и его retention (KSEC-05, KCOR-06, кандидаты C)
+- [ ] **S13** — Входы и дефолты: S3, OTLP, пароль, аудит и его retention (KSEC-05, KCOR-06, кандидаты C;
+  N4 валидатора v1.3.0 — `session.Revoke` называет владельца)
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S4
 
 ### Итог
@@ -244,12 +249,14 @@ blocked-by: —
 - **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — из
   `LockState`; обход длинного subject в адаптере не нужен.
 - **authnkit и auditkit.** Пароль длиннее 1 KiB — ошибка (DTO — свой `maxLength`); NUL и не-UTF-8
-  в записи аудита — `ErrInvalidEntry`; retention — env.
+  в записи аудита — `ErrInvalidEntry`; retention — env; владелец сессии из `Revoke` — автор аудита
+  выхода.
 - **env для INFRA-HANDOFF:** новые переменные S4, S8, S9, S12, S13; `STORAGE_S3_USE_SSL`; токен
   OTLP вне loopback.
 
 ## Где мы сейчас
-План заведён по сводке базового аудита и бэклогу «партия 3»; v1.3.0 выпущен — шаги не начаты. При
-старте: строки бэклога «партия 3», появившиеся после коммита плана (хвосты валидатора B
-`harden-authn-release` и валидатора партии v1.3.0), — в шаги этого плана или второго,
-`status: in-progress`, первый шаг — S1. Заготовка аннотации v1.4.0 — здесь, по шагам.
+План заведён по сводке базового аудита и бэклогу «партия 3»; v1.3.0 выпущен — шаги не начаты.
+Хвосты валидатора B `harden-authn-release` закрыты до релиза v1.3.0; строка бэклога
+`release-v130-tails` (валидатор партии v1.3.0) распределена: N5 — S3, N4 — S9 (IP в ctx) и S13
+(`Revoke`), N1 и N2 — S5 `harden-tests-archkit-release`. Следующий шаг — S1. Заготовка аннотации
+v1.4.0 — здесь, по шагам.
