@@ -2,7 +2,6 @@ package grpckit
 
 import (
 	"context"
-	"log/slog"
 
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -21,10 +20,8 @@ func RequestIDFrom(ctx context.Context) string { return requestid.From(ctx) }
 // лога появляется только у зарегистрированного ctx-атрибута. RegisterAttr
 // идемпотентен по ключу: сборка с httpkit и grpckit не даёт двух полей.
 func init() {
-	logkit.RegisterAttr("request_id", func(ctx context.Context) (slog.Value, bool) {
-		if id := requestid.From(ctx); id != "" {
-			return slog.StringValue(id), true
-		}
-		return slog.Value{}, false
+	logkit.RegisterAttr("request_id", func(ctx context.Context) (any, bool) {
+		id := requestid.From(ctx)
+		return id, id != ""
 	})
 }

@@ -58,11 +58,9 @@ func requestIDAttr(t *testing.T, key string) context.Context {
 	t.Cleanup(resetAttrs)
 
 	type ctxKey struct{}
-	RegisterAttr(key, func(ctx context.Context) (slog.Value, bool) {
-		if v, ok := ctx.Value(ctxKey{}).(string); ok {
-			return slog.StringValue(v), true
-		}
-		return slog.Value{}, false
+	RegisterAttr(key, func(ctx context.Context) (any, bool) {
+		v, ok := ctx.Value(ctxKey{}).(string)
+		return v, ok
 	})
 	return context.WithValue(context.Background(), ctxKey{}, "req-1")
 }
@@ -79,16 +77,25 @@ func TestRegisterAttr_AppearsInLog(t *testing.T) {
 	}
 }
 
+// Значение атрибута — любого типа, как у пар ключ-значение Logger: число остаётся числом.
+func TestRegisterAttr_ValueKeepsItsType(t *testing.T) {
+	resetAttrs()
+	t.Cleanup(resetAttrs)
+	RegisterAttr("tenant_id", func(context.Context) (any, bool) { return 42, true })
+
+	var buf bytes.Buffer
+	mustLogger(t, Config{Level: "debug"}, &buf).Info(context.Background(), "typed")
+	if m := decodeLine(t, buf.Bytes()); m["tenant_id"] != float64(42) {
+		t.Errorf("tenant_id must stay a number, got %#v", m["tenant_id"])
+	}
+}
+
 func TestRegisterAttr_SameKeyReplaces(t *testing.T) {
 	resetAttrs()
 	t.Cleanup(resetAttrs)
 
-	RegisterAttr("user_id", func(context.Context) (slog.Value, bool) {
-		return slog.StringValue("first"), true
-	})
-	RegisterAttr("user_id", func(context.Context) (slog.Value, bool) {
-		return slog.StringValue("second"), true
-	})
+	RegisterAttr("user_id", func(context.Context) (any, bool) { return "first", true })
+	RegisterAttr("user_id", func(context.Context) (any, bool) { return "second", true })
 
 	var buf bytes.Buffer
 	mustLogger(t, Config{Level: "debug"}, &buf).Info(context.Background(), "dup")
@@ -106,7 +113,7 @@ func TestRegisterAttr_RejectsEmptyKeyAndNilFunc(t *testing.T) {
 	t.Cleanup(resetAttrs)
 
 	for name, call := range map[string]func(){
-		"empty key": func() { RegisterAttr("", func(context.Context) (slog.Value, bool) { return slog.Value{}, false }) },
+		"empty key": func() { RegisterAttr("", func(context.Context) (any, bool) { return nil, false }) },
 		"nil func":  func() { RegisterAttr("k", nil) },
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -412,9 +419,7 @@ func TestRegisterAttr_ConcurrentWithHandle(t *testing.T) {
 	go func() {
 		defer close(done)
 		for range 200 {
-			RegisterAttr("user_id", func(context.Context) (slog.Value, bool) {
-				return slog.StringValue("u"), true
-			})
+			RegisterAttr("user_id", func(context.Context) (any, bool) { return "u", true })
 		}
 	}()
 	for range 200 {

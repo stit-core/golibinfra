@@ -140,14 +140,13 @@ if log.Enabled(ctx, slog.LevelDebug) {
 
 `RegisterAttr` регистрирует под ключом функцию, которую kit зовёт на **каждой**
 записи; при `ok == true` поле добавляется в record (в оба sink'а, всегда на
-верхнем уровне записи):
+верхнем уровне записи). Значение — любого типа, как у пар ключ-значение `Logger`:
+потребителю `log/slog` не нужен.
 
 ```go
-logkit.RegisterAttr("request_id", func(ctx context.Context) (slog.Value, bool) {
-	if rid, ok := ctx.Value(requestIDKey{}).(string); ok {
-		return slog.StringValue(rid), true
-	}
-	return slog.Value{}, false
+logkit.RegisterAttr("request_id", func(ctx context.Context) (any, bool) {
+	rid, ok := ctx.Value(requestIDKey{}).(string)
+	return rid, ok
 })
 ```
 
@@ -310,7 +309,7 @@ func WithService(cfg ServiceConfig) Option
 func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) // обёртка над любым slog.Handler; nil inner → ошибка
 func NewOTelHandler(lp log.LoggerProvider, level slog.Leveler) slog.Handler       // мост slog → OTel Logs; nil-аргументы → no-op sink и info
 
-type Attr func(ctx context.Context) (slog.Value, bool)
+type Attr func(ctx context.Context) (any, bool) // значение любого типа, как у пар Logger
 func RegisterAttr(key string, fn Attr)          // дедупликация по ключу
 
 func NewConfig() (Config, error)                // envconfig + Validate

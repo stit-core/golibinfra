@@ -2,7 +2,6 @@ package oidckit
 
 import (
 	"context"
-	"log/slog"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
@@ -44,11 +43,8 @@ func MustIdentityFrom(ctx context.Context) Identity {
 // RegisterIdentityLogAttr пробрасывает subject сессии в каждый log-record как
 // user_id; повторный вызов заменяет регистрацию, а не дублирует поле.
 func RegisterIdentityLogAttr() {
-	logkit.RegisterAttr("user_id", func(ctx context.Context) (slog.Value, bool) {
+	logkit.RegisterAttr("user_id", func(ctx context.Context) (any, bool) {
 		id, ok := IdentityFrom(ctx)
-		if !ok {
-			return slog.Value{}, false
-		}
-		return slog.StringValue(id.Subject), true
+		return id.Subject, ok
 	})
 }

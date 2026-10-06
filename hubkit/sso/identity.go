@@ -3,7 +3,6 @@ package sso
 import (
 	"context"
 	"errors"
-	"log/slog"
 	"strings"
 
 	"git.stit.tech/stit-core/golibinfra/hubkit/hubclaims"
@@ -165,15 +164,14 @@ func MustIdentityFrom(ctx context.Context) Identity {
 // как user_id (fallback — subject, если employee_id пуст); повторный вызов
 // заменяет регистрацию, а не дублирует поле.
 func RegisterIdentityLogAttr() {
-	logkit.RegisterAttr("user_id", func(ctx context.Context) (slog.Value, bool) {
+	logkit.RegisterAttr("user_id", func(ctx context.Context) (any, bool) {
 		id, ok := IdentityFrom(ctx)
 		if !ok || id.Subject == "" {
-			return slog.Value{}, false
+			return nil, false
 		}
-		uid := id.EmployeeID
-		if uid == "" {
-			uid = id.Subject
+		if id.EmployeeID != "" {
+			return id.EmployeeID, true
 		}
-		return slog.StringValue(uid), true
+		return id.Subject, true
 	})
 }

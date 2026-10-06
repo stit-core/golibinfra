@@ -20,7 +20,6 @@ blocked-by: —
   §6; находки — `M/kits-audit/summary.md` и отчёты углов (`M` — `/home/mm/.cache/stit-audit-program/`).
 - **Потребитель** — шаблон: `fix-reference-code` S9 (сессии, токены, IP, аудит, `config` без ctx) и
   S11 (бизнес-метрики с проверкой записи); что он снимает и меняет на bump — «Handoff».
-- **Код китов:** logkit — `logkit/attrs.go:11`.
 - **Правила шага:** README и `docs/` кита — тем же коммитом (`make envdoc-check`); breaking — `!` и
   `BREAKING CHANGE:`. Новая зависимость в `go.mod` не нужна ни одному шагу.
 
@@ -82,8 +81,10 @@ blocked-by: —
   `go test -race ./authnkit/` → PASS
   - Подтверждено: E06 PASS (свой `JWT_AUDIENCE` у сервиса, оригинал — `M/exs8/orig/`); authnkit PASS,
     `TestHS256JWT_PreviousSecret`, `TestModule_AudienceFromEnvIsolatesServices`; 6 мутантов красные
-- [ ] **AC10** — Атрибут лога регистрируется без `slog` в сигнатуре потребителя. Проверка:
+- [x] **AC10** — Атрибут лога регистрируется без `slog` в сигнатуре потребителя. Проверка:
   `go doc ./logkit Attr` → без `slog`; `go test -race ./logkit/` → PASS
+  - Подтверждено: `go doc` — `func(ctx context.Context) (any, bool)`, slog нет; logkit PASS, число
+    остаётся числом — `TestRegisterAttr_ValueKeepsItsType` (мутант со строкой — красный)
 - [ ] **AC11** — Тег `v1.3.0` готов:
   - тег аннотированный, с разделами Breaking, Поведение, Изменения, Гейт;
   - каждая строка apidiff `v1.2.0 → v1.3.0` по объёму и каждое изменение envconfig-тегов — в
@@ -144,8 +145,9 @@ blocked-by: —
 - [x] **S11** — authnkit: iss и aud из конфига `Module`, ротация секрета через предыдущий секрет (C)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S5
   - Сделано: `JWTConfig.Issuer`/`Audience`/`PreviousSecret`; опции `WithIssuer`/`WithAudience` удалены
-- [ ] **S12** — logkit: `Attr` без slog в сигнатуре (C)
+- [x] **S12** — logkit: `Attr` без slog в сигнатуре (C)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: —
+  - Сделано: `Attr func(ctx) (any, bool)`; httpkit, grpckit, hubkit/sso, oidckit — без slog
 
 ### Релиз
 - [ ] **S13** — Релиз: корневые README и CLAUDE.md сверены с API; `make test-full` и `make gate-clean`;
@@ -183,15 +185,13 @@ blocked-by: —
   `authn_session_*`; `SESSION_IDLE_TTL` 168h, `SESSION_ABSOLUTE_TTL` 720h. Stateless refresh JWT удалён.
 - **config.** `Load(dst, sources...)` и `Source.Apply(dst)` без ctx. Удалённый источник сам
   ограничивает свой I/O. ctx в графе даёт любому конструктору вечный контекст (FX-10).
-- **natskit.**
-  - Задержка NAK — `NATS_JS_NAK_BACKOFF·2^(n−1)` до `NATS_JS_NAK_MAX_BACKOFF` (1m), `MaxDeliver` 21:
-    15 минут — failover Postgres, выкатка соседа (E15: сообщение терялось через ≈10 с); после
-    восстановления — не позже минуты. Потолок ниже начала — постоянная задержка: старый конфиг цел.
-  - Term — только `ErrTerminal` и исчерпанный бюджет; dead и dlq-ошибка несут `stream_seq`.
-  - Правило канона: обработчик возвращает ошибку и не логирует её — natskit пишет ERROR с
-    `trace_id` и subject (KO20).
-  - `Unsubscribe` ставит флаг, callback его сверяет: pull-подписку JetStream nats.go снимает
-    асинхронно (флак R5). Имена стримов тестов — с номером прогона, `-count=2` чист.
+- **natskit.** Задержка NAK — `NATS_JS_NAK_BACKOFF·2^(n−1)` до `NATS_JS_NAK_MAX_BACKOFF` (1m),
+  `MaxDeliver` 21: 15 минут — failover Postgres, выкатка соседа (E15: сообщение терялось через ≈10 с);
+  после восстановления — не позже минуты; потолок ниже начала — постоянная задержка. Term — только
+  `ErrTerminal` и исчерпанный бюджет; dead и dlq-ошибка несут `stream_seq`. Канон: обработчик
+  возвращает ошибку и не логирует её — natskit пишет ERROR с `trace_id` и subject (KO20).
+  `Unsubscribe` ставит флаг, callback его сверяет: pull-подписку nats.go снимает асинхронно (R5).
+  Имена стримов тестов — с номером прогона, `-count=2` чист.
 - **httpclient.** Метрики otelhttp выключаются через noop `MeterProvider` у транспорта; спаны попытки
   остаются. Длительность попытки видна в спане, повторы считает `http_client_retry_attempts_total`.
   Переименовать метрику кита — breaking и хуже. otelhttp anthropickit (вне объёма) — бэклог.
@@ -207,7 +207,7 @@ blocked-by: —
   сервису на своём секрете они не нужны, общий секрет без `aud` небезопасен — это сказано в доке.
   Опции `WithIssuer`/`WithAudience` удалены: один способ, а `Module` знает только конфиг. Ротация:
   подпись текущим секретом, проверка — текущим, затем `JWT_PREVIOUS_SECRET`; `kid` не нужен.
-- **logkit.** `type Attr func(ctx) (any, bool)`, кит оборачивает значение в `slog.AnyValue`.
+- **logkit.** `type Attr func(ctx) (any, bool)`, кит кладёт значение как `slog.Any`.
 - **Релиз.** Раздел «Гейт» называет `make gate-clean` (с integration), `make test-full`, apidiff и
   env-diff против v1.2.0 и сборку шаблона через `replace`.
 
@@ -257,8 +257,9 @@ blocked-by: —
 `fx.Provide(context.Background)`.
 
 ## Где мы сейчас
-Этап S1–S7 принят (`M/validation-harden-authn-release-A.md`, перепроверка `cd654a7` — PASS),
-остатки R1–R5 закрыты (R5 — в S8). S8–S11 сделаны; дальше S12 (`logkit.Attr`), релиз S13.
+Этап S1–S7 принят (перепроверка `cd654a7` — PASS), остатки R1–R5 закрыты (R5 — в S8). Этап S8–S12
+сделан: дальше валидатор этапа, затем S13 — релиз. Под решения правлены эксперименты E06, H33, HX03,
+HX02b и сборка инвентаря `httpkit-b/run.sh` (оригиналы — `M/exs8/orig/`).
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
@@ -295,3 +296,5 @@ blocked-by: —
 - Breaking — authnkit: `WithIssuer`, `WithAudience` удалены → `JWTConfig.Issuer`, `Audience`
   (`JWT_ISSUER`, `JWT_AUDIENCE` через запятую); сервисам на общем `JWT_SECRET` — свой `JWT_AUDIENCE`.
 - Изменения — authnkit: ротация секрета — `JWTConfig.PreviousSecret` (`JWT_PREVIOUS_SECRET`).
+- Breaking — logkit: `Attr` — `func(ctx) (any, bool)`, а не `(slog.Value, bool)` → значение без
+  обёртки `slog.*Value`, `//nolint:forbidigo` у регистрации не нужен.

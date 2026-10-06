@@ -7,8 +7,9 @@ import (
 	"sync/atomic"
 )
 
-// Attr извлекает значение поля из ctx; ok=false — поле не добавляется в запись.
-type Attr func(ctx context.Context) (slog.Value, bool)
+// Attr извлекает значение поля из ctx: ok=false — поле не добавляется в запись. Значение —
+// любого типа, как у пар ключ-значение Logger.
+type Attr func(ctx context.Context) (any, bool)
 
 type keyedAttr struct {
 	key string
@@ -61,7 +62,7 @@ func loadAttrs() []keyedAttr {
 func registeredCtxAttrs(ctx context.Context, dst []slog.Attr) []slog.Attr {
 	for _, a := range loadAttrs() {
 		if v, ok := a.fn(ctx); ok {
-			dst = append(dst, slog.Attr{Key: a.key, Value: v})
+			dst = append(dst, slog.Any(a.key, v))
 		}
 	}
 	return dst

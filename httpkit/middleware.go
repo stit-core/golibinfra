@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log/slog"
 	"net/http"
 	"runtime/debug"
 	"time"
@@ -21,11 +20,9 @@ import (
 )
 
 func init() {
-	logkit.RegisterAttr("request_id", func(ctx context.Context) (slog.Value, bool) {
-		if id := RequestIDFrom(ctx); id != "" {
-			return slog.StringValue(id), true
-		}
-		return slog.Value{}, false
+	logkit.RegisterAttr("request_id", func(ctx context.Context) (any, bool) {
+		id := RequestIDFrom(ctx)
+		return id, id != ""
 	})
 }
 
