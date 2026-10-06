@@ -24,6 +24,7 @@ const (
 	defaultMaxAge              = 7 * 24 * time.Hour
 	defaultDuplicates          = 2 * time.Minute
 	defaultPublishAsyncTimeout = 5 * time.Second
+	defaultNakMaxBackoff       = time.Minute
 
 	// minAckWait — ниже этого порога +WPI не успевает продлить ожидание сервера.
 	minAckWait = time.Second
@@ -47,9 +48,13 @@ type JetStreamConfig struct {
 	// HandlerTimeout — deadline ctx одной попытки обработчика; 0 — равен AckWait.
 	HandlerTimeout      time.Duration `envconfig:"NATS_JS_HANDLER_TIMEOUT" default:"0"`
 	PublishAsyncTimeout time.Duration `envconfig:"NATS_JS_PUBLISH_ASYNC_TIMEOUT" default:"5s"`
-	MaxDeliver          int           `envconfig:"NATS_JS_MAX_DELIVER" default:"10"`
-	NakBackoff          time.Duration `envconfig:"NATS_JS_NAK_BACKOFF" default:"1s"`
-	DLQSubject          string        `envconfig:"NATS_JS_DLQ_SUBJECT" default:""`
+	// MaxDeliver, NakBackoff и NakMaxBackoff — бюджет ретраев: задержка NAK после n-й
+	// доставки — NakBackoff·2^(n−1), не больше NakMaxBackoff; дефолты держат сообщение
+	// 15 минут сбоя зависимости.
+	MaxDeliver    int           `envconfig:"NATS_JS_MAX_DELIVER" default:"21"`
+	NakBackoff    time.Duration `envconfig:"NATS_JS_NAK_BACKOFF" default:"1s"`
+	NakMaxBackoff time.Duration `envconfig:"NATS_JS_NAK_MAX_BACKOFF" default:"1m"`
+	DLQSubject    string        `envconfig:"NATS_JS_DLQ_SUBJECT" default:""`
 }
 
 // Config — публичный env-контракт инстанса шины.
@@ -155,6 +160,7 @@ func (j JetStreamConfig) validate() error {
 		{"NATS_JS_HANDLER_TIMEOUT", j.HandlerTimeout},
 		{"NATS_JS_PUBLISH_ASYNC_TIMEOUT", j.PublishAsyncTimeout},
 		{"NATS_JS_NAK_BACKOFF", j.NakBackoff},
+		{"NATS_JS_NAK_MAX_BACKOFF", j.NakMaxBackoff},
 	} {
 		if d.v < 0 {
 			return fmt.Errorf("%w: %s must be >= 0, got %s", ErrConfig, d.name, d.v)

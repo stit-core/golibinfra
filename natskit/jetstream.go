@@ -104,6 +104,7 @@ type jsBus struct {
 	maxInFlight    int
 	maxDeliver     int
 	nakBackoff     time.Duration
+	nakMaxBackoff  time.Duration
 	dlqSubject     string
 	// dlqInStream — DLQ-subject накрыт стримом: копия уходит JetStream-публикацией
 	// с PubAck. Иначе Core-публикацией: JetStream ждал бы PubAck, которого не будет.
@@ -168,6 +169,7 @@ func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error) 
 		maxInFlight:    maxInFlight,
 		maxDeliver:     cfg.JetStream.MaxDeliver,
 		nakBackoff:     cfg.JetStream.NakBackoff,
+		nakMaxBackoff:  nakMaxBackoff(cfg.JetStream),
 		dlqSubject:     cfg.JetStream.DLQSubject,
 		instr:          newNatsInstruments(instance, transportJetStream),
 	}
@@ -483,7 +485,11 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 		cc, err := cons.Consume(func(msg jetstream.Msg) {
 			// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
 			_ = b.sem.Acquire(context.Background(), 1)
-			untrack := s.track()
+			untrack, ok := s.track()
+			if !ok {
+				b.sem.Release(1)
+				return
+			}
 			go func() {
 				defer untrack()
 				defer b.sem.Release(1)
@@ -592,24 +598,24 @@ func (b *jsBus) invoke(ctx context.Context, subject string, handler Handler, dat
 }
 
 // failStream решает судьбу неуспешного сообщения: терминальная ошибка или
-// исчерпанный MaxDeliver — DLQ (если задан) + Term; иначе NAK с backoff.
+// исчерпанный MaxDeliver — DLQ (если задан) + Term; иначе NAK с растущей задержкой.
 // Term делается только после успешной DLQ-публикации: иначе недоступный DLQ
 // стирал бы сообщение и из стрима, и из DLQ. Провал публикации оставляет
 // сообщение на ределивери (NAK) — попытки ограничены MaxDeliver на сервере.
 func (b *jsBus) failStream(ctx context.Context, sc streamConsumer, msg jetstream.Msg, cause error, panicked bool) string {
 	subject := msg.Subject()
-	deliveries := deliveries(msg)
+	deliveries, streamSeq := position(msg)
 	if reason := b.terminalReason(cause, deliveries); reason != "" {
 		if err := b.deadLetter(ctx, sc, msg, cause, reason, deliveries); err != nil {
 			b.log.Error(ctx, "natskit: jetstream dlq publish failed, message kept for redelivery",
-				"stream", sc.stream, "durable", sc.durable, "subject", subject,
+				"stream", sc.stream, "durable", sc.durable, "subject", subject, "stream_seq", streamSeq,
 				"deliveries", deliveries, "reason", reason, "dlq", b.dlqSubject,
 				"err", err, "cause", cause)
-			b.nak(ctx, msg, subject)
+			b.nak(ctx, msg, subject, deliveries)
 			return "dlq_error"
 		}
 		b.log.Error(ctx, "natskit: jetstream message dead",
-			"stream", sc.stream, "durable", sc.durable, "subject", subject,
+			"stream", sc.stream, "durable", sc.durable, "subject", subject, "stream_seq", streamSeq,
 			"deliveries", deliveries, "reason", reason, "dlq", b.dlqSubject, "err", cause)
 		if err := msg.TermWithReason(truncate(headerValue(cause.Error()), maxTermReasonLen)); err != nil {
 			b.log.Error(ctx, "natskit: jetstream term error", "subject", subject, "err", err)
@@ -617,7 +623,7 @@ func (b *jsBus) failStream(ctx context.Context, sc streamConsumer, msg jetstream
 		return "dead"
 	}
 
-	b.nak(ctx, msg, subject)
+	b.nak(ctx, msg, subject, deliveries)
 	if !panicked && !errors.Is(cause, context.Canceled) {
 		b.log.Error(ctx, "natskit: jetstream handler error", "subject", subject, "err", cause)
 	}
@@ -629,16 +635,33 @@ func (b *jsBus) failStream(ctx context.Context, sc streamConsumer, msg jetstream
 
 // nak возвращает сообщение в очередь ределивери; ошибка самого NAK не меняет
 // судьбу сообщения (сервер переотправит его по AckWait), но не должна теряться.
-func (b *jsBus) nak(ctx context.Context, msg jetstream.Msg, subject string) {
+func (b *jsBus) nak(ctx context.Context, msg jetstream.Msg, subject string, deliveries uint64) {
 	var err error
-	if b.nakBackoff > 0 {
-		err = msg.NakWithDelay(b.nakBackoff)
+	if delay := b.nakDelay(deliveries); delay > 0 {
+		err = msg.NakWithDelay(delay)
 	} else {
 		err = msg.Nak()
 	}
 	if err != nil {
 		b.log.Warn(ctx, "natskit: jetstream nak error", "subject", subject, "err", err)
 	}
+}
+
+// nakMaxBackoff — потолок задержки NAK: потолок ниже NakBackoff даёт постоянную
+// задержку, а не сжимает её до потолка.
+func nakMaxBackoff(j JetStreamConfig) time.Duration {
+	return max(durationOr(j.NakMaxBackoff, defaultNakMaxBackoff), j.NakBackoff)
+}
+
+// nakDelay — задержка ределивери после n-й доставки: NakBackoff, удвоенная на каждую
+// следующую доставку, не больше потолка: короткий сбой — ретраи через секунды, долгий —
+// не чаще раза в потолок.
+func (b *jsBus) nakDelay(n uint64) time.Duration {
+	d := b.nakBackoff
+	for i := uint64(1); i < n && d > 0 && d < b.nakMaxBackoff; i++ {
+		d *= 2
+	}
+	return min(d, b.nakMaxBackoff)
 }
 
 // terminalReason — почему сообщение не пойдёт на ретрай; пусто — идёт.
@@ -652,12 +675,14 @@ func (b *jsBus) terminalReason(cause error, deliveries uint64) string {
 	return ""
 }
 
-func deliveries(msg jetstream.Msg) uint64 {
+// position — номер доставки сообщения и его sequence в стриме: по нему мёртвое
+// сообщение достают из стрима руками.
+func position(msg jetstream.Msg) (deliveries, streamSeq uint64) {
 	md, err := msg.Metadata()
 	if err != nil {
-		return 0
+		return 0, 0
 	}
-	return md.NumDelivered
+	return md.NumDelivered, md.Sequence.Stream
 }
 
 // deadLetter публикует копию мёртвого сообщения в DLQSubject и сообщает исход:

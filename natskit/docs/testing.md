@@ -10,7 +10,9 @@
   весь прогон; тест берёт его URL через `natsURL(t)` (внутри —
   `testkit.RequireDocker(t)`, поэтому под `-short` тест пропускается, а без
   Docker падает). Изоляцию даёт не отдельный сервер, а уникальные имена:
-  `nameFor(t)` — стрим по имени теста, `subj(t, "created")` — subject внутри него.
+  `nameFor(t)` — стрим по имени теста (у повтора `-count` — с номером прогона:
+  иначе он застал бы стрим и durable-консьюмеров прошлого), `subj(t, "created")` —
+  subject внутри него.
 - `testkit.StartNATS(t, testkit.WithJetStream())` — общая фикстура репо для
   тестов потребителя: контейнер с фиксированным тегом образа, снимается в
   `t.Cleanup`. Без `WithJetStream()` поднимается Core NATS: JetStream-вызовы на
@@ -60,6 +62,7 @@ func TestSomething(t *testing.T) {
 | `TestBus_Backpressure` | пиковая конкуренция обработчиков не превышает `MaxInFlight`. |
 | `TestBus_HandlerTimeout` | Core-обработчик получает отмену ctx по `NATS_HANDLER_TIMEOUT`. |
 | `TestBus_SubscriptionUnsubscribe` / `TestStreamBus_SubscriptionUnsubscribe` | после `Unsubscribe` сообщения не приходят (Core и JetStream). |
+| `TestSubscription_UnsubscribeSkipsMessageWaitingForSlot` | сообщение, полученное до `Unsubscribe`, но ждущее слот `MaxInFlight`, обработчик не получает (Core и JetStream). |
 | `TestBus_SubscriptionDrainWaitsForHandler` / `…HonoursContext` | `Drain` ждёт работающий обработчик и снимает интерес; истёкший ctx → ошибка. |
 | `TestStreamBus_SubscriptionDrainWaitsForHandler` | то же для JetStream-консьюмера. |
 | `TestConn_CloseWaitsForInflightHandler` | `Close` возвращается после завершения обработчика; статус `CLOSED`; `Subscribe` после — `ErrClosed`. |
@@ -86,11 +89,12 @@ func TestSomething(t *testing.T) {
 | `TestStreamBus_PublishBatchPartialError` | частичный сбой батча: валидные публикуются, oversized возвращает ошибку в `results[i]`. |
 | `TestStreamBus_PublishBatchCancelledContext` | отмена ctx батча не превращает подтверждённые публикации в ошибки. |
 | `TestStreamBus_PublishBatchLostAckTimesOut` | потерянный `PubAck` → `ErrAsyncPublishTimeout` в пределах `PublishAsyncTimeout`. |
-| `TestStreamBus_MaxDeliverDLQ` | исчерпание `MaxDeliver` → `error`-лог + DLQ-копия с `Origin`/`Error`/`Reason`/`Stream`/`Consumer`/`Deliveries`/`Msg-Id`; после `Term` попыток ровно `MaxDeliver`. |
+| `TestStreamBus_MaxDeliverDLQ` | исчерпание `MaxDeliver` → `error`-лог с причиной и `stream_seq` + DLQ-копия с `Origin`/`Error`/`Reason`/`Stream`/`Consumer`/`Deliveries`/`Msg-Id`; после `Term` попыток ровно `MaxDeliver`. |
 | `TestStreamBus_TermWithoutDLQ` | без `DLQSubject` отказ всё равно логируется, ределивери прекращается. |
 | `TestStreamBus_TerminalErrorSkipsRetries` / `…DecodeErrorGoesToDLQ` | `ErrTerminal` и ошибка декода — DLQ с первой попытки, `reason=terminal`. |
 | `TestStreamBus_PanicGoesPoisonPath` | паника обработчика идёт через NAK и заканчивается `Term`. |
-| `TestStreamBus_NakBackoffDelaysRedelivery` | `NakBackoff` разносит попытки во времени. |
+| `TestStreamBus_NakBackoffDelaysRedelivery` | задержка NAK растёт: первая — `NakBackoff`, вторая — вдвое больше. |
+| `TestNakDelay_GrowsToCap` / `…DefaultBudgetCoversFifteenMinutes` | удвоение до `NakMaxBackoff`, потолок ниже начала — постоянная задержка, `0` — мгновенный `Nak`; дефолты дают не меньше 15 минут ретраев (без Docker). |
 | `TestStreamBus_RejectsDLQUnderConsumerFilter` | фильтр, накрывающий DLQ-subject, отвергается на регистрации. |
 | `TestStreamBus_DLQInsideStreamWithDedup` | DLQ внутри стрима с дедупом: `Nats-Msg-Id` снят и перенесён в `Natskit-Dlq-Msg-Id`. |
 | `TestStreamBus_SlowHandlerNotRedelivered` | обработчик дольше `AckWait` (в пределах `HandlerTimeout`) вызывается один раз — `InProgress` продлевает ожидание сервера. |

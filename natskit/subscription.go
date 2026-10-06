@@ -3,6 +3,7 @@ package natskit
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 )
 
 // Handler — обработчик входящего сообщения; subject и header'ы доступны через
@@ -10,10 +11,10 @@ import (
 type Handler func(ctx context.Context, payload []byte) error
 
 // Subscription — handle одной подписки. Unsubscribe снимает интерес сразу,
-// не дожидаясь обработчиков (полученные, но не начатые сообщения теряются;
-// JetStream переотправит их после AckWait). Drain снимает интерес, даёт
-// обработать уже полученное и ждёт завершения запущенных обработчиков в
-// пределах ctx.
+// не дожидаясь обработчиков: доставка, которую транспорт отдаст после него, и
+// полученные, но не начатые сообщения обработчик не получает (JetStream
+// переотправит их после AckWait). Drain снимает интерес, даёт обработать уже
+// полученное и ждёт завершения запущенных обработчиков в пределах ctx.
 type Subscription interface {
 	Unsubscribe() error
 	Drain(ctx context.Context) error
@@ -28,18 +29,26 @@ type subscription struct {
 	// вернулись, новых add в inflight не будет.
 	done     <-chan struct{}
 	inflight inflightGroup
+	// unsubscribed — Unsubscribe вызван: pull-подписку JetStream транспорт снимает
+	// асинхронно, и доставки после возврата Unsubscribe ещё приходят в callback.
+	unsubscribed atomic.Bool
 
 	once    sync.Once
 	stopErr error
 }
 
-func (s *subscription) track() (untrack func()) {
+// track учитывает запущенный обработчик; false — подписка снята Unsubscribe, и
+// сообщение не обрабатывается.
+func (s *subscription) track() (untrack func(), ok bool) {
+	if s.unsubscribed.Load() {
+		return nil, false
+	}
 	s.conn.inflight.add()
 	s.inflight.add()
 	return func() {
 		s.inflight.done()
 		s.conn.inflight.done()
-	}
+	}, true
 }
 
 func (s *subscription) request(drain bool) error {
@@ -58,6 +67,7 @@ func (s *subscription) wait(ctx context.Context) error {
 }
 
 func (s *subscription) Unsubscribe() error {
+	s.unsubscribed.Store(true)
 	err := s.request(false)
 	s.conn.forget(s)
 	return err

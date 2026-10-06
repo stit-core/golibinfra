@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -85,11 +86,29 @@ func natsURL(t *testing.T) string {
 	return shared.url
 }
 
-// nameFor — уникальные на тест имя стрима и префикс subject'ов: сервер общий,
-// поэтому стрим соседнего теста не должен ловить эти сообщения.
+var (
+	namesMu sync.Mutex
+	names   = map[*testing.T]string{}
+	runs    = map[string]int{}
+)
+
+// nameFor — уникальные на прогон теста имя стрима и префикс subject'ов: сервер общий,
+// поэтому стрим соседнего теста не должен ловить эти сообщения, а повтор (-count) —
+// застать стрим и durable-консьюмеров прошлого прогона.
 func nameFor(t *testing.T) string {
 	t.Helper()
-	return strings.NewReplacer("/", "_", "-", "_", " ", "_", ".", "_").Replace(t.Name())
+	namesMu.Lock()
+	defer namesMu.Unlock()
+	if name, ok := names[t]; ok {
+		return name
+	}
+	name := strings.NewReplacer("/", "_", "-", "_", " ", "_", ".", "_").Replace(t.Name())
+	runs[name]++
+	if runs[name] > 1 {
+		name += "_" + strconv.Itoa(runs[name])
+	}
+	names[t] = name
+	return name
 }
 
 // subj — subject внутри стрима теста (`<TestName>.created`).
@@ -187,6 +206,16 @@ type logEntry struct {
 // text — запись целиком: тест ищет в ней и сообщение, и значения атрибутов.
 func (e logEntry) text() string {
 	return fmt.Sprintf("%s %s %v", e.level, e.msg, e.kv)
+}
+
+// value — значение атрибута key; nil — атрибута в записи нет.
+func (e logEntry) value(key string) any {
+	for i := 0; i+1 < len(e.kv); i += 2 {
+		if e.kv[i] == key {
+			return e.kv[i+1]
+		}
+	}
+	return nil
 }
 
 // memLogger собирает записи, чтобы тест проверял предупреждения drain/timeout и

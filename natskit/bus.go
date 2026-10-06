@@ -96,7 +96,11 @@ func (b *natsBus) subscribe(ctx context.Context, subject, queue string, handler 
 		cb := func(msg *nats.Msg) {
 			// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
 			_ = b.sem.Acquire(context.Background(), 1)
-			untrack := s.track()
+			untrack, ok := s.track()
+			if !ok {
+				b.sem.Release(1)
+				return
+			}
 			go func() {
 				defer untrack()
 				defer b.sem.Release(1)

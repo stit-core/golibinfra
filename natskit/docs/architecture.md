@@ -159,7 +159,7 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
                 ├─ да  → deadLetter (если DLQSubject задан)
                 │        ├─ копия ушла → log error + msg.TermWithReason(cause)  status=dead
                 │        └─ отказ DLQ  → log error + Nak                   status=dlq_error
-                └─ нет → NakWithDelay(NakBackoff) | Nak()  status=handler_error|panic
+                └─ нет → NakWithDelay(растущая задержка) | Nak()  status=handler_error|panic
 ```
 
 - **Deadline + `InProgress`.** Сервер переотправляет сообщение, не дождавшись
@@ -176,8 +176,14 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
   (server-side backstop), и проверяется клиентом перед `Term`. `MaxDeliver == 0`
   — без лимита (бесконечный ределивери).
 - **NAK-backoff** — при `NakBackoff > 0` неуспешное сообщение возвращается с
-  задержкой (`NakWithDelay`), иначе мгновенно (`Nak`). Задержка распределяет
-  ретраи во времени, не упирая консьюмера в горячую петлю.
+  задержкой (`NakWithDelay`), иначе мгновенно (`Nak`). Задержка растёт с номером
+  доставки — `NakBackoff × 2^(n−1)` до `NakMaxBackoff`: короткий сбой зависимости
+  переживается за секунды, долгий — с ретраем раз в потолок, без горячей петли.
+  Бюджет дефолтов (`MaxDeliver=21`, `1s`, `1m`) — 15 минут ретраев
+  ([configuration.md](configuration.md#бюджет-ретраев)).
+- **Ошибку обработчика логирует кит.** `error`-запись `natskit: jetstream handler
+  error` (Core — `natskit: handler error`) несёт `subject`, `trace_id` спана
+  обработки и саму ошибку; обработчик её возвращает и не пишет в лог второй раз.
 - **DLQ** — на терминальном отказе сообщение перед `Term` republish'ится в
   `DLQSubject` с заголовками `Natskit-Dlq-Origin`/`-Error`/`-Reason`/`-Stream`/
   `-Consumer`/`-Deliveries`/`-Instance`/`-Msg-Id` и остальными исходными
@@ -207,8 +213,9 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
 (`inflightGroup`; тот же счётчик есть у `Conn` целиком).
 
 - `Subscription.Unsubscribe()` — снимает интерес сразу; уже полученные, но не
-  начатые сообщения не обрабатываются (JetStream переотправит их после
-  `AckWait`), работающие обработчики не ждутся.
+  начатые сообщения и доставки, которые транспорт отдаст после него, не
+  обрабатываются (JetStream переотправит их после `AckWait`), работающие
+  обработчики не ждутся.
 - `Subscription.Drain(ctx)` — снимает интерес, даёт обработать буфер и ждёт
   завершения обработчиков в пределах ctx.
 - `Conn.Close()` (= `Client.Close()`, `OnStop`-хук `Module`) с бюджетом
@@ -310,6 +317,12 @@ fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
   из конфига кита затирал бы ручной тюнинг оператора (`Replicas`, `MaxBytes`,
   доп. subjects). Кит владеет только своим subject `<name>.>`; всё остальное —
   зона оператора, а `NATS_JS_STREAM_MANAGED=false` отдаёт ему и это.
+- **Бюджет ретраев — минуты, а не секунды.** Транзиентный сбой зависимости
+  обработчика (failover Postgres, выкатка соседа) длится десятки секунд и
+  минуты; постоянная секундная задержка при ограниченном `MaxDeliver` отдала бы
+  такое сообщение в `Term` до восстановления. Растущая задержка с потолком и
+  `MaxDeliver=21` держат его 15 минут, а `Term` получают только `ErrTerminal` и
+  исчерпанный бюджет.
 - **`HandlerTimeout` отдельно от `AckWait`.** `AckWait` — про смерть процесса
   (за сколько сообщение уйдёт другому инстансу), бюджет обработки — про зависший
   код. Смешивать их значило бы либо ставить `AckWait` в минуты (медленный

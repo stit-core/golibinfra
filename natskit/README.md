@@ -83,7 +83,9 @@ func publish(ctx context.Context, bus natskit.Bus) error {
 
 Минимальный ENV: `NATS_URL`. Конфиг валидируется на старте (`Validate` →
 `ErrConfig`): пустой URL, отрицательный таймаут или недоступный файл кредов валят
-запуск, а не первую публикацию. Сигнатуры дженериков, JetStream, DLQ/NAK,
+запуск, а не первую публикацию. Обработчик ошибку возвращает и не логирует: кит сам
+пишет `error`-запись с `subject` и `trace_id`, а JetStream ретраит сообщение с
+растущей задержкой — при дефолтах 15 минут — до DLQ и `Term`. Сигнатуры дженериков, JetStream, DLQ/NAK,
 `Subscription`, graceful shutdown и рецепт двух шин в одном приложении — в
 [docs/usage.md](docs/usage.md). Без fx инстанс собирается напрямую:
 `natskit.New(name, cfg, log)` (см. также [docs/testing.md](docs/testing.md)).

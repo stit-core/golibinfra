@@ -2,8 +2,6 @@ package natskit_test
 
 import (
 	"context"
-	"strconv"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -56,17 +54,15 @@ func labelValues(d metrictest.Snapshot, name, key string) map[string]bool {
 	return out
 }
 
-// instrRuns — прогоны TestBus_EmitsMetricsAndSpans в процессе (-count).
-var instrRuns atomic.Int64
-
 func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 	spans := installTracing(t)
 	before := metrictest.Collect(t)
 
 	conn := connect(t, natsURL(t))
 	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
-	// Серия nats_inflight_messages прошлого прогона после +1 −1 не меняется и выпала бы из дельты.
-	subject := subj(t, "instr"+strconv.FormatInt(instrRuns.Add(1), 10))
+	// Серия nats_inflight_messages прошлого прогона после +1 −1 не меняется и выпала бы из
+	// дельты: subject свой на прогон (nameFor).
+	subject := subj(t, "instr")
 
 	handled := make(chan struct{}, 1)
 	if _, err := bus.Subscribe(context.Background(), subject, func(context.Context, []byte) error {

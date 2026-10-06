@@ -309,8 +309,13 @@ func TestStreamBus_MaxDeliverDLQ(t *testing.T) {
 	eventually(t, 5*time.Second, "dead message logged", func() bool {
 		return log.has("error", "natskit: jetstream message dead")
 	})
-	if e := log.find("error", "natskit: jetstream message dead"); e == nil || !strings.Contains(e.text(), "boom") {
+	e := log.find("error", "natskit: jetstream message dead")
+	if e == nil || !strings.Contains(e.text(), "boom") {
 		t.Fatalf("dead-message log has no cause: %v", log.dump())
+	}
+	// Мёртвое сообщение достают из стрима по sequence: оно в стриме теста первое.
+	if got := e.value("stream_seq"); got != uint64(1) {
+		t.Fatalf("dead-message log stream_seq = %v, want 1: %v", got, e.text())
 	}
 
 	// после Term ределивери прекращается — попыток ровно MaxDeliver.
@@ -478,13 +483,14 @@ func TestStreamBus_PanicGoesPoisonPath(t *testing.T) {
 	}
 }
 
-// NAK с backoff разносит попытки во времени, а не крутит горячую петлю.
+// Задержка NAK растёт с номером доставки: попытки расходятся во времени, а не крутят
+// горячую петлю, и бюджет ретраев покрывает минуты сбоя, а не секунды.
 func TestStreamBus_NakBackoffDelaysRedelivery(t *testing.T) {
 	stream := nameFor(t)
 	cfg := jsConfig(stream)
 	cfg.JetStream.AckWait = 30 * time.Second
 	cfg.JetStream.MaxDeliver = 3
-	cfg.JetStream.NakBackoff = time.Second
+	cfg.JetStream.NakBackoff = 500 * time.Millisecond
 	sb := newStreamBus(t, cfg)
 	subject := subj(t, "created")
 
@@ -502,8 +508,12 @@ func TestStreamBus_NakBackoffDelaysRedelivery(t *testing.T) {
 
 	first := recv(t, attempts, 20*time.Second, "first attempt")
 	second := recv(t, attempts, 20*time.Second, "redelivery")
-	if gap := second.Sub(first); gap < 900*time.Millisecond {
-		t.Fatalf("redelivery gap = %v, want ≈NakBackoff (1s)", gap)
+	third := recv(t, attempts, 20*time.Second, "second redelivery")
+	if gap := second.Sub(first); gap < 450*time.Millisecond {
+		t.Fatalf("first redelivery gap = %v, want ≈NakBackoff (500ms)", gap)
+	}
+	if gap := third.Sub(second); gap < 900*time.Millisecond {
+		t.Fatalf("second redelivery gap = %v, want ≈2×NakBackoff (1s)", gap)
 	}
 }
 

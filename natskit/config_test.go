@@ -71,11 +71,14 @@ func TestNewConfig_SafeDefaults(t *testing.T) {
 	if cfg.HandlerTimeout != 30*time.Second {
 		t.Errorf("HandlerTimeout default = %v, want 30s", cfg.HandlerTimeout)
 	}
-	if cfg.JetStream.MaxDeliver != 10 {
-		t.Errorf("MaxDeliver default = %d, want 10", cfg.JetStream.MaxDeliver)
+	if cfg.JetStream.MaxDeliver != 21 {
+		t.Errorf("MaxDeliver default = %d, want 21", cfg.JetStream.MaxDeliver)
 	}
 	if cfg.JetStream.NakBackoff != time.Second {
 		t.Errorf("NakBackoff default = %v, want 1s", cfg.JetStream.NakBackoff)
+	}
+	if cfg.JetStream.NakMaxBackoff != time.Minute {
+		t.Errorf("NakMaxBackoff default = %v, want 1m", cfg.JetStream.NakMaxBackoff)
 	}
 	if cfg.JetStream.AckWait != 30*time.Second {
 		t.Errorf("AckWait default = %v, want 30s", cfg.JetStream.AckWait)
@@ -264,6 +267,7 @@ func TestConfig_Validate(t *testing.T) {
 		{"ack wait below a second", func(c *natskit.Config) { c.JetStream.AckWait = time.Millisecond }, true},
 		{"negative ack wait", func(c *natskit.Config) { c.JetStream.AckWait = -time.Second }, true},
 		{"negative nak backoff", func(c *natskit.Config) { c.JetStream.NakBackoff = -time.Second }, true},
+		{"negative nak max backoff", func(c *natskit.Config) { c.JetStream.NakMaxBackoff = -time.Second }, true},
 		{"negative max deliver", func(c *natskit.Config) { c.JetStream.MaxDeliver = -1 }, true},
 		{"unknown retention", func(c *natskit.Config) { c.JetStream.Retention = "nonsense" }, true},
 		{"stream name with a dot", func(c *natskit.Config) { c.JetStream.StreamNames = []string{"a.b"} }, true},

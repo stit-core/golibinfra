@@ -219,6 +219,53 @@ func TestLoadEnv_ParseErrors(t *testing.T) {
 	}
 }
 
+func TestNakDelay_GrowsToCap(t *testing.T) {
+	defaults := JetStreamConfig{NakBackoff: time.Second}
+	tests := []struct {
+		name string
+		cfg  JetStreamConfig
+		n    uint64
+		want time.Duration
+	}{
+		{"first delivery", defaults, 1, time.Second},
+		{"doubles per delivery", defaults, 3, 4 * time.Second},
+		{"last below the cap", defaults, 6, 32 * time.Second},
+		{"capped", defaults, 7, defaultNakMaxBackoff},
+		{"far past the cap", defaults, 1 << 40, defaultNakMaxBackoff},
+		{"own cap", JetStreamConfig{NakBackoff: 100 * time.Millisecond, NakMaxBackoff: 300 * time.Millisecond}, 4, 300 * time.Millisecond},
+		{"zero backoff is an immediate nak", JetStreamConfig{}, 5, 0},
+		{"cap below backoff keeps it constant", JetStreamConfig{NakBackoff: 2 * time.Minute}, 3, 2 * time.Minute},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			b := &jsBus{nakBackoff: tt.cfg.NakBackoff, nakMaxBackoff: nakMaxBackoff(tt.cfg)}
+			if got := b.nakDelay(tt.n); got != tt.want {
+				t.Fatalf("nakDelay(%d) = %v, want %v", tt.n, got, tt.want)
+			}
+		})
+	}
+}
+
+// Дефолты держат сообщение 15 минут сбоя зависимости обработчика (failover Postgres,
+// выкатка соседа): сумма задержек NAK до последней доставки — то, что обещает дока.
+func TestNakDelay_DefaultBudgetCoversFifteenMinutes(t *testing.T) {
+	for _, env := range []string{"NATS_JS_MAX_DELIVER", "NATS_JS_NAK_BACKOFF", "NATS_JS_NAK_MAX_BACKOFF"} {
+		t.Setenv(env, "")
+	}
+	cfg, err := NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := &jsBus{nakBackoff: cfg.JetStream.NakBackoff, nakMaxBackoff: nakMaxBackoff(cfg.JetStream)}
+	var budget time.Duration
+	for n := uint64(1); n < uint64(cfg.JetStream.MaxDeliver); n++ {
+		budget += b.nakDelay(n)
+	}
+	if budget < 15*time.Minute {
+		t.Fatalf("default retry budget = %v over %d deliveries, want >= 15m", budget, cfg.JetStream.MaxDeliver)
+	}
+}
+
 func TestCloseBudget(t *testing.T) {
 	c := newConn(nil, nil, Config{DrainTimeout: time.Second})
 	if got := c.closeBudget(context.Background()); got != time.Second {

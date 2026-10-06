@@ -348,9 +348,11 @@ if checker, ok := sb.(natskit.StreamChecker); ok { // фейки шины стр
 ## DLQ / NAK
 
 Poison-обработка настраивается через ENV (`NATS_JS_MAX_DELIVER`,
-`NATS_JS_NAK_BACKOFF`, `NATS_JS_DLQ_SUBJECT` — см.
-[configuration.md](configuration.md)), не в коде. Обработчик просто возвращает
-ошибку — остальное делает кит.
+`NATS_JS_NAK_BACKOFF`, `NATS_JS_NAK_MAX_BACKOFF`, `NATS_JS_DLQ_SUBJECT` — см.
+[configuration.md](configuration.md)), не в коде. Обработчик возвращает ошибку и
+не логирует её — остальное делает кит: `error`-запись с `subject` и `trace_id`,
+`Nak` с растущей задержкой (при дефолтах ретраи идут 15 минут), по исчерпании —
+DLQ и `Term`.
 
 Ошибку, которую ретраить бессмысленно (неизвестная схема, чужой тип события),
 обработчик помечает `natskit.ErrTerminal` — сообщение уходит в DLQ и получает
@@ -442,8 +444,10 @@ sub, err := bus.Subscribe(ctx, "orders.>", func(ctx context.Context, payload []b
 
 ## Обработка ошибок и паник
 
-- Обработчик вернул ошибку: Core логирует (кроме `context.Canceled`), сообщение
-  уже сконсюмлено; JetStream делает `Nak`/`NakWithDelay` (ретрай).
+- Обработчик вернул ошибку: кит пишет `error`-запись `natskit: handler error` /
+  `natskit: jetstream handler error` с `subject`, `err` и `trace_id` (кроме
+  `context.Canceled`) — обработчик ту же ошибку в лог не пишет. Core: сообщение
+  уже сконсюмлено; JetStream: `NakWithDelay` с растущей задержкой (ретрай).
 - Обработчик вернул ошибку, обёрнутую `natskit.ErrTerminal`: JetStream — DLQ +
   `Term` без ретраев; Core — обычная ошибка обработчика.
 - Обработчик паникнул: recover ловит, логирует стек, подписчик продолжает жить.

@@ -22,11 +22,10 @@ blocked-by: —
   S11 (бизнес-метрики с проверкой записи); что он снимает и меняет на bump — «Handoff».
 - **Код китов:**
   - authnkit: `authnkit/module.go:26` — `NewHS256JWT` без iss/aud, хотя опции есть;
-  - natskit: `natskit/jetstream.go:545-599`, `natskit/config.go:50-52`;
   - httpclient: `httpclient/client.go:163`;
   - остановка и пробы: `httpkit/module.go:153-157`, `httpkit/health.go:77-94`,
     `healthkit/healthkit.go:55`;
-  - прочее: `logkit/attrs.go:11`, `config/loader.go`, `config/README.md:74`.
+  - logkit: `logkit/attrs.go:11`.
 - **Правила шага:** README и `docs/` кита — тем же коммитом (`make envdoc-check`); breaking — `!` и
   `BREAKING CHANGE:`. Новая зависимость в `go.mod` не нужна ни одному шагу.
 
@@ -69,10 +68,12 @@ blocked-by: —
   `fx.Provide(context.Background)`. Проверка: `go test -race ./config/` → PASS;
   `grep -rn "context" config/` → пусто
   - Подтверждено: PASS, grep пуст; граф README без ctx — `TestModule_AppConfigWithoutCtxInGraph`
-- [ ] **AC6** — Сообщение JetStream переживает 15-секундный сбой зависимости обработчика при
+- [x] **AC6** — Сообщение JetStream переживает 15-секундный сбой зависимости обработчика при
   дефолтах. `ErrTerminal` уходит в dead сразу. ERROR `jetstream message dead` несёт `stream_seq`.
   Бюджет ретраев по умолчанию назван в доке. Проверка:
   `M/kits-audit/correctness-security/run.sh <rev> nats` → E15 PASS
+  - Подтверждено: E15 (5 доставок, обработано 1), E16 PASS; `stream_seq` — `…MaxDeliverDLQ`, бюджет
+    ≥ 15 мин — `TestNakDelay_DefaultBudgetCoversFifteenMinutes`, `ErrTerminal` — `…SkipsRetries`
 - [ ] **AC7** — Метрики otelhttp у клиента не эмитятся; имена метрик объёма после трансляции в
   Prometheus без коллизий. Проверка: `fx-observability/run.sh <rev> obs-unit obs` → KO01 PASS,
   `promname` → 0 коллизий
@@ -130,9 +131,12 @@ blocked-by: —
   - Сделано: `Load(dst, sources...)`, `Source.Apply(dst)`; README и тест графа без ctx
 
 ### High базового аудита и кандидаты C
-- [ ] **S8** — natskit: бюджет ретраев JetStream переживает типичный сбой (KCOR-01); `stream_seq`
+- [x] **S8** — natskit: бюджет ретраев JetStream переживает типичный сбой (KCOR-01); `stream_seq`
   в dead; в доке — правило «обработчик возвращает ошибку, natskit логирует её сам» (C)
   - Проверка: AC6 → выполнен · Закрывает: AC6 · Зависит от: —
+  - Сделано: NAK `1s·2^(n−1)` до 1m, 21 доставка — 15 мин; доставка после `Unsubscribe` не
+    обрабатывается; natskit `-count=2` чист; 5 мутантов (рост, потолок, бюджет, `stream_seq`, флаг)
+    красные
 - [ ] **S9** — httpclient: метрики otelhttp выключены, README и тест без коллизий имён (KOBS-01)
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S2
 - [ ] **S10** — httpkit, остановка: фаза дренажа с `/ready` 503 (C), дедлайн HTTP из остатка бюджета
@@ -147,16 +151,10 @@ blocked-by: —
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: —
 
 ### Релиз
-- [ ] **S13** — Релиз:
-  - корневые README и CLAUDE.md сверены с API;
-  - `make test-full` и `make gate-clean`;
-  - apidiff и env-diff против v1.2.0;
-  - сборка шаблона на HEAD через `replace` в своём worktree: каждая ошибка сборки — строкой
-    Breaking;
-  - тег `v1.3.0` локально.
-
-  Push `main` и тега — дирижёр после PASS валидатора партии; затем план удаляется отдельным
-  `chore(plan)`.
+- [ ] **S13** — Релиз: корневые README и CLAUDE.md сверены с API; `make test-full` и `make gate-clean`;
+  apidiff и env-diff против v1.2.0; сборка шаблона на HEAD через `replace` в своём worktree (каждая
+  ошибка сборки — строкой Breaking); тег `v1.3.0` локально. Push `main` и тега — дирижёр после PASS
+  валидатора партии; затем план удаляется отдельным `chore(plan)`
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S3, S6, S7, S8, S9, S10, S11, S12
 
 ## Решения
@@ -165,48 +163,42 @@ blocked-by: —
   статический страж `internal/otelkit`: код инициализации пакета (`var`, `init()`, `sync.Once*`) — шов,
   функция, метод, значение функции пакета; замыкание конструктора fx — нет; не тест второго
   провайдера — страж видит все пакеты, а не перечень китов.
-- **metrictest.** Путь — по источнику `Meter`, у каждого один способ. Переданный (бизнес-метрики,
-  провайдер telemetry в boot-тесте) — `NewProvider()`: провайдер теста, снимок без дельт, параллельно
-  и при `-count`. Глобальный (киты) — провайдер процесса: его ставит первый `Collect`, не импорт (иначе
-  импорт ради `NewProvider` делал пустой проверку графа); цена — записи до первого `Collect` не видны.
-  SDK-провайдер до первого `Collect` и подмена после роняют его. `Get` — ровно эти labels,
-  `Find`/`Value` — фильтр; `Sub` оставляет новую серию и с нулём, gauge — текущим. Повтор: тесты
-  снимков — на `NewProvider`, UpDownCounter процесса — labels с номером прогона. Коллизии — своя
-  трансляция `UnderscoreEscapingWithSuffixes` с таблицами единиц otlptranslator (сверка вне репо — 0
-  расхождений); ряды гистограммы не сверяет — сказано в доке. Свой провайдер — у `internal/otelkit`
-  и `telemetry`.
+- **metrictest.** Путь — по источнику `Meter`, у каждого один способ: переданный (бизнес-метрики,
+  провайдер telemetry в boot-тесте) — `NewProvider()`, снимок без дельт, параллельно и при `-count`;
+  глобальный (киты) — провайдер процесса, его ставит первый `Collect`, не импорт (иначе импорт делал
+  пустой проверку графа); записи до него не видны, SDK-провайдер до него и подмена после его роняют.
+  `Get` — ровно эти labels, `Find`/`Value` — фильтр; `Sub` оставляет новую серию и с нулём, gauge —
+  текущим; повтор — снимки на `NewProvider`, UpDownCounter процесса — labels прогона. Коллизии —
+  `UnderscoreEscapingWithSuffixes` с таблицами otlptranslator (вне репо — 0 расхождений), без рядов
+  гистограммы. Свой провайдер — у `internal/otelkit` и `telemetry`.
 - **Аудит.** `Entry.Enrich(ctx)` ядра auditkit зовут pgstore, `audittest` и свой `Logger` до
   `Validate`. Ключ IP — из `internal/`, auditkit не импортирует httpkit.
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его, base64url — нет (`logkit-redact-gaps`).
   SHA-256, а не Argon2id: полная энтропия. Поиск — по хешу в SQL, в памяти — `subtle`. `NewToken`
   без ошибки: `crypto/rand.Read` с Go 1.24 её не возвращает.
 - **Сессии.**
-  - Раскладка: `authnkit/session` — `Store`, `Token`, `Config`, ошибки; `session/pgstore` —
-    хранилище с метриками (их пишет хранилище, как у auditkit и bruteforcekit), миграции, `Module`,
-    очистка; `testkit/sessiontest` — фейк и набор `Run`.
+  - Раскладка: `authnkit/session` — `Store`, `Token`, `Config`, ошибки; `session/pgstore` — хранилище
+    с метриками (как auditkit, bruteforcekit), миграции, `Module`, очистка; `testkit/sessiontest`.
   - Ротация — один оператор: условный `UPDATE … WHERE used_at IS NULL AND revoked_at IS NULL` и
-    вставка следующего токена в `WITH`, Transactor не нужен; срок следующего — `min(now + IdleTTL,
-    срок сессии)`.
-  - Повтор использованного токена — отзыв сессии и `*ReusedError` (subject и сессия — для аудита),
-    без окна прощения. `Rotate` в транзакции — `ErrInTx`, как `Attempt` bruteforcekit: откат
-    вызывающего не отменяет отзыв. `Issue`, `Revoke`, `RevokeAll` — в транзакции из ctx.
-  - Время — часы приложения (`WithClock`, `clockkit.Clock` из графа): набор двигает время
-    одинаково для фейка и Postgres; цена — расхождение часов реплик (NTP).
-  - Старт — таблица версий против последней миграции кита (`ErrSchema` с подсказкой) после
-    `pgkit.Migrated`; образец для KFX-02. Очистка — по абсолютному сроку: отозванные сессии живут
-    до него, повтор их токенов виден.
-  - Метрики `authn_session_*{result|reason}`; конструктор без fx — для CLI; дефолты
-    `SESSION_IDLE_TTL` 168h и `SESSION_ABSOLUTE_TTL` 720h (не больше прежних 720 ч).
-  - Stateless refresh JWT удалён — одна механика refresh (его брали шаблон и тест `oidckit`);
-    `typ` остаётся у access.
+    вставка следующего токена в `WITH`; срок следующего — `min(now + IdleTTL, срок сессии)`.
+  - Повтор использованного токена — отзыв сессии и `*ReusedError` (для аудита), без окна прощения;
+    `Rotate` в транзакции — `ErrInTx` (откат не отменяет отзыв); `Issue`, `Revoke`, `RevokeAll` — в
+    транзакции из ctx. Время — часы приложения (`WithClock`); цена — расхождение часов реплик.
+  - Старт — таблица версий против последней миграции кита (`ErrSchema`) после `pgkit.Migrated`.
+    Очистка — по абсолютному сроку: повтор токенов отозванной сессии виден до него.
+  - Метрики `authn_session_*{result|reason}`; дефолты `SESSION_IDLE_TTL` 168h, `SESSION_ABSOLUTE_TTL`
+    720h. Stateless refresh JWT удалён — одна механика refresh; `typ` остаётся у access.
 - **config.** `Load(dst, sources...)` и `Source.Apply(dst)` без ctx. Удалённый источник сам
   ограничивает свой I/O. ctx в графе даёт любому конструктору вечный контекст (FX-10).
 - **natskit.**
-  - Задержка NAK растёт с `NumDelivered` до потолка. Дефолты покрывают не меньше 15 минут:
-    failover Postgres, выкатка соседа (E15: сообщение терялось через ≈10 с).
-  - Term — только `ErrTerminal` и исчерпанный бюджет.
+  - Задержка NAK — `NATS_JS_NAK_BACKOFF·2^(n−1)` до `NATS_JS_NAK_MAX_BACKOFF` (1m), `MaxDeliver` 21:
+    15 минут — failover Postgres, выкатка соседа (E15: сообщение терялось через ≈10 с); после
+    восстановления — не позже минуты. Потолок ниже начала — постоянная задержка: старый конфиг цел.
+  - Term — только `ErrTerminal` и исчерпанный бюджет; dead и dlq-ошибка несут `stream_seq`.
   - Правило канона: обработчик возвращает ошибку и не логирует её — natskit пишет ERROR с
     `trace_id` и subject (KO20).
+  - `Unsubscribe` ставит флаг, callback его сверяет: pull-подписку JetStream nats.go снимает
+    асинхронно (флак R5). Имена стримов тестов — с номером прогона, `-count=2` чист.
 - **httpclient.** Метрики otelhttp выключаются через noop `MeterProvider` у транспорта; спаны попытки
   остаются. Длительность попытки видна в спане, повторы считает `http_client_retry_attempts_total`.
   Переименовать метрику кита — breaking и хуже.
@@ -264,7 +256,8 @@ blocked-by: —
   - `JWT_REFRESH_TTL` → `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_CLEANUP_INTERVAL`;
   - `JWT_ISSUER`, `JWT_AUDIENCE`; `JWT_PREVIOUS_SECRET` — при ротации;
   - конечный `OUTBOX_MAX_ATTEMPTS`;
-  - `HTTP_SHUTDOWN_TIMEOUT` и `HTTP_SHUTDOWN_DRAIN_DELAY`, бюджет ретраев `NATS_JS_*`.
+  - `HTTP_SHUTDOWN_TIMEOUT` и `HTTP_SHUTDOWN_DRAIN_DELAY`; бюджет ретраев — `NATS_JS_MAX_DELIVER` 21,
+    `NATS_JS_NAK_MAX_BACKOFF` 1m.
 
 **Аннотация v1.3.0:** первая половина (гейт, B1–B3) — заготовка в материалах программы
 `/home/mm/.cache/stit-audit-program/annotation-v1.3.0.md`; вторая — по шагам этого плана в «Где мы
@@ -273,10 +266,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап S1–S7 принят (`M/validation-harden-authn-release-A.md`, перепроверка `cd654a7` — PASS),
-остатки R1–R4 закрыты, R5 — в S8. Дальше S8 (natskit). Хвост для S8:
-`TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
-(1 прогон из 4), а дока обещает «снимает интерес сразу»; natskit упал в 1 из 7 прогонов гейта
-(тест не записан), при `-count=2` — 8 давних падений JetStream-тестов (N10).
+остатки R1–R5 закрыты (R5 — в S8). S8 сделан; дальше S9 (httpclient), затем S10–S12 и релиз S13.
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
@@ -298,3 +288,7 @@ blocked-by: —
   `Cleanup`, `Module`, `authn_session_*`; `testkit/sessiontest`: фейк `New`/`Active`, `RunContract`.
 - Breaking — config: `Load(ctx, dst, …)` → `Load(dst, …)`, `Source.Apply(ctx, dst)` → `Apply(dst)`
   → убрать ctx и `fx.Provide(context.Background)`; свой `Source` с I/O ограничивает время сам.
+- Поведение — natskit: задержка NAK растёт от `NATS_JS_NAK_BACKOFF` вдвое до `NATS_JS_NAK_MAX_BACKOFF`
+  (1m), `NATS_JS_MAX_DELIVER` по умолчанию 21 — ретраи 15 минут, а не ≈10 с; ERROR `jetstream
+  message dead` несёт `stream_seq`; доставку после `Unsubscribe` обработчик не получает.
+- Изменения — natskit: `JetStreamConfig.NakMaxBackoff` (`NATS_JS_NAK_MAX_BACKOFF`).
