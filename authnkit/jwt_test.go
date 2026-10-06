@@ -410,6 +410,14 @@ func TestHS256JWT_IssuerAndAudience(t *testing.T) {
 	if _, err := otherAudience.Parse(ctx, multiTok); err != nil {
 		t.Fatalf("intersecting audience rejected: %v", err)
 	}
+	// Своим считается токен для любого значения JWT_AUDIENCE, а не только для первого.
+	secondTok, err := otherAudience.SignAccess(ctx, map[string]any{"sub": "u"})
+	if err != nil {
+		t.Fatalf("SignAccess: %v", err)
+	}
+	if _, err := multi.Parse(ctx, secondTok); err != nil {
+		t.Fatalf("token for the second configured audience rejected: %v", err)
+	}
 }
 
 // WithClock(nil) не подсовывает nil-часы вместо clockkit.Real ни одному конструктору.
