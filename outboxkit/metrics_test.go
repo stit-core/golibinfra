@@ -40,6 +40,23 @@ func TestRegisterBacklogGauges_ObservesSnapshot(t *testing.T) {
 	}
 }
 
+// Пустая очередь — серия инстанса с нулями, а не её отсутствие: алерт absent() не путает здоровый
+// инстанс с пропавшим.
+func TestRegisterBacklogGauges_EmptyQueueIsZero(t *testing.T) {
+	collect := metricsSince(t)
+	reg, err := outboxkit.RegisterBacklogGauges("orders", &fakeRepo{})
+	if err != nil {
+		t.Fatalf("RegisterBacklogGauges: %v", err)
+	}
+	t.Cleanup(func() { _ = reg.Unregister() })
+	rm := collect()
+	for _, name := range []string{"outbox_lag_seconds", "outbox_pending_count"} {
+		if pts := rm.Find(name, "instance", "orders"); len(pts) != 1 || pts[0].Value != 0 {
+			t.Errorf("%s of an empty queue: %v, want one zero point", name, pts)
+		}
+	}
+}
+
 // Сбой снимка не валит экспорт, но и не исчезает молча: иначе алерт на lag не
 // отличит «нет отставания» от «снимок не берётся».
 func TestRegisterBacklogGauges_ErrorCounted(t *testing.T) {

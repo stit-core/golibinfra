@@ -142,7 +142,7 @@ func withMigrator(ctx context.Context, dsn string, lockTimeout time.Duration, sr
 		if ctx.Err() != nil {
 			err = interruptedBy(ctx, err)
 		}
-		return fmt.Errorf("pgkit: migrate source %q: connect: %w", src.Name, err)
+		return fmt.Errorf("pgkit: migrate source %q: open: %w", src.Name, err)
 	}
 	m, err := migrate.NewWithInstance("iofs", srcDrv, "pgx5", dbDrv)
 	if err != nil {

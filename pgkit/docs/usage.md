@@ -223,7 +223,10 @@ err = pgkit.MigrateUpAll(ctx, dsn, cfg.LockTimeout, auditpg.Migrations, outboxpg
 оператор миграции. `MigrateUpAll(context.Background(), …)` из CLI будет ждать lock
 бесконечно — оборачивай в `context.WithTimeout`. `lockTimeout` (> 0) — `lock_timeout`
 операторов миграции: команда миграций берёт `cfg.LockTimeout`, чтобы семантика совпадала с
-`MigrateModule`.
+`MigrateModule`. Тот же `lock_timeout` ограничивает и advisory-lock самого golang-migrate:
+второй одновременный `MigrateUp`/`MigrateDown` того же источника падает через него (`open: …
+lock timeout`, SQLSTATE 55P03); одновременные прогоны с ожиданием друг друга — `MigrateUpAll`
+и `MigrateModule`, их lock ждёт только дедлайна.
 
 ## Read-replica
 

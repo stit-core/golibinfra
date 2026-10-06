@@ -134,8 +134,9 @@ func (r *registry) Config() huma.Config {
 }
 
 // CheckRoutes — проверка старта: METHOD+path у операций не повторяется и не занят маршрутом
-// chi мимо huma.Register (в любом порядке регистрации), Public — без Security, схема Security —
-// из components. Если в components.securitySchemes есть схема, у каждой операции, в том числе
+// chi мимо huma.Register (в любом порядке регистрации), Public — без Security, в Security есть
+// альтернатива со схемой (открытая без credentials операция — Public), схема Security — из
+// components. Если в components.securitySchemes есть схема, у каждой операции, в том числе
 // скрытой, — Security или Public, а маршрут chi мимо huma.Register (кроме /docs, /openapi.*,
 // /schemas) — в PublicRoutes. Module зовёт её на OnStart, после всех Invoke; маршрут,
 // добавленный позже, она не видит. Ошибка — ErrRoutes с именами операций и маршрутов.
@@ -158,6 +159,8 @@ func (s *Server) CheckRoutes() error {
 			problems = append(problems, fmt.Sprintf("operation %s is httpkit.Public but has Security", name))
 		case guarded && !public && len(op.Security) == 0:
 			problems = append(problems, fmt.Sprintf("operation %s has no Security and is not httpkit.Public", name))
+		case len(op.Security) > 0 && !slices.ContainsFunc(op.Security, func(alt map[string][]string) bool { return len(alt) > 0 }):
+			problems = append(problems, fmt.Sprintf("operation %s has only empty Security alternatives: mark it httpkit.Public", name))
 		}
 		for _, req := range op.Security {
 			for scheme := range req {

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -143,9 +144,18 @@ func TestHumaAuth_ChallengeWithoutKitHook(t *testing.T) {
 }
 
 // Регрессия KSEC-13 (H07): HEAD на GET-маршрутах, /health и /ready тоже, — как GET без тела; у
-// маршрута без GET — 405.
+// маршрута без GET — 405; свой HEAD маршрута остаётся его.
 func TestModule_HeadOnGetRoutes(t *testing.T) {
+	type headOut struct {
+		Own string `header:"X-Head"`
+	}
 	srv := startApp(t, fx.Invoke(func(api huma.API) {
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "file", Method: http.MethodGet, Path: "/files/{id}"}),
+			func(context.Context, *struct{}) (*struct{ Body string }, error) {
+				return &struct{ Body string }{Body: "file"}, nil
+			})
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "file-head", Method: http.MethodHead, Path: "/files/{id}"}),
+			func(context.Context, *struct{}) (*headOut, error) { return &headOut{Own: "own"}, nil })
 		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "item", Method: http.MethodGet, Path: "/items/{id}"}),
 			func(context.Context, *struct {
 				ID string `path:"id"`
@@ -167,22 +177,27 @@ func TestModule_HeadOnGetRoutes(t *testing.T) {
 	if resp.StatusCode != http.StatusMethodNotAllowed || !slices.Equal(resp.Header.Values("Allow"), []string{http.MethodPost}) {
 		t.Errorf("HEAD on a POST route: %d, Allow %v; want 405 and [POST]", resp.StatusCode, resp.Header.Values("Allow"))
 	}
+	if resp := do(t, srv, http.MethodHead, "/files/1", nil); resp.Header.Get("X-Head") != "own" {
+		t.Errorf("HEAD on a route with its own HEAD: %d %v, want its own handler", resp.StatusCode, resp.Header)
+	}
 }
 
 // Регрессия KSEC-15 (H35): хендлер дольше HTTP_REQUEST_TIMEOUT — у ctx дедлайн, клиент получает
-// 503 problem+json к дедлайну, а не обрыв по WriteTimeout; поток SSE идёт без дедлайна.
+// 503 problem+json к дедлайну, а не обрыв по WriteTimeout; поток SSE (GET) идёт без дедлайна, а
+// Accept: text/event-stream на записи дедлайна не снимает.
 func TestModule_RequestDeadline(t *testing.T) {
 	t.Setenv("HTTP_WRITE_TIMEOUT", "2s")
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "200ms")
 	var hasDeadline atomic.Bool
+	slow := func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+		_, ok := ctx.Deadline()
+		hasDeadline.Store(ok)
+		time.Sleep(600 * time.Millisecond)
+		return &struct{}{}, nil
+	}
 	srv := startApp(t, fx.Invoke(func(api huma.API) {
-		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "slow", Method: http.MethodGet, Path: "/slow"}),
-			func(ctx context.Context, _ *struct{}) (*struct{}, error) {
-				_, ok := ctx.Deadline()
-				hasDeadline.Store(ok)
-				time.Sleep(600 * time.Millisecond)
-				return &struct{}{}, nil
-			})
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "slow", Method: http.MethodGet, Path: "/slow"}), slow)
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "slow-write", Method: http.MethodPost, Path: "/slow"}), slow)
 	}))
 
 	start := time.Now()
@@ -205,14 +220,23 @@ func TestModule_RequestDeadline(t *testing.T) {
 	if resp.StatusCode != http.StatusNoContent || hasDeadline.Load() {
 		t.Errorf("SSE request: %d, ctx deadline %v; want the handler's 204 without a deadline", resp.StatusCode, hasDeadline.Load())
 	}
+	for _, h := range []string{"Accept: text/event-stream", "Upgrade: websocket"} {
+		if resp := do(t, srv, http.MethodPost, "/slow", nil, h); resp.StatusCode != http.StatusServiceUnavailable || !hasDeadline.Load() {
+			t.Errorf("POST with %q: %d, ctx deadline %v; want 503 with a deadline", h, resp.StatusCode, hasDeadline.Load())
+		}
+	}
 }
 
 // Дедлайн пишет 503 только за хендлер, не начавший ответ: начатый ответ дописывается как есть, а
-// запись после 503 хендлеру возвращает http.ErrHandlerTimeout.
+// запись после 503 молча отбрасывается — без ошибки, на которой паникует huma.
 func TestModule_RequestDeadlineKeepsStartedResponse(t *testing.T) {
 	t.Setenv("HTTP_WRITE_TIMEOUT", "2s")
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "100ms")
-	late := make(chan error, 1)
+	type write struct {
+		n   int
+		err error
+	}
+	late := make(chan write, 1)
 	srv := startApp(t, fx.Invoke(func(_ huma.API, s *httpkit.Server) {
 		s.Router().Get("/started", func(w http.ResponseWriter, _ *http.Request) {
 			w.Header().Set("X-Handler", "yes")
@@ -223,8 +247,8 @@ func TestModule_RequestDeadlineKeepsStartedResponse(t *testing.T) {
 		})
 		s.Router().Get("/late", func(w http.ResponseWriter, _ *http.Request) {
 			time.Sleep(300 * time.Millisecond)
-			_, err := w.Write([]byte("late"))
-			late <- err
+			n, err := w.Write([]byte("late"))
+			late <- write{n, err}
 		})
 	}))
 
@@ -232,30 +256,66 @@ func TestModule_RequestDeadlineKeepsStartedResponse(t *testing.T) {
 	if resp.StatusCode != http.StatusOK || resp.Header.Get("X-Handler") != "yes" || bodyString(t, resp) != "partial done" {
 		t.Fatalf("started response: %d %v", resp.StatusCode, resp.Header)
 	}
-	if resp := get(t, srv, "/late"); resp.StatusCode != http.StatusServiceUnavailable {
-		t.Fatalf("late handler: %d, want 503", resp.StatusCode)
+	resp = get(t, srv, "/late")
+	if e := apiErrorOf(t, resp); resp.StatusCode != http.StatusServiceUnavailable || e.Code != "REQUEST_TIMEOUT" {
+		t.Fatalf("late handler: %d %+v, want 503 REQUEST_TIMEOUT", resp.StatusCode, e)
 	}
-	if err := <-late; !errors.Is(err, http.ErrHandlerTimeout) {
-		t.Fatalf("write after the deadline: %v, want http.ErrHandlerTimeout", err)
+	if w := <-late; w.n != len("late") || w.err != nil {
+		t.Fatalf("write after the deadline: %d, %v; want it dropped without an error", w.n, w.err)
+	}
+}
+
+// 503 дедлайна — целый ответ (Content-Length, Connection: close): клиент дочитывает его, пока
+// хендлер ещё работает, — и когда хендлер переживает WriteTimeout, — а не ждёт конца ответа.
+func TestModule_RequestDeadlineResponseIsComplete(t *testing.T) {
+	t.Setenv("HTTP_WRITE_TIMEOUT", "2s")
+	t.Setenv("HTTP_REQUEST_TIMEOUT", "100ms")
+	release := make(chan struct{})
+	srv := startApp(t, fx.Invoke(func(api huma.API) {
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "stuck", Method: http.MethodGet, Path: "/stuck"}),
+			func(context.Context, *struct{}) (*struct{}, error) {
+				<-release
+				return &struct{}{}, nil
+			})
+	}))
+	t.Cleanup(func() { close(release) })
+
+	client := &http.Client{Timeout: 3 * time.Second}
+	resp, err := client.Get("http://" + srv.Addr().String() + "/stuck")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil || resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(string(body), `"REQUEST_TIMEOUT"`) {
+		t.Fatalf("503 body read while the handler runs: %d %q %v; want the whole problem+json", resp.StatusCode, body, err)
+	}
+	if resp.ContentLength != int64(len(body)) || !resp.Close {
+		t.Fatalf("Content-Length %d for %d bytes, Connection: close %v; want a self-delimited response on a closing connection",
+			resp.ContentLength, len(body), resp.Close)
 	}
 }
 
 // Дедлайн — над Idempotency: она держит резерв, пока срезанный хендлер не вернётся, и сохраняет
-// его ответ — повтор с тем же ключом получает результат, а не второе выполнение.
+// его ответ с телом — повтор с тем же ключом получает результат, а не второе выполнение; паники
+// на записи после 503 нет.
 func TestModule_RequestDeadlineKeepsIdempotencyReservation(t *testing.T) {
 	t.Setenv("HTTP_WRITE_TIMEOUT", "2s")
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "100ms")
+	log := logtest.Capture()
+	before := metrictest.Collect(t)
 	var calls atomic.Int32
 	done := make(chan struct{})
 	srv := startApp(t,
+		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
 		fx.Provide(func() httpkit.IdempotencyStore { return httpkit.NewMemoryStore() }),
 		fx.Invoke(func(api huma.API) {
 			huma.Register(api, huma.Operation{OperationID: "charge", Method: http.MethodPost, Path: "/charge", DefaultStatus: http.StatusCreated},
-				func(context.Context, *struct{}) (*struct{}, error) {
+				func(context.Context, *struct{}) (*struct{ Body map[string]string }, error) {
 					calls.Add(1)
 					time.Sleep(300 * time.Millisecond)
 					defer close(done)
-					return &struct{}{}, nil
+					return &struct{ Body map[string]string }{Body: map[string]string{"charge": "ch-1"}}, nil
 				})
 		}))
 	hdr := []string{"Idempotency-Key: charge-1", "Authorization: Bearer alice"}
@@ -274,9 +334,67 @@ func TestModule_RequestDeadlineKeepsIdempotencyReservation(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if resp.StatusCode != http.StatusCreated || resp.Header.Get(httpkit.HeaderIdempotentReplayed) != "true" || calls.Load() != 1 {
-		t.Fatalf("retry after the handler: %d replayed=%q calls=%d; want the stored 201 and one call",
+	if body := bodyString(t, resp); resp.StatusCode != http.StatusCreated || resp.Header.Get(httpkit.HeaderIdempotentReplayed) != "true" ||
+		!strings.Contains(body, `"ch-1"`) || calls.Load() != 1 {
+		t.Fatalf("retry after the handler: %d replayed=%q %s calls=%d; want the stored 201 with its body and one call",
+			resp.StatusCode, resp.Header.Get(httpkit.HeaderIdempotentReplayed), body, calls.Load())
+	}
+	if log.Has(slog.LevelError, "panic recovered") || len(metrictest.Collect(t).Sub(before).Find("http_panics_total")) > 0 {
+		t.Fatalf("a write after the deadline panicked: %v", log.Entries())
+	}
+}
+
+// Ошибка хендлера после дедлайна — не паника: ошибка ctx и APIError доходят до huma без сбоя записи;
+// отказ < 500 Idempotency сохраняет — повтор с ключом его воспроизводит, а не выполняет заново.
+func TestModule_RequestDeadlineLateErrorIsNotAPanic(t *testing.T) {
+	t.Setenv("HTTP_WRITE_TIMEOUT", "2s")
+	t.Setenv("HTTP_REQUEST_TIMEOUT", "100ms")
+	log := logtest.Capture()
+	before := metrictest.Collect(t)
+	var calls atomic.Int32
+	srv := startApp(t,
+		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
+		fx.Provide(func() httpkit.IdempotencyStore { return httpkit.NewMemoryStore() }),
+		fx.Invoke(func(api huma.API) {
+			huma.Register(api, httpkit.Public(huma.Operation{OperationID: "query", Method: http.MethodGet, Path: "/query"}),
+				func(ctx context.Context, _ *struct{}) (*struct{ Body string }, error) {
+					<-ctx.Done()
+					return nil, fmt.Errorf("db: %w", ctx.Err())
+				})
+			huma.Register(api, huma.Operation{OperationID: "reserve", Method: http.MethodPost, Path: "/reserve"},
+				func(ctx context.Context, _ *struct{}) (*struct{ Body string }, error) {
+					calls.Add(1)
+					<-ctx.Done()
+					return nil, httpkit.Error("SOLD_OUT", http.StatusGone, "sold out")
+				})
+		}))
+	served := func(path string) {
+		t.Helper()
+		for range 100 {
+			if _, ok := log.FindFunc(func(e logtest.Entry) bool { return e.Msg == "http" && e.Str("path") == path }); ok {
+				return
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		t.Fatalf("no access-log line for %s", path)
+	}
+
+	if resp := get(t, srv, "/query"); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("ctx error after the deadline: %d, want the 503 of the deadline", resp.StatusCode)
+	}
+	served("/query")
+	hdr := []string{"Idempotency-Key: r-1", "Authorization: Bearer alice"}
+	if resp := do(t, srv, http.MethodPost, "/reserve", nil, hdr...); resp.StatusCode != http.StatusServiceUnavailable {
+		t.Fatalf("APIError after the deadline: %d, want the 503 of the deadline", resp.StatusCode)
+	}
+	served("/reserve")
+	if resp := do(t, srv, http.MethodPost, "/reserve", nil, hdr...); resp.StatusCode != http.StatusGone ||
+		resp.Header.Get(httpkit.HeaderIdempotentReplayed) != "true" || calls.Load() != 1 {
+		t.Fatalf("retry: %d replayed=%q calls=%d; want the stored 410 and one call",
 			resp.StatusCode, resp.Header.Get(httpkit.HeaderIdempotentReplayed), calls.Load())
+	}
+	if log.Has(slog.LevelError, "panic recovered") || len(metrictest.Collect(t).Sub(before).Find("http_panics_total")) > 0 {
+		t.Fatalf("an error after the deadline panicked: %v", log.Entries())
 	}
 }
 
@@ -368,19 +486,32 @@ func TestRecovery_PanicAfterHeaderIsAbort(t *testing.T) {
 }
 
 // Регрессия KSEC-08 (H15): операцию открывает только её схема — extractor каждой схемы
-// альтернативы, альтернатива целиком; пустая альтернатива открывает без credentials.
+// альтернативы, альтернатива целиком, ctx схемы — следующей схеме альтернативы; отказ бэкенда
+// любой альтернативы — 503. Пустая альтернатива открывает без credentials и идёт последней:
+// валидный токен даёт личность, где бы `{}` ни стоял, а отказ бэкенда — 503, не аноним.
 func TestModule_AuthOpensOnlyByOperationScheme(t *testing.T) {
+	type roleKey struct{}
 	user := func(r *http.Request) (context.Context, error) {
-		if r.Header.Get("Authorization") == "Bearer user" {
+		switch r.Header.Get("Authorization") {
+		case "Bearer user":
 			return httpkit.ContextWithSubject(r.Context(), "user"), nil
+		case "Bearer down":
+			return nil, errors.Join(errors.New("jwks"), httpkit.ErrAuthUnavailable)
 		}
 		return nil, errors.New("no bearer")
 	}
 	admin := func(r *http.Request) (context.Context, error) {
-		if r.Header.Get("X-Admin-Key") == "k" {
-			return r.Context(), nil
+		switch r.Header.Get("X-Admin-Key") {
+		case "k":
+			return context.WithValue(r.Context(), roleKey{}, "admin"), nil
+		case "down":
+			return nil, errors.Join(errors.New("key store"), httpkit.ErrAuthUnavailable)
 		}
 		return nil, errors.New("no admin key")
+	}
+	type identity struct {
+		Subject string `header:"X-Subject"`
+		Role    string `header:"X-Role"`
 	}
 	srv := startApp(t,
 		httpkit.ProvideSecurityScheme(func() []httpkit.SecuritySchemeEntry {
@@ -392,29 +523,42 @@ func TestModule_AuthOpensOnlyByOperationScheme(t *testing.T) {
 		fx.Invoke(func(api huma.API) {
 			reg := func(id, path string, security ...map[string][]string) {
 				huma.Register(api, huma.Operation{OperationID: id, Method: http.MethodPost, Path: path, Security: security},
-					func(context.Context, *struct{}) (*struct{}, error) { return &struct{}{}, nil })
+					func(ctx context.Context, _ *struct{}) (*identity, error) {
+						role, _ := ctx.Value(roleKey{}).(string)
+						return &identity{Subject: httpkit.SubjectFrom(ctx), Role: role}, nil
+					})
 			}
 			reg("wipe", "/admin/wipe", map[string][]string{"AdminKey": {}})
 			reg("either", "/either", map[string][]string{"Bearer": {}}, map[string][]string{"AdminKey": {}})
 			reg("both", "/both", map[string][]string{"Bearer": {}, "AdminKey": {}})
 			reg("optional", "/optional", map[string][]string{"Bearer": {}}, map[string][]string{})
+			reg("optional-first", "/optional-first", map[string][]string{}, map[string][]string{"Bearer": {}})
 		}))
 	bearer, key := "Authorization: Bearer user", "X-Admin-Key: k"
 	for _, c := range []struct {
-		path    string
-		headers []string
-		want    int
+		path          string
+		headers       []string
+		want          int
+		subject, role string
 	}{
-		{"/admin/wipe", []string{bearer}, http.StatusUnauthorized},
-		{"/admin/wipe", []string{key}, http.StatusNoContent},
-		{"/either", []string{bearer}, http.StatusNoContent},
-		{"/either", []string{key}, http.StatusNoContent},
-		{"/both", []string{bearer}, http.StatusUnauthorized},
-		{"/both", []string{bearer, key}, http.StatusNoContent},
-		{"/optional", nil, http.StatusNoContent},
+		{"/admin/wipe", []string{bearer}, http.StatusUnauthorized, "", ""},
+		{"/admin/wipe", []string{key}, http.StatusNoContent, "", "admin"},
+		{"/either", []string{bearer}, http.StatusNoContent, "user", ""},
+		{"/either", []string{key}, http.StatusNoContent, "", "admin"},
+		{"/either", []string{"X-Admin-Key: down"}, http.StatusServiceUnavailable, "", ""},
+		{"/both", []string{bearer}, http.StatusUnauthorized, "", ""},
+		{"/both", []string{bearer, key}, http.StatusNoContent, "user", "admin"},
+		{"/optional", nil, http.StatusNoContent, "", ""},
+		{"/optional", []string{"Authorization: Bearer bad"}, http.StatusNoContent, "", ""},
+		{"/optional", []string{bearer}, http.StatusNoContent, "user", ""},
+		{"/optional", []string{"Authorization: Bearer down"}, http.StatusServiceUnavailable, "", ""},
+		{"/optional-first", []string{bearer}, http.StatusNoContent, "user", ""},
+		{"/optional-first", nil, http.StatusNoContent, "", ""},
 	} {
-		if resp := do(t, srv, http.MethodPost, c.path, nil, c.headers...); resp.StatusCode != c.want {
-			t.Errorf("POST %s %v: %d, want %d", c.path, c.headers, resp.StatusCode, c.want)
+		resp := do(t, srv, http.MethodPost, c.path, nil, c.headers...)
+		if resp.StatusCode != c.want || resp.Header.Get("X-Subject") != c.subject || resp.Header.Get("X-Role") != c.role {
+			t.Errorf("POST %s %v: %d subject=%q role=%q, want %d subject=%q role=%q", c.path, c.headers,
+				resp.StatusCode, resp.Header.Get("X-Subject"), resp.Header.Get("X-Role"), c.want, c.subject, c.role)
 		}
 	}
 }

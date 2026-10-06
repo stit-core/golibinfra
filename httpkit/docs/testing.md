@@ -96,7 +96,7 @@ httpkit.AccessLog(log, "/ready")(handler).ServeHTTP(rec, req)
 `unmatched`, `method` — стандартный метод или `other`.
 
 Имя спана проверяется `tracetest.NewSpanRecorder` c `otel.SetTracerProvider`:
-запрос через chi-роутер с `OTel()` и `Metrics()` даёт спан `GET /users/{id}` и
+запрос через chi-роутер с `OTel(false)` и `Metrics()` даёт спан `GET /users/{id}` и
 атрибуты `http.route`, `request_id`.
 
 ## Идемпотентность

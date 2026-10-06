@@ -61,6 +61,9 @@ label дал бы серию на сущность. Гистограммы `_sec
 | `outbox_pending_count` | Int64ObservableGauge | `instance`, `subject`¹ | Количество неопубликованных (не-dead) событий инстанса (по шаблону — сумма). |
 | `outbox_backlog_errors_total` | Int64Counter | `instance` | Снимки backlog'а, завершившиеся ошибкой (gauge'и за этот сбор не эмитятся). |
 
+Серия инстанса без шаблона есть и у пустой очереди — с нулями; по шаблону серии есть только у
+шаблонов с неопубликованными событиями.
+
 Эти сигналы появляются, если репозиторий реализует `outboxkit.BacklogReporter`
 (`Backlog(ctx) ([]SubjectBacklog, error)`) — его реализует `pgstore.Store` — **и**
 callback зарегистрирован:

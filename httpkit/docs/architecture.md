@@ -107,7 +107,7 @@ chi применяет middleware в порядке регистрации: пе
 | 8 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
 | 9 | `RateLimit` | если `RateLimit.RPS > 0` | bucket на клиента (IPv6 — по `/64`); дешёвый отказ до тяжёлой работы |
 | 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом; лимит фиксируется на первом чтении — операция huma ставит свой `MaxBodyBytes` |
-| 11 | дедлайн запроса | если `RequestTimeout > 0` | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
+| 11 | дедлайн запроса | если `RequestTimeout > 0`; GET-поток (SSE, upgrade) — без него | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ, запись хендлера после него отбрасывается; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
 | 12 | HEAD как GET | всегда | HEAD без своего маршрута идёт в GET-маршрут (RFC 9110 §9.1), тело net/http не отправляет |
 | 13 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 
@@ -231,11 +231,13 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 схем (`SecuritySchemeEntry.Extract`): операция открыта, если прошла одна из её альтернатив
 целиком — каждая схема альтернативы, в порядке имён, и личность в ctx — от неё; Bearer не
 открывает операцию под `AdminKey`. Пустая альтернатива (`Security: [{bearer}, {}]`) открывает
-операцию и без credentials — необязательная аутентификация OpenAPI. Чтобы
-забытый `Security` не открывал операцию молча, открытость явная: когда в
-`components.securitySchemes` есть схема, у каждой операции — `Security` со схемой из
+операцию и без credentials — необязательная аутентификация OpenAPI; она идёт последней, где
+бы ни стояла: прошедшие схему credentials дают личность, отказ бэкенда схемы — 503, остальное —
+запрос без личности. Чтобы забытый `Security` не открывал операцию молча, открытость явная:
+когда в `components.securitySchemes` есть схема, у каждой операции — `Security` со схемой из
 `components` или пометка `httpkit.Public(op)` (в `Operation.Metadata`); пустой `Security`
-публичным не считается. Так сделаны `/health` и `/ready`. Без схем в графе (сервис без
+публичным не считается, а `Security` из одних `{}` — ошибка старта: открытая операция —
+только `Public`. Так сделаны `/health` и `/ready`. Без схем в графе (сервис без
 аутентификации) пометка не нужна.
 
 Ошибка extractor'а не уходит клиенту: `401 UNAUTHORIZED` (причина — в лог на
@@ -255,10 +257,10 @@ Debug), `*APIError` от extractor'а сохраняет свой статус �
 `/users/{userID}` для chi — один маршрут, второй молча заменил бы первый), маршрут мимо
 `huma.Register` на METHOD+path операции — в любом порядке: chi оставляет маршруту последний
 хендлер, и чужой открыл бы операцию мимо `HumaAuth` (хендлер операции кит ставит своего
-типа и по нему отличает), `Public` с `Security`; при схеме в графе — операция без
-`Security` и без `Public`, схема в `Security` вне `components`, маршрут мимо `huma.Register`
-(`Router().Get`, `Mount`, `api.Adapter().Handle` — middleware API huma, а с ним
-`HumaAuth`, вешает только `huma.Register`), путь которого не в `PublicRoutes`, и строка
+типа и по нему отличает), `Public` с `Security`, `Security` из одних `{}`; при схеме в
+графе — операция без `Security` и без `Public`, схема в `Security` вне `components`, маршрут
+мимо `huma.Register` (`Router().Get`, `Mount`, `api.Adapter().Handle` — middleware API huma, а с
+ним `HumaAuth`, вешает только `huma.Register`), путь которого не в `PublicRoutes`, и строка
 `PublicRoutes` без такого маршрута. Маршруты документации huma (`/docs`, `/openapi.*`,
 `/schemas`) — свои у кита. Маршрут, добавленный после проверки — в `OnStart` позже хука
 сервера или из хендлера, — она не видит: маршруты регистрируют в Invoke или конструкторе.

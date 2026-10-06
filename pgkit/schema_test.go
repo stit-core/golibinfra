@@ -43,6 +43,16 @@ func TestCheckSchema(t *testing.T) {
 	if err := pgkit.CheckSchema(ctx, db, src); err != nil {
 		t.Fatalf("CheckSchema after migrations: %v", err)
 	}
+	// Схема новее кода — откат релиза после миграции вперёд: старт не падает.
+	if _, err := db.Exec(ctx, `UPDATE schema_migrations_kitschema SET version = 3`); err != nil {
+		t.Fatal(err)
+	}
+	if err := pgkit.CheckSchema(ctx, db, src); err != nil {
+		t.Fatalf("CheckSchema of a schema ahead of the code: %v, want nil", err)
+	}
+	if _, err := db.Exec(ctx, `UPDATE schema_migrations_kitschema SET version = 2`); err != nil {
+		t.Fatal(err)
+	}
 
 	// Срез, а не map: поломки копятся, и dirty проверяется на последней версии, до остальных.
 	for _, c := range []struct{ name, fix, want string }{

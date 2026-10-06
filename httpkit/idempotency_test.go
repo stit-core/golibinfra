@@ -549,6 +549,28 @@ func TestIdempotency_AnonymousRequestsAreNotDeduplicated(t *testing.T) {
 	}
 }
 
+// Клиент с одной cookie-сессией — не аноним: его ключ scope'ится cookie, повтор — replay, а
+// чужая cookie с тем же ключом выполняет свой запрос.
+func TestIdempotency_CookieClientIsDeduplicated(t *testing.T) {
+	var calls atomic.Int32
+	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
+	send := func(cookie string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{}`))
+		req.Header.Set("Idempotency-Key", "1")
+		req.Header.Set("Cookie", cookie)
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	send("sid=alice")
+	if rec := send("sid=alice"); rec.Header().Get(HeaderIdempotentReplayed) != "true" || calls.Load() != 1 {
+		t.Fatalf("cookie client retry: replayed=%q calls=%d; want a replay", rec.Header().Get(HeaderIdempotentReplayed), calls.Load())
+	}
+	if rec := send("sid=bob"); rec.Header().Get(HeaderIdempotentReplayed) != "" || calls.Load() != 2 {
+		t.Fatalf("another cookie with the same key: replayed=%q calls=%d; want its own execution", rec.Header().Get(HeaderIdempotentReplayed), calls.Load())
+	}
+}
+
 func TestIdempotency_OversizedResponseNotStored(t *testing.T) {
 	var calls atomic.Int32
 	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {

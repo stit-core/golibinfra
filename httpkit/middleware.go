@@ -174,10 +174,12 @@ var ErrAuthNotConfigured = errors.New("httpkit: auth not configured")
 
 // HumaAuth проверяет операции с непустым Operation().Security extractor'ами их схем (schemes):
 // операция открыта, если прошла одна из её альтернатив целиком — каждая схема альтернативы, в
-// порядке имён, и ctx с личностью — от неё; пустая альтернатива `{}` открывает операцию без
-// credentials. Схема без extractor'а альтернативу не открывает: если открыть нечем, — 500
-// AUTH_NOT_CONFIGURED. 401 несёт WWW-Authenticate по схемам операции; отказ бэкенда любой
-// схемы — 503. Работает на любом huma-адаптере (chi в проде, humatest в тестах потребителя).
+// порядке имён, и ctx с личностью — от неё. Пустая альтернатива `{}` (необязательная
+// аутентификация) идёт последней, в каком бы месте ни стояла: запрос, не прошедший схемы,
+// открыт без личности. Схема без extractor'а альтернативу не открывает: если открыть нечем, —
+// 500 AUTH_NOT_CONFIGURED. 401 несёт WWW-Authenticate по схемам операции; отказ бэкенда любой
+// схемы — 503, и при `{}`: предъявленные credentials не превращаются в анонима. Работает на
+// любом huma-адаптере (chi в проде, humatest в тестах потребителя).
 func HumaAuth(schemes []SecuritySchemeEntry, log logkit.Logger) func(huma.Context, func(huma.Context)) {
 	extractors := make(map[string]AuthExtractor, len(schemes))
 	for _, e := range schemes {
@@ -192,7 +194,12 @@ func HumaAuth(schemes []SecuritySchemeEntry, log logkit.Logger) func(huma.Contex
 			return
 		}
 		var failures []error
+		optional := false
 		for _, alt := range op.Security {
+			if len(alt) == 0 {
+				optional = true
+				continue
+			}
 			authCtx, configured, err := authenticate(requestFrom(ctx), extractors, alt)
 			if !configured {
 				continue
@@ -202,6 +209,10 @@ func HumaAuth(schemes []SecuritySchemeEntry, log logkit.Logger) func(huma.Contex
 				return
 			}
 			failures = append(failures, err)
+		}
+		if optional && !slices.ContainsFunc(failures, func(err error) bool { return errors.Is(err, ErrAuthUnavailable) }) {
+			next(ctx)
+			return
 		}
 		if len(failures) == 0 {
 			log.Error(ctx.Context(), "auth not configured", "operation", op.OperationID)

@@ -21,13 +21,11 @@ blocked-by: —
 - **Потребитель** — шаблон: bump v1.4.0 в `repair-harness` S7 (Handoff — во втором плане).
 - **Правила шага:** README и `docs/` кита — тем же коммитом; breaking — `!`, `BREAKING CHANGE:` и строка заготовки
   аннотации; новых зависимостей нет; киты вне объёма правятся под API тем же коммитом.
-- **Код:** extractor — `httpkit/middleware.go`, `redactURL` — `natskit/conn.go`.
 
 ## Не входит
 - Вторая половина партии 3 — `harden-tests-archkit-release`: fx (KFX-03, -05, -06, KOBS-08), сигналы
   (и httpkit в гейте), фейки, мутанты, `archkit`, гейт, обвязка, доки, повтор экспериментов, релиз.
-- Маршрут после проверки старта httpkit и сырой тег группы timerkit — `backlog.md`; правки шаблона и
-  шлюзов — по аннотации тега; push — дирижёр после PASS валидатора партии.
+- Хвосты — `backlog.md`; правки шаблона и шлюзов — по аннотации тега; push — дирижёр после PASS валидатора партии.
 
 ## Критерии приёмки
 `<rev>` — проверяемый коммит, `<wt>` — worktree на нём; скрипты — от `M/kits-audit/`.
@@ -36,8 +34,7 @@ blocked-by: —
   значением. Проверка: `api-docs/scripts/run-go-experiments.sh <rev> envempty hcprefix` → U4, U5;
   `api-docs/claims-A-exp/run.sh <wt>` (`parseerr`), `api-docs/scripts/claimsB/run.sh <wt>` → U6 21/21 с
   `ErrConfig`; `httpkit-a/run.sh <rev> api` → U01 PASS, U02 — пустое = дефолт
-  - Подтверждено: дерево S1 (`M/exc1/logs/`) — U4 87/87, U5, U6 (13/13, 11/11, `TestKitConfigs_*`), U01; U02 — 31
-    тег
+  - Подтверждено: дерево S1 (`M/exc1/logs/`) — U4 87/87, U5, U6 (13/13, 11/11, `TestKitConfigs_*`), U01; U02 — 31 тег
 - [x] **AC2** — Невалидный конфиг не проходит ни один конструктор (`outboxkit.New`, `NewWorker`,
   `storagekit.Module`, `httpkit.NewServer` — с ошибкой); у `Validate`, нулей и nil-опций одна семантика; `BindAPI`
   без гонки; тик outbox дольше простоя транзакции пула — ошибка старта. Проверка:
@@ -71,7 +68,7 @@ blocked-by: —
   GET-маршрутах; анонимы не делят scope ключа; долгий хендлер — дедлайн ctx и 503 problem+json, не EOF; CORS
   пускает заголовок идемпотентности; panic после заголовка обрывает ответ. Проверка: `httpkit-a/run.sh <rev>
   contract security lifecycle` → H04, H06, H07, H10, H16, H17, H35 PASS
-  - Подтверждено: дерево S8 (`M/exc2/logs/s8-*.log`) — семь PASS (H35: 503 через 200 мс, ctx с дедлайном)
+  - Подтверждено: дерево S8 (`M/exc2/logs/s8-*.log`) — семь PASS; фикс B1 — T2–T5, T8 валидатора чисты (`M/hkc3e`)
 - [x] **AC8** — Край httpkit: операцию открывает только её схема (Bearer не открывает `AdminKey`); extractor —
   один раз на запрос и при отказе бэкенда; `Security` со схемой вне `components` — ошибка старта и без схем в
   графе; trace-context и baggage клиента без явного доверия не принимаются; `ip:port` в XFF даёт ip; тест кладёт
@@ -103,8 +100,7 @@ blocked-by: —
 - [x] **S2** — Конструкторы зовут `Validate`, одна семантика нулей и опций (KAPI-01, -05, -08, KCOR-12)
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: S1
   - Сделано: `51fc02d`; AC2 → PASS; мутанты `M/exc1/mut_s2.py` 18/18; эксперименты правлены под API
-- [x] **S3** — Одна форма API, опции httpclient значением (KAPI-06, KAPI-07, KTST-07, KFX-01, KFX-10;
-  N5 валидатора v1.3.0 — перечень хранилищ `pgstore` в README § Принципы)
+- [x] **S3** — Одна форма API, опции httpclient значением (KAPI-06, -07, KTST-07, KFX-01, -10; N5 валидатора v1.3.0)
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Зависит от: S2
   - Сделано: `4508a58`; AC3 → PASS; мутанты `M/exc1/mut_s3.py` 23/23 (M7 заменён M7b); эксперименты под API
 
@@ -124,8 +120,7 @@ blocked-by: —
 - [x] **S8** — Контракт HTTP httpkit (KCOR-09, KCOR-10, KCOR-11, KSEC-13, KSEC-14, KSEC-15, KAPI-09)
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S7
   - Сделано: AC7 → PASS; мутанты `M/exc2/mut_s8.py` 27/27; под API: H16, `downStore` (S7), H35 — дедлайн
-- [x] **S9** — Край httpkit (KSEC-08, KFX-11, KSEC-12; N7, N8, N9, N11, f1-07 валидатора B
-  `harden-gate-defaults` — тесты и строки доки; N4 валидатора v1.3.0 — IP клиента в ctx для тестов)
+- [x] **S9** — Край httpkit (KSEC-08, KFX-11, KSEC-12; N7–N9, N11, f1-07 валидатора B `harden-gate-defaults`; N4 v1.3.0)
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: S8
   - Сделано: AC8 → PASS; мутанты `M/exc2/mut_s9.py` 12/12; под API: zzka2 (`bearerAuth`, H15, H18, H40, H52), zzhb
 
@@ -153,45 +148,45 @@ blocked-by: —
 - **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки или
   `ErrConfig` («без предела» у новых — `-1`); формат — и у выключенного; nil-опции игнорируются; тик outbox против
   простоя транзакции — при `pgkit.PoolConfig` в графе; `RedactConfig{}` безопасен.
-- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>` с проверкой типа, значение —
-  `Supply<Thing>`; конструктор — `(cfg, зависимости…, log, opts…)`, логгер — параметр (исключения — в CLAUDE.md);
-  опции httpclient — значение `Options` (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после
-  `Migrated` (KX61b).
+- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>` с проверкой типа, значение — `Supply<Thing>`;
+  конструктор — `(cfg, зависимости…, log, opts…)` (исключения — в CLAUDE.md); опции httpclient — значение `Options`
+  (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после `Migrated` (KX61b).
 - **pgkit.** Мигратор — `lock_timeout` = `PG_MIGRATE_LOCK_TIMEOUT` (5 с) параметром `MigrateUp/Down/UpAll`, у
-  advisory-lock — только дедлайн; дедлайн — cancel request серверу до конца прогона (`GracefulStop` — гонка флага,
-  `M/exc2/logs/s4-gracefulstop-race.log`; E09). `OnStop` пула — 2/3 остатка, затем WARN и `nil` (KX65). Вложенный
-  строже внешней — `ErrNestedTxStricter`. `CheckSchemaOnStart(src)` — после `Migrated`, у outbox — перед
-  партициями (KX62); паритет `pgtest` — S3 второго плана.
+  advisory-lock `MigrateUpAll` — только дедлайн; дедлайн — cancel request серверу до конца прогона (`GracefulStop` —
+  гонка флага, `M/exc2/logs/s4-gracefulstop-race.log`; E09). `OnStop` пула — 2/3 остатка, затем WARN и `nil` (KX65);
+  `ErrNestedTxStricter`; `CheckSchemaOnStart(src)` — после `Migrated`, у outbox — перед партициями (KX62).
 - **outbox.** `created_at` — `clock_timestamp()` вставки (E10). Предел — по JSONB-тексту тем же `INSERT`
   (экспонента раздувает ×4): мерит хранилище, параметр `Repository.Insert(…, maxBytes)`. Строка хранит W3C
   trace-context `Publish` (колонка 0003, без baggage), producer-спан — его ребёнок со ссылкой на тик (KO13); label
   `subject` — только шаблоном `WithMetricSubject` (KO11, KO21); имя спана natskit — шаблон или `natskit.publish`.
-- **Идемпотентность и кэш.** `SetNX`, `GetDel`, `Compare*` — вторым клиентом без повторов (до
-  2×`REDIS_POOL_SIZE`): повтор видит эффект первой попытки (E18); прочие — с повторами. `IdempotencyStore.Set(…,
-  token, …) (stored, err)` — compare-and-set по токену (E07), без sentinel (cachekit не импортирует httpkit);
-  `!stored` — WARN, `skipped`; набор — `testkit/idempotencytest`. Предел — отказ, не вытеснение:
-  `MemoryCache.WithMaxKeys` (100 000, `ErrMemoryFull`), `httpkit.MemoryStore` — 100 000 без опции (свой —
-  cachekit), httpclient `MaxHosts` (1024, `-1`) — реестр breaker'ов и label, сверх — `other`.
+- **Идемпотентность и кэш.** `SetNX`, `GetDel`, `Compare*` — вторым клиентом без повторов (до 2×`REDIS_POOL_SIZE`):
+  повтор видит эффект первой попытки (E18). `IdempotencyStore.Set(…, token, …) (stored, err)` — compare-and-set по
+  токену (E07), без sentinel; `!stored` — WARN, `skipped`; набор — `testkit/idempotencytest`. Предел — отказ, не
+  вытеснение: `MemoryCache.WithMaxKeys` (100 000, `ErrMemoryFull`), `httpkit.MemoryStore` — 100 000 без опции,
+  httpclient `MaxHosts` (1024, `-1`) — реестр breaker'ов и label, сверх — `other`.
 - **Контракт HTTP.** Лимит тела — один `MaxBytesReader`, лимит фиксируется на первом чтении: huma-middleware
   ставит `MaxBodyBytes` операции, скрытой реестр зовёт те же `OnAddOperation`; `*http.MaxBytesError` в причине
   ошибки huma — 413 (H17). Не хранятся 408, 409, 425, 429: «не выполнено», повтор исполняет заново (H16); без
   субъекта и credentials — без дедупликации. `WWW-Authenticate` — хук кита по `components` (http — схема,
   oauth2/oidc — `Bearer`, прочие — имя), без хука — имена; HEAD — свой middleware, `Allow` — с HEAD. Дедлайн —
-  `HTTP_REQUEST_TIMEOUT` 25s < `WriteTimeout`, `ReserveTTL` строго больше, отрицательный — выкл. (`-1`
-  длительностью не читается): 503 из таймера с Flush под мьютексом writer'а, над `Idempotency`; SSE (`Accept`) и
-  upgrade — без дедлайна (H35). CORS — `Idempotency-Key` в дефолте. panic после заголовка — Flush и
-  `http.ErrAbortHandler`: иначе EOF до заголовков (H06).
+  `HTTP_REQUEST_TIMEOUT` 25s < `WriteTimeout`, `ReserveTTL` больше, `-1s` — выкл.; над `Idempotency` (H35): 503 с
+  `Content-Length` и `Connection: close` (клиент дочитывает его, пока хендлер работает); ответ после дедлайна — 503 и
+  в гонке с таймером, запись после 503 отбрасывается без ошибки — huma паникует на ней (B1 валидатора B); без
+  дедлайна — только GET с SSE или `Upgrade` (N5: заголовок клиента не снимает дедлайн с записи, POST-поток обрывается).
+  CORS — `Idempotency-Key` в дефолте. panic после заголовка — Flush и `http.ErrAbortHandler`: иначе EOF (H06).
 - **Край httpkit.** Extractor — поле `SecuritySchemeEntry.Extract`; `HumaAuth(schemes, log)`: операция открыта,
-  если прошла одна из её альтернатив целиком, `{}` — без credentials (OpenAPI); отказы — 503 бэкенда, иначе
+  если прошла одна из её альтернатив целиком; `{}` — без credentials, последней (N2: личность и 503 бэкенда при
+  `{}` не теряются), `Security` из одних `{}` — `ErrRoutes` (открытая — только `Public`); отказы — 503 бэкенда, иначе
   `APIError` extractor'а, иначе 401. Графовый `AuthExtractor`, `WithAuthExtractor`, `handlertest.WithAuth`,
-  `Idempotency(…, WithAuth)` удалены — один способ (H15); схема вне `components` — `ErrRoutes` и без схем (N8),
-  без `Extract` — `ErrAuthNotConfigured`. `Idempotency` — тот же net/http-middleware в цепочке huma после
-  `HumaAuth`: extractor — один вызов (HX07), replay — с маршрутом (KOBS-12), только операции huma. trace-context
-  клиента — `WithPublicEndpointFn` (ссылка на новом корне) и propagator без baggage, `HTTP_TRUST_TRACE_CONTEXT`
-  выключен (H18); `OTel(trust, quiet…)`. XFF — адрес, затем `ParseAddrPort` (N9); `ContextWithClientIP` (N4).
-  hubkit/sso — extractor своего cookie на контур, oidckit — схема с `Extract`.
-- **Секреты в URL.** Один `redactURL` в `internal/`: пароль userinfo, значения query, URL без схемы
-  (`user:pass@host`), пароль keyword-DSN. httpclient: атрибуты попытки — на свой спан с очищенным URL,
+  `Idempotency(…, WithAuth)` удалены (H15); схема вне `components` — `ErrRoutes` и без схем (N8), без `Extract` —
+  `ErrAuthNotConfigured`. `Idempotency` — net/http-middleware в цепочке huma после `HumaAuth`: extractor — один
+  вызов (HX07), replay — с маршрутом (KOBS-12), только операции huma. trace-context клиента — `WithPublicEndpointFn`
+  (ссылка на новом корне), propagator без baggage, `HTTP_TRUST_TRACE_CONTEXT` выключен (H18). XFF — адрес, затем
+  `ParseAddrPort` (N9); `ContextWithClientIP` (N4). hubkit/sso — extractor своего cookie, oidckit — схема с `Extract`.
+- **Фикс этапа 2.** Тесты на выживших мутантов B (V1, V4, V6, V8, V11); backlog-gauge инстанса без шаблона — 0 у
+  пустой очереди (N8); локальный предел payload outbox — вторая мера, не берём; KDOC-11 — S12 второго плана.
+- **Секреты в URL.** Один `redactURL` (из `natskit/conn.go`) в `internal/`: пароль userinfo, значения query, URL без
+  схемы (`user:pass@host`), пароль keyword-DSN. httpclient: атрибуты попытки — на свой спан с очищенным URL,
   `*url.Error` — с очищенным URL (E03, E04); путь остаётся, README: секрет — не в пути.
 - **Маски logkit.** Схема слов ключа (`classifyWords`) остаётся. Словарь секретов дополняют `pass`, `sid`,
   `signature`, `refresh`, `tokens`; `code` — слово-код (прячет и числа) только с квалификатором (`passcode`,
@@ -218,51 +213,54 @@ blocked-by: —
   ошибка старта (`cmd/migrate` шаблона их накатывает); `PG_MIGRATE_LOCK_TIMEOUT` (5 с).
 - **outbox.** Миграция 0003 (мигратор берёт её сам; своя копия `SchemaSQL` — колонка `trace_context JSONB`);
   метрики без `subject` (дашборды — `WithMetricSubject`); предел тела — по JSONB.
-- **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate` шаблона, `handlertest.WithSecuritySchemes`); дедлайн запроса;
-  408/409/425/429 не воспроизводятся; trace-заголовки клиента — по настройке доверия.
-- **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — из `LockState`; обход
-  длинного subject в адаптере не нужен.
+- **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate/module.go`); `handlertest.WithAuth` →
+  `WithSecuritySchemes`: `handler_test.go` auth и user, `scripts/new-domain.sh:662`, `rules/tests-pipeline.md:47`,
+  doc `identitytest.go:47`; `make gen` (`REQUEST_TIMEOUT` в `openapi.json`); `Security` из одних `{}` — `Public`.
+- **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` из `LockState`; обходы не нужны.
 - **authnkit и auditkit.** Пароль длиннее 1 KiB — ошибка (DTO — свой `maxLength`); NUL и не-UTF-8 в аудите —
   `ErrInvalidEntry`; retention — env; владелец сессии из `Revoke` — автор аудита выхода.
-- **env для INFRA-HANDOFF:** новые переменные S4, S7 (`HTTPCLIENT_MAX_HOSTS`), S8 (`HTTP_REQUEST_TIMEOUT` <
-  `HTTP_WRITE_TIMEOUT`), S9 (`HTTP_TRUST_TRACE_CONTEXT`), S12, S13; `STORAGE_S3_USE_SSL`; OTLP вне loopback; Redis — 2× пул.
+- **env для INFRA-HANDOFF:** `PG_MIGRATE_LOCK_TIMEOUT`, `HTTPCLIENT_MAX_HOSTS`, `HTTP_REQUEST_TIMEOUT` (меньше
+  `HTTP_WRITE_TIMEOUT` и `HTTP_IDEMPOTENCY_RESERVE_TTL`, иначе старт падает), `HTTP_TRUST_TRACE_CONTEXT`, S12, S13;
+  `HTTP_CORS_HEADERS` + `Idempotency-Key` (свой список — дописать); `STORAGE_S3_USE_SSL`; OTLP; Redis — 2× пул.
 
 ## Где мы сейчас
-Этап 1 принят (`M/validation-harden-kits-contracts-A.md`); этап 2 (S4–S9) закрыт (AC4–AC8) — дальше валидатор этапа, затем S10.
+Этап 1 принят (`M/validation-harden-kits-contracts-A.md`); этап 2 (S4–S9) закрыт, B1 и N1–N10 валидатора B
+(`M/validation-harden-kits-contracts-B.md`) — коммит `fix(httpkit)`, перепроверка — у валидатора. Следующий шаг — S10.
 
 Заготовка аннотации v1.4.0 (по шагам):
-- **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg,
-  conn, log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов (`POSTGRES_PG_DSN` →
-  `PG_DSN`), поле без тега — ошибка `Load` (тег или `ignored:"true"`), тег на вложенной структуре — ошибка (был
-  приставкой, `DB_PG_DSN`: снять тег, имена — `PG_*`; вторая секция того же кита — `ignored:"true"` и свой
-  `config.Load(&a.X, config.EnvPrefixed("x"))`, незаданная `X_*` — из голой), поле `map`, `[]byte`, `url.URL` или
-  типа только с `UnmarshalBinary`/`Set` — ошибка `Load` (строка с разбором в `Validate` или тип с `UnmarshalText`),
-  нет `*envconfig.ParseError`. httpkit: `NewServer(cfg, log, opts…) (*Server, error)` ставит цепочку кита и
-  `HumaAuth` (`WithAuthExtractor`, `WithIdempotencyStore`), `WithLogger` удалён; `ClientIP(hops, log)`,
-  `HumaAuth(extract, log)`, `RegisterHealth(api, timeout, log, probes…)`, схема — `ProvideSecurityScheme(ctor)`;
-  handlertest — с цепочкой кита. healthkit, timerkit: `Group` → `ProbesGroup`/`JobsGroup`, `Provide` →
-  `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` → `SupplyMigrations`; `MigrateUp/Down/UpAll(ctx, dsn,
-  lockTimeout, …)` (> 0, команда миграций — `cfg.LockTimeout`); `Module` берёт `logkit.Logger`; литерал
-  `MigrateRunnerConfig` без `LockTimeout` — `ErrConfig`; вложенный `WithTxOptions` строже внешней —
-  `ErrNestedTxStricter`. authnkit/session/pgstore: `ErrSchema`, `Store.CheckSchema` → `pgkit.ErrSchema`,
-  `pgkit.CheckSchema`. outboxkit: `New(name, cfg, …)`, `NewWorker(instance, cfg, …)` с ошибкой,
+- **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
+  log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`), поле
+  без тега — ошибка `Load` (тег или `ignored:"true"`), тег на вложенной структуре — ошибка (был приставкой,
+  `DB_PG_DSN`: снять тег, имена — `PG_*`; вторая секция того же кита — `ignored:"true"` и свой `config.Load(&a.X,
+  config.EnvPrefixed("x"))`, незаданная `X_*` — из голой), поле `map`, `[]byte`, `url.URL` или типа только с
+  `UnmarshalBinary`/`Set` — ошибка `Load` (строка с разбором в `Validate` или тип с `UnmarshalText`), нет
+  `*envconfig.ParseError`. httpkit: `NewServer(cfg, log, opts…) (*Server, error)` ставит цепочку кита и `HumaAuth`
+  (`WithSecuritySchemes`, `WithIdempotencyStore`), `WithLogger` удалён; `ClientIP(hops, log)`, `RegisterHealth(api,
+  timeout, log, probes…)`, схема — `ProvideSecurityScheme(ctor)`; handlertest — с цепочкой кита. healthkit, timerkit:
+  `Group` → `ProbesGroup`/`JobsGroup`, `Provide` → `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` →
+  `SupplyMigrations`; `MigrateUp/Down/UpAll(ctx, dsn, lockTimeout, …)` (> 0, команда миграций — `cfg.LockTimeout`);
+  `Module` берёт `logkit.Logger`; литерал `MigrateRunnerConfig` без `LockTimeout` — `ErrConfig`; вложенный
+  `WithTxOptions` строже внешней — `ErrNestedTxStricter`. authnkit/session/pgstore: `ErrSchema`, `Store.CheckSchema` →
+  `pgkit.ErrSchema`, `pgkit.CheckSchema`. outboxkit: `New(name, cfg, …)`, `NewWorker(instance, cfg, …)` с ошибкой,
   `Default{BatchSize,TickTimeout,MaxAttempts}` удалены, `Repository.Insert(ctx, subject, payload, maxBytes)` — тело
   мерит хранилище (своё — по своему представлению), сверх — `ErrPayloadTooLarge`; `pgstore.SchemaSQL` — с колонкой
   `trace_context JSONB` (своя копия схемы её добавляет). minio: `NewStorage(cfg, client, urls, log)` с ошибкой.
   authnkit: `DefaultAccessTTL`, `DefaultLeeway` удалены, `Argon2idParams`/`NewArgon2idParams` →
-  `Argon2idConfig`/`NewArgon2idConfig`; `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий. httpclient:
-  `Validate` — value-приёмник, группа опций → значение `httpclient.Options`, литерал `Config` без `MaxHosts` —
-  `ErrConfig` (`1024` или `-1`). storagekit: `NewKey` → `string`, `MemoryStorage.Bytes`/`Keys` удалены (`Get`).
-  telemetry: `Headers.Decode` — без `ErrConfig`. cachekit: `Cache.CompareAndSet` (свой `Cache` — реализовать),
-  `IdempotencyStore.Set(ctx, key, token, record, ttl) (bool, error)`. httpkit: `IdempotencyStore.Set(ctx, key,
-  token, record, ttl) (stored bool, err error)` — запись только поверх резерва этого токена (свой store —
-  `testkit/idempotencytest.RunContract`), литерал `Config` без `RequestTimeout` — `ErrConfig`
-  (`HTTP_REQUEST_TIMEOUT` 25s меньше `HTTP_WRITE_TIMEOUT`, `RESERVE_TTL` больше; `-1s` — выкл.). httpkit (S9):
-  extractor — `SecuritySchemeEntry.Extract`, `AuthExtractor` в графе и `WithAuthExtractor` удалены,
-  `HumaAuth(schemes, log)`, `Idempotency(cfg, store, log)` (без `WithAuth`), `OTel(trust, quiet…)`; схема `Security`
-  вне `components` — ошибка старта и без схем; handlertest: `WithAuth` → `WithSecuritySchemes` со схемой с
-  `Extract`. oidckit, hubkit/sso: `Module` не кладёт `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie
-  своего контура).
+  `Argon2idConfig`/`NewArgon2idConfig`; `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий. httpclient: `Validate`
+  — value-приёмник, группа опций → значение `httpclient.Options`, литерал `Config` без `MaxHosts` — `ErrConfig`
+  (`1024` или `-1`). storagekit: `NewKey` → `string`, `MemoryStorage.Bytes`/`Keys` удалены (`Get`). telemetry:
+  `Headers.Decode` — без `ErrConfig`. cachekit: `Cache.CompareAndSet` (свой `Cache` — реализовать),
+  `IdempotencyStore.Set(ctx, key, token, record, ttl) (bool, error)`. httpkit: `IdempotencyStore.Set(ctx, key, token,
+  record, ttl) (stored bool, err error)` — запись только поверх резерва этого токена (свой store —
+  `testkit/idempotencytest.RunContract`), литерал `Config` без `RequestTimeout` — `ErrConfig` (`HTTP_REQUEST_TIMEOUT`
+  25s меньше `HTTP_WRITE_TIMEOUT`, `RESERVE_TTL` больше; `-1s` — выкл.). httpkit (S9): extractor —
+  `SecuritySchemeEntry.Extract` (поле-функция: `SecuritySchemeEntry` несравним — `==` и ключ map не компилируются),
+  `AuthExtractor` в графе и `WithAuthExtractor` удалены, `HumaAuth(schemes, log)`, `Idempotency(cfg, store, log)`
+  (`IdempotencyOption` и `WithAuth` удалены), `OTel(trust, quiet…)`; схема `Security` вне `components` и `Security` из
+  одних `{}` — ошибка старта (`{}` — `httpkit.Public`); идемпотентность — только у операций huma: маршрут мимо huma с
+  `Idempotency-Key` исполняется каждый раз — операция huma или обёртка `httpkit.Idempotency(cfg, store, log)`;
+  handlertest: `WithAuth` → `WithSecuritySchemes` со схемой с `Extract`. oidckit, hubkit/sso: `Module` не кладёт
+  `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie своего контура).
 - **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт; пустую строку или список задаёт `-`
   (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`, `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён
   нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые — десятичные; ошибка ENV —
@@ -270,27 +268,29 @@ blocked-by: —
   SSE; `MaxRedirects 0` — без редиректов), natskit (таймауты, drain, потолки; JetStream — у включённого;
   `NakMaxBackoff 0` — постоянная задержка), `JWTConfig.AccessTTL`; `Leeway 0` — без допуска. Формат telemetry и
   JetStream — и у выключенного; невалидный `Config` у `storagekit.Module` и тик outbox ≥
-  `PG_IDLE_IN_TX_SESSION_TIMEOUT` — ошибка графа. nil-опции ничего не меняют; hook'и `WithBeforeAttempt`
-  складываются, второй `WithTransport` — `ErrConfig`; проба natskit — `natskit` или `natskit:<name>`; cleanup
-  bruteforcekit и сессий, drain outbox — после миграций; префиксы ошибок `<kit>/<sub>:`, воркер outbox —
-  `outboxkit:`, `telemetry: shutdown`, лог ошибок SDK — `telemetry: otel sdk error`. Хранилища китов (аудит,
-  bruteforce, сессии, outbox и его инстансы) без своих миграций — ошибка старта `pgkit.ErrSchema`; дедлайн миграций
-  прерывает идущий оператор, блокировку он ждёт ≤ `PG_MIGRATE_LOCK_TIMEOUT` (отказ — `dirty`); outbox `ordered` — по
-  моменту вставки, а не началу транзакции; предел тела — по JSONB-тексту (числа в экспоненте у предела —
-  `ErrPayloadTooLarge`); пул с занятым соединением на остановке — WARN и `nil` через 2/3 бюджета. Метрики outbox —
-  без label `subject` (шаблон — `WithMetricSubject` инстанса), backlog-gauge'и — серия на инстанс; producer-спан
-  natskit без шаблона — `natskit.publish`, `destination.template` — только шаблон; доставка события outbox — в
-  трассе записавшего его запроса (ссылка на тик). cachekit: `SetNX`, `GetDel`, `CompareAndDelete` не повторяются —
-  на сбое связи ошибка вместо ложного «нет» (`REDIS_MAX_RETRIES` — `Get`, `Set`, `Delete`, теги, `Ping`), соединений
-  — до 2×`REDIS_POOL_SIZE`; `MemoryCache` и `httpkit.MemoryStore` — до 100 000 ключей (новый сверх — ошибка, без
+  `PG_IDLE_IN_TX_SESSION_TIMEOUT` — ошибка графа. nil-опции ничего не меняют; hook'и `WithBeforeAttempt` складываются,
+  второй `WithTransport` — `ErrConfig`; проба natskit — `natskit` или `natskit:<name>`; cleanup bruteforcekit и
+  сессий, drain outbox — после миграций; префиксы ошибок `<kit>/<sub>:`, воркер outbox — `outboxkit:`, `telemetry:
+  shutdown`, лог ошибок SDK — `telemetry: otel sdk error`. Хранилища китов (аудит, bruteforce, сессии, outbox и его
+  инстансы) без своих миграций — ошибка старта `pgkit.ErrSchema`; дедлайн миграций прерывает идущий оператор,
+  блокировку он ждёт ≤ `PG_MIGRATE_LOCK_TIMEOUT` (отказ — `dirty`); outbox `ordered` — по моменту вставки, а не началу
+  транзакции; предел тела — по JSONB-тексту (числа в экспоненте у предела — `ErrPayloadTooLarge`); пул с занятым
+  соединением на остановке — WARN и `nil` через 2/3 бюджета. Метрики outbox — без label `subject` (шаблон —
+  `WithMetricSubject` инстанса), backlog-gauge'и — серия на инстанс (у пустой очереди — 0); producer-спан natskit без
+  шаблона — `natskit.publish`, `destination.template` — только шаблон; доставка события outbox — в трассе записавшего
+  его запроса (ссылка на тик). cachekit: `SetNX`, `GetDel`, `CompareAndDelete` не повторяются — на сбое связи ошибка
+  вместо ложного «нет» (`REDIS_MAX_RETRIES` — `Get`, `Set`, `Delete`, теги, `Ping`), соединений — до
+  2×`REDIS_POOL_SIZE`; `MemoryCache` и `httpkit.MemoryStore` — до 100 000 ключей (новый сверх — ошибка, без
   вытеснения); ответ запроса дольше `HTTP_IDEMPOTENCY_RESERVE_TTL` не сохраняется (WARN, `skipped`); httpclient:
   breaker и label `host` — у первых 1024 хостов (`HTTPCLIENT_MAX_HOSTS`), остальные — без breaker'а, `host="other"`.
   httpkit: тело сверх лимита в huma — 413, лимит операции выше общего поднимает транспортный, скрытая — по тем же
   хукам `OnAddOperation`; 408/409/425/429 и запросы без credentials идемпотентность не хранит; 401 — с
-  `WWW-Authenticate`; HEAD на GET-маршрутах; ответ, не начатый к `HTTP_REQUEST_TIMEOUT`, — `503 REQUEST_TIMEOUT`
-  (SSE — без дедлайна); CORS пускает `Idempotency-Key`; panic после заголовка обрывает соединение. httpkit (S9):
-  операцию открывает только альтернатива её схем целиком; идемпотентность — после `HumaAuth`, у операций huma;
-  trace-context клиента — ссылкой на новый корень, baggage — только с `HTTP_TRUST_TRACE_CONTEXT`; `ip:port` в
+  `WWW-Authenticate`; HEAD на GET-маршрутах; ответ, не начатый к `HTTP_REQUEST_TIMEOUT`, — `503 REQUEST_TIMEOUT` целым
+  ответом с `Connection: close`, ответ хендлера после него отбрасывается (идемпотентность его хранит); без дедлайна —
+  только GET-поток (SSE, `Upgrade`), POST-поток обрывается; `openapi.json` — `REQUEST_TIMEOUT` в описании `code`
+  (`make gen`); CORS пускает `Idempotency-Key`; panic после заголовка обрывает соединение; операцию открывает только
+  альтернатива её схем целиком, `{}` — без credentials, последней (отказ бэкенда — 503); идемпотентность — после
+  `HumaAuth`; trace-context клиента — ссылкой на новый корень, baggage — с `HTTP_TRUST_TRACE_CONTEXT`; `ip:port` в
   X-Forwarded-For — его IP.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,

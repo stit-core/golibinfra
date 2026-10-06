@@ -4,7 +4,9 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/go-chi/chi/v5"
@@ -117,5 +119,26 @@ func TestRegistry_ClaimMatchesPath(t *testing.T) {
 	}
 	if got := reg.claim(&huma.Operation{Method: http.MethodGet, Path: "/b"}); got != nil {
 		t.Fatalf("second claim(/b) = %v, want nil", got)
+	}
+}
+
+// Ответ, начатый после дедлайна ctx, — 503 дедлайна, кто бы ни дошёл до границы первым: хендлер,
+// ответивший на отмену ctx, и хендлер, вернувшийся без ответа, таймер не обгоняют.
+func TestDeadlineWriter_ResponseAfterDeadlineIsTheTimeout(t *testing.T) {
+	expired, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+	for name, respond := range map[string]func(*deadlineWriter){
+		"WriteHeader": func(d *deadlineWriter) { d.WriteHeader(http.StatusGone) },
+		"Write":       func(d *deadlineWriter) { _, _ = d.Write([]byte("late")) },
+		"Flush":       func(d *deadlineWriter) { d.Flush() },
+		"no response": func(*deadlineWriter) {},
+	} {
+		rec := httptest.NewRecorder()
+		d := &deadlineWriter{w: rec, h: http.Header{}, ctx: expired, timeout: time.Second, log: logkit.Nop()}
+		respond(d)
+		d.finish()
+		if rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), codeRequestTimeout) {
+			t.Errorf("%s after the deadline: %d %q, want the 503 %s", name, rec.Code, rec.Body.String(), codeRequestTimeout)
+		}
 	}
 }

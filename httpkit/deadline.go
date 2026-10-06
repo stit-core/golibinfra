@@ -2,8 +2,11 @@ package httpkit
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"maps"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,9 +19,10 @@ const codeRequestTimeout = "REQUEST_TIMEOUT"
 
 // deadline ставит ctx запроса дедлайн timeout (HTTP_REQUEST_TIMEOUT). Ответ, не начатый к дедлайну,
 // — 503 problem+json сразу, до WriteTimeout, иначе клиент получил бы обрыв; запись хендлера после
-// этого отбрасывается (http.ErrHandlerTimeout). Middleware выше ждут возврата хендлера: резерв
-// идемпотентности и учёт запросов в полёте его переживают. Потоки — SSE (Accept:
-// text/event-stream) и upgrade — идут без дедлайна.
+// этого молча отбрасывается: huma паникует на ошибке записи, а ответ хендлера ещё нужен
+// Idempotency. Middleware выше ждут возврата хендлера: резерв идемпотентности и учёт запросов в
+// полёте его переживают. Потоки — GET с Accept: text/event-stream (SSE) или Upgrade — идут без
+// дедлайна.
 func deadline(timeout time.Duration, log logkit.Logger) func(http.Handler) http.Handler {
 	if timeout <= 0 {
 		return func(next http.Handler) http.Handler { return next }
@@ -31,12 +35,8 @@ func deadline(timeout time.Duration, log logkit.Logger) func(http.Handler) http.
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), timeout)
 			defer cancel()
-			dw := &deadlineWriter{w: w, h: w.Header().Clone()}
-			timer := time.AfterFunc(timeout, func() {
-				if dw.expire(ctx) {
-					log.Warn(ctx, "request deadline exceeded", "timeout", timeout.String())
-				}
-			})
+			dw := &deadlineWriter{w: w, h: w.Header().Clone(), ctx: ctx, timeout: timeout, log: log}
+			timer := time.AfterFunc(timeout, dw.expire)
 			defer func() {
 				timer.Stop()
 				dw.finish()
@@ -46,8 +46,12 @@ func deadline(timeout time.Duration, log logkit.Logger) func(http.Handler) http.
 	}
 }
 
-// streaming — запрос потока: SSE или upgrade (WebSocket); дедлайн оборвал бы его.
+// streaming — запрос потока: GET с SSE или upgrade (WebSocket); дедлайн оборвал бы его. Заголовок
+// шлёт клиент, поэтому запись (POST, PUT, PATCH, DELETE) им дедлайна не снимает.
 func streaming(r *http.Request) bool {
+	if r.Method != http.MethodGet {
+		return false
+	}
 	if r.Header.Get("Upgrade") != "" {
 		return true
 	}
@@ -65,6 +69,9 @@ type deadlineWriter struct {
 	mu          sync.Mutex
 	w           http.ResponseWriter
 	h           http.Header
+	ctx         context.Context
+	timeout     time.Duration
+	log         logkit.Logger
 	wroteHeader bool
 	timedOut    bool
 	done        bool
@@ -78,9 +85,14 @@ func (d *deadlineWriter) WriteHeader(code int) {
 	d.writeHeader(code)
 }
 
-// writeHeader переносит заголовки хендлера в ответ и пишет статус; вызывается под d.mu.
+// writeHeader переносит заголовки хендлера в ответ и пишет статус, а после дедлайна — 503 вместо
+// них: хендлер, ответивший на отмену ctx, не обгоняет таймер. Вызывается под d.mu.
 func (d *deadlineWriter) writeHeader(code int) {
 	if d.wroteHeader || d.timedOut {
+		return
+	}
+	if errors.Is(d.ctx.Err(), context.DeadlineExceeded) {
+		d.timeOut()
 		return
 	}
 	d.wroteHeader = true
@@ -97,20 +109,20 @@ func (d *deadlineWriter) writeHeader(code int) {
 func (d *deadlineWriter) Write(b []byte) (int, error) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.timedOut {
-		return 0, http.ErrHandlerTimeout
-	}
 	d.writeHeader(http.StatusOK)
+	if d.timedOut {
+		return len(b), nil
+	}
 	return d.w.Write(b)
 }
 
 func (d *deadlineWriter) Flush() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
+	d.writeHeader(http.StatusOK)
 	if d.timedOut {
 		return
 	}
-	d.writeHeader(http.StatusOK)
 	if f, ok := d.w.(http.Flusher); ok {
 		f.Flush()
 	}
@@ -118,25 +130,40 @@ func (d *deadlineWriter) Flush() {
 
 func (d *deadlineWriter) Unwrap() http.ResponseWriter { return d.w }
 
-// expire — дедлайн: ответ не начат — 503 problem+json и Flush, чтобы клиент получил его до
-// WriteTimeout; true, если 503 записан.
-func (d *deadlineWriter) expire(ctx context.Context) bool {
+// expire — таймер дедлайна: ответ не начат и хендлер ещё работает — 503.
+func (d *deadlineWriter) expire() {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.wroteHeader || d.done {
-		return false
+	if !d.wroteHeader && !d.timedOut && !d.done {
+		d.timeOut()
 	}
+}
+
+// finish — хендлер вернулся: таймер больше не пишет в ответ, а хендлер, вернувшийся после дедлайна
+// без ответа, получает 503, как и не дождавшийся таймера.
+func (d *deadlineWriter) finish() {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if !d.wroteHeader && !d.timedOut && errors.Is(d.ctx.Err(), context.DeadlineExceeded) {
+		d.timeOut()
+	}
+	d.done = true
+}
+
+// timeOut пишет 503 REQUEST_TIMEOUT целым ответом (Content-Length) с Flush: клиент дочитывает его,
+// не дожидаясь хендлера, а по Connection: close не шлёт следующий запрос в соединение, которое
+// хендлер держит до возврата. Вызывается под d.mu.
+func (d *deadlineWriter) timeOut() {
 	d.timedOut = true
-	writeAPIError(ctx, d.w, Unavailable(codeRequestTimeout, ""))
+	body, _ := json.Marshal(Unavailable(codeRequestTimeout, "").forRequest(d.ctx))
+	h := d.w.Header()
+	h.Set("Content-Type", ProblemContentType)
+	h.Set("Content-Length", strconv.Itoa(len(body)))
+	h.Set("Connection", "close")
+	d.w.WriteHeader(http.StatusServiceUnavailable)
+	_, _ = d.w.Write(body)
 	if f, ok := d.w.(http.Flusher); ok {
 		f.Flush()
 	}
-	return true
-}
-
-// finish — хендлер вернулся: таймер больше не пишет в ответ.
-func (d *deadlineWriter) finish() {
-	d.mu.Lock()
-	d.done = true
-	d.mu.Unlock()
+	d.log.Warn(d.ctx, "request deadline exceeded", "timeout", d.timeout.String())
 }

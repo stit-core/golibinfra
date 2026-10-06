@@ -11,3 +11,8 @@
   `timerkit.Module` в графе); контракт «только `timerkit.ProvideJob`» держит README. Не правило
   раскладки, поэтому не `archkit` (решение владельца: узко). Триггер: сырой тег у потребителя или
   второй кит с той же дырой маркера.
+- **grpckit-accesslog-flake** — `TestAccessLogLevelByCode` под нагрузкой CPU падает 4–6 раз из 500
+  (`/test.Echo/Watch`, `code=OK`): `callStream` (`grpckit/e2e_test.go`) возвращается после первого
+  `RecvMsg`, а access-log сервер пишет после возврата хендлера — тест читает лог раньше записи.
+  Фикс — дочитать стрим до `io.EOF` или ждать запись с дедлайном. grpckit вне объёма аудита.
+  Триггер: падение в pre-push или правка grpckit.

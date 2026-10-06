@@ -8,23 +8,23 @@
   `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes` (с nil — ничего). Методы:
   `Router()`, `API()`/`BindAPI()`, `CheckRoutes()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
 - **Middleware** (net/http): `RequestID`, `ClientIP(trustProxyHops, log)`,
-  `OTel(quietPaths...)`, `Recovery(log)`,
+  `OTel(trustTraceContext, quietPaths...)`, `Recovery(log)`,
   `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
   `AccessLog(log, quietPaths...)`, `Metrics()`,
-  `Idempotency(cfg, store, log, opts...)`. huma-уровень: `HumaAuth(extract, log)`.
+  `Idempotency(cfg, store, log)`. huma-уровень: `HumaAuth(schemes, log)`.
 - **fx**: `Module`, `Middlewares`, `HumaConfigs`, `PublicRoutes` (значения графа),
   `ProvideSecurityScheme(ctor, anns...)` → группа `SecuritySchemeGroup`.
 - **Ошибки**: `APIError`, `FieldError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
   Conflict/Internal/Unavailable`, `ErrorMap` (`NewErrorMap`, `ErrorRule`, `Map`,
   `Declare`, `Unmapped`), `ProblemContentType`.
-- **Auth и маршруты**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
-  `ContextWithSubject`, `SubjectFrom`, `Public`, `PublicRoutes`, `ErrRoutes`.
+- **Auth и маршруты**: `SecuritySchemeEntry` (`Extract` — `AuthExtractor`), `ErrAuthUnavailable`,
+  `ErrAuthNotConfigured`, `ContextWithSubject`, `SubjectFrom`, `Public`, `PublicRoutes`, `ErrRoutes`.
 - **Health**: `RegisterHealth(api, probeTimeout, log, probes...)`, `Probe`
   (= `healthkit.Probe`); проверка здоровья контейнера — `Healthcheck(ctx)` (код выхода),
   `CheckHealth(ctx, addr)`.
 - **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
-  `HeaderIdempotentReplayed`, `ClientIPFrom`, `IsMaxBodyError`, `NewMemoryStore`,
-  `NewConfig`, `Config.Validate`, `ErrConfig`.
+  `HeaderIdempotentReplayed`, `ClientIPFrom`, `ContextWithClientIP` (IP клиента в ctx теста без
+  middleware), `IsMaxBodyError`, `NewMemoryStore`, `NewConfig`, `Config.Validate`, `ErrConfig`.
 
 ## Сервер через fx Module
 
@@ -184,9 +184,9 @@ type IdempotencyStore interface {
 
 `httpkit.NewMemoryStore()` — in-memory store для тестов и одного процесса:
 истёкшие записи выметаются, ключей — не больше 100 000 (новый ключ сверх предела —
-ошибка `Reserve`, как у недоступного store: fail-open или 503 по `FailClosed`).
-Свой предел — `cachekit.NewIdempotencyStore(cachekit.NewMemoryCache(cachekit.WithMaxKeys(n)))`
-или Redis.
+ошибка `Reserve`, как у недоступного store: fail-open или 503 по `FailClosed`). При TTL ответа
+`24h` предел держит в среднем ~1,2 новых ключа в секунду; больше или свой предел —
+`cachekit.NewIdempotencyStore(cachekit.NewMemoryCache(cachekit.WithMaxKeys(n)))` или Redis.
 
 ## Security headers
 
@@ -386,9 +386,9 @@ func stream(w http.ResponseWriter, r *http.Request) {
 ```
 
 Для долгих стримов задайте `HTTP_WRITE_TIMEOUT=0` (или продлевайте дедлайн через
-`ResponseController.SetWriteDeadline`). Дедлайн запроса `HTTP_REQUEST_TIMEOUT` поток
-SSE не получает, если клиент шлёт `Accept: text/event-stream` (`EventSource` шлёт),
-и upgrade WebSocket тоже; поток без этого заголовка ctx отменит на дедлайне. На
+`ResponseController.SetWriteDeadline`). Дедлайн запроса `HTTP_REQUEST_TIMEOUT` не получает
+GET с `Accept: text/event-stream` (`EventSource` шлёт) или `Upgrade` (WebSocket); поток без
+этого заголовка и поток на POST ctx отменит на дедлайне — поток делают GET-операцией. На
 остановке поток держит соединение до дедлайна `HTTP_SHUTDOWN_TIMEOUT`, затем ctx
 запроса отменяется — и у WebSocket на захваченном соединении: обработчик, который
 слушает `r.Context()`, завершается сам.

@@ -75,7 +75,7 @@ func hidden(op huma.Operation) huma.Operation {
 
 // TestModule_RoutesCheck: при схеме в графе публичность операции явная (Security или
 // Public, в том числе у скрытой и групповой), маршрут мимо huma.Register — в PublicRoutes;
-// дубль METHOD+path и Public с Security — ошибка старта и без схем.
+// дубль METHOD+path, Public с Security и Security из одних `{}` — ошибка старта и без схем.
 func TestModule_RoutesCheck(t *testing.T) {
 	rawRoute := func(path string) fx.Option {
 		return fx.Invoke(func(srv *httpkit.Server) {
@@ -125,6 +125,15 @@ func TestModule_RoutesCheck(t *testing.T) {
 			name: "Public с Security", opts: []fx.Option{withBearer, register(httpkit.Public(secured(operation("both", http.MethodGet, "/both"))))},
 			want: []string{"operation both is httpkit.Public but has Security"},
 		},
+		{name: "Security из одних пустых альтернатив — не способ открыть", opts: []fx.Option{withBearer, register(huma.Operation{
+			OperationID: "wipe", Method: http.MethodPost, Path: "/wipe", Security: []map[string][]string{{}},
+		})}, want: []string{"operation wipe has only empty Security alternatives: mark it httpkit.Public"}},
+		{name: "пустые альтернативы и без схем", opts: []fx.Option{register(huma.Operation{
+			OperationID: "wipe", Method: http.MethodPost, Path: "/wipe", Security: []map[string][]string{{}, {}},
+		})}, want: []string{"operation wipe has only empty Security alternatives"}},
+		{name: "необязательная аутентификация", opts: []fx.Option{withBearer, register(huma.Operation{
+			OperationID: "feed", Method: http.MethodGet, Path: "/feed", Security: []map[string][]string{{}, {"Bearer": {}}},
+		})}},
 		{name: "дубль METHOD+path с другим именем параметра", opts: []fx.Option{register(
 			operation("first", http.MethodGet, "/items/{id}"), operation("second", http.MethodGet, "/items/{itemID}"),
 		)}, want: []string{"operations first and second share GET /items/{}"}},

@@ -128,6 +128,10 @@ func registerBacklogGauges(instance string, reporter BacklogReporter, fold func(
 			pending int64
 		}
 		folded := map[string]series{}
+		if fold == nil {
+			// Серия инстанса есть и у пустой очереди — 0, а не «нет данных» для absent().
+			folded[""] = series{}
+		}
 		for _, b := range backlog {
 			key := ""
 			if fold != nil {
