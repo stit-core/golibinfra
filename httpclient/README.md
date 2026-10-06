@@ -172,6 +172,12 @@ OTel-провайдеры (no-op без `MeterProvider`/`TracerProvider`).
 | `httpclient.Stream <METHOD>` | OTel span (client) | те же | Спан на весь стрим: закрывается вместе с потоком |
 | HTTP-спан попытки | OTel span (`otelhttp`) | + `http.request.resend_count` | Дочерний спан на каждую попытку, W3C trace-context в upstream |
 
+Метрик otelhttp (`http.client.request.duration`, `http.client.request.body.size`)
+клиент не эмитит: в Prometheus первая получила бы имя
+`http_client_request_duration_seconds`, и серии двух гистограмм с разными бакетами
+и labels слились бы в одну метрику. Длительность попытки видна в её спане, число
+повторов — `http_client_retry_attempts_total`.
+
 Значения `status`: код ответа (`200`, `503`), `breaker_open` при отказе открытой
 цепи, `error` для транспортных ошибок и отмены ctx. Для `Stream` `status` — код
 ответа при чистом завершении потока и `error`, если поток оборвался.

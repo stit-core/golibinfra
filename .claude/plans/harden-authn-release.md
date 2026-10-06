@@ -22,7 +22,6 @@ blocked-by: —
   S11 (бизнес-метрики с проверкой записи); что он снимает и меняет на bump — «Handoff».
 - **Код китов:**
   - authnkit: `authnkit/module.go:26` — `NewHS256JWT` без iss/aud, хотя опции есть;
-  - httpclient: `httpclient/client.go:163`;
   - остановка и пробы: `httpkit/module.go:153-157`, `httpkit/health.go:77-94`,
     `healthkit/healthkit.go:55`;
   - logkit: `logkit/attrs.go:11`.
@@ -74,9 +73,11 @@ blocked-by: —
   `M/kits-audit/correctness-security/run.sh <rev> nats` → E15 PASS
   - Подтверждено: E15 (5 доставок, обработано 1), E16 PASS; `stream_seq` — `…MaxDeliverDLQ`, бюджет
     ≥ 15 мин — `TestNakDelay_DefaultBudgetCoversFifteenMinutes`, `ErrTerminal` — `…SkipsRetries`
-- [ ] **AC7** — Метрики otelhttp у клиента не эмитятся; имена метрик объёма после трансляции в
+- [x] **AC7** — Метрики otelhttp у клиента не эмитятся; имена метрик объёма после трансляции в
   Prometheus без коллизий. Проверка: `fx-observability/run.sh <rev> obs-unit obs` → KO01 PASS,
   `promname` → 0 коллизий
+  - Подтверждено: KO01 PASS; `promname` (KO01 и граф китов) — 0 коллизий, `compare.py` — метрик
+    otelhttp нет; мутант без noop-провайдера — `TestMetrics_NoOtelhttpMetricsNoNameCollisions` красный
 - [ ] **AC8** — Остановка httpkit:
   - `/ready` отвечает 503, пока listener ещё открыт;
   - долгий запрос или SSE не съедают бюджет fx: после дедлайна HTTP ctx хендлеров отменён,
@@ -137,8 +138,9 @@ blocked-by: —
   - Сделано: NAK `1s·2^(n−1)` до 1m, 21 доставка — 15 мин; доставка после `Unsubscribe` не
     обрабатывается; natskit `-count=2` чист; 5 мутантов (рост, потолок, бюджет, `stream_seq`, флаг)
     красные
-- [ ] **S9** — httpclient: метрики otelhttp выключены, README и тест без коллизий имён (KOBS-01)
+- [x] **S9** — httpclient: метрики otelhttp выключены, README и тест без коллизий имён (KOBS-01)
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S2
+  - Сделано: noop `MeterProvider` у транспорта otelhttp; тест: только `http_client_*`, коллизий нет
 - [ ] **S10** — httpkit, остановка: фаза дренажа с `/ready` 503 (C), дедлайн HTTP из остатка бюджета
   с отменой ctx и `Close` (KFX-08 вместе с KCOR-08), `recover` в пробах `/ready` и
   `healthkit.WithTimeout` (KOBS-14); проверка здоровья без shell для distroless-образа — функция
@@ -201,7 +203,7 @@ blocked-by: —
     асинхронно (флак R5). Имена стримов тестов — с номером прогона, `-count=2` чист.
 - **httpclient.** Метрики otelhttp выключаются через noop `MeterProvider` у транспорта; спаны попытки
   остаются. Длительность попытки видна в спане, повторы считает `http_client_retry_attempts_total`.
-  Переименовать метрику кита — breaking и хуже.
+  Переименовать метрику кита — breaking и хуже. otelhttp anthropickit (вне объёма) — бэклог.
 - **Остановка httpkit.**
   - Порядок: флаг остановки → `/ready` 503 → пауза `HTTP_SHUTDOWN_DRAIN_DELAY` → `Shutdown` с
     дедлайном `min(HTTP_SHUTDOWN_TIMEOUT, остаток stop-ctx − запас)` → на дедлайне отмена ctx
@@ -266,7 +268,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап S1–S7 принят (`M/validation-harden-authn-release-A.md`, перепроверка `cd654a7` — PASS),
-остатки R1–R5 закрыты (R5 — в S8). S8 сделан; дальше S9 (httpclient), затем S10–S12 и релиз S13.
+остатки R1–R5 закрыты (R5 — в S8). S8, S9 сделаны; дальше S10 (остановка httpkit), S11, S12, релиз S13.
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
@@ -292,3 +294,5 @@ blocked-by: —
   (1m), `NATS_JS_MAX_DELIVER` по умолчанию 21 — ретраи 15 минут, а не ≈10 с; ERROR `jetstream
   message dead` несёт `stream_seq`; доставку после `Unsubscribe` обработчик не получает.
 - Изменения — natskit: `JetStreamConfig.NakMaxBackoff` (`NATS_JS_NAK_MAX_BACKOFF`).
+- Поведение — httpclient: метрик otelhttp (`http.client.request.duration`, `.body.size`) нет — в
+  Prometheus первая сливалась с `http_client_request_duration_seconds` кита → запросы — на неё.

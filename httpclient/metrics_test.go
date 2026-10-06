@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -93,5 +94,36 @@ func TestMetrics_SSEDialErrorRecorded(t *testing.T) {
 	}
 	if got := durationCounts(metrictest.Collect(t).Sub(before)); got["error/sse"] == 0 {
 		t.Errorf("sse dial error must be recorded as status=error, mode=sse (all: %v)", got)
+	}
+}
+
+// Метрики otelhttp клиент не эмитит: http.client.request.duration в Prometheus получил бы имя
+// гистограммы кита, и серии двух инструментов слились бы. Спаны попыток остаются (trace_test).
+func TestMetrics_NoOtelhttpMetricsNoNameCollisions(t *testing.T) {
+	before := metrictest.Collect(t)
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	c := newTestClient(t, Config{})
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodPost, srv.URL, strings.NewReader(`{"a":1}`))
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+
+	snap := metrictest.Collect(t)
+	for _, s := range snap.Sub(before).All() {
+		if !strings.HasPrefix(s.Name, "http_client_") {
+			t.Errorf("metric outside the kit contract: %s (scope %s)", s, s.Scope)
+		}
+	}
+	if len(snap.Sub(before).Find("http_client_request_duration_seconds")) == 0 {
+		t.Fatal("kit histogram http_client_request_duration_seconds not recorded")
+	}
+	if got := snap.Collisions(); len(got) != 0 {
+		t.Errorf("Prometheus name collisions: %v", got)
 	}
 }

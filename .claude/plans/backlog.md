@@ -58,8 +58,9 @@
   `FxLogger` без OTel-sink, логгер go-redis через logkit (KFX-03, KFX-05, KFX-06, KOBS-08). Триггер:
   партия 3.
 - **obs-conventions** — semconv БД одной версии, ключ ошибки `error` во всех китах, `not_found` в
-  storagekit, TOTP-метрика — одна точка на вызов (KOBS-06, KOBS-07, KOBS-09, KDOC-05). Триггер:
-  партия 3.
+  storagekit, TOTP-метрика — одна точка на вызов (KOBS-06, KOBS-07, KOBS-09, KDOC-05); транспорт
+  otelhttp anthropickit — без метрик, как у httpclient: его `http.client.request.duration` в
+  Prometheus сливается с гистограммой httpclient (класс KOBS-01). Триггер: партия 3.
 - **security-defaults** — бюджет перебора на subject по всем адресам, `CLEANUP_RETENTION` ≥
   `LOCK_DURATION`, TLS S3 и `OTEL_TOKEN` не по `http://`, предел длины пароля Argon2id (KSEC-04,
   KSEC-07, KSEC-05, C). Триггер: партия 3.

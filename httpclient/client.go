@@ -21,6 +21,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
@@ -148,7 +149,7 @@ type Client struct {
 }
 
 // New собирает клиент: валидирует конфиг (дефолты вместо нулей), применяет
-// опции и оборачивает транспорт в otelhttp.
+// опции и оборачивает транспорт в otelhttp — спаны попыток без его метрик.
 func New(cfg Config, opts ...Option) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -160,7 +161,9 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 	if c.base == nil {
 		c.base = defaultTransport()
 	}
-	transport := otelhttp.NewTransport(&resendTransport{next: c.base})
+	// Без метрик otelhttp: его http.client.request.duration в Prometheus сливается с гистограммой кита.
+	transport := otelhttp.NewTransport(&resendTransport{next: c.base},
+		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()))
 	c.c = &http.Client{Timeout: cfg.Timeout, Transport: transport, CheckRedirect: c.checkRedirect}
 	c.streamC = &http.Client{Transport: transport, CheckRedirect: c.checkRedirect}
 	c.breakers = newBreakerSet(cfg.Breaker, c.instr)
