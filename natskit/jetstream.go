@@ -134,12 +134,12 @@ func (disabledStreamBus) CheckStreams(context.Context, ...string) error {
 // выключенном JetStream отдаёт заглушку, все методы которой возвращают
 // ErrJetStreamDisabled.
 func NewStreamBus(cfg Config, conn *Conn, log logkit.Logger) (StreamBus, error) {
-	if !cfg.JetStream.Enabled {
-		return disabledStreamBus{}, nil
-	}
-	// Соединение уже открыто, поэтому проверяются только JetStream-поля.
+	// Соединение уже открыто, поэтому проверяются только JetStream-поля — формат и у выключенного.
 	if err := cfg.JetStream.validate(); err != nil {
 		return nil, err
+	}
+	if !cfg.JetStream.Enabled {
+		return disabledStreamBus{}, nil
 	}
 	if log == nil {
 		log = logkit.Nop()

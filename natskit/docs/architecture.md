@@ -83,8 +83,8 @@ ctx → ошибка сразу). Время жизни подписки — `Su
 
 ## StreamBus (JetStream)
 
-`jsBus` активен только при `NATS_JETSTREAM_ENABLED=true`; иначе `NewStreamBus`
-возвращает `disabledStreamBus`, у которого все методы отдают
+`jsBus` активен только при `NATS_JETSTREAM_ENABLED=true`; иначе `NewStreamBus` (формат
+JetStream-полей он проверяет и у выключенного) возвращает `disabledStreamBus`, у которого все методы отдают
 `ErrJetStreamDisabled` (no-op, не nil — приложение не падает при сборке графа,
 а получает явную ошибку при попытке использовать выключенный транспорт).
 

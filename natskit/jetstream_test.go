@@ -87,6 +87,18 @@ func TestNewStreamBus_RejectsInvalidConfig(t *testing.T) {
 	}
 }
 
+// Формат JetStream проверяется и у выключенного: MaxDeliver=-1 — ErrConfig, а не заглушка (N4
+// валидатора A).
+func TestNewStreamBus_ChecksFormatWhenDisabled(t *testing.T) {
+	cfg := natskit.Config{JetStream: natskit.JetStreamConfig{MaxDeliver: -1}}
+	if _, err := natskit.NewStreamBus(cfg, nil, logkit.Nop()); !errors.Is(err, natskit.ErrConfig) {
+		t.Fatalf("NewStreamBus(disabled, MaxDeliver=-1) err = %v, want ErrConfig", err)
+	}
+	if sb, err := natskit.NewStreamBus(natskit.Config{}, nil, logkit.Nop()); err != nil || sb == nil {
+		t.Fatalf("NewStreamBus(disabled, zero format) = %v, %v; want the disabled bus", sb, err)
+	}
+}
+
 func TestStreamBus_WildcardSubjectInContext(t *testing.T) {
 	stream := nameFor(t)
 	sb := newStreamBus(t, jsConfig(stream))

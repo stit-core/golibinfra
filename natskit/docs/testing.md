@@ -81,7 +81,7 @@ func TestSomething(t *testing.T) {
 | `TestBus_ConsumerSpanIsChildOfProducer` | consumer-спан — child producer-спана (trace-context через `nats.Header`). |
 | `TestBus_PublishMetricSubjectIsOptIn` | label `subject` publish-метрик появляется только с `WithMetricSubject`. |
 | `TestStreamBus_ConsumeMetricsUseFilterSubject` | label `subject` и имя consumer-спана — фильтр подписки, реальный subject — в атрибуте. |
-| `TestStreamBus_Disabled` / `TestNewStreamBus_RejectsInvalidConfig` | выключенный JetStream отдаёт `ErrJetStreamDisabled` (и из `CheckStreams`); невалидный DLQ-subject — `ErrConfig`. |
+| `TestStreamBus_Disabled` / `TestNewStreamBus_RejectsInvalidConfig` / `TestNewStreamBus_ChecksFormatWhenDisabled` | выключенный JetStream отдаёт `ErrJetStreamDisabled` (и из `CheckStreams`); невалидный DLQ-subject — `ErrConfig`; формат JetStream-полей проверяется и у выключенного. |
 | `TestStreamBus_CheckStreams` | фильтр, накрытый стримом целиком, проходит; пересечения мало — `ErrNoStream` с фильтром в тексте; без фильтров — только проверка JetStream. |
 | `TestStreamBus_CheckStreamsServerWithoutJetStream` | сервер без `-js`: публикация — `ErrNoStreamResponse`, как без стрима, а `CheckStreams` — `ErrJetStreamDisabled`. |
 | `TestStreamBus_PublishSubscribe` / `…WildcardSubjectInContext` / `…PublishHeadersReachHandler` | JetStream round-trip, `SubjectFromContext` под wildcard-фильтром, заголовки публикации. |

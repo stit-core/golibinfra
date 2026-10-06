@@ -266,8 +266,8 @@ bruteforcekit, дефолты и входы. Вторая половина и р
 - **env для INFRA-HANDOFF:** новые переменные S4, S8, S9, S12, S13; `STORAGE_S3_USE_SSL`; OTLP вне loopback.
 
 ## Где мы сейчас
-S1–S3 закрыты, AC1–AC3 подтверждены; валидатор A этапа — FAIL (B1,
-`M/validation-harden-kits-contracts-A.md`): фиксы — коммитами `fix(…)`, затем повторная валидация и S4.
+S1–S3 закрыты, AC1–AC3 подтверждены; валидатор A этапа — FAIL (`M/validation-harden-kits-contracts-A.md`):
+фиксы `fix(…)` — envconf (B1, N3, V1, V2), natskit (N4); затем повторная валидация и S4.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`,
