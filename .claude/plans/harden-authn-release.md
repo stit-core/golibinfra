@@ -82,12 +82,16 @@ blocked-by: —
 - [x] **AC10** — Атрибут лога регистрируется без `slog` в сигнатуре потребителя. Проверка:
   `go doc ./logkit Attr` → без `slog`; `go test -race ./logkit/` → PASS
   - Подтверждено: `go doc` — `func(ctx context.Context) (any, bool)`; число остаётся числом (тест)
-- [ ] **AC11** — Тег `v1.3.0` аннотированный, с разделами Breaking, Поведение, Изменения, Гейт;
+- [x] **AC11** — Тег `v1.3.0` аннотированный, с разделами Breaking, Поведение, Изменения, Гейт;
   каждая строка apidiff `v1.2.0 → v1.3.0` и каждое изменение envconfig-тегов — в аннотации с шагом
   миграции; каждая ошибка сборки шаблона на v1.3.0 (`replace`) закрыта строкой Breaking;
   `make gate-clean` и `make test-full` зелёные. Проверка: `git tag -l --format='%(contents)' v1.3.0`
   → четыре раздела; `M/kits-audit/api-docs/scripts/run-versions.sh v1.2.0 v1.3.0` → всё покрыто;
   `make gate-clean` → зелёный
+  - Подтверждено: четыре раздела; 20 строк apidiff `v1.2.0 → HEAD` и 16 изменений env всего модуля —
+    в аннотации (`M/rel-v130/versions/`); шаблон `c0e7c86` с `replace` — ошибки в 5 файлах закрыты
+    строками authnkit (refresh), httpkit (`ClientIP`, `RateLimitConfig.TrustProxy`), logkit (`Attr`);
+    `make gate-clean`, `make test-full` — зелёные
 
 ## Шаги
 ### Данные, authn и тестовые хелперы: B4–B8
@@ -142,11 +146,13 @@ blocked-by: —
   - Сделано: `Attr func(ctx) (any, bool)`; httpkit, grpckit, hubkit/sso, oidckit — без slog
 
 ### Релиз
-- [ ] **S13** — Релиз: корневые README и CLAUDE.md сверены с API; `make test-full` и `make gate-clean`;
+- [x] **S13** — Релиз: корневые README и CLAUDE.md сверены с API; `make test-full` и `make gate-clean`;
   apidiff и env-diff против v1.2.0; сборка шаблона на HEAD через `replace` в своём worktree (каждая
   ошибка сборки — строкой Breaking); тег `v1.3.0` локально. Push `main` и тега — дирижёр после PASS
   валидатора партии; затем план удаляется отдельным `chore(plan)`
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S3, S6, S7, S8, S9, S10, S11, S12
+  - Сделано: README — ретраи natskit и `aud` у SSO, CLAUDE.md сверен без правок; apidiff, env-diff и
+    сборка шаблона — AC11; тег `v1.3.0` локально на этом коммите
 
 ## Решения
 - **Инструменты метрик** — в конструкторах через `otelkit.Meter` (и трейсер timerkit): делегат OTel
@@ -206,7 +212,11 @@ blocked-by: —
   только конфиг. Ротация: подпись текущим, проверка — текущим, затем `JWT_PREVIOUS_SECRET`; без `kid`.
 - **logkit.** `type Attr func(ctx) (any, bool)`, кит кладёт значение как `slog.Any`.
 - **Релиз.** Раздел «Гейт» называет `make gate-clean` (с integration), `make test-full`, apidiff и
-  env-diff против v1.2.0 и сборку шаблона через `replace`.
+  env-diff против v1.2.0 и сборку шаблона через `replace`. env-diff — по всему модулю: `env-diff.sh`
+  аудита видит только объём, без httpkit. Шаблон — снимок `git archive` в `M/rel-v130/tpl`, а не
+  worktree: репо шаблона не трогается; ошибки за первыми — после патчей валидаторов (`val-har-A2`,
+  `val-harB`) и заглушек refresh-JWT. Строки apidiff вне заготовок дописаны в Breaking: `JWTConfig` и
+  `outboxkit.Bus` не сравнимы, `RateLimitConfig.TrustProxy`, `NewAPI(…, opts...)`.
 
 ## Handoff
 **Шаблон, `fix-reference-code` S9 — что снимается и меняется на bump v1.3.0:**
@@ -250,51 +260,11 @@ blocked-by: —
   - `HTTP_SHUTDOWN_TIMEOUT` и `HTTP_SHUTDOWN_DRAIN_DELAY` (за Traefik — 5s); бюджет ретраев —
     `NATS_JS_MAX_DELIVER` 21, `NATS_JS_NAK_MAX_BACKOFF` 1m.
 
-**Аннотация v1.3.0:** первая половина (гейт, B1–B3) — `M/annotation-v1.3.0.md`, вторая — «Где мы
-сейчас». Шлюзам на v0.39.0 — цепочка аннотаций; `config` без ctx → убрать
-`fx.Provide(context.Background)`.
+**Аннотация v1.3.0** — в теге: Breaking с шагом миграции, Поведение, Изменения, Гейт. Шлюзам на
+v0.39.0 — цепочка аннотаций; `config` без ctx → убрать `fx.Provide(context.Background)`.
 
 ## Где мы сейчас
-S1–S12 приняты (валидаторы этапов — PASS); неблокирующие N1–N13 валидатора B закрыты — коммиты
-`b27ab7d`..`5083fe6`, «Решения», Handoff и заготовка ниже. Дальше S13 — релиз.
-
-Заготовка аннотации второй половины v1.3.0:
-- Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
-  инструменты берут глобальный провайдер при сборке объекта, а не первый провайдер процесса.
-- Изменения — `testkit/metrictest`: `NewProvider()` — провайдер теста для кода с переданным `Meter`
-  (бизнес-метрики, подмена провайдера telemetry в boot-тесте); `Collect` — провайдер процесса китов
-  (ставит первый вызов), дельты `Sub`, `Get`/`Find`/`Value`, коллизии имён в Prometheus.
-- Поведение — auditkit: пустые `IP` и `RequestID` записи `pgstore` и `audittest` берут из ctx
-  (httpkit; request-id — и grpckit) → ручные значения убрать, тест `Entry` целиком под ctx запроса
-  видит их; своему `Logger` — `Entry.Enrich(ctx)`.
-- Изменения — authnkit: `NewToken()` (256 бит hex) и `HashToken` (SHA-256) → вместо `pkg/tokens`.
-- Breaking — authnkit: `SignRefresh`, `ParseRefresh`, `TokenTypeRefresh`, `DefaultRefreshTTL`,
-  `JWTConfig.RefreshTTL` (`JWT_REFRESH_TTL`) удалены → refresh — `authnkit/session`: в граф
-  `session/pgstore.Module` (с `timerkit.Module`) и `session.NewConfig`, `pgstore.Migrations` — в
-  мигратор (без них `ErrSchema` на старте), env `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`,
-  `SESSION_CLEANUP_INTERVAL`; старые refresh-JWT недействительны — вход заново один раз.
-- Изменения — `authnkit/session`: `Store` (`Rotate` вне транзакции, `RevokeAll` в транзакции из
-  ctx), `Token`, `ReusedError`; `session/pgstore`: `NewStore`, `WithClock`, `CheckSchema`,
-  `Cleanup`, `Module`, `authn_session_*`; `testkit/sessiontest`: фейк `New`/`Active`, `RunContract`.
-- Breaking — config: `Load(ctx, dst, …)` → `Load(dst, …)`, `Source.Apply(ctx, dst)` → `Apply(dst)`
-  → убрать ctx и `fx.Provide(context.Background)`; свой `Source` с I/O ограничивает время сам.
-- Поведение — natskit: задержка NAK растёт от `NATS_JS_NAK_BACKOFF` вдвое до `NATS_JS_NAK_MAX_BACKOFF`
-  (1m), `NATS_JS_MAX_DELIVER` по умолчанию 21 — ретраи 15 минут, а не ≈10 с, и весь срок сообщение
-  держит слот `NATS_JS_MAX_IN_FLIGHT` — детерминированный отказ помечайте `ErrTerminal`; ERROR
-  `jetstream message dead` несёт `stream_seq`; доставку после `Unsubscribe` обработчик не получает.
-- Изменения — natskit: `JetStreamConfig.NakMaxBackoff` (`NATS_JS_NAK_MAX_BACKOFF`).
-- Поведение — httpclient: метрик otelhttp (`http.client.request.duration`, `.body.size`) нет — в
-  Prometheus первая сливалась с `http_client_request_duration_seconds` кита → запросы — на неё.
-- Поведение — httpkit: с начала остановки `/ready` — 503 `draining`; пауза `HTTP_SHUTDOWN_DRAIN_DELAY`
-  (новый, 0 — фаза 503 почти не видна); `HTTP_SHUTDOWN_TIMEOUT` по умолчанию 10s, а не 15s; на
-  дедлайне ctx хендлеров отменён, соединения закрыты (WARN), `Server.Stop` — nil, а не `context
-  deadline exceeded`; HTTP берёт не больше ⅔ остатка `fx.StopTimeout`; panic пробы — `down` и
-  ERROR → за балансировщиком пауза 5–10 с, сумма бюджетов — в `fx.StopTimeout`.
-- Изменения — httpkit: `Healthcheck(ctx)`, `CheckHealth(ctx, addr)` (напрямую, мимо `HTTP_PROXY`) →
-  подкоманда `api healthcheck`; healthkit: `PanicError` — panic проверки в `Run` и `WithTimeout`.
-- Breaking — authnkit: `WithIssuer`, `WithAudience` удалены → `JWTConfig.Issuer`, `Audience`
-  (`JWT_ISSUER`, `JWT_AUDIENCE` через запятую); сервисам на общем `JWT_SECRET` — свой `JWT_AUDIENCE`;
-  `JWTConfig` не сравним `==` (`Audience []string`) → сравнивать поля.
-- Изменения — authnkit: ротация секрета — `JWTConfig.PreviousSecret` (`JWT_PREVIOUS_SECRET`).
-- Breaking — logkit: `Attr` — `func(ctx) (any, bool)`, а не `(slog.Value, bool)` → значение без
-  обёртки `slog.*Value`, `//nolint:forbidigo` у регистрации не нужен.
+S1–S13 сделаны, тег `v1.3.0` — локально на коммите S13. Аннотация —
+`git tag -l --format='%(contents)' v1.3.0` (копия — `M/rel-v130/annotation-v1.3.0.txt`), собрана из
+заготовок `M/annotation-v1.3.0.md` и «Где мы сейчас» коммита `be827cf`. Ждёт валидатора партии,
+затем push `main` и тега (дирижёр); после push план удаляется отдельным `chore(plan)`.
