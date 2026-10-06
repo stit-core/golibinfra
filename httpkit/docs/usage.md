@@ -309,13 +309,18 @@ healthkit.Provide(func(s *Sync) healthkit.Probe { return healthkit.New("sync", s
 
 ## Остановка за балансировщиком
 
-Под балансировщиком (k8s Service, ingress) задайте паузу дренажа:
-`HTTP_SHUTDOWN_DRAIN_DELAY` не меньше времени, за которое балансировщик по
-`/ready` выводит инстанс (в k8s — `periodSeconds × failureThreshold`
-readiness-пробы), обычно 5–10 с. Пауза, `HTTP_SHUTDOWN_TIMEOUT` и бюджеты
-остальных хуков (`NATS_DRAIN_TIMEOUT`, …) укладываются в `fx.StopTimeout`, а он — в
-`terminationGracePeriodSeconds`; HTTP берёт не больше двух третей бюджета
-([configuration.md § Остановка](configuration.md#остановка)):
+Под балансировщиком (k8s Service, ingress, Traefik) задайте паузу дренажа
+`HTTP_SHUTDOWN_DRAIN_DELAY`, обычно 5–10 с: пока она идёт, listener принимает
+запросы, а отправители узнают об остановке. В k8s удаляемый под сразу выпадает из
+EndpointSlice — пауза покрывает время, пока это дойдёт до kube-proxy и ingress.
+Балансировщик со своей проверкой здоровья (Traefik, ALB) выводит инстанс по `503`
+`/ready` — пауза не меньше его интервала проверки × порога отказов. Без паузы
+(`0s`, по умолчанию) `/ready` 503 на остановке почти не виден: listener закрывается
+сразу.
+
+Пауза, `HTTP_SHUTDOWN_TIMEOUT` и бюджеты остальных хуков (`NATS_DRAIN_TIMEOUT`, …)
+укладываются в `fx.StopTimeout`, а он — в `terminationGracePeriodSeconds`; HTTP берёт
+не больше двух третей бюджета ([configuration.md § Остановка](configuration.md#остановка)):
 
 ```go
 fx.New(
