@@ -175,8 +175,10 @@ const UnitSeconds = "s"
 p := metrictest.NewProvider()
 svc := NewService(NewMetrics(p.Meter("test"))) // в приложении Meter приходит из графа
 svc.Login(ctx, creds)
-s := p.Collect(t).Get(t, "biz_auth_login_attempts_total", "result", "ok")
-// s.Kind == metrictest.Counter, s.Unit == bizmetric.UnitEvent, s.Value == 1
+snap := p.Collect(t)
+s := snap.Get(t, "biz_auth_login_attempts_total", "result", "ok")
+// s.Kind == metrictest.Counter, s.Unit == bizmetric.UnitEvent, s.Value == 1;
+// snap.Value("biz_auth_login_attempts_total") == 1 — исход ровно один, лишней серии нет
 ```
 
 ## Инварианты и подводные камни

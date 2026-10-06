@@ -3,6 +3,7 @@ package metrictest
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"testing"
@@ -197,8 +198,26 @@ func TestCollect_ProviderReplacedFails(t *testing.T) {
 	Collect(t)
 	otel.SetMeterProvider(sdkmetric.NewMeterProvider())
 	defer otel.SetMeterProvider(process.MeterProvider)
-	if msg := fatalOf(t, func(tb testing.TB) { Collect(tb) }); !strings.Contains(msg, "подменён") {
+	if msg := fatalOf(t, func(tb testing.TB) { Collect(tb) }); !strings.Contains(msg, "поставил не metrictest") {
 		t.Fatalf("replaced provider must fail Collect, got %q", msg)
+	}
+}
+
+// Обратный порядок: telemetry.Init до первого Collect. Collect не ставит провайдер процесса
+// поверх чужого, а падает: иначе инструменты, собранные раньше, писали бы мимо снимка, и
+// проверка «записи нет» проходила бы. Свой процесс: в этом бинаре первый Collect уже был.
+func TestCollect_ForeignProviderBeforeFirstCollectFails(t *testing.T) {
+	const child = "METRICTEST_FOREIGN_FIRST"
+	if os.Getenv(child) == "1" {
+		otel.SetMeterProvider(sdkmetric.NewMeterProvider())
+		fmt.Print(fatalOf(t, func(tb testing.TB) { Collect(tb) }))
+		return
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestCollect_ForeignProviderBeforeFirstCollectFails$")
+	cmd.Env = append(os.Environ(), child+"=1")
+	out, err := cmd.CombinedOutput()
+	if err != nil || !strings.Contains(string(out), "поставил не metrictest") {
+		t.Fatalf("first Collect over a foreign global provider must fail; child: %v\n%s", err, out)
 	}
 }
 

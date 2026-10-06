@@ -166,15 +166,14 @@ blocked-by: —
   пакета вне замыканий; не тест второго провайдера — страж видит все пакеты, а не перечень китов.
 - **metrictest.** Путь — по источнику `Meter`, у каждого один способ. Переданный (бизнес-метрики,
   провайдер telemetry в boot-тесте) — `NewProvider()`: провайдер теста, снимок без дельт, параллельно
-  и при `-count`; фильтр scope не нужен. Глобальный (киты) — провайдер процесса, его ставит первый
-  `Collect`, не импорт: иначе импорт ради `NewProvider` делал пустой проверку «граф поставил
-  глобальный провайдер» и менял делегат OTel под тестом; цена — записи до первого `Collect` не видны.
-  Подмена после первого `Collect` роняет его. `Get` — ровно эти labels, `Find`/`Value` — фильтр;
-  `Sub` оставляет новую серию и с нулём, gauge — текущим. Повтор (`-count`): тесты снимков — на
-  `NewProvider`, UpDownCounter на провайдере процесса — labels с номером прогона (natskit). Коллизии —
-  своя трансляция `UnderscoreEscapingWithSuffixes` с таблицами единиц otlptranslator целиком (сверка вне
-  репо: 0 расхождений из 12 444); ряды гистограммы не сверяет — сказано в доке. Свой провайдер — у
-  `internal/otelkit` и `telemetry` (связка с SDK).
+  и при `-count`. Глобальный (киты) — провайдер процесса: его ставит первый `Collect`, не импорт (иначе
+  импорт ради `NewProvider` делал пустой проверку графа); цена — записи до первого `Collect` не видны.
+  SDK-провайдер до первого `Collect` и подмена после роняют его. `Get` — ровно эти labels,
+  `Find`/`Value` — фильтр; `Sub` оставляет новую серию и с нулём, gauge — текущим. Повтор: тесты
+  снимков — на `NewProvider`, UpDownCounter процесса — labels с номером прогона. Коллизии — своя
+  трансляция `UnderscoreEscapingWithSuffixes` с таблицами единиц otlptranslator (сверка вне репо — 0
+  расхождений); ряды гистограммы не сверяет — сказано в доке. Свой провайдер — у `internal/otelkit`
+  и `telemetry`.
 - **Аудит.** `Entry.Enrich(ctx)` ядра auditkit зовут pgstore, `audittest` и свой `Logger` до
   `Validate`. Ключ IP — из `internal/`, auditkit не импортирует httpkit.
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его, base64url — нет (`logkit-redact-gaps`).
@@ -250,9 +249,10 @@ blocked-by: —
 - **OpenAPI.** `openapi.json` перегенерировать: `$schema` снят; `HTTP_DOCS_ENABLED=true` — только в
   dev.
 - **Метрики.** Хелперы `counted`/`counter` и свой `ManualReader` → `metrictest.NewProvider()`:
-  подтесты `auth`, `verification` — `NewMetrics(p.Meter("test"))`, `p.Collect(t).Get(t, name, "result",
-  …)`; `TestBoot` — `tapped.MeterProvider = p.MeterProvider` в `fx.Decorate`, `IsType` глобального
-  провайдера остаётся: `NewProvider` его не ставит, а `metrictest.Collect` с telemetry не смешивают.
+  подтесты `auth`, `verification` — `NewMetrics(p.Meter("test"))`, `snap := p.Collect(t)`,
+  `snap.Get(t, name, "result", r).Value == 1` и `snap.Value(name) == 1` (исход ровно один);
+  `TestBoot` — в `fx.Decorate` запомнить провайдер telemetry (`telemetryMP`) и подменить его
+  `p.MeterProvider`, `IsType` → `require.Same(t, telemetryMP, otel.GetMeterProvider())`.
 - **Тесты.** Лесенка `cmd/migrate/migrate_test.go` может перейти на хелпер testkit (иначе —
   `repair-harness` S7: `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...), …)`).
   `scripts/tools/test.sh:21-22` — testkit без Docker вне `-short` — FAIL, обход
@@ -271,11 +271,11 @@ blocked-by: —
 `fx.Provide(context.Background)`.
 
 ## Где мы сейчас
-Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`); круг фиксов B1,
-B2, N1–N9 сделан (N10 — в S8), дальше перепроверка валидатором, затем S8 (natskit). Хвост для
-S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
-(1 прогон из 4), а дока обещает «снимает интерес сразу»; в круге фиксов natskit упал в 1 из 7
-прогонов гейта (тест не записан), при `-count=2` — 8 давних падений JetStream-тестов (N10).
+Этап S1–S7 принят (`M/validation-harden-authn-release-A.md`, перепроверка `cd654a7` — PASS),
+остатки R1–R4 — до S8, R5 — в S8. Дальше S8 (natskit). Хвост для S8:
+`TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
+(1 прогон из 4), а дока обещает «снимает интерес сразу»; natskit упал в 1 из 7 прогонов гейта
+(тест не записан), при `-count=2` — 8 давних падений JetStream-тестов (N10).
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:

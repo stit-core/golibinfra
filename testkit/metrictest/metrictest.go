@@ -95,16 +95,21 @@ var (
 // Collect снимает серии провайдера процесса — глобального MeterProvider, в который
 // пишут киты. Его ставит первый Collect, а не импорт пакета: инструменты, созданные
 // раньше от глобального провайдера OTel, делегат переносит на него, записи до первого
-// Collect не видны — тест снимает before до действия. Подмена глобального провайдера
-// после первого Collect (telemetry.Init, otel.SetMeterProvider) роняет Collect: в
-// таком бинаре метрики проверяют через NewProvider. Снимок видит записи всего
-// процесса: тест, сравнивающий дельты, не идёт параллельно с тестами тех же серий.
+// Collect не видны — тест снимает before до действия. SDK-провайдер, поставленный
+// глобальным до первого Collect (telemetry.Init, otel.SetMeterProvider), и подмена
+// глобального провайдера после него роняют Collect: в таком бинаре метрики проверяют
+// через NewProvider. Снимок видит записи всего процесса: тест, сравнивающий дельты, не
+// идёт параллельно с тестами тех же серий.
 func Collect(t testing.TB) Snapshot {
 	t.Helper()
-	install.Do(func() { otel.SetMeterProvider(process.MeterProvider) })
+	install.Do(func() {
+		if _, sdk := otel.GetMeterProvider().(*sdkmetric.MeterProvider); !sdk {
+			otel.SetMeterProvider(process.MeterProvider)
+		}
+	})
 	if otel.GetMeterProvider() != process.MeterProvider {
-		t.Fatalf("metrictest: глобальный MeterProvider подменён после первого Collect (telemetry.Init, otel.SetMeterProvider) — " +
-			"провайдер процесса один; Meter, переданный коду, проверяет NewProvider")
+		t.Fatalf("metrictest: глобальный MeterProvider поставил не metrictest (telemetry.Init, otel.SetMeterProvider) — " +
+			"до первого Collect или после; провайдер процесса один, Meter, переданный коду, проверяет NewProvider")
 	}
 	return process.Collect(t)
 }

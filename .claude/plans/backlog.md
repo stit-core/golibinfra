@@ -45,7 +45,9 @@
   audittest маршалят и видят откат (`pgtest` с откатом), logtest через `slog.Record`, authntest,
   `MemoryCache`, таймеры clockkit (KTST-03, KTST-04, KTST-05, KDOC-08). Триггер: партия 3.
 - **tests-mutants** — убить 7 выживших мутантов (jwks ×4, `RecordSuccess` bruteforcekit, `OnStop`
-  cachekit, `Reset` clockkit) и тест таймаута healthkit с дедлайном (KTST-02). Триггер: партия 3.
+  cachekit, `Reset` clockkit) и тест таймаута healthkit с дедлайном (KTST-02); тесты метрик amocrmkit
+  сверяют `Value` без `Kind` — `amocrm_api_calls_total`, ставший UpDownCounter, их проходит: тип
+  серии, как в anthropickit (валидатор A этапа S1–S7 `harden-authn-release`, R4). Триггер: партия 3.
 - **gate-hook-paths** — pre-push зовёт `scripts/gate-clean.sh` из рабочего дерева: правка скрипта
   выключает гейт push — гонять версию из пушимого коммита (KGATE-08); ложные отказы guard на
   `find -name pre-push`, `awk`/`sort`/`cp` из хука (валидатор B этапа B1–B3). Триггер: партия 3.
