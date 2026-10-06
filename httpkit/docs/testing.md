@@ -30,16 +30,16 @@ func TestGetUser(t *testing.T) {
 `AssertAPIError` — статус, `application/problem+json`, `code` и `request_id`,
 равный `X-Request-ID` ответа.
 
-То, что сервер берёт из графа, `NewAPI` берёт опциями: `WithAuth(extract)` —
-`AuthExtractor` (без него защищённая операция отвечает `500 AUTH_NOT_CONFIGURED`, а не
-открыта), `WithSecuritySchemes(entries...)` — схемы (с ними операция без `Security` и без
-`httpkit.Public` валит тест, как старт `Module`), `WithConfig(cfg)` — конфиг вместо
+То, что сервер берёт из графа, `NewAPI` берёт опциями: `WithSecuritySchemes(entries...)` —
+схемы с extractor'ами (`SecuritySchemeEntry.Extract`; схема без него закрывает операцию
+`500 AUTH_NOT_CONFIGURED`, схема `Security` вне них, как и операция без `Security` и без
+`httpkit.Public` при схемах, валит тест, как старт `Module`), `WithConfig(cfg)` — конфиг вместо
 `httpkit.NewConfig()`, `WithLogger(log)` — логгер: причина 5xx — строкой `handler error`
 с `request_id` ответа:
 
 ```go
 api := handlertest.NewAPI(t, func(api huma.API) { registerRoutes(api, svc) },
-    handlertest.WithAuth(extract))
+    handlertest.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearer, Extract: extract}))
 handlertest.AssertAPIError(t, api.Get("/me"), http.StatusUnauthorized, "UNAUTHORIZED")
 ```
 

@@ -128,10 +128,7 @@ func TestModule_Graph(t *testing.T) {
 	cust := hubtest.NewCustomerIssuer(t)
 	cfg := hubtest.SSOConfig(emp, cust)
 
-	var (
-		extract httpkit.AuthExtractor
-		schemes []httpkit.SecuritySchemeEntry
-	)
+	var schemes []httpkit.SecuritySchemeEntry
 	type schemesIn struct {
 		fx.In
 		Schemes []httpkit.SecuritySchemeEntry `group:"httpkit.security_scheme"`
@@ -141,20 +138,25 @@ func TestModule_Graph(t *testing.T) {
 		fx.Supply(cfg),
 		fx.Provide(logkit.Nop),
 		sso.Module,
-		fx.Populate(&extract),
 		fx.Invoke(func(in schemesIn) { schemes = in.Schemes }),
 	)
 	app.RequireStart().RequireStop()
 
-	if extract == nil {
-		t.Fatal("httpkit.AuthExtractor not provided")
-	}
-	names := map[string]bool{}
+	byName := map[string]httpkit.SecuritySchemeEntry{}
 	for _, s := range schemes {
-		names[s.Name] = true
+		byName[s.Name] = s
 	}
-	if !names[cfg.SchemeName()] || !names[cfg.CustomerSchemeName()] {
-		t.Fatalf("security schemes = %v, want both contours", names)
+	employee, customer := byName[cfg.SchemeName()], byName[cfg.CustomerSchemeName()]
+	if employee.Extract == nil || customer.Extract == nil {
+		t.Fatalf("security schemes = %v, want both contours with an extractor", byName)
+	}
+	// Схема открывает операцию только своим cookie: сессия заказчика не открывает контур сотрудника.
+	req := hubtest.Request(sso.DefaultCustomerCookie, cust.CustomerToken(t))
+	if _, err := employee.Extract(req); !errors.Is(err, sso.ErrNoSessionCookie) {
+		t.Fatalf("employee scheme with a customer cookie: %v, want ErrNoSessionCookie", err)
+	}
+	if _, err := customer.Extract(req); err != nil {
+		t.Fatalf("customer scheme with its cookie: %v", err)
 	}
 }
 

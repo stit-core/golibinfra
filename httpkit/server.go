@@ -53,11 +53,14 @@ type Config struct {
 	// TrustProxyHops — сколько доверенных прокси перед сервисом дописывают X-Forwarded-For
 	// (ClientIP): 0 — IP клиента — адрес соединения.
 	TrustProxyHops int `envconfig:"HTTP_TRUST_PROXY_HOPS" default:"0"`
-	CORS           CORSConfig
-	RateLimit      RateLimitConfig
-	MaxBody        MaxBodyConfig
-	Security       SecurityHeadersConfig
-	Idempotency    IdempotencyConfig
+	// TrustTraceContext — traceparent и baggage клиента принимаются (OTel): только за доверенным
+	// краем, иначе клиент выбирает trace_id, сэмплирование и значения baggage.
+	TrustTraceContext bool `envconfig:"HTTP_TRUST_TRACE_CONTEXT" default:"false"`
+	CORS              CORSConfig
+	RateLimit         RateLimitConfig
+	MaxBody           MaxBodyConfig
+	Security          SecurityHeadersConfig
+	Idempotency       IdempotencyConfig
 }
 
 // ErrConfig — невалидный конфиг httpkit; оборачивается в ошибку старта.
@@ -105,46 +108,37 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// SecuritySchemeEntry — одна запись в openapi `components.securitySchemes`.
-// Регистрируется caller'ом через ProvideSecurityScheme (fx-группа
-// `httpkit.security_scheme`) или опцией WithSecuritySchemes. httpkit не выставляет
-// дефолтных схем.
+// SecuritySchemeEntry — схема безопасности: запись `components.securitySchemes` OpenAPI и её
+// extractor. Регистрируется caller'ом через ProvideSecurityScheme (fx-группа
+// `httpkit.security_scheme`) или опцией WithSecuritySchemes. httpkit не выставляет дефолтных
+// схем.
 type SecuritySchemeEntry struct {
 	Name   string
 	Scheme *huma.SecurityScheme
+	// Extract проверяет credentials этой схемы (HumaAuth); без него операция со схемой не
+	// стартует (ErrAuthNotConfigured).
+	Extract AuthExtractor
 }
 
-// ServerOption — опция NewServer: схемы безопасности, extractor, хранилище идемпотентности,
-// middleware потребителя, правка huma.Config, публичные маршруты мимо huma. Опция с nil
-// ничего не задаёт.
+// ServerOption — опция NewServer: схемы безопасности, хранилище идемпотентности, middleware
+// потребителя, правка huma.Config, публичные маршруты мимо huma. Опция с nil ничего не задаёт.
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
 	schemes      []SecuritySchemeEntry
-	extract      AuthExtractor
 	store        IdempotencyStore
 	middleware   []func(http.Handler) http.Handler
 	humaConfig   []func(*huma.Config)
 	publicRoutes PublicRoutes
 }
 
-// WithSecuritySchemes добавляет схемы в `components.securitySchemes` OpenAPI.
+// WithSecuritySchemes добавляет схемы в `components.securitySchemes` OpenAPI, а их extractor'ы —
+// в HumaAuth.
 func WithSecuritySchemes(schemes ...SecuritySchemeEntry) ServerOption {
 	return func(o *serverOptions) { o.schemes = append(o.schemes, schemes...) }
 }
 
-// WithAuthExtractor отдаёт серверу AuthExtractor: HumaAuth проверяет им операции с Security,
-// Idempotency делит ключи по субъекту. Без него операция с Security отвечает 500
-// AUTH_NOT_CONFIGURED, а старт Module падает с ErrAuthNotConfigured.
-func WithAuthExtractor(extract AuthExtractor) ServerOption {
-	return func(o *serverOptions) {
-		if extract != nil {
-			o.extract = extract
-		}
-	}
-}
-
-// WithIdempotencyStore включает в цепочку кита Idempotency поверх store.
+// WithIdempotencyStore включает Idempotency поверх store — в цепочке huma, после HumaAuth.
 func WithIdempotencyStore(store IdempotencyStore) ServerOption {
 	return func(o *serverOptions) {
 		if store != nil {
@@ -265,14 +259,14 @@ func NewServer(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, er
 
 // chain — цепочка кита: RequestID, ClientIP и OTel первыми (request_id, IP клиента и trace_id
 // в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight попадали в
-// RED-метрики и access-log; дедлайн запроса — над Idempotency: она видит ответ хендлера, а не 503
-// дедлайна, и держит резерв, пока хендлер не вернётся; middleware потребителя — внутри всей
-// цепочки кита.
+// RED-метрики и access-log; дедлайн запроса — над Idempotency (в цепочке huma): она видит ответ
+// хендлера, а не 503 дедлайна, и держит резерв, пока хендлер не вернётся; middleware
+// потребителя — внутри всей цепочки кита.
 func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) http.Handler {
-	mws := []func(http.Handler) http.Handler{
+	return append([]func(http.Handler) http.Handler{
 		RequestID(),
 		ClientIP(cfg.TrustProxyHops, log),
-		OTel(cfg.QuietPaths...),
+		OTel(cfg.TrustTraceContext, cfg.QuietPaths...),
 		AccessLog(log, cfg.QuietPaths...),
 		Metrics(),
 		Recovery(log),
@@ -282,19 +276,11 @@ func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) 
 		MaxBody(cfg.MaxBody),
 		deadline(cfg.RequestTimeout, log),
 		headAsGet,
-	}
-	if o.store != nil {
-		var idem []IdempotencyOption
-		if o.extract != nil {
-			idem = append(idem, WithAuth(o.extract))
-		}
-		mws = append(mws, Idempotency(cfg.Idempotency, o.store, log, idem...))
-	}
-	return append(mws, o.middleware...)
+	}, o.middleware...)
 }
 
-// BindAPI инициализирует huma.API поверх chi с лимитом тела операции и HumaAuth первыми
-// huma-middleware; операции, зарегистрированные на нём (и на его группах), проверяет
+// BindAPI инициализирует huma.API поверх chi с лимитом тела операции, HumaAuth и Idempotency
+// первыми huma-middleware; операции, зарегистрированные на нём (и на его группах), проверяет
 // CheckRoutes. Идемпотентен и безопасен из нескольких горутин; middleware chi после него не
 // регистрируются.
 func (s *Server) BindAPI() huma.API {
@@ -335,7 +321,10 @@ func (s *Server) bindAPI() {
 	}
 	s.api = &registry{API: api}
 	s.api.adapter = &opAdapter{Adapter: api.Adapter(), router: s.router, reg: s.api}
-	s.api.UseMiddleware(operationBodyLimit, HumaAuth(s.opts.extract, s.log))
+	s.api.UseMiddleware(operationBodyLimit, HumaAuth(s.opts.schemes, s.log))
+	if s.opts.store != nil {
+		s.api.UseMiddleware(humaMiddleware(Idempotency(s.cfg.Idempotency, s.opts.store, s.log)))
+	}
 }
 
 func (s *Server) registry() *registry {

@@ -72,11 +72,12 @@ blocked-by: —
   пускает заголовок идемпотентности; panic после заголовка обрывает ответ. Проверка: `httpkit-a/run.sh <rev>
   contract security lifecycle` → H04, H06, H07, H10, H16, H17, H35 PASS
   - Подтверждено: дерево S8 (`M/exc2/logs/s8-*.log`) — семь PASS (H35: 503 через 200 мс, ctx с дедлайном)
-- [ ] **AC8** — Край httpkit: операцию открывает только её схема (Bearer не открывает `AdminKey`); extractor —
+- [x] **AC8** — Край httpkit: операцию открывает только её схема (Bearer не открывает `AdminKey`); extractor —
   один раз на запрос и при отказе бэкенда; `Security` со схемой вне `components` — ошибка старта и без схем в
   графе; trace-context и baggage клиента без явного доверия не принимаются; `ip:port` в XFF даёт ip; тест кладёт
   IP клиента в ctx без middleware. Проверка: `httpkit-a/run.sh <rev> security` → H15, H18 PASS; `httpkit-b/run.sh
   <rev> exp` → HX07 PASS
+  - Подтверждено: дерево S9 (`M/exc2/logs/s9-*.log`) — H15, H18 PASS, HX07 — 1 вызов (503); httpkit-a — без FAIL
 - [ ] **AC9** — Секреты: пароль и токен из URL и DSN не попадают в ошибки, логи и спаны natskit, cachekit,
   storagekit, telemetry и httpclient; маски logkit по умолчанию прячут base64url-токены и ссылки с ними, пароль
   DSN, коды вне словаря, поля структур и map под указателем в `Any`, JSON в `RawMessage` и `[]byte`, `otpauth`;
@@ -123,9 +124,10 @@ blocked-by: —
 - [x] **S8** — Контракт HTTP httpkit (KCOR-09, KCOR-10, KCOR-11, KSEC-13, KSEC-14, KSEC-15, KAPI-09)
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S7
   - Сделано: AC7 → PASS; мутанты `M/exc2/mut_s8.py` 27/27; под API: H16, `downStore` (S7), H35 — дедлайн
-- [ ] **S9** — Край httpkit (KSEC-08, KFX-11, KSEC-12; N7, N8, N9, N11, f1-07 валидатора B
+- [x] **S9** — Край httpkit (KSEC-08, KFX-11, KSEC-12; N7, N8, N9, N11, f1-07 валидатора B
   `harden-gate-defaults` — тесты и строки доки; N4 валидатора v1.3.0 — IP клиента в ctx для тестов)
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: S8
+  - Сделано: AC8 → PASS; мутанты `M/exc2/mut_s9.py` 12/12; под API: zzka2 (`bearerAuth`, H15, H18, H40, H52), zzhb
 
 ### Секреты и дефолты
 - [ ] **S10** — URL и DSN без секретов в ошибках, логах и спанах, `SECURITY.md` к факту (KDOC-02, KSEC-03)
@@ -145,60 +147,49 @@ blocked-by: —
   - Проверка: `make gate-clean` → зелёный · Закрывает: — · Зависит от: S6, S9, S11, S12, S13
 
 ## Решения
-- **ENV.** Ридер — `internal/envconf` (35 конструкторов и `config.Env`): `KEY=` — как незаданная (U4), пустое —
-  `-`, список из разделителей — ошибка; имя `<P>_<TAG>`, голый `<TAG>` — где кит обещает; вложенная структура —
-  без тега, с тем же префиксом (U5; тег — ошибка, B1), вторая секция — свой `Load` с `EnvPrefixed`; тип вне ридера
-  (`map`, `[]byte`, `Set`, `UnmarshalBinary`) и поле без тега и `ignored` — ошибка (канон — строка с `Validate`
-  или `UnmarshalText`); целые — десятичные.
+- **ENV.** Ридер — `internal/envconf` (`New*Config`, `config.Env`): `KEY=` — как незаданная (U4), пустое — `-`;
+  имя `<P>_<TAG>`, вложенная структура — без тега с тем же префиксом (U5; тег — ошибка, B1), вторая секция —
+  `Load` с `EnvPrefixed`; тип вне ридера и поле без тега и `ignored` — ошибка; целые — десятичные.
 - **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки или
-  `ErrConfig` («без предела» у новых — `-1`); формат — и у выключенного; nil-опции игнорируются. тик outbox против
-  простоя транзакции — при `pgkit.PoolConfig` в графе; ноль, уходящий в драйвер, — его значение из доки;
-  `RedactConfig{}` — безопасный дефолт.
-- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>(ctor, anns…)` с проверкой типа, значение
-  — `Supply<Thing>`; проба инстанса — `natskit.ProvideProbe(name)`. Конструктор — `(cfg, зависимости…, log,
-  opts…)`, функция над объектом берёт его первым; логгер — параметр (исключения — в CLAUDE.md). Опции httpclient —
-  значение `Options` (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после optional
-  `pgkit.Migrated` (KX61b).
-- **pgkit.** Мигратор — `lock_timeout` = `PG_MIGRATE_LOCK_TIMEOUT` (5 с, ноль — `ErrConfig`) параметром
-  `MigrateUp/Down/UpAll`, у advisory-lock — только дедлайн; дедлайн — cancel request серверу до конца прогона
-  (`StatementTimeout` не видит ctx, `GracefulStop` — гонка флага `M/exc2/logs/s4-gracefulstop-race.log`, обрыв
-  сокета ALTER не снимает — E09), упавшая миграция — `dirty`. `OnStop` пула — 2/3 остатка, затем WARN и `nil`
-  (KX65), логгер — из графа. Вложенный строже внешней (и `ReadOnly` в `ReadWrite`) — `ErrNestedTxStricter`.
-  `CheckSchemaOnStart(src)` — у хранилищ после optional `Migrated`, у outbox — перед партициями, `Instance` —
-  `outboxkit.SchemaChecker` (KX62); фейк `pgtest` — паритет у S3 второго плана.
-- **outbox: порядок и предел.** `created_at` — `clock_timestamp()` вставки: писатели, сериализованные блокировкой
-  агрегата, вставляют после коммита соседа (E10); ключ партиций и `ORDER BY` те же. Предел — по JSONB-тексту тем
-  же `INSERT` (числа в экспоненте раздувают JSONB ×4, N1 валидатора B): мерит хранилище, не `Bus` — параметр
-  `Repository.Insert(…, maxBytes)` (у инстанса свой, фабрика его не знает).
-- **outbox: трасса и кардинальность.** Строка хранит W3C trace-context `Publish` (колонка `trace_context` миграции
-  0003, без baggage); producer-спан — ребёнок контекста со ссылкой на тик (`natskit.WithTraceParent`), строка без
-  контекста — в трассе тика (KO13). Label `subject` — только шаблоном `WithMetricSubject(fn)` инстанса (как
-  `WithSubjects`), по умолчанию — серия на инстанс (KO11, KO21; gauge'и — самое старое и сумма). Producer-спан
-  natskit — шаблон или `natskit.publish` (стрим по subject без запроса к серверу не узнать); `outbox.instance` не
-  нужен — его называет ссылка на тик.
-- **Идемпотентность и кэш.** `SetNX`, `GetDel`, `CompareAndDelete`, `CompareAndSet` — вторым клиентом без повторов
-  (свой пул: до 2×`REDIS_POOL_SIZE`): повтор видит эффект первой попытки (E18); `Get`, `Set`, `Delete`, теги,
-  `Ping` — с повторами, их повтор даёт то же состояние. `IdempotencyStore.Set(…, token, …) (stored, err)` —
-  compare-and-set по токену (E07), без sentinel (cachekit не импортирует httpkit); `!stored` — WARN и `skipped`.
-  Набор — `testkit/idempotencytest`. Предел — отказ, не вытеснение (резерв и lock не пропадают молча):
-  `MemoryCache.WithMaxKeys` (100 000, `ErrMemoryFull`); `httpkit.MemoryStore` — тот же класс KSEC-06: 100 000 без
-  опции (свой — cachekit); httpclient `MaxHosts` (1024, `-1` — без предела) — один реестр breaker'ов и label
-  `host`, сверх — `other`.
+  `ErrConfig` («без предела» у новых — `-1`); формат — и у выключенного; nil-опции игнорируются; тик outbox против
+  простоя транзакции — при `pgkit.PoolConfig` в графе; `RedactConfig{}` безопасен.
+- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>` с проверкой типа, значение —
+  `Supply<Thing>`; конструктор — `(cfg, зависимости…, log, opts…)`, логгер — параметр (исключения — в CLAUDE.md);
+  опции httpclient — значение `Options` (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после
+  `Migrated` (KX61b).
+- **pgkit.** Мигратор — `lock_timeout` = `PG_MIGRATE_LOCK_TIMEOUT` (5 с) параметром `MigrateUp/Down/UpAll`, у
+  advisory-lock — только дедлайн; дедлайн — cancel request серверу до конца прогона (`GracefulStop` — гонка флага,
+  `M/exc2/logs/s4-gracefulstop-race.log`; E09). `OnStop` пула — 2/3 остатка, затем WARN и `nil` (KX65). Вложенный
+  строже внешней — `ErrNestedTxStricter`. `CheckSchemaOnStart(src)` — после `Migrated`, у outbox — перед
+  партициями (KX62); паритет `pgtest` — S3 второго плана.
+- **outbox.** `created_at` — `clock_timestamp()` вставки (E10). Предел — по JSONB-тексту тем же `INSERT`
+  (экспонента раздувает ×4): мерит хранилище, параметр `Repository.Insert(…, maxBytes)`. Строка хранит W3C
+  trace-context `Publish` (колонка 0003, без baggage), producer-спан — его ребёнок со ссылкой на тик (KO13); label
+  `subject` — только шаблоном `WithMetricSubject` (KO11, KO21); имя спана natskit — шаблон или `natskit.publish`.
+- **Идемпотентность и кэш.** `SetNX`, `GetDel`, `Compare*` — вторым клиентом без повторов (до
+  2×`REDIS_POOL_SIZE`): повтор видит эффект первой попытки (E18); прочие — с повторами. `IdempotencyStore.Set(…,
+  token, …) (stored, err)` — compare-and-set по токену (E07), без sentinel (cachekit не импортирует httpkit);
+  `!stored` — WARN, `skipped`; набор — `testkit/idempotencytest`. Предел — отказ, не вытеснение:
+  `MemoryCache.WithMaxKeys` (100 000, `ErrMemoryFull`), `httpkit.MemoryStore` — 100 000 без опции (свой —
+  cachekit), httpclient `MaxHosts` (1024, `-1`) — реестр breaker'ов и label, сверх — `other`.
 - **Контракт HTTP.** Лимит тела — один `MaxBytesReader`, лимит фиксируется на первом чтении: huma-middleware
-  ставит `MaxBodyBytes` операции (поднятый хуком — выше общего), скрытой реестр зовёт те же `OnAddOperation`;
-  `*http.MaxBytesError` в причине ошибки huma — 413 (H17); до S9 тело с ключом идемпотентности читается до
-  операции — по общему лимиту. Не хранятся 408, 409, 425, 429: «не выполнено», повтор исполняет заново (H16); без
+  ставит `MaxBodyBytes` операции, скрытой реестр зовёт те же `OnAddOperation`; `*http.MaxBytesError` в причине
+  ошибки huma — 413 (H17). Не хранятся 408, 409, 425, 429: «не выполнено», повтор исполняет заново (H16); без
   субъекта и credentials — без дедупликации. `WWW-Authenticate` — хук кита по `components` (http — схема,
   oauth2/oidc — `Bearer`, прочие — имя), без хука — имена; HEAD — свой middleware, `Allow` — с HEAD. Дедлайн —
   `HTTP_REQUEST_TIMEOUT` 25s < `WriteTimeout`, `ReserveTTL` строго больше, отрицательный — выкл. (`-1`
-  длительностью не читается): 503 из таймера с Flush под мьютексом writer'а, над `Idempotency` — хранит ответ
-  срезанного хендлера; SSE (`Accept`) и upgrade — без дедлайна (H35). CORS — `Idempotency-Key` в дефолте. panic
-  после заголовка — Flush и `http.ErrAbortHandler`: без Flush клиент видит EOF до заголовков (H06).
-- **Край httpkit.** Extractor — в `SecuritySchemeEntry`; операция открыта, если прошла одна из её альтернатив
-  целиком; общий `AuthExtractor` графа удалён — один способ (H15). Идемпотентность — после маршрута и `HumaAuth`:
-  знает операцию и субъект, extractor — один вызов (HX07), replay получает маршрут (KOBS-12). Входящий
-  trace-context — ссылкой на новый корень, baggage отбрасывается; доверие — одна настройка, выключена (H18). XFF —
-  `netip.ParseAddrPort`, затем адрес.
+  длительностью не читается): 503 из таймера с Flush под мьютексом writer'а, над `Idempotency`; SSE (`Accept`) и
+  upgrade — без дедлайна (H35). CORS — `Idempotency-Key` в дефолте. panic после заголовка — Flush и
+  `http.ErrAbortHandler`: иначе EOF до заголовков (H06).
+- **Край httpkit.** Extractor — поле `SecuritySchemeEntry.Extract`; `HumaAuth(schemes, log)`: операция открыта,
+  если прошла одна из её альтернатив целиком, `{}` — без credentials (OpenAPI); отказы — 503 бэкенда, иначе
+  `APIError` extractor'а, иначе 401. Графовый `AuthExtractor`, `WithAuthExtractor`, `handlertest.WithAuth`,
+  `Idempotency(…, WithAuth)` удалены — один способ (H15); схема вне `components` — `ErrRoutes` и без схем (N8),
+  без `Extract` — `ErrAuthNotConfigured`. `Idempotency` — тот же net/http-middleware в цепочке huma после
+  `HumaAuth`: extractor — один вызов (HX07), replay — с маршрутом (KOBS-12), только операции huma. trace-context
+  клиента — `WithPublicEndpointFn` (ссылка на новом корне) и propagator без baggage, `HTTP_TRUST_TRACE_CONTEXT`
+  выключен (H18); `OTel(trust, quiet…)`. XFF — адрес, затем `ParseAddrPort` (N9); `ContextWithClientIP` (N4).
+  hubkit/sso — extractor своего cookie на контур, oidckit — схема с `Extract`.
 - **Секреты в URL.** Один `redactURL` в `internal/`: пароль userinfo, значения query, URL без схемы
   (`user:pass@host`), пароль keyword-DSN. httpclient: атрибуты попытки — на свой спан с очищенным URL,
   `*url.Error` — с очищенным URL (E03, E04); путь остаётся, README: секрет — не в пути.
@@ -227,17 +218,17 @@ blocked-by: —
   ошибка старта (`cmd/migrate` шаблона их накатывает); `PG_MIGRATE_LOCK_TIMEOUT` (5 с).
 - **outbox.** Миграция 0003 (мигратор берёт её сам; своя копия `SchemaSQL` — колонка `trace_context JSONB`);
   метрики без `subject` (дашборды — `WithMetricSubject`); предел тела — по JSONB.
-- **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate` шаблона); дедлайн запроса;
+- **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate` шаблона, `handlertest.WithSecuritySchemes`); дедлайн запроса;
   408/409/425/429 не воспроизводятся; trace-заголовки клиента — по настройке доверия.
 - **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — из `LockState`; обход
   длинного subject в адаптере не нужен.
 - **authnkit и auditkit.** Пароль длиннее 1 KiB — ошибка (DTO — свой `maxLength`); NUL и не-UTF-8 в аудите —
   `ErrInvalidEntry`; retention — env; владелец сессии из `Revoke` — автор аудита выхода.
 - **env для INFRA-HANDOFF:** новые переменные S4, S7 (`HTTPCLIENT_MAX_HOSTS`), S8 (`HTTP_REQUEST_TIMEOUT` <
-  `HTTP_WRITE_TIMEOUT`), S9, S12, S13; `STORAGE_S3_USE_SSL`; OTLP вне loopback; Redis — 2× пул.
+  `HTTP_WRITE_TIMEOUT`), S9 (`HTTP_TRUST_TRACE_CONTEXT`), S12, S13; `STORAGE_S3_USE_SSL`; OTLP вне loopback; Redis — 2× пул.
 
 ## Где мы сейчас
-Этап 1 принят (`M/validation-harden-kits-contracts-A.md`); этап 2: S4–S8 закрыты (AC4–AC7), дальше S9.
+Этап 1 принят (`M/validation-harden-kits-contracts-A.md`); этап 2 (S4–S9) закрыт (AC4–AC8) — дальше валидатор этапа, затем S10.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg,
@@ -266,7 +257,12 @@ blocked-by: —
   `IdempotencyStore.Set(ctx, key, token, record, ttl) (bool, error)`. httpkit: `IdempotencyStore.Set(ctx, key,
   token, record, ttl) (stored bool, err error)` — запись только поверх резерва этого токена (свой store —
   `testkit/idempotencytest.RunContract`), литерал `Config` без `RequestTimeout` — `ErrConfig`
-  (`HTTP_REQUEST_TIMEOUT` 25s меньше `HTTP_WRITE_TIMEOUT`, `RESERVE_TTL` больше; `-1s` — выкл.).
+  (`HTTP_REQUEST_TIMEOUT` 25s меньше `HTTP_WRITE_TIMEOUT`, `RESERVE_TTL` больше; `-1s` — выкл.). httpkit (S9):
+  extractor — `SecuritySchemeEntry.Extract`, `AuthExtractor` в графе и `WithAuthExtractor` удалены,
+  `HumaAuth(schemes, log)`, `Idempotency(cfg, store, log)` (без `WithAuth`), `OTel(trust, quiet…)`; схема `Security`
+  вне `components` — ошибка старта и без схем; handlertest: `WithAuth` → `WithSecuritySchemes` со схемой с
+  `Extract`. oidckit, hubkit/sso: `Module` не кладёт `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie
+  своего контура).
 - **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт; пустую строку или список задаёт `-`
   (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`, `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён
   нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые — десятичные; ошибка ENV —
@@ -292,9 +288,13 @@ blocked-by: —
   httpkit: тело сверх лимита в huma — 413, лимит операции выше общего поднимает транспортный, скрытая — по тем же
   хукам `OnAddOperation`; 408/409/425/429 и запросы без credentials идемпотентность не хранит; 401 — с
   `WWW-Authenticate`; HEAD на GET-маршрутах; ответ, не начатый к `HTTP_REQUEST_TIMEOUT`, — `503 REQUEST_TIMEOUT`
-  (SSE — без дедлайна); CORS пускает `Idempotency-Key`; panic после заголовка обрывает соединение.
+  (SSE — без дедлайна); CORS пускает `Idempotency-Key`; panic после заголовка обрывает соединение. httpkit (S9):
+  операцию открывает только альтернатива её схем целиком; идемпотентность — после `HumaAuth`, у операций huma;
+  trace-context клиента — ссылкой на новый корень, baggage — только с `HTTP_TRUST_TRACE_CONTEXT`; `ip:port` в
+  X-Forwarded-For — его IP.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,
   `outboxkit.WithMetricSubject`, `Message.TraceParent`, `OutMsg.MetricSubject`/`TraceParent`, миграция outbox 0003;
   `natskit.WithTraceParent`, `StreamMsg.TraceParent`; `testkit/idempotencytest`, `Cache.CompareAndSet`,
-  `cachekit.WithMaxKeys`, `ErrMemoryFull`, `HTTPCLIENT_MAX_HOSTS`; `HTTP_REQUEST_TIMEOUT`, код `REQUEST_TIMEOUT`.
+  `cachekit.WithMaxKeys`, `ErrMemoryFull`, `HTTPCLIENT_MAX_HOSTS`; `HTTP_REQUEST_TIMEOUT`, код `REQUEST_TIMEOUT`;
+  `HTTP_TRUST_TRACE_CONTEXT`, `httpkit.ContextWithClientIP`.

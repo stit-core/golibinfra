@@ -24,12 +24,13 @@ var Module = fx.Options(
 	httpkit.Module,
 
 	fx.Provide(sso.NewConfig), // HUB_SSO_* из ENV, с Validate
-	sso.Module,                // Verifier + CustomerVerifier + Extractor + схемы + AuthExtractor
+	sso.Module,                // Verifier + CustomerVerifier + Extractor + схемы с extractor'ами
 )
 ```
 
-`sso.Module` кладёт в граф `httpkit.AuthExtractor`, поэтому huma-операции с
-непустым `Security` начинают требовать сессию:
+`sso.Module` кладёт в граф схемы контуров с extractor'ами (`SecuritySchemeEntry.Extract` —
+cookie своего контура), поэтому huma-операции с их схемой в `Security` начинают требовать
+сессию; операция, которой подходят оба контура, перечисляет обе схемы альтернативами:
 
 ```go
 huma.Register(api, huma.Operation{
@@ -46,22 +47,19 @@ OpenAPI только при включённом контуре.
 
 ### Составной extractor
 
-`httpkit` принимает один `AuthExtractor`. Сервису, у которого кроме hub-сессии
-есть свой способ аутентификации, нужен `sso.Verifiers` — то же самое без
-привязки к `httpkit.AuthExtractor`:
+Extractor — у каждой схемы своей записью: сервис, у которого кроме hub-сессии есть свой
+способ аутентификации, объявляет свою схему рядом, а операция, которой подходит любая,
+перечисляет их альтернативами `Security`:
 
 ```go
 var Module = fx.Options(
 	fx.Provide(sso.NewConfig),
-	sso.Verifiers, // *Verifier, *CustomerVerifier, *Extractor, security-схемы
+	sso.Verifiers, // *Verifier, *CustomerVerifier, *Extractor, схемы контуров с extractor'ами
 
-	fx.Provide(func(hub *sso.Extractor, tokens *TokenAuth) httpkit.AuthExtractor {
-		return func(r *http.Request) (context.Context, error) {
-			if r.Header.Get("X-Service-Token") != "" {
-				return tokens.Extract(r)
-			}
-			return hub.Extract(r)
-		}
+	httpkit.ProvideSecurityScheme(func(tokens *TokenAuth) httpkit.SecuritySchemeEntry {
+		return httpkit.SecuritySchemeEntry{Name: "ServiceToken",
+			Scheme:  &huma.SecurityScheme{Type: "apiKey", In: "header", Name: "X-Service-Token"},
+			Extract: tokens.Extract}
 	}),
 	fx.Invoke(sso.RegisterIdentityLogAttr), // user_id в логах
 )

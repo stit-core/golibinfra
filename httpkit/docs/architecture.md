@@ -99,7 +99,7 @@ chi применяет middleware в порядке регистрации: пе
 |---|---|---|---|
 | 1 | `RequestID` | всегда | `X-Request-ID` в ctx до всего остального: он попадает в каждую строку лога и в атрибут спана |
 | 2 | `ClientIP` | всегда | IP клиента в ctx (`ClientIPFrom`, `HTTP_TRUST_PROXY_HOPS`) до спана: ключ лимитера, `client.address`, аудит и антибрутфорс видят один адрес; `r.WithContext` выше `OTel` не трогает объект запроса otelhttp |
-| 3 | `OTel` | всегда | server-span и входящий `traceparent`; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log |
+| 3 | `OTel` | всегда | server-span; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log. `traceparent` клиента — ссылка на спане нового корня, baggage не читается (клиент не выбирает trace_id и сэмплирование); `HTTP_TRUST_TRACE_CONTEXT=true` за доверенным краем — спан продолжает трассу клиента |
 | 4 | `AccessLog` | всегда | строка на запрос с `route`, `status`, `bytes`, `duration_ms` |
 | 5 | `Metrics` | всегда | RED на chi route-pattern; имя спана и `client.address`; ниже него — всё, что может ответить клиенту |
 | 6 | `Recovery` | всегда | ловит panic из всего, что ниже: 500 + `http_panics_total`; после записанного заголовка — обрыв соединения (`http.ErrAbortHandler`): усечённый ответ не выглядит полным; свой `http.ErrAbortHandler` хендлера пробрасывает |
@@ -109,10 +109,11 @@ chi применяет middleware в порядке регистрации: пе
 | 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом; лимит фиксируется на первом чтении — операция huma ставит свой `MaxBodyBytes` |
 | 11 | дедлайн запроса | если `RequestTimeout > 0` | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
 | 12 | HEAD как GET | всегда | HEAD без своего маршрута идёт в GET-маршрут (RFC 9110 §9.1), тело net/http не отправляет |
-| 13 | `Idempotency` | если есть `IdempotencyStore` (`WithIdempotencyStore`, в графе — значение) | дедуп write-запросов по `Idempotency-Key` |
-| 14 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
+| 13 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 
-`HumaAuth` и лимит тела операции — отдельный слой на `huma.API`.
+Лимит тела операции, `HumaAuth` и `Idempotency` (если есть `IdempotencyStore`) — отдельный
+слой на `huma.API`, в этом порядке, до middleware huma потребителя: идемпотентность знает
+операцию и субъекта.
 
 Почему так: `RequestID`, `ClientIP` и `OTel` первыми, чтобы контекст запроса был полным у
 всех остальных. `AccessLog` и `Metrics` — **над** `Recovery`, `CORS` и
@@ -127,11 +128,9 @@ preflight, лимитер, лимит тела, идемпотентность.
 - `logkit.Logger` — обязателен (`Recovery`, `AccessLog`, `HumaAuth`, `/ready`,
   причины 5xx, `ErrorLog`).
 - `IdempotencyStore` (`optional`) — есть в графе → `Idempotency` с
-  `Config.Idempotency` (`HTTP_IDEMPOTENCY_*`).
-- `AuthExtractor` (`optional`) → `HumaAuth` и scope идемпотентности; нет, а у
-  операции есть `Security`, — старт падает с `ErrAuthNotConfigured` и именами
-  операций.
-- `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI. Дубль имени и
+  `Config.Idempotency` (`HTTP_IDEMPOTENCY_*`) в цепочке huma после `HumaAuth`.
+- `[]SecuritySchemeEntry` (группа `httpkit.security_scheme`) → OpenAPI и extractor'ы
+  `HumaAuth` (`Extract`; у схемы операции его нет — старт падает с `ErrAuthNotConfigured`). Дубль имени и
   схема без `Name` или `Scheme` — ошибка сборки графа (`ErrConfig`): из группы значения
   приходят в случайном порядке, и в OpenAPI попала бы случайная из двух.
 - `Middlewares` (`optional`) → цепочка в порядке слайса.
@@ -228,7 +227,11 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 
 ## Аутентификация
 
-`HumaAuth(extract, log)` проверяет операции с непустым `Operation().Security`. Чтобы
+`HumaAuth(schemes, log)` проверяет операции с непустым `Operation().Security` extractor'ами их
+схем (`SecuritySchemeEntry.Extract`): операция открыта, если прошла одна из её альтернатив
+целиком — каждая схема альтернативы, в порядке имён, и личность в ctx — от неё; Bearer не
+открывает операцию под `AdminKey`. Пустая альтернатива (`Security: [{bearer}, {}]`) открывает
+операцию и без credentials — необязательная аутентификация OpenAPI. Чтобы
 забытый `Security` не открывал операцию молча, открытость явная: когда в
 `components.securitySchemes` есть схема, у каждой операции — `Security` со схемой из
 `components` или пометка `httpkit.Public(op)` (в `Operation.Metadata`); пустой `Security`
@@ -259,10 +262,12 @@ Debug), `*APIError` от extractor'а сохраняет свой статус �
 `PublicRoutes` без такого маршрута. Маршруты документации huma (`/docs`, `/openapi.*`,
 `/schemas`) — свои у кита. Маршрут, добавленный после проверки — в `OnStart` позже хука
 сервера или из хендлера, — она не видит: маршруты регистрируют в Invoke или конструкторе.
-Затем, если в графе нет `AuthExtractor`, а у операции есть `Security`, `Module` не
-стартует с `ErrAuthNotConfigured` и именами таких операций. Без fx `CheckRoutes` зовут
-сами, а `HumaAuth(nil, log)` на защищённой операции отвечает `500 AUTH_NOT_CONFIGURED`
-со строкой `auth not configured` и `operation` в логе.
+Схема в `Security` вне `components` — ошибка проверки и без схем в графе (OpenAPI был бы
+невалиден). Затем, если у схемы операции нет `Extract`, `Module` не стартует с
+`ErrAuthNotConfigured` и парами «операция (схема)». Без fx `CheckRoutes` зовут сами, а
+`HumaAuth` на операции, которую открыть нечем, отвечает `500 AUTH_NOT_CONFIGURED` со строкой
+`auth not configured` и `operation` в логе. Свой `Router().NotFound` маршрутом не считается:
+проверка его не видит, и он отвечает без аутентификации — контент там не отдают.
 
 Middleware работает с `huma.Context` (`*http.Request` достаётся из адаптера или
 собирается из полей контекста), поэтому один и тот же гейт тестируется и на
@@ -280,13 +285,10 @@ prod-адаптере chi, и на `testkit/handlertest`.
   короткоживущего токена между попытками. Запрос без субъекта и без обоих заголовков
   идёт без дедупликации (`result=skipped`): scope анонимов общий, и сохранённый ответ
   одного получил бы другой.
-- **Replay — после аутентификации.** Когда в графе есть `AuthExtractor`,
-  middleware вызывает его до обращения к store: отозванная сессия с тем же
-  заголовком сохранённый ответ не получает. Успешная проверка помечает ctx,
-  и `HumaAuth` не верифицирует те же credentials второй раз. Обратная сторона —
-  анонимный запрос (extractor вернул ошибку) идёт **без дедупликации**
-  (`result=skipped`): гарантия «выполнится один раз» есть только у
-  аутентифицированного клиента.
+- **Replay — после аутентификации.** `Idempotency` стоит в цепочке huma после `HumaAuth`:
+  у защищённой операции отозванная сессия получает 401, а не сохранённый ответ, extractor
+  зовётся один раз на запрос, а replay учитывается метриками по маршруту операции.
+  Идемпотентность — у операций huma; маршрутам мимо huma её нет.
 - **Запись не зависит от клиента.** `Set`/`Release` идут с
   `context.WithoutCancel` и `StoreTimeout`: клиент отвалился по таймауту —
   результат всё равно сохранён, и его ретрай получает replay, а не второе

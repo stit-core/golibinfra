@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
@@ -48,20 +50,6 @@ type IdempotencyStore interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	Set(ctx context.Context, key, token string, record []byte, ttl time.Duration) (stored bool, err error)
 	Release(ctx context.Context, key, token string) error
-}
-
-// IdempotencyOption — опция Idempotency.
-type IdempotencyOption func(*idempotencyOptions)
-
-type idempotencyOptions struct {
-	extract AuthExtractor
-}
-
-// WithAuth привязывает идемпотентность к аутентификации: replay отдаётся только
-// запросу с валидными credentials, а ключ scope'ится субъектом из ctx
-// (ContextWithSubject). Повторную проверку в HumaAuth результат снимает.
-func WithAuth(extract AuthExtractor) IdempotencyOption {
-	return func(o *idempotencyOptions) { o.extract = extract }
 }
 
 type idempotencyRecord struct {
@@ -217,16 +205,13 @@ func storeCtx(parent context.Context, timeout time.Duration) (context.Context, c
 	return context.WithTimeout(context.WithoutCancel(parent), timeout)
 }
 
-// Idempotency воспроизводит ответ на повтор POST/PUT/PATCH с тем же ключом.
-// Ключ scope'ится субъектом (или Authorization и Cookie клиента), запрос без них идёт без
-// дедупликации; повтор с другим телом, путём, query или методом — 422, параллельный повтор —
-// 409. Кэшируются только ответы < 500, кроме 408, 409, 425 и 429. Ошибка store — строка лога и
-// fail-open, если не задан FailClosed.
-func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger, opts ...IdempotencyOption) func(http.Handler) http.Handler {
-	var o idempotencyOptions
-	for _, opt := range opts {
-		opt(&o)
-	}
+// Idempotency воспроизводит ответ на повтор POST/PUT/PATCH с тем же ключом. Сервер кита ставит
+// её в цепочку huma после HumaAuth: replay получает только запрос, прошедший аутентификацию
+// операции, а ключ scope'ится его субъектом (ContextWithSubject), иначе Authorization и Cookie
+// клиента; запрос без них идёт без дедупликации. Повтор с другим телом, путём, query или методом
+// — 422, параллельный повтор — 409. Кэшируются только ответы < 500, кроме 408, 409, 425 и 429.
+// Ошибка store — строка лога и fail-open, если не задан FailClosed.
+func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger) func(http.Handler) http.Handler {
 	instr := newInstruments()
 	outcome := func(ctx context.Context, result string) {
 		instr.idempotency.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
@@ -256,17 +241,6 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 			if key == "" {
 				next.ServeHTTP(w, r)
 				return
-			}
-			// Replay — только аутентифицированному запросу: иначе отозванная
-			// сессия с тем же заголовком получила бы чужой сохранённый ответ.
-			if o.extract != nil {
-				authCtx, err := o.extract(r)
-				if err != nil {
-					outcome(r.Context(), "skipped")
-					next.ServeHTTP(w, r)
-					return
-				}
-				r = r.WithContext(withAuthDone(authCtx))
 			}
 			ctx := r.Context()
 			// Без credentials scope ключа у всех анонимов общий: сохранённый ответ одного получил бы другой.
@@ -382,6 +356,21 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				outcome(ctx, "stored")
 			}
 		})
+	}
+}
+
+// humaMiddleware ставит net/http-middleware в цепочку huma: дальше по цепочке идёт контекст
+// huma над запросом и writer'ом, которые отдал middleware.
+func humaMiddleware(mw func(http.Handler) http.Handler) func(huma.Context, func(huma.Context)) {
+	return func(hc huma.Context, next func(huma.Context)) {
+		r, w := unwrapHTTP(hc)
+		if r == nil {
+			next(hc)
+			return
+		}
+		mw(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			next(humachi.NewContext(hc.Operation(), r, w))
+		})).ServeHTTP(w, r.WithContext(hc.Context()))
 	}
 }
 

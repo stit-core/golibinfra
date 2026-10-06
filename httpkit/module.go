@@ -94,7 +94,6 @@ type serverIn struct {
 	Config Config
 	Log    logkit.Logger
 
-	Extract      AuthExtractor         `optional:"true"`
 	Store        IdempotencyStore      `optional:"true"`
 	Middlewares  Middlewares           `optional:"true"`
 	HumaConfigs  HumaConfigs           `optional:"true"`
@@ -128,10 +127,9 @@ func registerHealth(in healthIn) error {
 
 // newServer — NewServer из графа: схемы и конфиг проверяются уже в fx.New, а не на OnStart.
 func newServer(in serverIn) (*Server, error) {
-	opts := make([]ServerOption, 0, 5+len(in.HumaConfigs))
+	opts := make([]ServerOption, 0, 4+len(in.HumaConfigs))
 	opts = append(opts,
 		WithSecuritySchemes(in.Schemes...),
-		WithAuthExtractor(in.Extract),
 		WithIdempotencyStore(in.Store),
 		WithMiddleware(in.Middlewares...),
 		WithPublicRoutes(in.PublicRoutes...),
@@ -153,7 +151,6 @@ type serveIn struct {
 	Lifecycle  fx.Lifecycle
 	Shutdowner fx.Shutdowner
 	Server     *Server
-	Extract    AuthExtractor `optional:"true"`
 }
 
 // serve вешает хук сервера. Это Invoke уровня Module, а не конструктор: хуки идут
@@ -166,8 +163,8 @@ func serve(in serveIn) {
 			if err := s.CheckRoutes(); err != nil {
 				return err
 			}
-			if ops := securedOperations(s.registry()); in.Extract == nil && len(ops) > 0 {
-				return fmt.Errorf("%w: operations with Security need an httpkit.AuthExtractor in the graph: %s",
+			if ops := unauthenticated(s.registry(), s.opts.schemes); len(ops) > 0 {
+				return fmt.Errorf("%w: security schemes of these operations have no SecuritySchemeEntry.Extract: %s",
 					ErrAuthNotConfigured, strings.Join(ops, ", "))
 			}
 			if err := s.Listen(); err != nil {
@@ -196,14 +193,23 @@ func serve(in serveIn) {
 	})
 }
 
-// securedOperations — операции с Security, в том числе скрытые, по имени.
-func securedOperations(reg *registry) []string {
+// unauthenticated — операции, в том числе скрытые, со схемой Security без extractor'а: «операция
+// (схема)» по имени.
+func unauthenticated(reg *registry, schemes []SecuritySchemeEntry) []string {
+	extractable := make(map[string]bool, len(schemes))
+	for _, e := range schemes {
+		extractable[e.Name] = e.Extract != nil
+	}
 	var names []string
 	for _, op := range reg.ops {
-		if len(op.Security) > 0 {
-			names = append(names, operationName(op))
+		for _, alt := range op.Security {
+			for scheme := range alt {
+				if !extractable[scheme] {
+					names = append(names, fmt.Sprintf("%s (%s)", operationName(op), scheme))
+				}
+			}
 		}
 	}
 	slices.Sort(names)
-	return names
+	return slices.Compact(names)
 }

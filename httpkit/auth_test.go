@@ -28,6 +28,11 @@ type authOutput struct {
 	}
 }
 
+// bearerEntry — схема Bearer операций тестов auth с extractor'ом extract.
+func bearerEntry(extract httpkit.AuthExtractor) httpkit.SecuritySchemeEntry {
+	return httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme, Extract: extract}
+}
+
 // authAPIs — prod-адаптер (chi) и тестовый (humatest, на котором строится
 // handlertest): HumaAuth обязан работать на обоих.
 func authAPIs(t *testing.T, log logkit.Logger, extract httpkit.AuthExtractor) map[string]humatest.TestAPI {
@@ -37,7 +42,7 @@ func authAPIs(t *testing.T, log logkit.Logger, extract httpkit.AuthExtractor) ma
 
 	out := map[string]humatest.TestAPI{"humachi": chiAPI, "humatest": flowAPI}
 	for _, api := range out {
-		api.UseMiddleware(httpkit.HumaAuth(extract, log))
+		api.UseMiddleware(httpkit.HumaAuth([]httpkit.SecuritySchemeEntry{bearerEntry(extract)}, log))
 		registerAuthRoutes(api)
 	}
 	return out
@@ -53,9 +58,9 @@ func registerAuthRoutes(api huma.API) {
 		OperationID: "guarded", Method: http.MethodGet, Path: "/guarded",
 		Security: []map[string][]string{{"Bearer": {}}},
 	}, handler)
-	huma.Register(api, huma.Operation{
+	huma.Register(api, httpkit.Public(huma.Operation{
 		OperationID: "open", Method: http.MethodGet, Path: "/open",
-	}, handler)
+	}), handler)
 }
 
 func TestHumaAuth_RejectsWithCodeAndLogsReason(t *testing.T) {
@@ -187,7 +192,7 @@ func TestHumaAuth_NilExtractorFailsClosed(t *testing.T) {
 	}
 }
 
-// Операция с Security без AuthExtractor в графе — ошибка старта с именами операций.
+// Схема операции без extractor'а — ошибка старта с именами операций и схемы.
 func TestModule_AuthRequiresExtractor(t *testing.T) {
 	secured := func(api huma.API) {
 		registerAuthRoutes(api)
@@ -197,12 +202,13 @@ func TestModule_AuthRequiresExtractor(t *testing.T) {
 		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
 	}
 
+	noExtract := httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry { return bearerEntry(nil) })
 	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")), fx.Provide(logkit.Nop),
-		fx.Invoke(secured), httpkit.Module)
+		fx.Invoke(secured), noExtract, httpkit.Module)
 	err := app.Start(t.Context())
 	if err == nil {
 		_ = app.Stop(t.Context())
-		t.Fatal("a secured operation without an AuthExtractor must fail the start")
+		t.Fatal("a secured operation whose scheme has no extractor must fail the start")
 	}
 	if !errors.Is(err, httpkit.ErrAuthNotConfigured) {
 		t.Fatalf("want ErrAuthNotConfigured, got %v", err)
@@ -219,7 +225,7 @@ func TestModule_AuthRequiresExtractor(t *testing.T) {
 	}
 
 	extract := func(*http.Request) (context.Context, error) { return nil, errors.New("no credentials") }
-	srv := startApp(t, fx.Invoke(secured), fx.Supply(httpkit.AuthExtractor(extract)))
+	srv := startApp(t, fx.Invoke(secured), httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry { return bearerEntry(extract) }))
 	if resp := get(t, srv, "/guarded"); resp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("with an extractor the graph starts and gates the operation: %d", resp.StatusCode)
 	}
@@ -227,7 +233,7 @@ func TestModule_AuthRequiresExtractor(t *testing.T) {
 
 // Скрытую операцию OpenAPI не видит, а старт видит: без extractor'а она — тоже ошибка старта.
 func TestModule_AuthHiddenOperationNeedsExtractor(t *testing.T) {
-	err := startErr(t, fx.Invoke(func(api huma.API) {
+	err := startErr(t, httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry { return bearerEntry(nil) }), fx.Invoke(func(api huma.API) {
 		huma.Register(api, huma.Operation{
 			OperationID: "hidden", Method: http.MethodGet, Path: "/hidden", Hidden: true,
 			Security: []map[string][]string{{"Bearer": {}}},

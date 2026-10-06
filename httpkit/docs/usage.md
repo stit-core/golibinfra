@@ -4,7 +4,7 @@
 
 - **Сервер**: `NewServer(cfg, log, opts...) (*Server, error)` — та же сборка, что у `Module`
   (цепочка кита, `HumaAuth` в `BindAPI`; невалидный `Config` — `ErrConfig`; log nil —
-  `logkit.Nop()`); опции `WithSecuritySchemes`, `WithAuthExtractor`, `WithIdempotencyStore`,
+  `logkit.Nop()`); опции `WithSecuritySchemes`, `WithIdempotencyStore`,
   `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes` (с nil — ничего). Методы:
   `Router()`, `API()`/`BindAPI()`, `CheckRoutes()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
 - **Middleware** (net/http): `RequestID`, `ClientIP(trustProxyHops, log)`,
@@ -135,28 +135,26 @@ IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` и «не выполнено, по�
 `HTTP_IDEMPOTENCY_FAIL_CLOSED=true`.
 
 Ключ привязан к клиенту: к субъекту, если extractor его положил, иначе к хешу
-`Authorization` + `Cookie`. Когда в графе есть `AuthExtractor`, replay отдаётся
-только после успешной аутентификации.
+`Authorization` + `Cookie`. `Idempotency` стоит в цепочке huma после `HumaAuth`: у
+защищённой операции replay получает только запрос, прошедший её схему, extractor зовётся
+один раз. Идемпотентность — у операций huma, маршрутам мимо huma её нет.
 
-**Без валидных credentials дедупликации нет.** Extractor зовётся на каждом
-write-запросе с ключом, независимо от `Operation().Security`; его ошибка даёт
-`result=skipped` и сквозной проход. Без extractor'а так же идёт запрос без субъекта,
-`Authorization` и `Cookie`: у анонимов общий scope ключа. Публичная write-операция (`httpkit.Public`) с
-анонимным клиентом выполняется столько раз, сколько раз пришёл запрос, — закрывайте
-такие операции `Security` или не опирайтесь на `Idempotency-Key` в их контракте.
+**Без credentials дедупликации нет.** Запрос без субъекта, `Authorization` и `Cookie` идёт
+сквозным проходом (`result=skipped`): у анонимов общий scope ключа. Публичная
+write-операция (`httpkit.Public`) с анонимным клиентом выполняется столько раз, сколько раз
+пришёл запрос, — закрывайте такие операции `Security` или не опирайтесь на
+`Idempotency-Key` в их контракте.
 
 ```go
-fx.Provide(func(v *oidckit.Verifier) httpkit.AuthExtractor {
-    return func(r *http.Request) (context.Context, error) {
-        id, err := v.Verify(r)
-        if err != nil {
-            return nil, err
-        }
-        // Субъект — стабильный scope идемпотентности: ротация токена не
-        // превращает ретрай в новую операцию.
-        return httpkit.ContextWithSubject(contextWithIdentity(r.Context(), id), id.Subject), nil
+Extract: func(r *http.Request) (context.Context, error) {
+    id, err := v.Verify(r)
+    if err != nil {
+        return nil, err
     }
-})
+    // Субъект — стабильный scope идемпотентности: ротация токена не
+    // превращает ретрай в новую операцию.
+    return httpkit.ContextWithSubject(contextWithIdentity(r.Context(), id), id.Subject), nil
+},
 ```
 
 Подключение store через fx — `Module` навесит middleware с `Config.Idempotency`:
@@ -253,30 +251,29 @@ fx.Supply(httpkit.PublicRoutes{"/.well-known/jwks.json"}) // путь chi; бе�
 конструкторе: добавленный позже (в `OnStart` после хука сервера, из хендлера) проверку не
 проходит.
 
-`AuthExtractor` (`func(*http.Request) (context.Context, error)`) кладёт личность
-в ctx; ошибка → `401 UNAUTHORIZED`, её текст — только в лог. Инфраструктурную
-ошибку (JWKS/хаб недоступны) оборачивайте в `httpkit.ErrAuthUnavailable` — клиент
-получит `503 AUTH_UNAVAILABLE` вместо разлогина; свой статус задаётся возвратом
-`*httpkit.APIError`. Операция с `Security` без extractor'а в графе, в том числе
-скрытая, не даёт стартовать (`httpkit.ErrAuthNotConfigured` с именами операций).
+Extractor схемы (`SecuritySchemeEntry.Extract`, `func(*http.Request) (context.Context,
+error)`) проверяет credentials своей схемы и кладёт личность в ctx; ошибка →
+`401 UNAUTHORIZED`, её текст — только в лог. Инфраструктурную ошибку (JWKS/хаб недоступны)
+оборачивайте в `httpkit.ErrAuthUnavailable` — клиент получит `503 AUTH_UNAVAILABLE` вместо
+разлогина; свой статус задаётся возвратом `*httpkit.APIError`. Операция со схемой без
+extractor'а, в том числе скрытая, не даёт стартовать (`httpkit.ErrAuthNotConfigured` с парами
+«операция (схема)»). Своя схема рядом с чужой (hub-сессия, OIDC) — своя запись со своим
+extractor'ом; операция, которой подходит любая, перечисляет их альтернативами.
 
 ```go
-fx.Provide(func(v *authnkit.Verifier) httpkit.AuthExtractor {
-    return func(r *http.Request) (context.Context, error) {
-        claims, err := v.Verify(extractBearer(r))
-        if errors.Is(err, authnkit.ErrKeysUnavailable) {
-            return nil, fmt.Errorf("verify: %w", httpkit.ErrAuthUnavailable)
-        }
-        if err != nil {
-            return nil, err
-        }
-        return contextWithClaims(r.Context(), claims), nil
-    }
-})
-
-httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
+httpkit.ProvideSecurityScheme(func(v *authnkit.Verifier) httpkit.SecuritySchemeEntry {
     return httpkit.SecuritySchemeEntry{Name: "Bearer",
-        Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"}}
+        Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"},
+        Extract: func(r *http.Request) (context.Context, error) {
+            claims, err := v.Verify(extractBearer(r))
+            if errors.Is(err, authnkit.ErrKeysUnavailable) {
+                return nil, fmt.Errorf("verify: %w", httpkit.ErrAuthUnavailable)
+            }
+            if err != nil {
+                return nil, err
+            }
+            return contextWithClaims(r.Context(), claims), nil
+        }}
 })
 ```
 
@@ -399,7 +396,7 @@ SSE не получает, если клиент шлёт `Accept: text/event-st
 ## Прямой запуск без fx
 
 ```go
-s, err := httpkit.NewServer(cfg, log, httpkit.WithAuthExtractor(extract)) // цепочка кита, как у Module
+s, err := httpkit.NewServer(cfg, log, httpkit.WithSecuritySchemes(bearer)) // цепочка кита, как у Module
 if err != nil { /* невалидный Config или схема — ErrConfig */ }
 api := s.BindAPI() // HumaAuth — среди первых huma-middleware: Security проверяется extractor'ом
 httpkit.RegisterHealth(api, cfg.ReadyProbeTimeout, log)

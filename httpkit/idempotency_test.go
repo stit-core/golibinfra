@@ -567,61 +567,6 @@ func TestIdempotency_OversizedResponseNotStored(t *testing.T) {
 	}
 }
 
-// Регрессия: replay до аутентификации отдал бы сохранённый ответ отозванной
-// сессии; ключ scope'ится субъектом, а не сырым заголовком.
-func TestIdempotency_WithAuth(t *testing.T) {
-	var calls atomic.Int32
-	extract := func(r *http.Request) (context.Context, error) {
-		token := r.Header.Get("Authorization")
-		if token == "Bearer revoked" {
-			return nil, errors.New("session revoked")
-		}
-		return ContextWithSubject(r.Context(), "user-1"), nil
-	}
-	store := NewMemoryStore()
-	h := Idempotency(idemCfg(), store, logkit.Nop(), WithAuth(extract))(createdHandler(&calls))
-
-	first := httptest.NewRecorder()
-	h.ServeHTTP(first, postWithKey("k1", `{"a":1}`))
-	if first.Code != http.StatusCreated || calls.Load() != 1 {
-		t.Fatalf("first call: %d calls=%d", first.Code, calls.Load())
-	}
-
-	revoked := postWithKey("k1", `{"a":1}`)
-	revoked.Header.Set("Authorization", "Bearer revoked")
-	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, revoked)
-	if rec.Header().Get(HeaderIdempotentReplayed) != "" {
-		t.Fatal("revoked credentials must not receive a replay")
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("unauthenticated request goes to the handler (auth layer answers): calls=%d", calls.Load())
-	}
-
-	// Тот же субъект после ротации токена — тот же scope, значит replay.
-	rotated := postWithKey("k1", `{"a":1}`)
-	rotated.Header.Set("Authorization", "Bearer new-token")
-	replayed := httptest.NewRecorder()
-	h.ServeHTTP(replayed, rotated)
-	if replayed.Header().Get(HeaderIdempotentReplayed) != "true" || calls.Load() != 2 {
-		t.Fatalf("token rotation must not duplicate the operation: replayed=%q calls=%d",
-			replayed.Header().Get(HeaderIdempotentReplayed), calls.Load())
-	}
-}
-
-func TestIdempotency_WithAuthMarksContextAuthenticated(t *testing.T) {
-	extract := func(r *http.Request) (context.Context, error) { return r.Context(), nil }
-	var seen bool
-	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop(), WithAuth(extract))(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		seen = authDone(r.Context())
-		w.WriteHeader(http.StatusCreated)
-	}))
-	h.ServeHTTP(httptest.NewRecorder(), postWithKey("k1", `{}`))
-	if !seen {
-		t.Fatal("HumaAuth must not re-verify credentials already checked by Idempotency")
-	}
-}
-
 // Регрессия (NF4): резерв, переживший ReserveTTL, своим отложенным Release не
 // снимает резерв следующего запроса — иначе третий запрос идёт параллельно второму.
 func TestMemoryStore_ReleaseIsScopedToOwner(t *testing.T) {

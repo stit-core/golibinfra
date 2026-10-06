@@ -65,11 +65,11 @@ app.Run()
 ```
 
 Без fx — `NewServer`, ту же сборку зовёт `Module`: цепочка middleware кита из `Config`,
-`HumaAuth` в `BindAPI` (extractor — `WithAuthExtractor`), невалидный `Config` — `ErrConfig`;
+`HumaAuth` в `BindAPI` (схемы с extractor'ами — `WithSecuritySchemes`), невалидный `Config` — `ErrConfig`;
 проверку старта `Module` делает `s.CheckRoutes()`:
 
 ```go
-s, err := httpkit.NewServer(cfg, log, httpkit.WithAuthExtractor(extract))
+s, err := httpkit.NewServer(cfg, log, httpkit.WithSecuritySchemes(bearer)) // bearer — SecuritySchemeEntry с Extract
 if err != nil {
     return err
 }

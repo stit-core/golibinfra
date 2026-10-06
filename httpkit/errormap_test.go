@@ -232,8 +232,11 @@ func TestErrorMap_DeclareSecured401(t *testing.T) {
 	api := handlertest.NewAPI(t, func(api huma.API) {
 		huma.Register(api, huma.Operation{OperationID: "getMe", Method: http.MethodGet, Path: "/me", Security: secured}, noBody)
 		huma.Register(api, authErrors.Declare(huma.Operation{OperationID: "refresh", Method: http.MethodPost, Path: "/refresh", Security: secured}), noBody)
-		huma.Register(api, huma.Operation{OperationID: "status", Method: http.MethodGet, Path: "/status", Security: []map[string][]string{}}, noBody)
-	})
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "status", Method: http.MethodGet, Path: "/status", Security: []map[string][]string{}}), noBody)
+	}, handlertest.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
+		Extract: func(r *http.Request) (context.Context, error) { return r.Context(), nil },
+	}))
 
 	for path, want := range map[string]string{
 		"/me":      "Unauthorized: UNAUTHORIZED",

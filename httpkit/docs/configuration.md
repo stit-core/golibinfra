@@ -24,6 +24,7 @@
 | `HTTP_READY_PROBE_TIMEOUT` | `ReadyProbeTimeout` | `time.Duration` | `5s` | потолок одной пробы `/ready`; `> 0` |
 | `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана; `-` — таких путей нет |
 | `HTTP_TRUST_PROXY_HOPS` | `TrustProxyHops` | `int` | `0` | сколько доверенных прокси перед сервисом дописывают `X-Forwarded-For` (§ IP клиента); `>= 0` |
+| `HTTP_TRUST_TRACE_CONTEXT` | `TrustTraceContext` | `bool` | `false` | `true` — `traceparent` и `baggage` клиента принимаются: server-спан — ребёнок входящего контекста; `false` — ссылка на спане нового корня, baggage не читается. `true` — только за доверенным краем (свой шлюз), иначе клиент выбирает trace_id, сэмплирование и значения baggage |
 | — | `CORS` | `CORSConfig` | — | вложенный |
 | — | `RateLimit` | `RateLimitConfig` | — | вложенный |
 | — | `MaxBody` | `MaxBodyConfig` | — | вложенный |
@@ -58,8 +59,9 @@ No-op при пустом `Origins`. Конкретный origin эхается 
   его адрес, а с ним bucket лимитера и ключ антибрутфорса);
 - `1` — один прокси (Traefik, nginx): правая запись; `2` — CDN → nginx: вторая справа.
 
-Записи всех заголовков `X-Forwarded-For` идут по порядку; цепочка короче `N` или запись — не
-IP: адрес соединения. `X-Real-IP` не читается: прокси, который ставит только его, настраивают
+Записи всех заголовков `X-Forwarded-For` идут по порядку; запись с портом (`203.0.113.7:4711`,
+`[2001:db8::7]:443`) — её IP; цепочка короче `N` или запись — не IP: адрес соединения. Тест
+usecase'а кладёт IP без middleware — `httpkit.ContextWithClientIP(ctx, ip)`. `X-Real-IP` не читается: прокси, который ставит только его, настраивают
 дописывать `X-Forwarded-For`. Адрес — в канонической форме (`::ffff:203.0.113.7` →
 `203.0.113.7`, `2001:DB8::1` → `2001:db8::1`).
 
@@ -92,8 +94,7 @@ Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP и�
 `WithHumaConfig` — он применяется после кита и выигрывает. Лимит `MaxBytesReader`
 фиксируется на первом чтении тела, и тело операции huma читается по её
 `MaxBodyBytes`: поднятый лимит поднимает и лимит транспорта, у маршрутов мимо huma —
-`HTTP_MAX_BODY_BYTES`. Превышение — всегда `413 BODY_TOO_LARGE`, и в huma тоже. Тело с
-ключом идемпотентности `Idempotency` читает до операции — по `HTTP_MAX_BODY_BYTES`.
+`HTTP_MAX_BODY_BYTES`. Превышение — всегда `413 BODY_TOO_LARGE`, и в huma тоже.
 
 ## SecurityHeadersConfig
 
@@ -109,7 +110,8 @@ Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP и�
 
 ## IdempotencyConfig
 
-Читается из ENV и применяется `Module`, когда в графе есть `IdempotencyStore`.
+Читается из ENV и применяется `Module`, когда в графе есть `IdempotencyStore`: `Idempotency`
+стоит в цепочке huma после `HumaAuth` — у операций huma.
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|

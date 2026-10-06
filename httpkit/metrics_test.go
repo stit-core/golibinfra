@@ -97,7 +97,7 @@ func TestOTel_SpanNameIsRoutePattern(t *testing.T) {
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 
 	r := chi.NewRouter()
-	r.Use(OTel("/ready"))
+	r.Use(OTel(false, "/ready"))
 	r.Use(Metrics())
 	r.Get("/api/users/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/ready", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
@@ -141,7 +141,7 @@ func TestOTel_SpanNameAndClientAddressBehindConsumerMiddleware(t *testing.T) {
 
 	type key struct{}
 	r := chi.NewRouter()
-	r.Use(RequestID(), ClientIP(0, logkit.Nop()), OTel(), Metrics())
+	r.Use(RequestID(), ClientIP(0, logkit.Nop()), OTel(false), Metrics())
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			next.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), key{}, "v")))
@@ -185,7 +185,7 @@ func TestMetrics_SpanCarriesRequestID(t *testing.T) {
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 
 	r := chi.NewRouter()
-	r.Use(RequestID(), OTel(), Metrics())
+	r.Use(RequestID(), OTel(false), Metrics())
 	r.Get("/ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 
 	req := httptest.NewRequest(http.MethodGet, "/ping", nil)

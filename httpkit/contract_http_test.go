@@ -21,6 +21,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 type uploadIn struct {
@@ -96,15 +97,12 @@ func TestModule_WWWAuthenticateOn401(t *testing.T) {
 		return huma.Operation{OperationID: id, Method: http.MethodGet, Path: path, Security: security}
 	}
 	srv := startApp(t,
-		fx.Supply(extract),
-		httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
-			return httpkit.SecuritySchemeEntry{Name: "bearerAuth", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}}
-		}),
-		httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
-			return httpkit.SecuritySchemeEntry{Name: "AdminKey", Scheme: &huma.SecurityScheme{Type: "apiKey", In: "header", Name: "X-Admin-Key"}}
-		}),
-		httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
-			return httpkit.SecuritySchemeEntry{Name: "oidc", Scheme: &huma.SecurityScheme{Type: "openIdConnect", OpenIDConnectURL: "https://id.example.com/.well-known/openid-configuration"}}
+		httpkit.ProvideSecurityScheme(func() []httpkit.SecuritySchemeEntry {
+			return []httpkit.SecuritySchemeEntry{
+				{Name: "bearerAuth", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}, Extract: extract},
+				{Name: "AdminKey", Scheme: &huma.SecurityScheme{Type: "apiKey", In: "header", Name: "X-Admin-Key"}, Extract: extract},
+				{Name: "oidc", Scheme: &huma.SecurityScheme{Type: "openIdConnect", OpenIDConnectURL: "https://id.example.com/.well-known/openid-configuration"}, Extract: extract},
+			}
 		}),
 		fx.Invoke(func(api huma.API) {
 			noop := func(context.Context, *struct{}) (*struct{}, error) { return &struct{}{}, nil }
@@ -130,9 +128,9 @@ func TestModule_WWWAuthenticateOn401(t *testing.T) {
 // HumaAuth на API без хука кита (humatest потребителя) берёт вызов из имён схем операции.
 func TestHumaAuth_ChallengeWithoutKitHook(t *testing.T) {
 	_, api := humatest.New(t)
-	api.UseMiddleware(httpkit.HumaAuth(func(*http.Request) (context.Context, error) {
+	api.UseMiddleware(httpkit.HumaAuth([]httpkit.SecuritySchemeEntry{{Name: "Bearer", Extract: func(*http.Request) (context.Context, error) {
 		return nil, errors.New("no credentials")
-	}, logkit.Nop()))
+	}}}, logkit.Nop()))
 	huma.Register(api, huma.Operation{
 		OperationID: "secure", Method: http.MethodGet, Path: "/secure",
 		Security: []map[string][]string{{"Bearer": {}}},
@@ -367,4 +365,133 @@ func TestRecovery_PanicAfterHeaderIsAbort(t *testing.T) {
 		}
 	}()
 	h.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil))
+}
+
+// Регрессия KSEC-08 (H15): операцию открывает только её схема — extractor каждой схемы
+// альтернативы, альтернатива целиком; пустая альтернатива открывает без credentials.
+func TestModule_AuthOpensOnlyByOperationScheme(t *testing.T) {
+	user := func(r *http.Request) (context.Context, error) {
+		if r.Header.Get("Authorization") == "Bearer user" {
+			return httpkit.ContextWithSubject(r.Context(), "user"), nil
+		}
+		return nil, errors.New("no bearer")
+	}
+	admin := func(r *http.Request) (context.Context, error) {
+		if r.Header.Get("X-Admin-Key") == "k" {
+			return r.Context(), nil
+		}
+		return nil, errors.New("no admin key")
+	}
+	srv := startApp(t,
+		httpkit.ProvideSecurityScheme(func() []httpkit.SecuritySchemeEntry {
+			return []httpkit.SecuritySchemeEntry{
+				{Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}, Extract: user},
+				{Name: "AdminKey", Scheme: &huma.SecurityScheme{Type: "apiKey", In: "header", Name: "X-Admin-Key"}, Extract: admin},
+			}
+		}),
+		fx.Invoke(func(api huma.API) {
+			reg := func(id, path string, security ...map[string][]string) {
+				huma.Register(api, huma.Operation{OperationID: id, Method: http.MethodPost, Path: path, Security: security},
+					func(context.Context, *struct{}) (*struct{}, error) { return &struct{}{}, nil })
+			}
+			reg("wipe", "/admin/wipe", map[string][]string{"AdminKey": {}})
+			reg("either", "/either", map[string][]string{"Bearer": {}}, map[string][]string{"AdminKey": {}})
+			reg("both", "/both", map[string][]string{"Bearer": {}, "AdminKey": {}})
+			reg("optional", "/optional", map[string][]string{"Bearer": {}}, map[string][]string{})
+		}))
+	bearer, key := "Authorization: Bearer user", "X-Admin-Key: k"
+	for _, c := range []struct {
+		path    string
+		headers []string
+		want    int
+	}{
+		{"/admin/wipe", []string{bearer}, http.StatusUnauthorized},
+		{"/admin/wipe", []string{key}, http.StatusNoContent},
+		{"/either", []string{bearer}, http.StatusNoContent},
+		{"/either", []string{key}, http.StatusNoContent},
+		{"/both", []string{bearer}, http.StatusUnauthorized},
+		{"/both", []string{bearer, key}, http.StatusNoContent},
+		{"/optional", nil, http.StatusNoContent},
+	} {
+		if resp := do(t, srv, http.MethodPost, c.path, nil, c.headers...); resp.StatusCode != c.want {
+			t.Errorf("POST %s %v: %d, want %d", c.path, c.headers, resp.StatusCode, c.want)
+		}
+	}
+}
+
+// Регрессия N8: схема Security вне components — ошибка старта и без схем в графе.
+func TestModule_SecurityOutsideComponentsFailsStart(t *testing.T) {
+	err := startErr(t, register(huma.Operation{OperationID: "me", Method: http.MethodGet, Path: "/me", Security: bearerOnly}))
+	if !errors.Is(err, httpkit.ErrRoutes) || !strings.Contains(err.Error(), `"Bearer" missing from components`) {
+		t.Fatalf("start error = %v, want ErrRoutes naming the missing scheme", err)
+	}
+}
+
+// Регрессия N7 (m6-04): схема в components через HumaConfigs тоже требует у операции Security
+// или Public, а без extractor'а её операция не стартует.
+func TestModule_SchemeFromHumaConfigsGuards(t *testing.T) {
+	cookie := fx.Supply(httpkit.HumaConfigs{func(c *huma.Config) {
+		c.Components.SecuritySchemes = map[string]*huma.SecurityScheme{"Cookie": {Type: "apiKey", In: "cookie", Name: "sid"}}
+	}})
+	err := startErr(t, cookie, register(huma.Operation{OperationID: "list", Method: http.MethodGet, Path: "/items"}))
+	if !errors.Is(err, httpkit.ErrRoutes) || !strings.Contains(err.Error(), "list has no Security") {
+		t.Fatalf("start error = %v, want ErrRoutes for the operation without Security", err)
+	}
+	err = startErr(t, cookie, register(huma.Operation{
+		OperationID: "me", Method: http.MethodGet, Path: "/me",
+		Security: []map[string][]string{{"Cookie": {}}},
+	}))
+	if !errors.Is(err, httpkit.ErrAuthNotConfigured) || !strings.Contains(err.Error(), "me (Cookie)") {
+		t.Fatalf("start error = %v, want ErrAuthNotConfigured for a scheme without an extractor", err)
+	}
+}
+
+// Регрессия KFX-11 (HX07), KOBS-12: Idempotency — после HumaAuth. Extractor зовётся один раз и при
+// отказе бэкенда, отозванная сессия получает 401, а не replay, ротация токена того же субъекта —
+// replay, и он учтён по маршруту.
+func TestModule_IdempotencyAfterAuth(t *testing.T) {
+	var calls, extracts atomic.Int32
+	extract := func(r *http.Request) (context.Context, error) {
+		extracts.Add(1)
+		switch r.Header.Get("Authorization") {
+		case "Bearer old", "Bearer new":
+			return httpkit.ContextWithSubject(r.Context(), "user-1"), nil
+		case "Bearer down":
+			return nil, errors.Join(errors.New("jwks"), httpkit.ErrAuthUnavailable)
+		}
+		return nil, errors.New("revoked")
+	}
+	srv := startApp(t,
+		httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
+			return httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}, Extract: extract}
+		}),
+		fx.Provide(func() httpkit.IdempotencyStore { return httpkit.NewMemoryStore() }),
+		fx.Invoke(func(api huma.API) {
+			huma.Register(api, huma.Operation{
+				OperationID: "create-order", Method: http.MethodPost, Path: "/orders",
+				DefaultStatus: http.StatusCreated, Security: bearerOnly,
+			},
+				func(context.Context, *struct{}) (*struct{}, error) { calls.Add(1); return &struct{}{}, nil })
+		}))
+	key := "Idempotency-Key: k-1"
+
+	if resp := do(t, srv, http.MethodPost, "/orders", nil, "Authorization: Bearer old", key); resp.StatusCode != http.StatusCreated {
+		t.Fatalf("first: %d", resp.StatusCode)
+	}
+	if resp := do(t, srv, http.MethodPost, "/orders", nil, "Authorization: Bearer revoked", key); resp.StatusCode != http.StatusUnauthorized ||
+		resp.Header.Get(httpkit.HeaderIdempotentReplayed) != "" {
+		t.Fatalf("revoked session: %d replayed=%q, want 401 without a replay", resp.StatusCode, resp.Header.Get(httpkit.HeaderIdempotentReplayed))
+	}
+	before := metrictest.Collect(t)
+	resp := do(t, srv, http.MethodPost, "/orders", nil, "Authorization: Bearer new", key)
+	if resp.StatusCode != http.StatusCreated || resp.Header.Get(httpkit.HeaderIdempotentReplayed) != "true" || calls.Load() != 1 {
+		t.Fatalf("rotated token: %d replayed=%q calls=%d, want the replay", resp.StatusCode, resp.Header.Get(httpkit.HeaderIdempotentReplayed), calls.Load())
+	}
+	if n := metrictest.Collect(t).Sub(before).Value("http_requests_total", "path", "/orders", "status", "201"); n != 1 {
+		t.Fatalf("replay counted under the route %v times, want 1", n)
+	}
+	extracts.Store(0)
+	if resp := do(t, srv, http.MethodPost, "/orders", nil, "Authorization: Bearer down", key); resp.StatusCode != http.StatusServiceUnavailable || extracts.Load() != 1 {
+		t.Fatalf("auth backend down: %d, extractor calls %d; want 503 and one call", resp.StatusCode, extracts.Load())
+	}
 }

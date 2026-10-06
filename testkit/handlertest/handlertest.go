@@ -24,7 +24,6 @@ type Option func(*options)
 type options struct {
 	cfg     *httpkit.Config
 	log     logkit.Logger
-	extract httpkit.AuthExtractor
 	schemes []httpkit.SecuritySchemeEntry
 }
 
@@ -39,14 +38,10 @@ func WithLogger(log logkit.Logger) Option {
 	return func(o *options) { o.log = log }
 }
 
-// WithAuth — AuthExtractor сервера: защищённая операция без credentials отвечает 401 (или кодом
-// extractor'а). Без опции защищённая операция отвечает 500 AUTH_NOT_CONFIGURED.
-func WithAuth(extract httpkit.AuthExtractor) Option {
-	return func(o *options) { o.extract = extract }
-}
-
-// WithSecuritySchemes — схемы безопасности сервера: с ними проверка маршрутов требует у каждой
-// операции Security из components или httpkit.Public, как старт Module.
+// WithSecuritySchemes — схемы безопасности сервера с extractor'ами (SecuritySchemeEntry.Extract):
+// защищённая операция без credentials отвечает 401 (или кодом extractor'а), схема без extractor'а
+// — 500 AUTH_NOT_CONFIGURED. Проверка маршрутов требует у операции схемы из components, а с
+// ними — Security или httpkit.Public у каждой, как старт Module.
 func WithSecuritySchemes(schemes ...httpkit.SecuritySchemeEntry) Option {
 	return func(o *options) { o.schemes = append(o.schemes, schemes...) }
 }
@@ -73,10 +68,7 @@ func NewAPI(t testing.TB, register func(api huma.API), opts ...Option) API {
 			return nil
 		}
 	}
-	s, err := httpkit.NewServer(cfg, o.log,
-		httpkit.WithSecuritySchemes(o.schemes...),
-		httpkit.WithAuthExtractor(o.extract),
-	)
+	s, err := httpkit.NewServer(cfg, o.log, httpkit.WithSecuritySchemes(o.schemes...))
 	if err != nil {
 		t.Fatalf("handlertest: %v", err)
 		return nil

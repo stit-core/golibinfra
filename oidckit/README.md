@@ -14,7 +14,7 @@ OIDC BFF-контур для SSO-входа: сервис сам ведёт Auth
 - **BFF-обвязка** — `BFF` + huma-роуты `GET <p>/login` (302 на idp),
   `GET <p>/callback` (exchange+verify → cookie-сессия), `GET <p>/me`,
   `POST <p>/logout`; `Extractor` (cookie → `authnkit.JWTParser` → `Identity`
-  в ctx), совместимый с `httpkit.AuthExtractor`.
+  в ctx) — `Extract` схемы Cookie (`httpkit.SecuritySchemeEntry.Extract`).
 
 Сессия — HS256-JWT (`authnkit.HS256JWT`, секрет `JWT_SECRET`, не короче 32 байт)
 c claim'ом `typ=oidc_session` в httpOnly-cookie (`__Host-access_token` при
@@ -68,7 +68,7 @@ fx.New(
     httpclient.Module,
     httpkit.Module,
     logkit.Module,
-    oidckit.Module, // роуты /auth/*, security-scheme Cookie, AuthExtractor, health-проба, user_id в логах
+    oidckit.Module, // роуты /auth/*, security-scheme Cookie с extractor'ом, health-проба, user_id в логах
 )
 ```
 
@@ -93,12 +93,10 @@ id, ok := oidckit.IdentityFrom(ctx) // Identity{Subject, Username, Name, Email, 
 
 ### Составной authn (несколько схем)
 
-`httpkit` принимает один `AuthExtractor`. Сервису, где cookie-сессия — лишь одна
-из схем (например плюс bearer сервис-токены), `Module` не подходит: собери
-проводку из конструкторов (`NewBFF`, `NewExtractor`, `NewSecurityScheme`,
-`RegisterRoutes`, `RegisterIdentityLogAttr`, `(*BFF).Probe`) и предоставь свой
-композитный `httpkit.AuthExtractor`, который делегирует `(*Extractor).Extract`
-для cookie-ветки.
+Extractor — у каждой схемы своей записью (`httpkit.SecuritySchemeEntry.Extract`): сервис,
+где cookie-сессия — лишь одна из схем (например плюс bearer сервис-токены), берёт `Module` и
+объявляет свою схему рядом (`httpkit.ProvideSecurityScheme`), а операция, которой подходит
+любая, перечисляет обе альтернативами `Security`.
 
 ### Тесты потребителя
 
@@ -154,7 +152,7 @@ Zero value `CookieConfig{}` безопасен: `Secure`, `SameSite=Lax`.
 - `Hooks{SessionClaims, OnLogin}` — доп-claims сессии / JIT-провижининг (ошибка
   `OnLogin` отменяет вход; служебный `typ` хук переопределить не может).
 - `NewExtractor(authnkit.JWTParser, CookieConfig) *Extractor`; `Extract` совместим
-  с `httpkit.AuthExtractor`; `Identity` + `WithIdentity`/`IdentityFrom`/`MustIdentityFrom`.
+  с `httpkit.AuthExtractor` (`Extract` схемы); `Identity` + `WithIdentity`/`IdentityFrom`/`MustIdentityFrom`.
 - `SecuritySchemeName` (`"Cookie"`), `NewSecurityScheme(CookieConfig)`, `SessionCookie`,
   `StateCookie`, `ExpiredSessionCookies`, `RegisterIdentityLogAttr`, `SessionTokenType`.
 - Sentinel'ы: `ErrConfig`, `ErrRPConfig`, `ErrIssuerMismatch`, `ErrNoJWKS`,

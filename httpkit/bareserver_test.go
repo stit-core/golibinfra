@@ -72,7 +72,7 @@ func TestNewServer_RejectsInvalidConfig(t *testing.T) {
 }
 
 // Путь без fx — та же сборка, что у Module: цепочка кита (request-id, security-заголовки,
-// Recovery, лимит тела) и HumaAuth с extractor'ом из WithAuthExtractor.
+// Recovery, лимит тела) и HumaAuth с extractor'ом схемы из WithSecuritySchemes.
 func TestNewServer_AssemblesKitChain(t *testing.T) {
 	cfg := testConfig(t, "127.0.0.1:0")
 	cfg.MaxBody.MaxBytes = 8
@@ -83,8 +83,7 @@ func TestNewServer_AssemblesKitChain(t *testing.T) {
 		return httpkit.ContextWithSubject(r.Context(), "u1"), nil
 	}
 	s := mustServer(t, cfg,
-		httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme}),
-		httpkit.WithAuthExtractor(extract))
+		httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme, Extract: extract}))
 	api := s.BindAPI()
 	huma.Register(api, httpkit.Public(operation("boom", http.MethodGet, "/boom")), func(context.Context, *struct{}) (*struct{}, error) {
 		panic("boom")
@@ -141,7 +140,7 @@ func TestServer_BindAPIConcurrent(t *testing.T) {
 func TestNewServer_NilOptionsIgnored(t *testing.T) {
 	s, err := httpkit.NewServer(testConfig(t, "127.0.0.1:0"), nil, nil,
 		httpkit.WithMiddleware(nil), httpkit.WithHumaConfig(nil),
-		httpkit.WithAuthExtractor(nil), httpkit.WithIdempotencyStore(nil))
+		httpkit.WithIdempotencyStore(nil))
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

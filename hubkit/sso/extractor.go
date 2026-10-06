@@ -75,6 +75,21 @@ func (e *Extractor) Extract(r *http.Request) (context.Context, error) {
 	return ctx, err
 }
 
+// extractSlot — extractor схемы одного контура: только его cookie, ошибки — как у Extract.
+func (e *Extractor) extractSlot(r *http.Request, cookie string, v *Verifier) (context.Context, error) {
+	ctx := r.Context()
+	id, err := verifySlot(r, cookie, v)
+	switch {
+	case err == nil:
+		return e.authenticated(ctx, id), nil
+	case errors.Is(err, errSlotEmpty):
+		return ctx, ErrNoSessionCookie
+	case errors.Is(err, ErrJWKSUnavailable):
+		return ctx, fmt.Errorf("%w: %w", httpkit.ErrAuthUnavailable, err)
+	}
+	return ctx, err
+}
+
 func (e *Extractor) authenticated(ctx context.Context, id Identity) context.Context {
 	return httpkit.ContextWithSubject(WithIdentity(ctx, id), id.SubjectKey())
 }

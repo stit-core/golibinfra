@@ -78,18 +78,20 @@ func warmup(lc fx.Lifecycle, b *BFF, cfg Config) {
 	lc.Append(fx.Hook{OnStart: func(ctx context.Context) error { return b.Warmup(ctx) }})
 }
 
-// Module — drop-in BFF: роуты login/callback/me/logout, security-scheme Cookie,
-// httpkit.AuthExtractor (cookie → Identity в ctx), health-проба и user_id в логах.
+// Module — drop-in BFF: роуты login/callback/me/logout, security-scheme Cookie с extractor'ом
+// (cookie → Identity в ctx), health-проба и user_id в логах.
 // Требования к графу и ограничения — README кита (§ Быстрый старт).
 var Module = fx.Module(
 	"oidckit",
 	fx.Provide(
 		newBFF,
 		NewExtractor,
-
-		func(e *Extractor) httpkit.AuthExtractor { return e.Extract },
 	),
-	httpkit.ProvideSecurityScheme(NewSecurityScheme),
+	httpkit.ProvideSecurityScheme(func(cookie CookieConfig, e *Extractor) httpkit.SecuritySchemeEntry {
+		s := NewSecurityScheme(cookie)
+		s.Extract = e.Extract
+		return s
+	}),
 	healthkit.ProvideProbe(func(b *BFF) healthkit.Probe { return b.Probe() }),
 	fx.Invoke(RegisterIdentityLogAttr),
 	fx.Invoke(warmup),

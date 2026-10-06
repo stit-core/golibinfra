@@ -16,6 +16,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
+	"go.opentelemetry.io/otel/propagation"
 
 	"git.stit.tech/stit-core/golibinfra/idkit"
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
@@ -53,19 +54,6 @@ func ContextWithSubject(ctx context.Context, subject string) context.Context {
 func SubjectFrom(ctx context.Context) string {
 	s, _ := ctx.Value(subjectCtxKey{}).(string)
 	return s
-}
-
-type authDoneCtxKey struct{}
-
-// withAuthDone помечает ctx как уже аутентифицированный: Idempotency вызывает
-// extractor до replay, и HumaAuth не должен верифицировать те же credentials второй раз.
-func withAuthDone(ctx context.Context) context.Context {
-	return context.WithValue(ctx, authDoneCtxKey{}, true)
-}
-
-func authDone(ctx context.Context) bool {
-	done, _ := ctx.Value(authDoneCtxKey{}).(bool)
-	return done
 }
 
 // RequestID принимает X-Request-ID клиента только печатным ASCII до 128 байт,
@@ -168,8 +156,8 @@ func AccessLog(log logkit.Logger, quietPaths ...string) func(http.Handler) http.
 	}
 }
 
-// AuthExtractor проверяет credentials запроса и возвращает ctx с личностью;
-// ошибка → 401, обёрнутый ErrAuthUnavailable → 503.
+// AuthExtractor проверяет credentials своей схемы безопасности (SecuritySchemeEntry.Extract) и
+// возвращает ctx с личностью; ошибка → 401, обёрнутый ErrAuthUnavailable → 503.
 type AuthExtractor func(r *http.Request) (context.Context, error)
 
 // ErrAuthUnavailable — зависимость аутентификации недоступна (JWKS, хаб,
@@ -180,36 +168,68 @@ var ErrAuthUnavailable = errors.New("httpkit: auth backend unavailable")
 // codeUnauthorized — code 401 HumaAuth: его же операция с Security объявляет в OpenAPI.
 const codeUnauthorized = "UNAUTHORIZED"
 
-// ErrAuthNotConfigured — у операции с Security нет AuthExtractor: Module не
-// стартует, HumaAuth(nil, log) отвечает на такую операцию 500 AUTH_NOT_CONFIGURED.
+// ErrAuthNotConfigured — у схемы из Security операции нет extractor'а: Module не стартует,
+// HumaAuth отвечает на такую операцию 500 AUTH_NOT_CONFIGURED.
 var ErrAuthNotConfigured = errors.New("httpkit: auth not configured")
 
-// HumaAuth проверяет операции с непустым Operation().Security: extractor кладёт
-// личность в ctx операции; без extractor'а такая операция закрыта (500). 401 несёт
-// WWW-Authenticate по схемам операции. Работает на любом huma-адаптере (chi в проде, humatest в
-// тестах потребителя).
-func HumaAuth(extract AuthExtractor, log logkit.Logger) func(huma.Context, func(huma.Context)) {
+// HumaAuth проверяет операции с непустым Operation().Security extractor'ами их схем (schemes):
+// операция открыта, если прошла одна из её альтернатив целиком — каждая схема альтернативы, в
+// порядке имён, и ctx с личностью — от неё; пустая альтернатива `{}` открывает операцию без
+// credentials. Схема без extractor'а альтернативу не открывает: если открыть нечем, — 500
+// AUTH_NOT_CONFIGURED. 401 несёт WWW-Authenticate по схемам операции; отказ бэкенда любой
+// схемы — 503. Работает на любом huma-адаптере (chi в проде, humatest в тестах потребителя).
+func HumaAuth(schemes []SecuritySchemeEntry, log logkit.Logger) func(huma.Context, func(huma.Context)) {
+	extractors := make(map[string]AuthExtractor, len(schemes))
+	for _, e := range schemes {
+		if e.Extract != nil {
+			extractors[e.Name] = e.Extract
+		}
+	}
 	return func(ctx huma.Context, next func(huma.Context)) {
-		if len(ctx.Operation().Security) == 0 || authDone(ctx.Context()) {
+		op := ctx.Operation()
+		if len(op.Security) == 0 {
 			next(ctx)
 			return
 		}
-		if extract == nil {
-			log.Error(ctx.Context(), "auth not configured", "operation", ctx.Operation().OperationID)
+		var failures []error
+		for _, alt := range op.Security {
+			authCtx, configured, err := authenticate(requestFrom(ctx), extractors, alt)
+			if !configured {
+				continue
+			}
+			if err == nil {
+				next(huma.WithContext(ctx, authCtx))
+				return
+			}
+			failures = append(failures, err)
+		}
+		if len(failures) == 0 {
+			log.Error(ctx.Context(), "auth not configured", "operation", op.OperationID)
 			writeHumaAPIError(ctx, Error("AUTH_NOT_CONFIGURED", http.StatusInternalServerError, ""))
 			return
 		}
-		newCtx, err := extract(requestFrom(ctx))
-		if err != nil {
-			e := authError(ctx.Context(), log, err)
-			if c := operationChallenge(ctx.Operation()); e.Status == http.StatusUnauthorized && c != "" {
-				ctx.SetHeader("WWW-Authenticate", c)
-			}
-			writeHumaAPIError(ctx, e)
-			return
+		e := authError(ctx.Context(), log, failures)
+		if c := operationChallenge(op); e.Status == http.StatusUnauthorized && c != "" {
+			ctx.SetHeader("WWW-Authenticate", c)
 		}
-		next(huma.WithContext(ctx, withAuthDone(newCtx)))
+		writeHumaAPIError(ctx, e)
 	}
+}
+
+// authenticate проходит альтернативу Security: extractor каждой её схемы в порядке имён, ctx — от
+// предыдущей. configured=false — у схемы альтернативы нет extractor'а.
+func authenticate(r *http.Request, extractors map[string]AuthExtractor, alt map[string][]string) (ctx context.Context, configured bool, err error) {
+	ctx = r.Context()
+	for _, name := range slices.Sorted(maps.Keys(alt)) {
+		extract, ok := extractors[name]
+		if !ok {
+			return nil, false, nil
+		}
+		if ctx, err = extract(r.WithContext(ctx)); err != nil {
+			return nil, true, err
+		}
+	}
+	return ctx, true, nil
 }
 
 // challengeKey — ключ Operation.Metadata с вызовом WWW-Authenticate операции (authChallenge).
@@ -261,25 +281,28 @@ func challenge(schemes map[string]*huma.SecurityScheme, security []map[string][]
 	return strings.Join(out, ", ")
 }
 
-// authError переводит ошибку extractor'а в APIError и логирует причину: наружу
-// уходит только код, текст ошибки остаётся у оператора.
-func authError(ctx context.Context, log logkit.Logger, err error) *APIError {
+// authError переводит отказы альтернатив в один APIError и логирует причины: отказ бэкенда — 503,
+// иначе APIError extractor'а (свой статус и код), иначе 401; наружу уходит только код.
+func authError(ctx context.Context, log logkit.Logger, failures []error) *APIError {
 	var apiErr *APIError
-	switch {
-	case errors.Is(err, ErrAuthUnavailable):
-		log.Warn(ctx, "auth backend unavailable", "err", err)
-		return Unavailable("AUTH_UNAVAILABLE", "")
-	case errors.As(err, &apiErr):
-		if apiErr.Status >= http.StatusInternalServerError {
-			log.Error(ctx, "auth failed", "err", err, "code", apiErr.Code)
-		} else {
-			log.Debug(ctx, "auth rejected", "err", err, "code", apiErr.Code)
+	for _, err := range failures {
+		if errors.Is(err, ErrAuthUnavailable) {
+			log.Warn(ctx, "auth backend unavailable", "err", err)
+			return Unavailable("AUTH_UNAVAILABLE", "")
 		}
-		return apiErr
-	default:
-		log.Debug(ctx, "auth rejected", "err", err)
-		return Unauthorized(codeUnauthorized, "unauthorized")
 	}
+	for _, err := range failures {
+		if errors.As(err, &apiErr) {
+			if apiErr.Status >= http.StatusInternalServerError {
+				log.Error(ctx, "auth failed", "err", err, "code", apiErr.Code)
+			} else {
+				log.Debug(ctx, "auth rejected", "err", err, "code", apiErr.Code)
+			}
+			return apiErr
+		}
+	}
+	log.Debug(ctx, "auth rejected", "err", errors.Join(failures...))
+	return Unauthorized(codeUnauthorized, "unauthorized")
 }
 
 func writeHumaAPIError(ctx huma.Context, e *APIError) {
@@ -332,20 +355,29 @@ func requestFrom(hc huma.Context) *http.Request {
 	return r
 }
 
-// OTel открывает server-спан и извлекает входящий traceparent. RED-метрики
-// otelhttp выключены: их эмитит Metrics в одном словаре с остальными китами.
-// Запросы на quietPaths (пробы оркестратора) спан не открывают.
-func OTel(quietPaths ...string) func(http.Handler) http.Handler {
+// OTel открывает server-спан. Входящий trace-context клиента без доверия (trustTraceContext,
+// HTTP_TRUST_TRACE_CONTEXT) — ссылка на спане нового корня, а baggage не читается: клиент не
+// выбирает trace_id, не включает сэмплирование и не кладёт значения в ctx. С доверием спан —
+// ребёнок входящего контекста, baggage — по глобальному propagator'у. RED-метрики otelhttp
+// выключены: их эмитит Metrics в одном словаре с остальными китами. Запросы на quietPaths (пробы
+// оркестратора) спан не открывают.
+func OTel(trustTraceContext bool, quietPaths ...string) func(http.Handler) http.Handler {
 	quiet := pathSet(quietPaths)
+	opts := []otelhttp.Option{
+		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()),
+		otelhttp.WithSpanNameFormatter(spanName),
+		otelhttp.WithFilter(func(r *http.Request) bool {
+			_, isQuiet := quiet[r.URL.Path]
+			return !isQuiet
+		}),
+	}
+	if !trustTraceContext {
+		opts = append(opts,
+			otelhttp.WithPublicEndpointFn(func(*http.Request) bool { return true }),
+			otelhttp.WithPropagators(propagation.TraceContext{}))
+	}
 	return func(next http.Handler) http.Handler {
-		return otelhttp.NewHandler(next, "http",
-			otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()),
-			otelhttp.WithSpanNameFormatter(spanName),
-			otelhttp.WithFilter(func(r *http.Request) bool {
-				_, isQuiet := quiet[r.URL.Path]
-				return !isQuiet
-			}),
-		)
+		return otelhttp.NewHandler(next, "http", opts...)
 	}
 }
 

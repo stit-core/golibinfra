@@ -47,9 +47,8 @@ func TestModule_Graph(t *testing.T) {
 	cfg.DiscoveryOnStart = false
 
 	var (
-		extractor httpkit.AuthExtractor
-		probes    []healthkit.Probe
-		schemes   []httpkit.SecuritySchemeEntry
+		probes  []healthkit.Probe
+		schemes []httpkit.SecuritySchemeEntry
 	)
 	api := handlertest.NewAPI(t, func(huma.API) {})
 	app := fxtest.New(t,
@@ -58,24 +57,20 @@ func TestModule_Graph(t *testing.T) {
 		fx.Invoke(func(in struct {
 			fx.In
 
-			Extractor httpkit.AuthExtractor
-			Probes    []healthkit.Probe             `group:"healthkit.probes"`
-			Schemes   []httpkit.SecuritySchemeEntry `group:"httpkit.security_scheme"`
+			Probes  []healthkit.Probe             `group:"healthkit.probes"`
+			Schemes []httpkit.SecuritySchemeEntry `group:"httpkit.security_scheme"`
 		},
 		) {
-			extractor, probes, schemes = in.Extractor, in.Probes, in.Schemes
+			probes, schemes = in.Probes, in.Schemes
 		}),
 	)
 	app.RequireStart()
 	t.Cleanup(app.RequireStop)
 
-	if extractor == nil {
-		t.Fatal("Module не отдал httpkit.AuthExtractor")
-	}
 	if len(probes) != 1 || probes[0].Name != "oidckit" {
 		t.Fatalf("health-пробы: %+v", probes)
 	}
-	if len(schemes) != 1 || schemes[0].Name != SecuritySchemeName || schemes[0].Scheme.Name != CookieAccess {
+	if len(schemes) != 1 || schemes[0].Name != SecuritySchemeName || schemes[0].Scheme.Name != CookieAccess || schemes[0].Extract == nil {
 		t.Fatalf("security-scheme: %+v", schemes)
 	}
 	if _, ok := api.OpenAPI().Paths["/auth/login"]; !ok {

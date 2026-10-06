@@ -1,7 +1,9 @@
 package sso
 
 import (
+	"context"
 	"fmt"
+	"net/http"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/fx"
@@ -105,32 +107,38 @@ func ProvideOption(ctor any) fx.Option {
 	return fx.Provide(fx.Annotate(ctor, fx.ResultTags(`group:"`+OptionGroup+`"`)))
 }
 
-// Verifiers — примитивы верификации без привязки к httpkit.AuthExtractor:
-// *Verifier, *CustomerVerifier (nil при выключенном контуре), *Extractor и
-// security-схемы включённых контуров в группу `httpkit.security_scheme`.
-//
-// Это точка сборки для сервиса с составным extractor'ом: httpkit принимает
-// ровно один httpkit.AuthExtractor, поэтому продукт, у которого кроме
-// hub-сессии есть свой способ аутентификации, берёт Verifiers и объявляет
-// AuthExtractor сам.
+// Verifiers — примитивы верификации: *Verifier, *CustomerVerifier (nil при выключенном контуре),
+// *Extractor и security-схемы включённых контуров в группу `httpkit.security_scheme`, у каждой —
+// extractor своего cookie: операцию контура сотрудника cookie заказчика не открывает. Свой способ
+// аутентификации продукт объявляет своей схемой рядом.
 var Verifiers = fx.Options(
 	fx.Provide(
 		newVerifier,
 		newCustomerVerifier,
 		NewDualExtractor,
 	),
-	httpkit.ProvideSecurityScheme(SecuritySchemes),
+	httpkit.ProvideSecurityScheme(schemesWithExtractors),
 )
 
-// Module — drop-in верификатор hub-сессии обоих контуров: Verifiers +
-// httpkit.AuthExtractor (cookie сотрудника или заказчика → Identity в ctx) +
-// user_id в логах.
+// schemesWithExtractors — SecuritySchemes с extractor'ом слота своего контура.
+func schemesWithExtractors(cfg Config, e *Extractor) []httpkit.SecuritySchemeEntry {
+	schemes := SecuritySchemes(cfg)
+	schemes[0].Extract = func(r *http.Request) (context.Context, error) { return e.extractSlot(r, e.cookie, e.verifier) }
+	if len(schemes) > 1 && e.customer != nil {
+		schemes[1].Extract = func(r *http.Request) (context.Context, error) {
+			return e.extractSlot(r, e.customerCookie, e.customer.Verifier)
+		}
+	}
+	return schemes
+}
+
+// Module — drop-in верификатор hub-сессии обоих контуров: Verifiers (схемы с extractor'ами:
+// cookie → Identity в ctx) + user_id в логах.
 //
 // Module не provide'ит Config (caller добавляет `fx.Provide(sso.NewConfig)`).
 // httpclient.Client опционален.
 var Module = fx.Module(
 	"hubkit/sso",
 	Verifiers,
-	fx.Provide(func(e *Extractor) httpkit.AuthExtractor { return e.Extract }),
 	fx.Invoke(RegisterIdentityLogAttr),
 )

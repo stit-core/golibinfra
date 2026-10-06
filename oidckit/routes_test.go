@@ -20,8 +20,9 @@ import (
 // связку extractor'а с гейтом защищённых операций.
 func newAPI(t *testing.T, b *BFF, e *Extractor) handlertest.API {
 	t.Helper()
-	return handlertest.NewAPI(t, func(api huma.API) { RegisterRoutes(api, b) },
-		handlertest.WithAuth(e.Extract), handlertest.WithSecuritySchemes(NewSecurityScheme(b.cookie)))
+	scheme := NewSecurityScheme(b.cookie)
+	scheme.Extract = e.Extract
+	return handlertest.NewAPI(t, func(api huma.API) { RegisterRoutes(api, b) }, handlertest.WithSecuritySchemes(scheme))
 }
 
 func cookieHeader(t *testing.T, resp *httptest.ResponseRecorder, name string) string {

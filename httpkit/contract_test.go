@@ -80,22 +80,23 @@ type signupInput struct {
 // contractRoutes — по маршруту на класс ошибки: сопоставленная, несопоставленная, panic,
 // 429 хендлера, 503 с RetryAfter() в причине, валидация и операция под Security.
 func contractRoutes(api huma.API) {
+	public := func(op *huma.Operation) { *op = httpkit.Public(*op) }
 	huma.Get(api, "/mapped", func(context.Context, *struct{}) (*struct{}, error) {
 		return nil, httpkit.NotFound("ITEM_NOT_FOUND", "item not found")
-	})
+	}, public)
 	huma.Get(api, "/unmapped", func(context.Context, *struct{}) (*struct{}, error) {
 		return nil, errors.New("pq: dial tcp 10.0.0.5:5432 password=s3cret")
-	})
+	}, public)
 	huma.Get(api, "/panic", func(context.Context, *struct{}) (*struct{}, error) {
 		panic("boom: password=s3cret")
-	})
+	}, public)
 	huma.Get(api, "/slow-down", func(context.Context, *struct{}) (*struct{}, error) {
 		return nil, huma.Error429TooManyRequests("slow down")
-	})
+	}, public)
 	huma.Get(api, "/maintenance", func(context.Context, *struct{}) (*struct{}, error) {
 		return nil, huma.Error503ServiceUnavailable("db is down: password=s3cret", fmt.Errorf("pool: %w", retryError(30*time.Second)))
-	})
-	huma.Register(api, huma.Operation{OperationID: "signup", Method: http.MethodPost, Path: "/signup"},
+	}, public)
+	huma.Register(api, httpkit.Public(huma.Operation{OperationID: "signup", Method: http.MethodPost, Path: "/signup"}),
 		func(context.Context, *signupInput) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
 	huma.Register(api, huma.Operation{
 		OperationID: "me", Method: http.MethodGet, Path: "/me",
@@ -144,7 +145,9 @@ func TestErrorContract(t *testing.T) {
 	}
 	srv := startApp(t,
 		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
-		fx.Supply(httpkit.AuthExtractor(extract)),
+		httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
+			return httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}, Extract: extract}
+		}),
 		fx.Provide(func() httpkit.IdempotencyStore { return downStore{} }),
 		fx.Invoke(contractRoutes),
 	)

@@ -167,26 +167,32 @@ func registerSecret(api huma.API) {
 	})
 }
 
-// Auth-гейт — как у сервера: HumaAuth до маршрутов, extractor — опцией WithAuth.
-func TestNewAPI_WithAuth(t *testing.T) {
-	api := handlertest.NewAPI(t, registerSecret, handlertest.WithAuth(func(r *http.Request) (context.Context, error) {
-		if r.Header.Get("Authorization") == "" {
-			return nil, errors.New("no credentials")
-		}
-		return r.Context(), nil
+// Auth-гейт — как у сервера: HumaAuth до маршрутов, extractor — у схемы из WithSecuritySchemes.
+func TestNewAPI_SchemeExtractor(t *testing.T) {
+	api := handlertest.NewAPI(t, registerSecret, handlertest.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
+		Extract: func(r *http.Request) (context.Context, error) {
+			if r.Header.Get("Authorization") == "" {
+				return nil, errors.New("no credentials")
+			}
+			return r.Context(), nil
+		},
 	}))
 
 	handlertest.AssertAPIError(t, api.Get("/secret"), http.StatusUnauthorized, "UNAUTHORIZED")
 	handlertest.AssertStatus(t, api.Get("/secret", "Authorization: Bearer alice"), http.StatusNoContent)
 }
 
-// KTST-08: без WithAuth защищённая операция закрыта (500 AUTH_NOT_CONFIGURED), а не открыта, — и
+// KTST-08: схема без extractor'а закрывает операцию (500 AUTH_NOT_CONFIGURED), а не открывает, — и
 // HumaAuth потребителя после маршрутов её не откроет.
 func TestNewAPI_SecuredOperationClosedByDefault(t *testing.T) {
+	bearer := httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}}
 	api := handlertest.NewAPI(t, func(api huma.API) {
 		registerSecret(api)
-		api.UseMiddleware(httpkit.HumaAuth(func(r *http.Request) (context.Context, error) { return r.Context(), nil }, logkit.Nop()))
-	})
+		allow := bearer
+		allow.Extract = func(r *http.Request) (context.Context, error) { return r.Context(), nil }
+		api.UseMiddleware(httpkit.HumaAuth([]httpkit.SecuritySchemeEntry{allow}, logkit.Nop()))
+	}, handlertest.WithSecuritySchemes(bearer))
 	handlertest.AssertAPIError(t, api.Get("/secret", "Authorization: Bearer alice"), http.StatusInternalServerError, "AUTH_NOT_CONFIGURED")
 }
 

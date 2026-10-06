@@ -47,7 +47,7 @@ func main() {
 		logkit.Module, httpclient.Module, httpkit.Module,
 
 		fx.Provide(sso.NewConfig), // HUB_SSO_* из ENV + Validate на старте
-		sso.Module,                // Extractor обоих контуров → httpkit.AuthExtractor
+		sso.Module,                // схемы обоих контуров, у каждой — extractor своего cookie
 
 		fx.Provide(client.NewConfig), // HUB_BASE_URL, HUB_SERVICE_TOKEN, …
 		client.Module,                // *client.Client поверх httpclient

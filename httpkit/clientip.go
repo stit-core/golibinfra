@@ -21,10 +21,20 @@ func ClientIPFrom(ctx context.Context) string {
 	return ""
 }
 
+// ContextWithClientIP кладёт IP клиента в ctx, как ClientIP: тест usecase'а читает его ClientIPFrom
+// без прогона через middleware. Не IP — ctx без изменений.
+func ContextWithClientIP(ctx context.Context, ip string) context.Context {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ctx
+	}
+	return clientip.With(ctx, addr)
+}
+
 // ClientIP кладёт IP клиента в ctx (ClientIPFrom). trustProxyHops (HTTP_TRUST_PROXY_HOPS) —
 // сколько доверенных прокси перед сервисом дописывают X-Forwarded-For: 0 — адрес соединения,
-// N — N-я справа запись X-Forwarded-For, левее неё — то, что прислал сам клиент; запись
-// короче N или не IP — адрес соединения. X-Real-IP не читается. X-Forwarded-For при 0 — одна
+// N — N-я справа запись X-Forwarded-For (IP или ip:port), левее неё — то, что прислал сам клиент;
+// запись короче N или не IP — адрес соединения. X-Real-IP не читается. X-Forwarded-For при 0 — одна
 // строка Warn на middleware: за прокси без настройки все клиенты делят его адрес.
 func ClientIP(trustProxyHops int, log logkit.Logger) func(http.Handler) http.Handler {
 	var warnOnce sync.Once
@@ -54,8 +64,13 @@ func forwardedFor(headers []string, hops int) (netip.Addr, bool) {
 	if len(entries) < hops {
 		return netip.Addr{}, false
 	}
-	addr, err := netip.ParseAddr(strings.TrimSpace(entries[len(entries)-hops]))
-	return addr, err == nil
+	entry := strings.TrimSpace(entries[len(entries)-hops])
+	if addr, err := netip.ParseAddr(entry); err == nil {
+		return addr, true
+	}
+	// Часть прокси дописывает порт: без разбора ip:port все клиенты делили бы адрес прокси.
+	ap, err := netip.ParseAddrPort(entry)
+	return ap.Addr(), err == nil
 }
 
 // remoteAddr — адрес соединения: у net/http это host:port, у тестового запроса бывает голый IP.
