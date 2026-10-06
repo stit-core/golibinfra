@@ -249,7 +249,8 @@ func (s Snapshot) Value(name string, labels ...string) float64 {
 
 // Collisions — имена Prometheus (PromName), в которые переходят разные инструменты
 // снимка: в Prometheus их серии сливаются в одну метрику. Ключ — имя Prometheus,
-// значение — инструменты «scope name».
+// значение — инструменты «scope name». Совпадение с рядами гистограммы (_count, _sum,
+// _bucket) не ищет.
 func (s Snapshot) Collisions() map[string][]string {
 	by := map[string]map[string]bool{}
 	for _, x := range s.series {
@@ -298,9 +299,9 @@ func contains(have, want map[string]string) bool {
 
 // PromName — имя метрики в Prometheus после трансляции OTLP по правилам
 // UnderscoreEscapingWithSuffixes (OTLP-приёмник Prometheus 3, prometheus-экспортёр
-// коллектора) с таблицей единиц времени и объёма: символы вне [a-zA-Z0-9:] делят
-// имя на слова, unit дописывается словом, Counter получает _total, Gauge с unit
-// «1» — _ratio.
+// коллектора) с таблицами единиц otlptranslator: символы вне [a-zA-Z0-9:] делят имя
+// на слова, unit дописывается словом, Counter получает _total, Gauge с unit «1» —
+// _ratio.
 func PromName(name, unit string, kind Kind) string {
 	tokens := strings.FieldsFunc(name, func(r rune) bool { return !promChar(r) })
 	main, per := unitSuffixes(unit)
@@ -337,15 +338,19 @@ func PromName(name, unit string, kind Kind) string {
 	return out
 }
 
+// promUnits и promPerUnits — таблицы единиц otlptranslator (unitMap, perUnitMap) целиком.
 var promUnits = map[string]string{
 	"d": "days", "h": "hours", "min": "minutes", "s": "seconds",
 	"ms": "milliseconds", "us": "microseconds", "ns": "nanoseconds",
-	"By": "bytes", "KiBy": "kibibytes", "MiBy": "mebibytes", "GiBy": "gibibytes",
-	"KBy": "kilobytes", "MBy": "megabytes", "GBy": "gigabytes",
-	"1": "", "%": "percent",
+	"By": "bytes", "KiBy": "kibibytes", "MiBy": "mebibytes", "GiBy": "gibibytes", "TiBy": "tibibytes",
+	"KBy": "kilobytes", "MBy": "megabytes", "GBy": "gigabytes", "TBy": "terabytes",
+	"m": "meters", "V": "volts", "A": "amperes", "J": "joules", "W": "watts", "g": "grams",
+	"Cel": "celsius", "Hz": "hertz", "1": "", "%": "percent",
 }
 
-var promPerUnits = map[string]string{"s": "second", "m": "minute", "h": "hour", "d": "day"}
+var promPerUnits = map[string]string{
+	"s": "second", "m": "minute", "h": "hour", "d": "day", "w": "week", "mo": "month", "y": "year",
+}
 
 func unitSuffixes(unit string) (main, per string) {
 	parts := strings.SplitN(unit, "/", 2)

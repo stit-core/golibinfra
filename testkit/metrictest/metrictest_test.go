@@ -218,6 +218,20 @@ func TestPromName(t *testing.T) {
 		{"payload.size", "By", Histogram, "payload_size_bytes"},
 		{"events", "{event}/s", Gauge, "events_per_second"},
 		{"2xx.responses", "", Counter, "_2xx_responses_total"},
+		{"payload.size", "TiBy", Histogram, "payload_size_tibibytes"},
+		{"disk.size", "TBy", Gauge, "disk_size_terabytes"},
+		{"speed", "m/s", Gauge, "speed_meters_per_second"},
+		{"supply.voltage", "V", Gauge, "supply_voltage_volts"},
+		{"current", "A", Gauge, "current_amperes"},
+		{"energy", "J", Counter, "energy_joules_total"},
+		{"power", "W", Gauge, "power_watts"},
+		{"mass", "g", Gauge, "mass_grams"},
+		{"temperature", "Cel", Gauge, "temperature_celsius"},
+		{"cpu.frequency", "Hz", Gauge, "cpu_frequency_hertz"},
+		{"traffic", "By/m", Gauge, "traffic_bytes_per_minute"},
+		{"signups", "{user}/w", Gauge, "signups_per_week"},
+		{"churn", "{user}/mo", Gauge, "churn_per_month"},
+		{"renewals", "{contract}/y", Gauge, "renewals_per_year"},
 	}
 	for _, c := range cases {
 		if got := PromName(c.name, c.unit, c.kind); got != c.want {

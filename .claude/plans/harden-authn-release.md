@@ -111,21 +111,18 @@ blocked-by: —
   переданного `Meter`, дельты, проверка коллизий имён. Обвязка метрик в тестах китов — на нём (KTST-06)
   - Проверка: AC1 → выполнен; `make check` → зелёный · Закрывает: AC1 · Зависит от: S1
   - Сделано: metrictest; на нём 17 из 20 файлов обвязки (кроме `internal/otelkit`, `telemetry`)
-- [x] **S3** — B4: auditkit берёт `RequestID` и `IP` из ctx, если в записи пусто; `audittest` —
-  так же
+- [x] **S3** — B4: auditkit и `audittest` берут `RequestID` и `IP` из ctx, если в записи пусто
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: —
   - Сделано: `auditkit.Entry.Enrich` — его зовут `pgstore.Store.Log` и `audittest.Recorder.Log`
 - [x] **S4** — B5: одноразовые токены в authnkit — генерация и хеш
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Зависит от: —
   - Сделано: `authnkit.NewToken() string` и `HashToken(token) string`, рецепт погашения в доке
-- [x] **S5** — B6: `authnkit/session` и `authnkit/session/pgstore`:
-  - выдача, ротация, отзыв цепочки, `RevokeAll`, `Revoke`, абсолютный срок;
-  - kit-owned миграция, проверка схемы на старте, очистка через timerkit, метрики;
-  - stateless refresh JWT удалён.
+- [x] **S5** — B6: `authnkit/session` и `session/pgstore`: выдача, ротация, отзыв цепочки, `RevokeAll`,
+  `Revoke`, абсолютный срок; kit-owned миграция, проверка схемы на старте, очистка через timerkit,
+  метрики; stateless refresh JWT удалён
   - Проверка: `go test -race ./authnkit/...` с Docker → PASS · Закрывает: AC4 · Зависит от: S2, S4
   - Сделано: PASS; 4 мутанта ротации — красные; лесенка; без миграций — `ErrSchema` на старте
-- [x] **S6** — B6: фейк `testkit/sessiontest` и общий контрактный набор; набор гоняется по фейку и по
-  pgstore
+- [x] **S6** — B6: фейк `testkit/sessiontest` и общий контрактный набор — по фейку и по pgstore
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S5
   - Сделано: `sessiontest.New`, `Active`, `Run` (10 кейсов) — по фейку и pgstore
 - [x] **S7** — B8: `config.Load` и `Source.Apply` без ctx, README без ctx в графе (KAPI-10)
@@ -175,8 +172,9 @@ blocked-by: —
   Подмена после первого `Collect` роняет его. `Get` — ровно эти labels, `Find`/`Value` — фильтр;
   `Sub` оставляет новую серию и с нулём, gauge — текущим. Повтор (`-count`): тесты снимков — на
   `NewProvider`, UpDownCounter на провайдере процесса — labels с номером прогона (natskit). Коллизии —
-  своя трансляция `UnderscoreEscapingWithSuffixes`. Свой провайдер — у `internal/otelkit` и
-  `telemetry` (связка с SDK).
+  своя трансляция `UnderscoreEscapingWithSuffixes` с таблицами единиц otlptranslator целиком (сверка вне
+  репо: 0 расхождений из 12 444); ряды гистограммы не сверяет — сказано в доке. Свой провайдер — у
+  `internal/otelkit` и `telemetry` (связка с SDK).
 - **Аудит.** `Entry.Enrich(ctx)` ядра auditkit зовут pgstore, `audittest` и свой `Logger` до
   `Validate`. Ключ IP — из `internal/`, auditkit не импортирует httpkit.
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его, base64url — нет (`logkit-redact-gaps`).
@@ -274,7 +272,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`); круг фиксов B1,
-B2, N1–N4 (и N6–N8) сделан, дальше N5, перепроверка валидатором, затем S8 (natskit). Хвост для
+B2, N1–N8 сделан (N10 — в S8), дальше перепроверка валидатором, затем S8 (natskit). Хвост для
 S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
 (1 прогон из 4), а дока обещает «снимает интерес сразу».
 
