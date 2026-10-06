@@ -30,6 +30,25 @@ func supplyJob(j Job) fx.Option {
 	return ProvideJob(func() Job { return j })
 }
 
+// waitFor ждёт сигнал с дедлайном: job, потерянный графом, валит тест причиной, а не вешает
+// пакет до таймаута go test.
+func waitFor(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(5 * time.Second):
+		t.Fatalf("%s: no signal after 5s", what)
+	}
+}
+
+// waitTimers — clock.WaitTimers с дедлайном.
+func waitTimers(t *testing.T, clock *clockkit.Tickable, n int) {
+	t.Helper()
+	done := make(chan struct{})
+	go func() { clock.WaitTimers(n); close(done) }()
+	waitFor(t, done, "job timers")
+}
+
 func TestModule_StartRunsJobAndStopWaits(t *testing.T) {
 	started := make(chan struct{})
 	finished := make(chan struct{})
@@ -45,7 +64,7 @@ func TestModule_StartRunsJobAndStopWaits(t *testing.T) {
 	if err := app.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
-	<-started
+	waitFor(t, started, "job start")
 	if err := app.Stop(context.Background()); err != nil {
 		t.Fatalf("Stop: %v", err)
 	}
@@ -104,18 +123,14 @@ func TestModule_SchedulesOnClockFromGraph(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = app.Stop(context.Background()) })
 
-	clock.WaitTimers(1)
+	waitTimers(t, clock, 1)
 	select {
 	case <-runs:
 		t.Fatal("job ran before the interval elapsed")
 	default:
 	}
 	clock.Advance(time.Hour)
-	select {
-	case <-runs:
-	case <-time.After(5 * time.Second):
-		t.Fatal("job did not run after the clock passed the interval")
-	}
+	waitFor(t, runs, "job run after the interval")
 }
 
 // Регрессия: конструктор неверного типа кладёт значение в группу другим типом,

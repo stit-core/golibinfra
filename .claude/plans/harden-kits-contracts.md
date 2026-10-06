@@ -267,7 +267,7 @@ bruteforcekit, дефолты и входы. Вторая половина и р
 
 ## Где мы сейчас
 S1–S3 закрыты, AC1–AC3 подтверждены; валидатор A — FAIL (`M/validation-harden-kits-contracts-A.md`),
-фиксы `fix(…)`: envconf (B1, N3, V1, V2), natskit (N4), outboxkit (V8, V11); затем ревалидация, S4.
+фиксы `fix(…)`: envconf (B1, N3, V1, V2), natskit (N4), outboxkit (V8, V11), timerkit (M18); дальше S4.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`,
