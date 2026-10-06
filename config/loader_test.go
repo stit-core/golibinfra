@@ -2,6 +2,7 @@ package config_test
 
 import (
 	"errors"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -137,6 +138,41 @@ func TestEnv_TaggedNestedStructIsAnError(t *testing.T) {
 	err := config.Load(&app{}, config.Env())
 	if err == nil || !strings.Contains(err.Error(), "config: source[0]: field app.DB: envconfig tag on a nested struct") {
 		t.Fatalf("err = %v, want an error naming the tagged nested struct", err)
+	}
+}
+
+// Тип, которого ридер не разбирает, — ошибка Load с именем поля и типом, а не совет снять тег:
+// у url.URL только UnmarshalBinary.
+func TestEnv_UnsupportedTypeIsAnError(t *testing.T) {
+	type app struct {
+		Endpoint url.URL `envconfig:"ENDPOINT"`
+	}
+	t.Setenv("ENDPOINT", "https://api.example")
+	err := config.Load(&app{}, config.Env())
+	if err == nil || !strings.HasPrefix(err.Error(), "config: source[0]: field app.Endpoint: unsupported type url.URL: ") {
+		t.Fatalf("err = %v, want an unsupported type error naming the field", err)
+	}
+}
+
+// Две секции одного кита: вторая помечена ignored и читается отдельным Load с приставкой —
+// рецепт config/README.md, иначе обе секции читали бы PG_DSN.
+func TestEnvPrefixed_SecondSectionOfOneKit(t *testing.T) {
+	type app struct {
+		Primary   pgSection
+		Analytics pgSection `ignored:"true"`
+	}
+	t.Setenv("PG_DSN", "postgres://primary")
+	t.Setenv("ANALYTICS_PG_DSN", "postgres://analytics")
+
+	var cfg app
+	if err := config.Load(&cfg, config.Env()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := config.Load(&cfg.Analytics, config.EnvPrefixed("analytics")); err != nil {
+		t.Fatalf("Load second section: %v", err)
+	}
+	if cfg.Primary.DSN != "postgres://primary" || cfg.Analytics.DSN != "postgres://analytics" {
+		t.Fatalf("sections = %+v, want PG_DSN and ANALYTICS_PG_DSN", cfg)
 	}
 }
 

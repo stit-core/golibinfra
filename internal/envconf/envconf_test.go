@@ -3,6 +3,7 @@ package envconf
 import (
 	"errors"
 	"net/netip"
+	"net/url"
 	"reflect"
 	"strings"
 	"testing"
@@ -244,12 +245,79 @@ func TestLoad_UntaggedFieldIsAnError(t *testing.T) {
 	if err == nil || !strings.Contains(err.Error(), "app.Region has no envconfig tag") {
 		t.Fatalf("Load = %v, want an error naming the untagged field", err)
 	}
-	type unsupported struct {
-		Ch chan int `envconfig:"T_CH"`
+}
+
+// level — тип с разбором Set (как у flag.Value), которого у ридера нет.
+type level int
+
+func (l *level) Set(string) error { *l = 1; return nil }
+
+// Тип, значение которого ридер не разбирает, — ошибка Load с именем поля, заданная переменная
+// или нет: map, []byte, Set, UnmarshalBinary (url.URL) и список из них, структура без
+// экспортируемых полей.
+func TestLoad_UnsupportedTypeIsAnError(t *testing.T) {
+	type withMap struct {
+		F map[string]string `envconfig:"T_F"`
 	}
-	t.Setenv("T_CH", "1")
-	if err := Load(&unsupported{}); err == nil || err.Error() != "T_CH: unsupported type chan int" {
-		t.Fatalf("Load = %v, want unsupported type", err)
+	type withBytes struct {
+		F []byte `envconfig:"T_F"`
+	}
+	type withSetter struct {
+		F level `envconfig:"T_F"`
+	}
+	type withURL struct {
+		F url.URL `envconfig:"T_F"`
+	}
+	type withURLPointer struct {
+		F *url.URL `envconfig:"T_F"`
+	}
+	type withURLList struct {
+		F []url.URL `envconfig:"T_F"`
+	}
+	type withLocation struct {
+		F *time.Location `envconfig:"T_F"`
+	}
+	type withChan struct {
+		F chan int `envconfig:"T_F"`
+	}
+	tests := []struct {
+		dst  any
+		want string
+	}{
+		{&withMap{}, "field withMap.F: unsupported type map[string]string: "},
+		{&withBytes{}, "field withBytes.F: unsupported type []uint8: "},
+		{&withSetter{}, "field withSetter.F: unsupported type envconf.level: "},
+		{&withURL{}, "field withURL.F: unsupported type url.URL: "},
+		{&withURLPointer{}, "field withURLPointer.F: unsupported type *url.URL: "},
+		{&withURLList{}, "field withURLList.F: unsupported type []url.URL: "},
+		{&withLocation{}, "field withLocation.F: unsupported type *time.Location: "},
+		{&withChan{}, "field withChan.F: unsupported type chan int: "},
+	}
+	for _, value := range []string{"", "1"} {
+		for _, tt := range tests {
+			t.Setenv("T_F", value)
+			err := Load(tt.dst)
+			if err == nil || !strings.HasPrefix(err.Error(), tt.want) || !strings.Contains(err.Error(), "Decode or UnmarshalText") {
+				t.Fatalf("T_F=%q: Load(%T) = %v, want %q naming what the reader parses", value, tt.dst, err, tt.want)
+			}
+		}
+	}
+}
+
+// Структура со своим разбором, которого нет у ридера, — не секция конфига: без тега — поле без
+// тега, а не обход её внутренних полей.
+func TestLoad_UntaggedOpaqueStructIsAnUntaggedField(t *testing.T) {
+	type withURL struct {
+		F url.URL
+	}
+	type withLocation struct {
+		F *time.Location
+	}
+	for _, dst := range []any{&withURL{}, &withLocation{}} {
+		err := Load(dst)
+		if err == nil || !strings.HasSuffix(err.Error(), ".F has no envconfig tag: tag it or mark it ignored:\"true\"") {
+			t.Fatalf("Load(%T) = %v, want an error naming the untagged field F", dst, err)
+		}
 	}
 }
 
@@ -264,8 +332,9 @@ func TestLoad_TaggedNestedStructIsAnError(t *testing.T) {
 	}
 	for _, dst := range []any{&byValue{}, &byPointer{}} {
 		err := Load(dst)
-		if err == nil || !strings.Contains(err.Error(), ".DB: envconfig tag on a nested struct") {
-			t.Fatalf("Load(%T) = %v, want an error naming the tagged nested struct", dst, err)
+		if err == nil || !strings.Contains(err.Error(), ".DB: envconfig tag on a nested struct") ||
+			!strings.Contains(err.Error(), "config.EnvPrefixed") {
+			t.Fatalf("Load(%T) = %v, want an error naming the tagged nested struct and the way to a second section", dst, err)
 		}
 	}
 }

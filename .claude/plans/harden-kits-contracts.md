@@ -8,9 +8,8 @@ blocked-by: —
 
 ## Цель
 Первая половина партии 3 — тега v1.4.0, после которого каждый угол аудита китов ≥ 9 (выше minor
-ничего, эксперименты чисты): находки medium и minor углов 1–3 — один ридер ENV и семантика конфигов,
-одна форма API, pgkit и схемы китов, outbox, идемпотентность, контракт и край httpkit, секреты,
-bruteforcekit, дефолты и входы. Вторая половина и релиз — `harden-tests-archkit-release`.
+ничего, эксперименты чисты): medium и minor углов 1–3 — ридер ENV, конфиги, форма API, pgkit, outbox,
+идемпотентность, httpkit, секреты, bruteforcekit, дефолты. Вторая половина и релиз — второй план.
 
 ## Контекст
 - **Программа.** Метод, push и решения владельца — `go-backend-template/.claude/plans/audit-program.md`;
@@ -21,8 +20,7 @@ bruteforcekit, дефолты и входы. Вторая половина и р
   шаблона (subject длиннее 255 байт) — строки `backlog.md` этого плана и второго.
 - **Эксперименты** — `run.sh` углов в своём worktree на ревизии: FAIL — дефект есть; не собирается
   на новом API — правка под API без смены смысла (оригинал — `M/exs8/orig/*.v130`); тяжёлые — по одному.
-- **Потребитель** — шаблон: bump v1.4.0 в `repair-harness` S7 (Handoff — в
-  `harden-tests-archkit-release`); шлюзы на v0.39.0 — цепочкой аннотаций.
+- **Потребитель** — шаблон: bump v1.4.0 в `repair-harness` S7 (Handoff — во втором плане).
 - **Правила шага:** README и `docs/` кита — тем же коммитом (`make envdoc-check`); breaking — `!`,
   `BREAKING CHANGE:` и строка заготовки аннотации («Где мы сейчас»); новых зависимостей в `go.mod`
   нет; киты вне объёма (oidckit, hubkit, amocrmkit, anthropickit) правятся под API тем же коммитом.
@@ -43,9 +41,9 @@ bruteforcekit, дефолты и входы. Вторая половина и р
   `api-docs/scripts/run-go-experiments.sh <rev> envempty hcprefix` → U4 одна семантика, U5 читается;
   `api-docs/claims-A-exp/run.sh <wt>` (`parseerr`), `api-docs/scripts/claimsB/run.sh <wt>` → U6 21
   из 21 с `ErrConfig`; `httpkit-a/run.sh <rev> api` → U01 PASS, U02 — пустое = дефолт
-  - Подтверждено: дерево S1, логи — `M/exc1/logs/`: U4 — 87 из 87 полей берут дефолт; U5 —
-    `AMOCRM_HTTPCLIENT_BREAKER_*` читается, теневых имён нет; U6 — `parseerr` 13/13, claimsB 11/11 с
-    `ErrConfig`, прочие — `TestKitConfigs_*` (35 конструкторов); U01 PASS, U02 — 31 тег — дефолт
+  - Подтверждено: дерево S1 (`M/exc1/logs/`) — U4 87/87 полей берут дефолт; U5 —
+    `<P>_HTTPCLIENT_BREAKER_*` читается, теневых нет; U6 — `parseerr` 13/13, claimsB 11/11, прочие —
+    `TestKitConfigs_*`; U01 PASS, U02 — 31 тег — дефолт
 - [x] **AC2** — Невалидный конфиг не проходит ни один конструктор (`outboxkit.New`, `NewWorker`,
   `storagekit.Module`, `httpkit.NewServer` — с ошибкой), молча подставленных дефолтов нет; у
   `Validate`, нулей и nil-опций одна семантика; `BindAPI` без гонки; тик outbox дольше таймаута
@@ -159,14 +157,14 @@ bruteforcekit, дефолты и входы. Вторая половина и р
   - Проверка: `make gate-clean` → зелёный · Закрывает: — · Зависит от: S6, S9, S11, S12, S13
 
 ## Решения
-- **ENV.** Ридер — `internal/envconf` у всех 35 конструкторов и `config.Env`; envconfig из `go.mod`
-  ушёл. `KEY=` — как незаданная (Helm `value: ""`, compose без подстановки; U4: `PG_MIGRATIONS_PATH=`
-  выключал миграции); пустую строку или список задаёт `-` — одно правило ридера, а не «off» у поля;
-  список из одних разделителей — ошибка (`,` молча снимал `aud`). Префикс `<P>_<TAG>`, голый `<TAG>`
-  — где кит обещает; вложенная структура — без тега, с тем же префиксом (U5); тег на ней — ошибка
-  `Load` с именем поля, а не приставка (B1 валидатора A: секция App молча пустела) — одно правило
-  имён. Поле без тега и без `ignored` — ошибка: `config.Env` не теряет поля App. Целые — десятичные.
-  `natskit.NewInstanceConfig(name)`; префиксы ошибок сабпакетов — `<kit>/<sub>:` (правило add-kit).
+- **ENV.** Ридер — `internal/envconf` у 35 конструкторов и `config.Env`, без envconfig. `KEY=` — как
+  незаданная (Helm `value: ""`; U4: `PG_MIGRATIONS_PATH=` выключал миграции); пустое задаёт `-`,
+  список из одних разделителей — ошибка (`,` снимал `aud`). Имя — `<P>_<TAG>`, голый `<TAG>` — где кит
+  обещает; вложенная структура — без тега, с тем же префиксом (U5), тег на ней — ошибка, а не
+  приставка (B1: секция App молча пустела); вторая секция кита — свой `Load` с `EnvPrefixed`
+  (подсказка в ошибке). Тип вне ридера (`map`, `[]byte`, `Set`, `UnmarshalBinary` — `url.URL`) —
+  ошибка по типу: канон — строка с `Validate` или `UnmarshalText`. Поле без тега и `ignored` — ошибка;
+  целые — десятичные; префиксы сабпакетов — `<kit>/<sub>:`.
 - **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки
   или `ErrConfig`, не дефолт кита («без предела» у новых настроек — `-1`); формат — и у выключенного,
   обязательное — у включённого; nil-опции игнорируются; `withDefaults` outbox удалён. `NewServer(cfg,
@@ -265,30 +263,32 @@ bruteforcekit, дефолты и входы. Вторая половина и р
 - **env для INFRA-HANDOFF:** новые переменные S4, S8, S9, S12, S13; `STORAGE_S3_USE_SSL`; OTLP вне loopback.
 
 ## Где мы сейчас
-S1–S3 закрыты, AC1–AC3 подтверждены; валидатор A — FAIL (`M/validation-harden-kits-contracts-A.md`),
-фиксы `fix(…)`: envconf, natskit, outboxkit, timerkit, доки (B1, N1, N3–N8, V1, V2, V8, V11, M18); дальше S4.
+Этап 1 (S1–S3, AC1–AC3) принят валидатором A после фиксов (`M/validation-harden-kits-contracts-A.md`);
+мелочи его перепроверки — `fix(envconf)!` (типы вне ридера, вторая секция кита); дальше S4.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`,
   `NewBus(cfg, conn, log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов
   (`POSTGRES_PG_DSN` → `PG_DSN`), поле без тега — ошибка `Load` (тег или `ignored:"true"`), тег на
-  вложенной структуре — ошибка (был приставкой, `DB_PG_DSN`: снять тег, имена — `PG_*`), нет
-  `*envconfig.ParseError`. httpkit: `NewServer(cfg, log, opts…) (*Server, error)` ставит цепочку кита и
-  `HumaAuth` (`WithAuthExtractor`, `WithIdempotencyStore`), `WithLogger` удалён; `ClientIP(hops, log)`,
-  `HumaAuth(extract, log)`, `RegisterHealth(api, timeout, log, probes…)`, схема —
-  `ProvideSecurityScheme(ctor)`; handlertest — с цепочкой кита. healthkit, timerkit: `Group` →
-  `ProbesGroup`/`JobsGroup`, `Provide` → `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` →
-  `SupplyMigrations`. outboxkit: `New(name, cfg, …)`, `NewWorker(instance, cfg, …)` с ошибкой,
-  `Default{BatchSize,TickTimeout,MaxAttempts}` удалены. minio: `NewStorage(cfg, client, urls, log)` с
-  ошибкой. authnkit: `DefaultAccessTTL`, `DefaultLeeway` удалены, `Argon2idParams`/`NewArgon2idParams`
-  → `Argon2idConfig`/`NewArgon2idConfig`; `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий.
-  httpclient: `Validate` — value-приёмник, группа опций → значение `httpclient.Options`. storagekit:
-  `NewKey` → `string`, `MemoryStorage.Bytes`/`Keys` удалены (`Get`). telemetry: `Headers.Decode` — без
-  `ErrConfig`.
+  вложенной структуре — ошибка (был приставкой, `DB_PG_DSN`: снять тег, имена — `PG_*`; вторая секция
+  того же кита — `ignored:"true"` и свой `config.Load(&a.X, config.EnvPrefixed("x"))`, незаданная `X_*`
+  — из голой), поле `map`, `[]byte`, `url.URL` или типа только с `UnmarshalBinary`/`Set` — ошибка `Load`
+  (строка с разбором в `Validate` или тип с `UnmarshalText`), нет `*envconfig.ParseError`. httpkit:
+  `NewServer(cfg, log, opts…) (*Server, error)` ставит цепочку кита и `HumaAuth` (`WithAuthExtractor`,
+  `WithIdempotencyStore`), `WithLogger` удалён; `ClientIP(hops, log)`, `HumaAuth(extract, log)`,
+  `RegisterHealth(api, timeout, log, probes…)`, схема — `ProvideSecurityScheme(ctor)`; handlertest — с
+  цепочкой кита. healthkit, timerkit: `Group` → `ProbesGroup`/`JobsGroup`, `Provide` →
+  `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` → `SupplyMigrations`. outboxkit: `New(name,
+  cfg, …)`, `NewWorker(instance, cfg, …)` с ошибкой, `Default{BatchSize,TickTimeout,MaxAttempts}`
+  удалены. minio: `NewStorage(cfg, client, urls, log)` с ошибкой. authnkit: `DefaultAccessTTL`,
+  `DefaultLeeway` удалены, `Argon2idParams`/`NewArgon2idParams` → `Argon2idConfig`/`NewArgon2idConfig`;
+  `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий. httpclient: `Validate` — value-приёмник, группа
+  опций → значение `httpclient.Options`. storagekit: `NewKey` → `string`, `MemoryStorage.Bytes`/`Keys`
+  удалены (`Get`). telemetry: `Headers.Decode` — без `ErrConfig`.
 - **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт; пустую строку или список задаёт `-`
   (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`, `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается,
-  теневых имён нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые
-  — десятичные; ошибка ENV — `<kit>.ErrConfig` с переменной (и у `tzkit.NewZone`). Литерал с нулями —
+  теневых имён нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые —
+  десятичные; ошибка ENV — `<kit>.ErrConfig` с переменной (и у `tzkit.NewZone`). Литерал с нулями —
   `ErrConfig`: httpclient (таймаут, ретрай, SSE; `MaxRedirects 0` — без редиректов), natskit (таймауты,
   drain, потолки; JetStream — у включённого; `NakMaxBackoff 0` — постоянная задержка),
   `JWTConfig.AccessTTL`; `Leeway 0` — без допуска. Формат telemetry и JetStream — и у выключенного;

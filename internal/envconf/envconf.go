@@ -23,19 +23,21 @@ type Decoder interface {
 }
 
 var (
-	durationType        = reflect.TypeFor[time.Duration]()
-	decoderType         = reflect.TypeFor[Decoder]()
-	textUnmarshalerType = reflect.TypeFor[encoding.TextUnmarshaler]()
+	durationType          = reflect.TypeFor[time.Duration]()
+	decoderType           = reflect.TypeFor[Decoder]()
+	textUnmarshalerType   = reflect.TypeFor[encoding.TextUnmarshaler]()
+	setterType            = reflect.TypeFor[interface{ Set(value string) error }]()
+	binaryUnmarshalerType = reflect.TypeFor[encoding.BinaryUnmarshaler]()
 )
 
 // Load заполняет dst — указатель на структуру — переменными с именами тегов envconfig.
 func Load(dst any) error { return LoadPrefixed(dst, "", false) }
 
 // LoadPrefixed читает переменные <PREFIX>_<тег>; с fallback незаданная берётся из голого
-// <тег>. Вложенная структура без тега читается с тем же префиксом; тег у вложенной структуры
-// и другое поле без тега и без ignored:"true" — ошибка с именем поля. Пустое значение равно
-// незаданной переменной: default, а без него поле не меняется. Ошибка значения называет
-// переменную.
+// <тег>. Вложенная структура без тега читается с тем же префиксом; тег у вложенной структуры,
+// поле типа, который ридер не разбирает, и другое поле без тега и без ignored:"true" — ошибка
+// с именем поля. Пустое значение равно незаданной переменной: default, а без него поле не
+// меняется. Ошибка значения называет переменную.
 func LoadPrefixed(dst any, prefix string, fallback bool) error {
 	rv := reflect.ValueOf(dst)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() || rv.Elem().Kind() != reflect.Struct {
@@ -60,7 +62,10 @@ func loadStruct(sv reflect.Value, prefix string, fallback bool) error {
 		switch {
 		case tagged && nestedStruct(meta.Type):
 			// Тег не даёт вложенной структуре приставку: имена у неё — общие с родителем.
-			err = fmt.Errorf("field %s.%s: envconfig tag on a nested struct: remove it, nested struct fields share the prefix", st.Name(), meta.Name)
+			err = fmt.Errorf("field %s.%s: envconfig tag on a nested struct: remove it, nested struct fields share the prefix; load a second section of the same type with config.EnvPrefixed", st.Name(), meta.Name)
+		case tagged && !parses(meta.Type):
+			// Проверка по типу, а не по значению: поле не ждёт, пока переменную зададут в проде.
+			err = fmt.Errorf("field %s.%s: unsupported type %s: use a string, bool, number, time.Duration, a list of them or a type with Decode or UnmarshalText", st.Name(), meta.Name, meta.Type)
 		case tagged:
 			err = loadField(field, meta, prefix, fallback)
 		case nestedStruct(meta.Type):
@@ -75,12 +80,51 @@ func loadStruct(sv reflect.Value, prefix string, fallback bool) error {
 	return nil
 }
 
-// nestedStruct — структура (или указатель на неё) без своего разбора: её читают поля.
+// nestedStruct — секция конфига: структура (или указатель на неё) с экспортируемыми полями и
+// без своего разбора; её читают поля.
 func nestedStruct(t reflect.Type) bool {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
-	return t.Kind() == reflect.Struct && !decodes(t)
+	if t.Kind() != reflect.Struct || decodes(t) || foreign(t) {
+		return false
+	}
+	for i := range t.NumField() {
+		if t.Field(i).IsExported() {
+			return true
+		}
+	}
+	return false
+}
+
+// parses — значение типа ридер разбирает: Decode или UnmarshalText, строка, bool, число,
+// time.Duration и список из них, кроме []byte.
+func parses(t reflect.Type) bool {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if decodes(t) {
+		return true
+	}
+	if foreign(t) {
+		return false
+	}
+	switch t.Kind() {
+	case reflect.String, reflect.Bool, reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Float32, reflect.Float64:
+		return true
+	case reflect.Slice:
+		// []byte ждёт сырые байты строки, а не список чисел через запятую.
+		return t.Elem().Kind() != reflect.Uint8 && parses(t.Elem())
+	}
+	return false
+}
+
+// foreign — у типа только разбор, которого ридер не знает: Set (как у flag.Value) или
+// UnmarshalBinary (url.URL); прочитать его по виду значения — молча не тот разбор.
+func foreign(t reflect.Type) bool {
+	pt := reflect.PointerTo(t)
+	return !decodes(t) && (pt.Implements(setterType) || pt.Implements(binaryUnmarshalerType))
 }
 
 // structValue — значение вложенной структуры; nil-указатель получает новую структуру.
