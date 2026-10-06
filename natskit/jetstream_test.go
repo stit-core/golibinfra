@@ -12,6 +12,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
@@ -359,6 +360,48 @@ func TestStreamBus_TermWithoutDLQ(t *testing.T) {
 	}
 }
 
+// Ошибку обработчика пишет natskit — ERROR с subject, err и trace_id спана обработки: дока
+// велит обработчику вернуть ошибку и не логировать её, без этой записи она пропала бы молча.
+func TestStreamBus_HandlerErrorLogged(t *testing.T) {
+	installTracing(t)
+	stream := nameFor(t)
+	log := &memLogger{}
+	cfg := jsConfig(stream)
+	cfg.JetStream.NakBackoff = time.Minute // за время теста — одна доставка
+	sb, err := natskit.NewStreamBus(connect(t, natsURL(t)), log, cfg)
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+	subject := subj(t, "created")
+
+	traces := make(chan trace.TraceID, 1)
+	if _, err := sb.SubscribeStream(context.Background(), stream, subject, "failing",
+		func(ctx context.Context, _ []byte) error {
+			select {
+			case traces <- trace.SpanContextFromContext(ctx).TraceID():
+			default:
+			}
+			return errors.New("boom")
+		}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := sb.PublishStream(context.Background(), subject, []byte(`{}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	handlerTrace := recv(t, traces, 20*time.Second, "handler call")
+
+	eventually(t, 5*time.Second, "handler error logged", func() bool {
+		return log.has("error", "natskit: jetstream handler error")
+	})
+	e := log.find("error", "natskit: jetstream handler error")
+	if e.value("subject") != subject || fmt.Sprint(e.value("err")) != "boom" {
+		t.Fatalf("handler error entry without subject or err: %v", e.text())
+	}
+	if !handlerTrace.IsValid() || e.trace != handlerTrace {
+		t.Fatalf("handler error trace_id = %s, want the handler span's %s", e.trace, handlerTrace)
+	}
+}
+
 // ErrTerminal — «не ретраить»: DLQ и Term с первой попытки.
 func TestStreamBus_TerminalErrorSkipsRetries(t *testing.T) {
 	stream := nameFor(t)
@@ -613,8 +656,8 @@ func TestStreamBus_DLQPublishFailureKeepsMessage(t *testing.T) {
 
 	log := &memLogger{}
 	cfg := jsConfig(stream)
-	cfg.JetStream.AckWait = time.Second
-	cfg.JetStream.NakBackoff = 100 * time.Millisecond
+	cfg.JetStream.AckWait = 5 * time.Second
+	cfg.JetStream.NakBackoff = 300 * time.Millisecond
 	cfg.JetStream.DLQSubject = dlqSubject
 	sb, err := natskit.NewStreamBus(connect(t, url), log, cfg)
 	if err != nil {
@@ -622,11 +665,11 @@ func TestStreamBus_DLQPublishFailureKeepsMessage(t *testing.T) {
 	}
 	subject := subj(t, "created")
 
-	attempts := make(chan struct{}, 32)
+	attempts := make(chan time.Time, 32)
 	if _, err := sb.SubscribeStream(ctx, stream, subject, "poison",
 		func(context.Context, []byte) error {
 			select {
-			case attempts <- struct{}{}:
+			case attempts <- time.Now():
 			default:
 			}
 			return fmt.Errorf("%w: broken payload", natskit.ErrTerminal)
@@ -638,9 +681,14 @@ func TestStreamBus_DLQPublishFailureKeepsMessage(t *testing.T) {
 	}
 
 	// Терминальная ошибка обычно означает Term с первой попытки; с провалившимся
-	// DLQ сообщение обязано вернуться на ределивери.
+	// DLQ сообщение обязано вернуться на ределивери — с той же растущей задержкой, что
+	// ретрай: недоступный DLQ не крутит попытки чаще, чем бюджет.
 	recv(t, attempts, 30*time.Second, "first attempt")
-	recv(t, attempts, 30*time.Second, "redelivery after a failed DLQ publish")
+	second := recv(t, attempts, 30*time.Second, "redelivery after a failed DLQ publish")
+	third := recv(t, attempts, 30*time.Second, "second redelivery after a failed DLQ publish")
+	if gap := third.Sub(second); gap < 500*time.Millisecond {
+		t.Fatalf("second redelivery after a failed DLQ publish in %v, want the doubled NakBackoff (600ms)", gap)
+	}
 	eventually(t, 5*time.Second, "failed DLQ publish logged", func() bool {
 		return log.has("error", "natskit: jetstream dlq publish failed, message kept for redelivery")
 	})

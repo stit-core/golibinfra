@@ -18,6 +18,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/testcontainers/testcontainers-go"
 	"github.com/testcontainers/testcontainers-go/wait"
+	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
@@ -201,6 +202,7 @@ type logEntry struct {
 	level string
 	msg   string
 	kv    []any
+	trace trace.TraceID // trace_id записи: logkit берёт его из ctx вызова
 }
 
 // text — запись целиком: тест ищет в ней и сообщение, и значения атрибутов.
@@ -226,16 +228,30 @@ type memLogger struct {
 	entries []logEntry
 }
 
-func (l *memLogger) record(level, msg string, kv []any) {
+func (l *memLogger) record(ctx context.Context, level, msg string, kv []any) {
 	l.mu.Lock()
-	l.entries = append(l.entries, logEntry{level: level, msg: msg, kv: append(append([]any{}, l.base...), kv...)})
+	l.entries = append(l.entries, logEntry{
+		level: level, msg: msg, kv: append(append([]any{}, l.base...), kv...),
+		trace: trace.SpanContextFromContext(ctx).TraceID(),
+	})
 	l.mu.Unlock()
 }
 
-func (l *memLogger) Debug(_ context.Context, msg string, kv ...any) { l.record("debug", msg, kv) }
-func (l *memLogger) Info(_ context.Context, msg string, kv ...any)  { l.record("info", msg, kv) }
-func (l *memLogger) Warn(_ context.Context, msg string, kv ...any)  { l.record("warn", msg, kv) }
-func (l *memLogger) Error(_ context.Context, msg string, kv ...any) { l.record("error", msg, kv) }
+func (l *memLogger) Debug(ctx context.Context, msg string, kv ...any) {
+	l.record(ctx, "debug", msg, kv)
+}
+
+func (l *memLogger) Info(ctx context.Context, msg string, kv ...any) {
+	l.record(ctx, "info", msg, kv)
+}
+
+func (l *memLogger) Warn(ctx context.Context, msg string, kv ...any) {
+	l.record(ctx, "warn", msg, kv)
+}
+
+func (l *memLogger) Error(ctx context.Context, msg string, kv ...any) {
+	l.record(ctx, "error", msg, kv)
+}
 
 func (l *memLogger) With(kv ...any) logkit.Logger {
 	l.mu.Lock()
