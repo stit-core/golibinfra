@@ -127,6 +127,19 @@ func TestEnv_NestedStructUsesTagNames(t *testing.T) {
 	}
 }
 
+// Регрессия B1 валидатора A: тег у вложенной структуры App — ошибка Load с именем поля, а не
+// молча пустая секция без дефолтов.
+func TestEnv_TaggedNestedStructIsAnError(t *testing.T) {
+	type app struct {
+		DB pgSection `envconfig:"DB"`
+	}
+	t.Setenv("DB_PG_DSN", "postgres://tagged")
+	err := config.Load(&app{}, config.Env())
+	if err == nil || !strings.Contains(err.Error(), "config: source[0]: field app.DB: envconfig tag on a nested struct") {
+		t.Fatalf("err = %v, want an error naming the tagged nested struct", err)
+	}
+}
+
 func TestEnv_ParseErrorNamesSourceAndVariable(t *testing.T) {
 	t.Setenv("WORKERS", "many")
 

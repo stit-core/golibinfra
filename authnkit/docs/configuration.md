@@ -57,7 +57,7 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 | `JWT_LEEWAY` | `Leeway` | `time.Duration` | `60s` | Допуск рассинхрона часов при проверке `exp`/`nbf`/`iat` в `Parse`. `0` — без допуска; отрицательный → `ErrConfig`. |
 | `JWT_PREVIOUS_SECRET` | `PreviousSecret` | `string` | `""` | Секрет до ротации: подписанные им токены ещё принимаются, новые подписывает `JWT_SECRET`. Пусто — ротации нет; короче 32 байт → `ErrConfig` (§ Ротация секрета). |
 | `JWT_ISSUER` | `Issuer` | `string` | `""` | `iss`: `Sign*` проставляет, `Parse*` требует совпадения (`ErrTokenAudience`). Пусто — не пишется и не проверяется. |
-| `JWT_AUDIENCE` | `Audience` | `[]string` | — (пусто) | `aud` через запятую: `Sign*` проставляет, `Parse*` требует пересечения (`ErrTokenAudience`). Пусто — не пишется и не проверяется. Пустой элемент списка из ENV отбрасывается, в `Config` — `ErrConfig`. |
+| `JWT_AUDIENCE` | `Audience` | `[]string` | — (пусто) | `aud` через запятую: `Sign*` проставляет, `Parse*` требует пересечения (`ErrTokenAudience`). Пусто — не пишется и не проверяется. Пустой элемент списка из ENV отбрасывается, список из одних разделителей (`,`) — `ErrConfig`, в `Config` пустой элемент — `ErrConfig`. |
 
 `Sign(ctx, claims, ttl)` принимает TTL явно — для токенов с нестандартным сроком
 (одноразовые ссылки, приглашения); `ttl <= 0` → `ErrConfig`.

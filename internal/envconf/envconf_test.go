@@ -105,17 +105,52 @@ func TestLoad_EmptyMarkerZeroesTextualFields(t *testing.T) {
 	t.Setenv("T_PATH", Empty)
 	t.Setenv("T_LIST", Empty)
 	t.Setenv("T_WORD", Empty)
-	s := spec{Word: "PREVIOUS"}
+	t.Setenv("T_ADDR", Empty)
+	s := spec{Word: "PREVIOUS", Addr: netip.MustParseAddr("10.0.0.1")}
 	if err := Load(&s); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if s.Path != "" || s.List != nil || s.Word != "" {
-		t.Fatalf("%q must set an explicit zero: Path=%q List=%v Word=%q", Empty, s.Path, s.List, s.Word)
+	if s.Path != "" || s.List != nil || s.Word != "" || s.Addr.IsValid() {
+		t.Fatalf("%q must set an explicit zero: Path=%q List=%v Word=%q Addr=%v", Empty, s.Path, s.List, s.Word, s.Addr)
 	}
 
 	t.Setenv("T_COUNT", Empty)
 	if err := Load(&spec{}); err == nil || !strings.HasPrefix(err.Error(), "T_COUNT: ") {
 		t.Fatalf("%q in a number = %v, want a parse error of T_COUNT", Empty, err)
+	}
+}
+
+// Целые — десятичные: ведущий ноль не делает число восьмеричным, 0x — ошибка.
+func TestLoad_IntegersAreDecimal(t *testing.T) {
+	clearEnv(t)
+	t.Setenv("T_COUNT", "010")
+	t.Setenv("T_SIZE", "010")
+	var s spec
+	if err := Load(&s); err != nil || s.Count != 10 || s.Size != 10 {
+		t.Fatalf("Load = %v, Count=%d Size=%d, want 10 and 10", err, s.Count, s.Size)
+	}
+	t.Setenv("T_COUNT", "0x10")
+	if err := Load(&spec{}); err == nil || !strings.HasPrefix(err.Error(), "T_COUNT: ") {
+		t.Fatalf("0x10 = %v, want a parse error of T_COUNT", err)
+	}
+}
+
+// Список из одних разделителей — ошибка: пустой список задаёт только Empty. Пустые элементы
+// между значениями отбрасываются.
+func TestLoad_ListWithoutElementsIsAnError(t *testing.T) {
+	for _, value := range []string{",", " , ", " "} {
+		clearEnv(t)
+		t.Setenv("T_LIST", value)
+		err := Load(&spec{})
+		if err == nil || err.Error() != `T_LIST: list has no elements: an empty list is "-"` {
+			t.Fatalf("T_LIST=%q: Load = %v, want the empty list error", value, err)
+		}
+	}
+	clearEnv(t)
+	t.Setenv("T_LIST", "a,,b")
+	var s spec
+	if err := Load(&s); err != nil || !reflect.DeepEqual(s.List, []string{"a", "b"}) {
+		t.Fatalf("Load = %v, List=%v, want [a b]", err, s.List)
 	}
 }
 
@@ -215,6 +250,23 @@ func TestLoad_UntaggedFieldIsAnError(t *testing.T) {
 	t.Setenv("T_CH", "1")
 	if err := Load(&unsupported{}); err == nil || err.Error() != "T_CH: unsupported type chan int" {
 		t.Fatalf("Load = %v, want unsupported type", err)
+	}
+}
+
+// Регрессия B1 валидатора A: тег у вложенной структуры не даёт приставку и молча не читал её
+// поля — теперь это ошибка с именем поля.
+func TestLoad_TaggedNestedStructIsAnError(t *testing.T) {
+	type byValue struct {
+		DB inner `envconfig:"DB"`
+	}
+	type byPointer struct {
+		DB *inner `envconfig:"DB"`
+	}
+	for _, dst := range []any{&byValue{}, &byPointer{}} {
+		err := Load(dst)
+		if err == nil || !strings.Contains(err.Error(), ".DB: envconfig tag on a nested struct") {
+			t.Fatalf("Load(%T) = %v, want an error naming the tagged nested struct", dst, err)
+		}
 	}
 }
 

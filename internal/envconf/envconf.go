@@ -4,6 +4,7 @@ package envconf
 
 import (
 	"encoding"
+	"errors"
 	"fmt"
 	"os"
 	"reflect"
@@ -12,8 +13,8 @@ import (
 	"time"
 )
 
-// Empty — значение переменной, которое явно задаёт строке, списку или map пустое
-// значение: пустая переменная равна незаданной и берёт default.
+// Empty — значение переменной, которое явно задаёт строке, списку или типу со своим разбором
+// пустое значение: пустая переменная равна незаданной и берёт default.
 const Empty = "-"
 
 // Decoder — тип со своим разбором значения переменной.
@@ -31,9 +32,10 @@ var (
 func Load(dst any) error { return LoadPrefixed(dst, "", false) }
 
 // LoadPrefixed читает переменные <PREFIX>_<тег>; с fallback незаданная берётся из голого
-// <тег>. Вложенная структура без тега читается с тем же префиксом, другое поле без тега и
-// без ignored:"true" — ошибка. Пустое значение равно незаданной переменной: default, а без
-// него поле не меняется. Ошибка называет переменную.
+// <тег>. Вложенная структура без тега читается с тем же префиксом; тег у вложенной структуры
+// и другое поле без тега и без ignored:"true" — ошибка с именем поля. Пустое значение равно
+// незаданной переменной: default, а без него поле не меняется. Ошибка значения называет
+// переменную.
 func LoadPrefixed(dst any, prefix string, fallback bool) error {
 	rv := reflect.ValueOf(dst)
 	if rv.Kind() != reflect.Pointer || rv.IsNil() || rv.Elem().Kind() != reflect.Struct {
@@ -53,17 +55,20 @@ func loadStruct(sv reflect.Value, prefix string, fallback bool) error {
 			continue
 		}
 		field := sv.Field(i)
-		if meta.Tag.Get("envconfig") != "" {
-			if err := loadField(field, meta, prefix, fallback); err != nil {
-				return err
-			}
-			continue
+		tagged := meta.Tag.Get("envconfig") != ""
+		var err error
+		switch {
+		case tagged && nestedStruct(meta.Type):
+			// Тег не даёт вложенной структуре приставку: имена у неё — общие с родителем.
+			err = fmt.Errorf("field %s.%s: envconfig tag on a nested struct: remove it, nested struct fields share the prefix", st.Name(), meta.Name)
+		case tagged:
+			err = loadField(field, meta, prefix, fallback)
+		case nestedStruct(meta.Type):
+			err = loadStruct(structValue(field), prefix, fallback)
+		default:
+			err = fmt.Errorf("field %s.%s has no envconfig tag: tag it or mark it ignored:\"true\"", st.Name(), meta.Name)
 		}
-		nested, ok := nestedStruct(field)
-		if !ok {
-			return fmt.Errorf("field %s.%s has no envconfig tag: tag it or mark it ignored:\"true\"", st.Name(), meta.Name)
-		}
-		if err := loadStruct(nested, prefix, fallback); err != nil {
+		if err != nil {
 			return err
 		}
 	}
@@ -71,18 +76,22 @@ func loadStruct(sv reflect.Value, prefix string, fallback bool) error {
 }
 
 // nestedStruct — структура (или указатель на неё) без своего разбора: её читают поля.
-func nestedStruct(field reflect.Value) (reflect.Value, bool) {
-	t := field.Type()
-	switch {
-	case t.Kind() == reflect.Struct && !decodes(t):
-		return field, true
-	case t.Kind() == reflect.Pointer && t.Elem().Kind() == reflect.Struct && !decodes(t.Elem()):
-		if field.IsNil() {
-			field.Set(reflect.New(t.Elem()))
-		}
-		return field.Elem(), true
+func nestedStruct(t reflect.Type) bool {
+	if t.Kind() == reflect.Pointer {
+		t = t.Elem()
 	}
-	return reflect.Value{}, false
+	return t.Kind() == reflect.Struct && !decodes(t)
+}
+
+// structValue — значение вложенной структуры; nil-указатель получает новую структуру.
+func structValue(field reflect.Value) reflect.Value {
+	if field.Kind() != reflect.Pointer {
+		return field
+	}
+	if field.IsNil() {
+		field.Set(reflect.New(field.Type().Elem()))
+	}
+	return field.Elem()
 }
 
 func loadField(field reflect.Value, meta reflect.StructField, prefix string, fallback bool) error {
@@ -119,14 +128,14 @@ func lookup(key string) (string, bool) {
 	return v, ok && v != ""
 }
 
-// textual — тип, у которого пустое значение отличается от незаданного: строка, список, map
-// и тип со своим разбором.
+// textual — тип, у которого пустое значение отличается от незаданного: строка, список и тип
+// со своим разбором.
 func textual(t reflect.Type) bool {
 	if t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
 	switch t.Kind() {
-	case reflect.String, reflect.Slice, reflect.Map:
+	case reflect.String, reflect.Slice:
 		return true
 	}
 	return decodes(t)
@@ -189,6 +198,9 @@ func setValue(v reflect.Value, raw string) error {
 		v.SetFloat(f)
 	case reflect.Slice:
 		items := splitList(raw)
+		if len(items) == 0 {
+			return errEmptyList
+		}
 		s := reflect.MakeSlice(v.Type(), len(items), len(items))
 		for i, item := range items {
 			if err := setValue(s.Index(i), item); err != nil {
@@ -201,6 +213,10 @@ func setValue(v reflect.Value, raw string) error {
 	}
 	return nil
 }
+
+// errEmptyList — список из одних разделителей: пустой список задаёт только Empty, иначе `,`
+// молча снимал бы, например, проверку aud.
+var errEmptyList = errors.New(`list has no elements: an empty list is "-"`)
 
 func splitList(raw string) []string {
 	parts := strings.Split(raw, ",")
