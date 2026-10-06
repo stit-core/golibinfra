@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/natskit"
 )
@@ -31,28 +32,30 @@ type OutMsg struct {
 	Subject string
 	// Payload — тело события.
 	Payload []byte
+	// MetricSubject — шаблон subject'а для сигналов брокера (WithMetricSubject инстанса); пусто —
+	// без шаблона: реальный subject с id в label и имя спана не годится.
+	MetricSubject string
+	// TraceParent — контекст трассы, в которой событие записано: доставка продолжает её.
+	TraceParent trace.SpanContext
 }
 
 type streamTransport struct {
 	sb        natskit.StreamBus
 	namespace string
-	// metricSubject — конечное значение label `subject` publish-метрик natskit:
-	// реальный subject события в label не годится (кардинальность домена).
-	metricSubject string
 }
 
 // NewStreamTransport адаптирует natskit JetStream (StreamBus) под Transport.
 // Nats-Msg-Id = id строки — корректно, пока outbox-таблица одна (BIGSERIAL
 // глобально уникален). Несколько таблиц на один стрим → NewStreamTransportFor.
 func NewStreamTransport(sb natskit.StreamBus) Transport {
-	return streamTransport{sb: sb, metricSubject: DefaultInstance}
+	return streamTransport{sb: sb}
 }
 
 // NewStreamTransportFor namespace'ит Nats-Msg-Id ("<namespace>:<id>") для
 // нескольких outbox-инстансов на одном JetStream-стриме: их BIGSERIAL'ы
 // независимы, а дедуп идёт по Msg-Id и молча уронил бы второй факт.
 func NewStreamTransportFor(sb natskit.StreamBus, namespace string) Transport {
-	return streamTransport{sb: sb, namespace: namespace, metricSubject: namespace}
+	return streamTransport{sb: sb, namespace: namespace}
 }
 
 func (t streamTransport) msgID(id int64) string {
@@ -66,7 +69,8 @@ func (t streamTransport) msgID(id int64) string {
 func (t streamTransport) Publish(ctx context.Context, m OutMsg) error {
 	err := t.sb.PublishStream(ctx, m.Subject, m.Payload,
 		natskit.WithMsgID(t.msgID(m.ID)),
-		natskit.WithMetricSubject(t.metricSubject),
+		natskit.WithMetricSubject(m.MetricSubject),
+		natskit.WithTraceParent(m.TraceParent),
 	)
 	return unavailable(err, t.jetStreamDown(ctx, err))
 }
@@ -78,7 +82,8 @@ func (t streamTransport) PublishBatch(ctx context.Context, msgs []OutMsg) ([]err
 			Subject:       m.Subject,
 			Payload:       m.Payload,
 			MsgID:         t.msgID(m.ID),
-			MetricSubject: t.metricSubject,
+			MetricSubject: m.MetricSubject,
+			TraceParent:   m.TraceParent,
 		}
 	}
 	results, err := t.sb.PublishStreamBatch(ctx, sm)

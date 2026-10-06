@@ -2,6 +2,7 @@ package natskit_test
 
 import (
 	"context"
+	"fmt"
 	"testing"
 	"time"
 
@@ -43,6 +44,20 @@ func deltaUntil(t *testing.T, before metrictest.Snapshot, cond func(metrictest.S
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
+}
+
+// isPublishOf — producer-спан публикации в subject: без шаблона имя у всех одно, subject — в
+// messaging.destination.name.
+func isPublishOf(s sdktrace.ReadOnlySpan, subject string) bool {
+	if s.SpanKind() != trace.SpanKindProducer {
+		return false
+	}
+	for _, kv := range s.Attributes() {
+		if kv.Key == "messaging.destination.name" {
+			return kv.Value.AsString() == subject
+		}
+	}
+	return false
 }
 
 // labelValues — значения label'а key у серий метрики name; "" — серия без него.
@@ -102,10 +117,10 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 	eventually(t, 3*time.Second, "publish and handle spans recorded", func() bool {
 		var sawPublish, sawHandle bool
 		for _, s := range spans.Ended() {
-			switch s.Name() {
-			case "natskit.publish " + subject:
+			switch {
+			case s.Name() == "natskit.publish" && isPublishOf(s, subject):
 				sawPublish = true
-			case "natskit.handle " + subject:
+			case s.Name() == "natskit.handle "+subject:
 				sawHandle = true
 			}
 		}
@@ -137,7 +152,7 @@ func TestBus_ConsumerSpanIsChildOfProducer(t *testing.T) {
 	var publishSpan trace.SpanContext
 	eventually(t, 3*time.Second, "publish span recorded", func() bool {
 		for _, s := range spans.Ended() {
-			if s.Name() == "natskit.publish "+subject {
+			if isPublishOf(s, subject) {
 				publishSpan = s.SpanContext()
 				return true
 			}
@@ -163,6 +178,85 @@ func TestBus_ConsumerSpanIsChildOfProducer(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// Имя producer-спана — шаблон из WithMetricSubject или `natskit.publish`: реальный subject с id
+// размножил бы имена (KO12); шаблон — и в messaging.destination.template.
+func TestBus_ProducerSpanNameIsTemplateNotSubject(t *testing.T) {
+	spans := installTracing(t)
+	conn := connect(t, natsURL(t))
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
+	base := subj(t, "names")
+	for i := range 3 {
+		if err := bus.Publish(context.Background(), fmt.Sprintf("%s.%d", base, i), []byte("x")); err != nil {
+			t.Fatalf("publish: %v", err)
+		}
+	}
+	if err := bus.Publish(context.Background(), base+".9", []byte("x"), natskit.WithMetricSubject(base+".*")); err != nil {
+		t.Fatalf("publish with template: %v", err)
+	}
+	names := map[string]int{}
+	var template string
+	for _, s := range spans.Ended() {
+		if s.SpanKind() != trace.SpanKindProducer {
+			continue
+		}
+		names[s.Name()]++
+		for _, kv := range s.Attributes() {
+			if kv.Key == "messaging.destination.template" {
+				template = kv.Value.AsString()
+			}
+		}
+	}
+	if names["natskit.publish"] != 3 || names["natskit.publish "+base+".*"] != 1 || len(names) != 2 || template != base+".*" {
+		t.Fatalf("producer span names = %v, template = %q; want 3 × natskit.publish and one named by the template", names, template)
+	}
+}
+
+// WithTraceParent: producer-спан — ребёнок контекста события, span публикатора — ссылка на него;
+// потребитель — в трассе события (KO13).
+func TestBus_TraceParentContinuesEventTrace(t *testing.T) {
+	spans := installTracing(t)
+	conn := connect(t, natsURL(t))
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
+	subject := subj(t, "parent")
+
+	handled := make(chan trace.SpanContext, 1)
+	if _, err := bus.Subscribe(context.Background(), subject, func(ctx context.Context, _ []byte) error {
+		handled <- trace.SpanContextFromContext(ctx)
+		return nil
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	tracer := otel.Tracer("test")
+	_, event := tracer.Start(context.Background(), "request")
+	event.End()
+	tickCtx, tick := tracer.Start(context.Background(), "tick")
+	err := bus.Publish(tickCtx, subject, []byte("x"), natskit.WithTraceParent(event.SpanContext()))
+	tick.End()
+	if err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	handler := recv(t, handled, 5*time.Second, "handler span context")
+	if handler.TraceID() != event.SpanContext().TraceID() {
+		t.Fatalf("handler trace %s, want the event trace %s", handler.TraceID(), event.SpanContext().TraceID())
+	}
+	var producer sdktrace.ReadOnlySpan
+	for _, s := range spans.Ended() {
+		if isPublishOf(s, subject) {
+			producer = s
+		}
+	}
+	if producer == nil {
+		t.Fatal("no producer span")
+	}
+	if producer.Parent().SpanID() != event.SpanContext().SpanID() {
+		t.Fatalf("producer parent = %s, want the event span %s", producer.Parent().SpanID(), event.SpanContext().SpanID())
+	}
+	links := producer.Links()
+	if len(links) != 1 || links[0].SpanContext.SpanID() != tick.SpanContext().SpanID() {
+		t.Fatalf("producer links = %+v, want one link to the publisher span", links)
+	}
 }
 
 // Label subject у publish-метрик появляется только с WithMetricSubject:

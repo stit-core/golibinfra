@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 
@@ -446,6 +447,71 @@ func TestInstance_ConfigOverride(t *testing.T) {
 	}
 	if repo.listMode != outboxkit.PublishOrdered || repo.limit != 7 {
 		t.Fatalf("instance config not applied: mode=%q limit=%d", repo.listMode, repo.limit)
+	}
+}
+
+// WithMetricSubject: label subject метрик и backlog-gauge'ей инстанса — шаблон, а не subject с id,
+// тот же шаблон и контекст трассы строки уходят в сигналы natskit (KO11, KO13, KO14, KO21).
+func TestInstance_WithMetricSubject(t *testing.T) {
+	collect := metricsSince(t)
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{7}, SpanID: trace.SpanID{8}, TraceFlags: trace.FlagsSampled, Remote: true,
+	})
+	traced := msg(1, "order.1.created")
+	traced.TraceParent = sc
+	repo := &fakeRepo{
+		unpublished: []outboxkit.Message{traced, msg(2, "order.2.created")},
+		backlog: []outboxkit.SubjectBacklog{
+			{Subject: "order.1.created", Oldest: 3 * time.Second, Pending: 1},
+			{Subject: "order.2.created", Oldest: time.Second, Pending: 2},
+		},
+	}
+	bus := &capturingBus{}
+	fold := func(subject string) string {
+		parts := strings.Split(subject, ".")
+		parts[1] = "*"
+		return strings.Join(parts, ".")
+	}
+	var ob *outboxkit.Outbox
+	app := fxtest.New(t,
+		fx.Provide(
+			func() outboxkit.RepositoryFactory { return &fakeFactory{repo: repo} },
+			func() natskit.StreamBus { return bus },
+			func() pgkit.Transactor { return &pgtest.Recorder{} },
+			func() outboxkit.Config {
+				return valid(outboxkit.Config{BatchSize: 10, Interval: time.Hour, PublishMode: outboxkit.PublishBatch})
+			},
+		),
+		scheduler(),
+		outboxkit.Instance("orders", "outbox_orders", outboxkit.WithMetricSubject(fold)),
+		fx.Invoke(fx.Annotate(func(o *outboxkit.Outbox) { ob = o }, fx.ParamTags(`name:"orders"`))),
+	)
+	app.RequireStart()
+	defer app.RequireStop()
+
+	if err := ob.Publisher().Publish(context.Background(), "order.3.created", map[string]int{"id": 3}); err != nil {
+		t.Fatalf("Publish: %v", err)
+	}
+	if err := ob.Worker().Run(context.Background()); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	rm := collect()
+	tpl := []string{"instance", "orders", "subject", "order.*.created"}
+	if got := rm.Value("outbox_events_inserted_total", append(tpl, "status", "ok")...); got != 1 {
+		t.Fatalf("inserted by template = %v, want 1", got)
+	}
+	if got := rm.Value("outbox_events_processed_total", append(tpl, "status", "published")...); got != 2 {
+		t.Fatalf("processed by template = %v, want 2", got)
+	}
+	if got := rm.Value("outbox_lag_seconds", tpl...); got != 3 {
+		t.Fatalf("lag by template = %v, want 3", got)
+	}
+	if got := rm.Value("outbox_pending_count", tpl...); got != 3 {
+		t.Fatalf("pending by template = %v, want 3", got)
+	}
+	msgs := bus.msgs()
+	if len(msgs) != 2 || msgs[0].MetricSubject != "order.*.created" || !msgs[0].TraceParent.Equal(sc) || msgs[1].TraceParent.IsValid() {
+		t.Fatalf("published %+v, want the template and the trace context of the first row only", msgs)
 	}
 }
 

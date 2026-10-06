@@ -282,14 +282,15 @@ func TestWorkerBrokerDownSpendsNoAttempts(t *testing.T) {
 	down := fmt.Errorf("%w: %w", outboxkit.ErrUnavailable, nats.ErrConnectionClosed)
 	nak := errors.New("nak")
 	cases := map[string]struct {
-		mode       outboxkit.PublishMode
-		tr         *fakeTransport
-		wantFailed []int64
+		mode          outboxkit.PublishMode
+		tr            *fakeTransport
+		wantFailed    []int64
+		publishErrors float64
 	}{
-		"batch without results": {outboxkit.PublishBatch, &fakeTransport{batchErr: down}, nil},
-		"batch per message":     {outboxkit.PublishBatch, &fakeTransport{failOn: map[string]error{"a": down, "b": down}}, nil},
-		"batch mixed":           {outboxkit.PublishBatch, &fakeTransport{failOn: map[string]error{"a": down, "b": nak}}, []int64{2}},
-		"ordered":               {outboxkit.PublishOrdered, &fakeTransport{failOn: map[string]error{"a": down}}, nil},
+		"batch without results": {outboxkit.PublishBatch, &fakeTransport{batchErr: down}, nil, 2},
+		"batch per message":     {outboxkit.PublishBatch, &fakeTransport{failOn: map[string]error{"a": down, "b": down}}, nil, 2},
+		"batch mixed":           {outboxkit.PublishBatch, &fakeTransport{failOn: map[string]error{"a": down, "b": nak}}, []int64{2}, 2},
+		"ordered":               {outboxkit.PublishOrdered, &fakeTransport{failOn: map[string]error{"a": down}}, nil, 1},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -303,9 +304,9 @@ func TestWorkerBrokerDownSpendsNoAttempts(t *testing.T) {
 			if failed := failedIDs(repo.recordedFailures()); !slices.Equal(failed, tc.wantFailed) {
 				t.Fatalf("failures = %v, want %v", failed, tc.wantFailed)
 			}
-			attrs := []string{"instance", "test", "subject", "a", "status", "publish_error"}
-			if got := collect().Value("outbox_events_processed_total", attrs...); got != 1 {
-				t.Fatalf("publish_error of the unavailable row = %v, want 1", got)
+			attrs := []string{"instance", "test", "status", "publish_error"}
+			if got := collect().Value("outbox_events_processed_total", attrs...); got != tc.publishErrors {
+				t.Fatalf("publish_error = %v, want %v", got, tc.publishErrors)
 			}
 		})
 	}

@@ -8,16 +8,21 @@ Resource attrs (`service`/`env`/…) и экспорт настраивает п
 Все метрики несут label `instance` — имя outbox-инстанса
 (`outboxkit.DefaultInstance` = `outbox` у `Module`, `name` у `outboxkit.Instance`
 и `outboxkit.New`), чтобы несколько outbox'ов в одном процессе не сливались в
-одну серию. Гистограммы `_seconds` используют общие бакеты китов
+одну серию. Label `subject` есть только у инстанса с `outboxkit.WithMetricSubject(fn)`:
+его значение — шаблон, в который `fn` сворачивает subject события
+(`order.42.created` → `order.*.created`). Subject — тип события, id — в payload: subject с id в
+label дал бы серию на сущность. Гистограммы `_seconds` используют общие бакеты китов
 (`otelkit.DurationBuckets()`, `0.005 … 30`).
 
 ## Метрики (всегда)
 
 | Метрика | Тип | Labels | Что считает |
 |---|---|---|---|
-| `outbox_events_inserted_total` | Int64Counter | `instance`, `subject`, `status` (`ok`\|`error`\|`marshal_error`\|`payload_too_large`\|`undeclared_subject`) | Вставки события в outbox (`Bus.Publish` → `Repository.Insert`). |
-| `outbox_events_processed_total` | Int64Counter | `instance`, `subject`, `status` (`published`\|`publish_error`\|`mark_error`) | Исход обработки события `Worker`'ом. |
-| `outbox_events_dead_total` | Int64Counter | `instance`, `subject` | Переходы строки в dead (исчерпан `OUTBOX_MAX_ATTEMPTS`). |
+| `outbox_events_inserted_total` | Int64Counter | `instance`, `subject`¹, `status` (`ok`\|`error`\|`marshal_error`\|`payload_too_large`\|`undeclared_subject`) | Вставки события в outbox (`Bus.Publish` → `Repository.Insert`). |
+| `outbox_events_processed_total` | Int64Counter | `instance`, `subject`¹, `status` (`published`\|`publish_error`\|`mark_error`) | Исход обработки события `Worker`'ом. |
+| `outbox_events_dead_total` | Int64Counter | `instance`, `subject`¹ | Переходы строки в dead (исчерпан `OUTBOX_MAX_ATTEMPTS`). |
+
+¹ — только с `WithMetricSubject` инстанса, значение — шаблон.
 | `outbox_revived_total` | Int64Counter | `instance` | Dead-строки, возвращённые в очередь `Outbox.ReviveDead`. |
 | `outbox_batch_size` | Int64Histogram | `instance` | Размер батча, вычитанного за тик `Worker`'а. |
 | `outbox_batch_duration_seconds` | Float64Histogram (`s`) | `instance` | Длительность всего тика `Worker`'а (включая транзакцию). |
@@ -52,8 +57,8 @@ Resource attrs (`service`/`env`/…) и экспорт настраивает п
 
 | Метрика | Тип | Labels | Что считает |
 |---|---|---|---|
-| `outbox_lag_seconds` | Float64ObservableGauge (`s`) | `instance`, `subject` | Возраст самого старого неопубликованного (не-dead) события. |
-| `outbox_pending_count` | Int64ObservableGauge | `instance`, `subject` | Количество неопубликованных (не-dead) событий. |
+| `outbox_lag_seconds` | Float64ObservableGauge (`s`) | `instance`, `subject`¹ | Возраст самого старого неопубликованного (не-dead) события инстанса (по шаблону — самого старого из его subject'ов). |
+| `outbox_pending_count` | Int64ObservableGauge | `instance`, `subject`¹ | Количество неопубликованных (не-dead) событий инстанса (по шаблону — сумма). |
 | `outbox_backlog_errors_total` | Int64Counter | `instance` | Снимки backlog'а, завершившиеся ошибкой (gauge'и за этот сбор не эмитятся). |
 
 Эти сигналы появляются, если репозиторий реализует `outboxkit.BacklogReporter`
@@ -88,15 +93,20 @@ callback зарегистрирован:
 возвращает: их пишет `timerkit` (`timerkit: job error`). Выключенный JetStream и subject'ы
 `WithSubjects` без стрима — ошибка старта, а не запись лога.
 
-## Спаны
+## Спаны и трасса события
 
 Сам `outboxkit` спанов не открывает — `Worker` инструментирован только метриками.
 Producer-спан публикации создаёт транспорт `natskit.StreamBus` (на
 `PublishStream` / `PublishStreamBatch`), куда `Worker` отдаёт сообщения; тик
 целиком лежит под спаном `timerkit.job outboxkit.publisher.<instance>`, а запросы
-к Postgres получают per-query спаны `otelpgx` от `pgkit`. Trace доставки события
-прослеживается через спаны `natskit` (producer) и потребителя.
+к Postgres получают per-query спаны `otelpgx` от `pgkit`.
 
-Label `subject` publish-метрик `natskit` транспорт задаёт равным имени
-outbox-инстанса (`StreamMsg.MetricSubject`): доменный subject в этом label дал бы
-неограниченную кардинальность.
+Трасса запроса продолжается через outbox: `pgstore` хранит в строке W3C trace-context
+(`traceparent`, `tracestate`; без baggage) span'а из ctx `Publish`, и producer-спан публикации —
+ребёнок этого контекста со ссылкой (link) на спан тика (`natskit.WithTraceParent`); потребитель
+события оказывается в трассе запроса, а решение о сэмплинге — запроса. Строка без
+контекста публикуется в трассе тика.
+
+Шаблон из `WithMetricSubject` уходит и в сигналы `natskit`: label `subject` publish-метрик, имя
+producer-спана и `messaging.destination.template`; без опции их нет — спан называется
+`natskit.publish`, реальный subject — в `messaging.destination.name`.

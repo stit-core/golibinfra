@@ -141,7 +141,7 @@ func (w *Worker) tick(opCtx, txCtx context.Context) (res tickResult, publishErr,
 
 	out := make([]OutMsg, len(msgs))
 	for i, m := range msgs {
-		out[i] = OutMsg{ID: m.ID, Subject: m.Subject, Payload: m.Payload}
+		out[i] = OutMsg{ID: m.ID, Subject: m.Subject, Payload: m.Payload, MetricSubject: w.instr.template(m.Subject), TraceParent: m.TraceParent}
 	}
 
 	var acked []Message
@@ -295,10 +295,7 @@ func (w *Worker) recordCommitted(ctx context.Context, res tickResult) {
 		w.processed(ctx, m.Subject, "published")
 	}
 	for _, f := range res.dead {
-		w.instr.deadTotal.Add(ctx, 1, metric.WithAttributes(
-			w.instr.instance,
-			attribute.String("subject", f.msg.Subject),
-		))
+		w.instr.deadTotal.Add(ctx, 1, metric.WithAttributes(append(w.instr.subject(f.msg.Subject), w.instr.instance)...))
 		// Dead — событие больше не доставится: без telemetry метрика — no-op, строка лога остаётся.
 		w.log.Error(ctx, "outboxkit: event dead",
 			"instance", w.name, "id", f.msg.ID, "subject", f.msg.Subject,
@@ -307,11 +304,8 @@ func (w *Worker) recordCommitted(ctx context.Context, res tickResult) {
 }
 
 func (w *Worker) processed(ctx context.Context, subject, status string) {
-	w.instr.processedTotal.Add(ctx, 1, metric.WithAttributes(
-		w.instr.instance,
-		attribute.String("subject", subject),
-		attribute.String("status", status),
-	))
+	w.instr.processedTotal.Add(ctx, 1, metric.WithAttributes(append(w.instr.subject(subject),
+		w.instr.instance, attribute.String("status", status))...))
 }
 
 // truncErr режет текст по границе руны: обрывок многобайтового символа — это

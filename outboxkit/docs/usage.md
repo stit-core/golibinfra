@@ -108,6 +108,20 @@ JetStream включён и каждый фильтр целиком накры�
 `Publish` вне объявленных — `outboxkit.ErrSubjectNotDeclared`. Без опции старт проверяет
 только JetStream.
 
+`WithMetricSubject(fn)` сворачивает subject события в шаблон — label `subject` метрик и
+backlog-gauge'ей инстанса и шаблон в сигналах `natskit`; без опции label нет. Subject — тип
+события, id — в payload; если id всё же в subject, `fn` возвращает шаблон:
+
+```go
+outboxkit.Instance("orders", "outbox_orders", outboxkit.WithMetricSubject(func(subject string) string {
+    parts := strings.Split(subject, ".") // orders.42.created
+    if len(parts) == 3 {
+        parts[1] = "*"
+    }
+    return strings.Join(parts, ".") // orders.*.created
+}))
+```
+
 Таблица `outbox` (`pgstore.Module` и `outboxkit.Module`) и инстансы
 (`pgstore.FactoryModule` и `outboxkit.Instance`) сочетаются в одном графе.
 

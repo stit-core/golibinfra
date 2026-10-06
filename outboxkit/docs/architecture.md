@@ -276,9 +276,9 @@ outbox-таблиц делят один JetStream-стрим, голый id ст
 Решение — `NewStreamTransportFor(sb, namespace)`: он формирует
 `Nats-Msg-Id = "<namespace>:<id>"`. namespace равен имени `Outbox`-инстанса
 (`Instance` подставляет его сам). Per-row дедуп ретраев сохраняется (та же строка
-→ тот же `Msg-Id`), а cross-table коллизии исчезают. Тот же namespace уходит в
-`StreamMsg.MetricSubject` — label `subject` publish-метрик `natskit` остаётся
-конечным множеством имён инстансов, а не доменных subject'ов.
+→ тот же `Msg-Id`), а cross-table коллизии исчезают. В сигналы `natskit` (label `subject`,
+имя producer-спана, `messaging.destination.template`) уходит шаблон subject'а из
+`WithMetricSubject` инстанса, а без него — ничего: имя инстанса шаблоном subject'а не является.
 
 ## tx-strict insert guard
 

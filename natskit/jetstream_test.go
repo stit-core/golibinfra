@@ -12,6 +12,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -228,6 +229,41 @@ func TestStreamBus_PublishBatchDedup(t *testing.T) {
 	expectSilence(t, got, time.Second, "extra delivery (dedup failed)")
 	if seen[1] != 1 || seen[2] != 1 {
 		t.Fatalf("seen = %v, want {1:1, 2:1}", seen)
+	}
+}
+
+// StreamMsg.TraceParent у батча: producer-спан сообщения — ребёнок своего контекста события со
+// ссылкой на span публикатора; сообщение без контекста — ребёнок span'а публикатора, как было.
+func TestStreamBus_PublishBatchTraceParent(t *testing.T) {
+	spans := installTracing(t)
+	stream := nameFor(t)
+	sb := newStreamBus(t, jsConfig(stream))
+	subject := subj(t, "traced")
+
+	tracer := otel.Tracer("test")
+	_, event := tracer.Start(context.Background(), "request")
+	event.End()
+	tickCtx, tick := tracer.Start(context.Background(), "tick")
+	results, err := sb.PublishStreamBatch(tickCtx, []natskit.StreamMsg{
+		{Subject: subject + ".a", Payload: []byte(`{}`), MsgID: "a", TraceParent: event.SpanContext()},
+		{Subject: subject + ".b", Payload: []byte(`{}`), MsgID: "b"},
+	})
+	tick.End()
+	if err != nil || results[0] != nil || results[1] != nil {
+		t.Fatalf("PublishStreamBatch = %v, %v", results, err)
+	}
+	for _, s := range spans.Ended() {
+		switch {
+		case isPublishOf(s, subject+".a"):
+			if s.Parent().SpanID() != event.SpanContext().SpanID() || len(s.Links()) != 1 ||
+				s.Links()[0].SpanContext.SpanID() != tick.SpanContext().SpanID() {
+				t.Fatalf("traced message: parent %s, links %+v; want the event span and a link to the tick", s.Parent().SpanID(), s.Links())
+			}
+		case isPublishOf(s, subject+".b"):
+			if s.Parent().SpanID() != tick.SpanContext().SpanID() || len(s.Links()) != 0 {
+				t.Fatalf("plain message: parent %s, links %+v; want the tick span without links", s.Parent().SpanID(), s.Links())
+			}
+		}
 	}
 }
 

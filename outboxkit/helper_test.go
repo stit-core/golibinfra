@@ -282,7 +282,7 @@ func (b *capturingBus) PublishStream(_ context.Context, subject string, payload 
 	spec := natskit.NewPublishSpec(opts...)
 	b.single = append(b.single, spec)
 	b.batch = append(b.batch, natskit.StreamMsg{
-		Subject: subject, Payload: payload, MsgID: spec.MsgID, MetricSubject: spec.MetricSubject,
+		Subject: subject, Payload: payload, MsgID: spec.MsgID, MetricSubject: spec.MetricSubject, TraceParent: spec.TraceParent,
 	})
 	return nil
 }

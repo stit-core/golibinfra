@@ -9,6 +9,8 @@ import (
 	"errors"
 	"time"
 
+	"go.opentelemetry.io/otel/trace"
+
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
@@ -54,6 +56,9 @@ type Message struct {
 	Payload json.RawMessage
 	// Attempts — число уже случившихся неудачных попыток публикации.
 	Attempts int
+	// TraceParent — контекст трассы, в которой событие записано (запрос); невалидный — контекста
+	// у строки нет.
+	TraceParent trace.SpanContext
 }
 
 // Ref возвращает адрес строки для MarkPublished/RecordFailures.

@@ -32,42 +32,40 @@ blocked-by: —
 
 ## Критерии приёмки
 `<rev>` — проверяемый коммит, `<wt>` — worktree на нём; скрипты — от `M/kits-audit/`.
-- [x] **AC1** — ENV читается одним способом: `KEY=` — как незаданная переменная в каждом ките и в
-  `config.Env`; ошибка разбора несёт `ErrConfig`, ключ и префикс кита; `<P>_HTTPCLIENT_BREAKER_*`
-  читается, теневых имён нет; выключение — явным значением, не пустой строкой. Проверка:
-  `api-docs/scripts/run-go-experiments.sh <rev> envempty hcprefix` → U4 одна семантика, U5 читается;
-  `api-docs/claims-A-exp/run.sh <wt>` (`parseerr`), `api-docs/scripts/claimsB/run.sh <wt>` → U6 21
-  из 21 с `ErrConfig`; `httpkit-a/run.sh <rev> api` → U01 PASS, U02 — пустое = дефолт
+- [x] **AC1** — ENV одним способом: `KEY=` — как незаданная в каждом ките и в `config.Env`; ошибка
+  разбора — `ErrConfig`, ключ и префикс кита; `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён нет;
+  выключение — явным значением. Проверка: `api-docs/scripts/run-go-experiments.sh <rev> envempty
+  hcprefix` → U4, U5; `api-docs/claims-A-exp/run.sh <wt>` (`parseerr`), `api-docs/scripts/claimsB/run.sh
+  <wt>` → U6 21/21 с `ErrConfig`; `httpkit-a/run.sh <rev> api` → U01 PASS, U02 — пустое = дефолт
   - Подтверждено: дерево S1 (`M/exc1/logs/`) — U4 87/87; U5 читается, теневых нет; U6 — 13/13, 11/11,
     прочие — `TestKitConfigs_*`; U01 PASS, U02 — 31 тег — дефолт
 - [x] **AC2** — Невалидный конфиг не проходит ни один конструктор (`outboxkit.New`, `NewWorker`,
-  `storagekit.Module`, `httpkit.NewServer` — с ошибкой), молча подставленных дефолтов нет; у
-  `Validate`, нулей и nil-опций одна семантика; `BindAPI` без гонки; тик outbox дольше таймаута
-  простоя транзакции пула — ошибка старта. Проверка: `api-docs/scripts/run-go-experiments.sh <rev>
-  literal` → U3 16 из 16; `httpkit-a/run.sh <rev> security lifecycle` → H20, H41 PASS;
-  `api-docs/scripts/claims-C/run.sh <wt>` → K2, T1 — отказ, C1 — без panic
+  `storagekit.Module`, `httpkit.NewServer` — с ошибкой); у `Validate`, нулей и nil-опций одна семантика;
+  `BindAPI` без гонки; тик outbox дольше простоя транзакции пула — ошибка старта. Проверка:
+  `api-docs/scripts/run-go-experiments.sh <rev> literal` → U3 16/16; `httpkit-a/run.sh <rev> security
+  lifecycle` → H20, H41 PASS; `api-docs/scripts/claims-C/run.sh <wt>` → K2, T1 — отказ, C1 — без panic
   - Подтверждено: дерево S2 (`M/exc1/logs/`) — U3 16/16; H20, H41 PASS; K2, T1 — отказ, C1 — без panic
-- [x] **AC3** — Одна форма API: константы групп, хелперы регистрации, пробы, логгер и порядок
-  параметров — по правилу «Решений»; обе опции httpclient срабатывают в заданном порядке; ошибка
-  графа httpkit называет функцию кита; job'ы со схемой стартуют после миграций; test-хелперы внутри
-  китов — только исключения правила; README § Принципы — хранилища `pgstore` без неполного перечня.
-  Проверка: `fx-observability/run.sh <rev> fx fx-docker` → KX50, KX61, KX61b PASS;
-  `httpkit-b/run.sh <rev> exp` → в HX04 (a), (b) есть `httpkit.`; таблица единообразия
-  `api-docs.md` пересчитана → без ✗ KAPI-06, KAPI-07
+- [x] **AC3** — Одна форма API (группы, хелперы, пробы, логгер, порядок параметров — по «Решениям»);
+  опции httpclient — в заданном порядке; ошибка графа httpkit называет функцию кита; job'ы со схемой —
+  после миграций; test-хелперы в китах — только исключения. Проверка: `fx-observability/run.sh <rev> fx
+  fx-docker` → KX50, KX61, KX61b PASS; `httpkit-b/run.sh <rev> exp` → в HX04 (a), (b) есть `httpkit.`;
+  таблица единообразия `api-docs.md` → без ✗ KAPI-06, KAPI-07
   - Подтверждено: дерево S3 (`M/exc1/logs`) — KX50 40/40, KX61, KX61b PASS; HX04 — `*httpkit.Server`; ✗ нет
 - [x] **AC4** — pgkit и схемы китов: миграция под чужой блокировкой укладывается в дедлайн и держит
   читателей не дольше `lock_timeout`; `OnStop` пула уважает ctx; вложенная транзакция строже
   внешней — ошибка; хранилище кита без своих миграций не стартует и называет источник. Проверка:
   `correctness-security/run.sh <rev> pg` → E09 PASS; `fx-observability/run.sh <rev> fx-docker` →
   KX62, KX65 PASS
-  - Подтверждено: дерево S4 (`M/exc2/logs/s4-*.log`) — E09 PASS: возврат 2,01 с, читатель 1,3 с;
-    KX62 PASS: старт — `pgkit.ErrSchema` с источником; KX65 PASS: Stop 2 с, `nil`, хук после пула
-- [ ] **AC5** — outbox: `ordered` публикует события агрегата в порядке его писателей; payload, который
+  - Подтверждено: дерево S4 (`M/exc2/logs/s4-*.log`) — E09 PASS (возврат 2,01 с, читатель 1,3 с); KX62
+    PASS (`pgkit.ErrSchema` с источником); KX65 PASS (Stop 2 с, `nil`, хук после пула)
+- [x] **AC5** — outbox: `ordered` публикует события агрегата в порядке его писателей; payload, который
   в JSONB больше предела, отвергается при вставке; потребитель события — в трассе запроса или со
   ссылкой на неё; число серий метрик outbox и имён producer-спанов не растёт с id в subject; новая
   миграция кита проходит лесенку. Проверка: `correctness-security/run.sh <rev> pg outbox-nats` → E10,
   E17 PASS; `fx-observability/run.sh <rev> obs` → KO11–KO14, KO21 PASS; `go test -race
   ./outboxkit/... ./natskit/...` с Docker → PASS
+  - Подтверждено: дерево S6 (`M/exc2/logs/s6-obs.log`) — E10, E17 PASS; KO11 0 серий с subject, KO12 0
+    имён с id, KO13 21/21 в трассе запроса, KO14, KO21 PASS; лесенка с 0003
 - [ ] **AC6** — Идемпотентность и кэш: `GetDel`, `SetNX` и резерв не теряют атомарности при сбое
   связи; запись идемпотентности ставит только владелец резерва; один контрактный набор проходят
   `httpkit.MemoryStore`, cachekit на памяти и на Redis; `MemoryCache` и breaker'ы httpclient
@@ -125,8 +123,9 @@ blocked-by: —
     → отказ `Publish` · Закрывает: AC5 · Зависит от: S4
   - Сделано: E10 PASS (`[paid shipped]`), E17 PASS; `TestPublish_RejectsPayloadOverJSONBLimit`; мутанты
     `M/exc2/mut_s5.py` 7/7; тест «порядок по началу транзакции» удалён — решение обратное
-- [ ] **S6** — Трасса и кардинальность outbox и natskit, миграция кита (KOBS-02, KOBS-03, KOBS-04)
+- [x] **S6** — Трасса и кардинальность outbox и natskit, миграция кита (KOBS-02, KOBS-03, KOBS-04)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: S5
+  - Сделано: AC5 → PASS; мутанты `M/exc2/mut_s6.py` 15/15; obs-эксперимент правлен под API (`MaxAttempts -1`)
 - [ ] **S7** — Атомарность cachekit, контракт идемпотентности, пределы (KCOR-04, -05, KTST-10, KSEC-06)
   - Проверка: AC6 → выполнен · Закрывает: AC6 · Зависит от: S3
 - [ ] **S8** — Контракт HTTP httpkit (KCOR-09, KCOR-10, KCOR-11, KSEC-13, KSEC-14, KSEC-15, KAPI-09)
@@ -153,29 +152,23 @@ blocked-by: —
   - Проверка: `make gate-clean` → зелёный · Закрывает: — · Зависит от: S6, S9, S11, S12, S13
 
 ## Решения
-- **ENV.** Ридер — `internal/envconf` у 35 конструкторов и `config.Env`, без envconfig. `KEY=` — как
-  незаданная (U4: `PG_MIGRATIONS_PATH=` выключал миграции); пустое — `-`, список из одних разделителей —
-  ошибка. Имя — `<P>_<TAG>`, голый `<TAG>` — где кит обещает; вложенная структура — без тега, с тем же
-  префиксом (U5), тег на ней — ошибка (B1: секция молча пустела); вторая секция кита — свой `Load` с
-  `EnvPrefixed` (подсказка в ошибке). Тип вне ридера (`map`, `[]byte`, `Set`, `UnmarshalBinary` —
-  `url.URL`) — ошибка по типу: канон — строка с `Validate` или `UnmarshalText`. Поле без тега и `ignored`
-  — ошибка; целые — десятичные.
+- **ENV.** Ридер — `internal/envconf` у 35 конструкторов и `config.Env`. `KEY=` — как незаданная (U4),
+  пустое — `-`, список из одних разделителей — ошибка. Имя — `<P>_<TAG>`, голый `<TAG>` — где кит
+  обещает; вложенная структура — без тега, с тем же префиксом (U5), тег на ней — ошибка (B1), вторая
+  секция кита — свой `Load` с `EnvPrefixed`. Тип вне ридера (`map`, `[]byte`, `Set`, `UnmarshalBinary`)
+  — ошибка по типу: канон — строка с `Validate` или `UnmarshalText`. Поле без тега и `ignored` — ошибка;
+  целые — десятичные.
 - **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки
-  или `ErrConfig`, не дефолт кита («без предела» у новых настроек — `-1`); формат — и у выключенного,
-  обязательное — у включённого; nil-опции игнорируются; `withDefaults` outbox удалён. `NewServer(cfg,
-  log, …) (*Server, error)` — сборка `Module` (цепочка кита, `HumaAuth` в `BindAPI`), handlertest — на
-  нём (H51). Тик outbox против таймаута простоя транзакции — в `Module` и `Instance` при
-  `pgkit.PoolConfig` в графе. Ноль, уходящий в драйвер (pgxpool, go-redis), — его значение из доки;
-  `RedactConfig{}` — безопасный дефолт; киты вне объёма `withDefaults` сохраняют.
-- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>(ctor, anns…)` с проверкой типа
-  (`healthkit.ProvideProbe`, `timerkit.ProvideJob`, `httpkit.ProvideSecurityScheme`,
-  `grpckit.ProvideService`), значение — `Supply<Thing>` (`pgkit.SupplyMigrations`); проба инстанса —
-  `natskit.ProvideProbe(name)`. Конструктор — `(cfg, зависимости…, log, opts…)`, функция над объектом
-  берёт его первым; логгер — параметр, у handlertest — опция, `WithErrorLogger` telemetry — handler SDK.
-  Опции httpclient — значение `Options`: hook'и складываются, второй транспорт — `ErrConfig` (KX50);
-  `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после optional `pgkit.Migrated` (KX61b).
-  Test-хелперы в ките — `MemoryCache`, `MemoryStorage`, `httpkit.MemoryStore`, фейки `clockkit`,
-  `pgkit.WithTestTx`. hubkit — как есть (вне объёма).
+  или `ErrConfig` («без предела» у новых — `-1`); формат — и у выключенного; nil-опции игнорируются.
+  `NewServer(cfg, log, …)` — сборка `Module`, handlertest — на нём (H51). Тик outbox против простоя
+  транзакции — при `pgkit.PoolConfig` в графе. Ноль, уходящий в драйвер, — его значение из доки;
+  `RedactConfig{}` — безопасный дефолт.
+- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>(ctor, anns…)` с проверкой типа,
+  значение — `Supply<Thing>`; проба инстанса — `natskit.ProvideProbe(name)`. Конструктор — `(cfg,
+  зависимости…, log, opts…)`, функция над объектом берёт его первым; логгер — параметр (исключения — в
+  CLAUDE.md). Опции httpclient — значение `Options` (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы
+  со схемой — после optional `pgkit.Migrated` (KX61b). Test-хелперы в ките — только двойного назначения,
+  фейки `clockkit`, `pgkit.WithTestTx`; hubkit — как есть.
 - **pgkit.** Мигратор — `lock_timeout` = `PG_MIGRATE_LOCK_TIMEOUT` (5 с, ноль — `ErrConfig`), параметр
   `lockTimeout` у `MigrateUp/Down/UpAll` (команда миграций — семантика модуля); у advisory-lock — только
   дедлайн. Дедлайн — cancel request серверу с повтором до конца прогона: `StatementTimeout` драйвера не
@@ -190,12 +183,14 @@ blocked-by: —
   BY` те же. Предел — по представлению хранилища тем же `INSERT` (`octet_length` JSONB-текста): числа в
   экспоненте раздувают JSONB ×4 (N1 валидатора B). Мерит хранилище, не `Bus`: предел — параметр
   `Repository.Insert(…, maxBytes)` (у инстанса свой предел, фабрика его не знает); дефолт тот же.
-- **outbox: трасса и кардинальность.** Строка хранит W3C-контекст запроса (колонка новой миграции
-  обоих источников); producer-спан публикации — ребёнок этого контекста со ссылкой на тик, строки
-  без контекста — как сейчас (KO13). Label `subject` метрик outbox и backlog-запроса — только через
-  `WithMetricSubject(func)` инстанса, по умолчанию — `instance` (KO11, KO21); в доке — «subject —
-  тип события, id — в payload». Producer-спан natskit — по шаблону, без него — `natskit.publish`
-  или `natskit.publish <stream>`; outbox — атрибут `outbox.instance`, не `destination.template`.
+- **outbox: трасса и кардинальность.** Строка хранит W3C trace-context ctx `Publish` (колонка
+  `trace_context` миграции 0003 обоих источников, без baggage); producer-спан — ребёнок контекста со
+  ссылкой на тик через `natskit.WithTraceParent` (`StreamMsg.TraceParent`), строка без контекста — в
+  трассе тика (KO13). Label `subject` метрик и backlog-gauge'ей — только шаблоном
+  `WithMetricSubject(fn)` инстанса (как `WithSubjects`, у `Module`/`New` нет), по умолчанию — серия на
+  инстанс (KO11, KO21; самое старое, сумма). Producer-спан natskit — шаблон, без него `natskit.publish`
+  (стрим по subject без запроса к серверу не узнать). Атрибута `outbox.instance` нет: инстанс называет
+  ссылка на тик, канал атрибутов в natskit — лишний API.
 - **Идемпотентность и кэш.** `SetNX`, `GetDel`, скрипты и резерв — клиентом без ретраев, `Get`,
   `Set`, `Delete` — с ретраями (E18). `IdempotencyStore.Set` — compare-and-set по токену резерва
   (E07): breaking интерфейса httpkit и обеих реализаций. Набор — `testkit/idempotencytest.RunContract`
@@ -242,8 +237,8 @@ blocked-by: —
   тегов, без тега на вложенной структуре; правки шаблона по местам — уже в Handoff второго плана.
 - **pgkit.** `cmd/migrate`: `MigrateUpAll`/`MigrateDown(ctx, dsn, cfg.LockTimeout, …)`; хранилища без
   миграций — ошибка старта (`cmd/migrate` шаблона их накатывает); `PG_MIGRATE_LOCK_TIMEOUT` (5 с).
-- **outbox.** Новая миграция кита (мигратор берёт её сам); метрики без `subject` (`WithMetricSubject`);
-  предел тела — по JSONB (событие с числами в экспоненте у предела теперь `ErrPayloadTooLarge`).
+- **outbox.** Миграция 0003 (мигратор берёт её сам; своя копия `SchemaSQL` — колонка `trace_context JSONB`);
+  метрики без `subject` (дашборды — `WithMetricSubject`); предел тела — по JSONB.
 - **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate` шаблона); дедлайн
   запроса; 408/409/425/429 не воспроизводятся; trace-заголовки клиента — по настройке доверия.
 - **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — из
@@ -254,7 +249,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап 1 (S1–S3) принят валидатором A (`M/validation-harden-kits-contracts-A.md`), мелочи перепроверки —
-`fix(envconf)!`; этап 2: S4 (AC4), S5 закрыты, дальше S6.
+`fix(envconf)!`; этап 2: S4–S6 закрыты (AC4, AC5), дальше S7.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`,
@@ -274,8 +269,9 @@ blocked-by: —
   `ErrSchema`, `Store.CheckSchema` → `pgkit.ErrSchema`, `pgkit.CheckSchema`. outboxkit: `New(name, cfg, …)`,
   `NewWorker(instance, cfg, …)` с ошибкой, `Default{BatchSize,TickTimeout,MaxAttempts}` удалены,
   `Repository.Insert(ctx, subject, payload, maxBytes)` — тело мерит хранилище (своё — по своему
-  представлению), сверх — `ErrPayloadTooLarge`. minio: `NewStorage(cfg, client, urls, log)` с ошибкой.
-  authnkit: `DefaultAccessTTL`, `DefaultLeeway` удалены, `Argon2idParams`/`NewArgon2idParams` →
+  представлению), сверх — `ErrPayloadTooLarge`; `pgstore.SchemaSQL` — с колонкой `trace_context JSONB` (своя
+  копия схемы её добавляет). minio: `NewStorage(cfg, client, urls, log)` с ошибкой. authnkit:
+  `DefaultAccessTTL`, `DefaultLeeway` удалены, `Argon2idParams`/`NewArgon2idParams` →
   `Argon2idConfig`/`NewArgon2idConfig`; `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий. httpclient:
   `Validate` — value-приёмник, группа опций → значение `httpclient.Options`. storagekit: `NewKey` →
   `string`, `MemoryStorage.Bytes`/`Keys` удалены (`Get`). telemetry: `Headers.Decode` — без `ErrConfig`.
@@ -294,6 +290,11 @@ blocked-by: —
   своих миграций — ошибка старта `pgkit.ErrSchema`; дедлайн миграций прерывает идущий оператор, блокировку
   он ждёт ≤ `PG_MIGRATE_LOCK_TIMEOUT` (отказ — `dirty`); outbox `ordered` — по моменту вставки, а не началу
   транзакции; предел тела — по JSONB-тексту (числа в экспоненте у предела — `ErrPayloadTooLarge`); пул с
-  занятым соединением на остановке — WARN и `nil` через 2/3 бюджета.
+  занятым соединением на остановке — WARN и `nil` через 2/3 бюджета. Метрики outbox — без label `subject`
+  (шаблон — `WithMetricSubject` инстанса), backlog-gauge'и — серия на инстанс; producer-спан natskit без
+  шаблона — `natskit.publish`, `destination.template` — только шаблон; доставка события outbox — в трассе
+  записавшего его запроса (ссылка на тик).
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
-  `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`.
+  `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,
+  `outboxkit.WithMetricSubject`, `Message.TraceParent`, `OutMsg.MetricSubject`/`TraceParent`, миграция outbox
+  0003; `natskit.WithTraceParent`, `StreamMsg.TraceParent`.

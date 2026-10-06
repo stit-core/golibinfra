@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
@@ -23,9 +24,9 @@ func TestStreamTransport_MsgIDBareByDefault(t *testing.T) {
 	if got := msgs[0].MsgID; got != "42" {
 		t.Fatalf("MsgID = %q, want %q", got, "42")
 	}
-	// label `subject` publish-метрик natskit — имя инстанса, а не доменный subject.
-	if got := msgs[0].MetricSubject; got != outboxkit.DefaultInstance {
-		t.Fatalf("MetricSubject = %q, want %q", got, outboxkit.DefaultInstance)
+	// Без шаблона subject'а — ни label, ни шаблона в сигналах natskit, а не имя инстанса (KO14).
+	if got := msgs[0].MetricSubject; got != "" {
+		t.Fatalf("MetricSubject = %q, want empty", got)
 	}
 }
 
@@ -38,9 +39,6 @@ func TestStreamTransportFor_NamespacesMsgID(t *testing.T) {
 	msgs := bus.msgs()
 	if got := msgs[0].MsgID; got != "account:42" {
 		t.Fatalf("MsgID = %q, want %q", got, "account:42")
-	}
-	if got := msgs[0].MetricSubject; got != "account" {
-		t.Fatalf("MetricSubject = %q, want %q", got, "account")
 	}
 }
 
@@ -55,8 +53,30 @@ func TestStreamTransport_SinglePublishCarriesMsgID(t *testing.T) {
 	if len(msgs) != 1 {
 		t.Fatalf("published %d msgs, want 1", len(msgs))
 	}
-	if msgs[0].MsgID != "orders:7" || msgs[0].MetricSubject != "orders" || msgs[0].Subject != "order.created" {
+	if msgs[0].MsgID != "orders:7" || msgs[0].MetricSubject != "" || msgs[0].Subject != "order.created" {
 		t.Fatalf("unexpected publish: %+v", msgs[0])
+	}
+}
+
+// Шаблон subject'а и контекст трассы события доходят до natskit обоими путями — батчем и
+// одиночной публикацией ordered.
+func TestStreamTransport_CarriesTemplateAndTraceParent(t *testing.T) {
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{1}, SpanID: trace.SpanID{2}, TraceFlags: trace.FlagsSampled, Remote: true,
+	})
+	m := outboxkit.OutMsg{ID: 1, Subject: "order.42.created", MetricSubject: "order.*.created", TraceParent: sc}
+	bus := &capturingBus{}
+	tr := outboxkit.NewStreamTransport(bus)
+	if _, err := tr.PublishBatch(context.Background(), []outboxkit.OutMsg{m}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tr.Publish(context.Background(), m); err != nil {
+		t.Fatal(err)
+	}
+	for i, got := range bus.msgs() {
+		if got.MetricSubject != "order.*.created" || !got.TraceParent.Equal(sc) {
+			t.Fatalf("message %d: %+v, want the template and the event trace context", i, got)
+		}
 	}
 }
 

@@ -80,6 +80,8 @@ func TestSomething(t *testing.T) {
 | `TestBus_EmitsMetricsAndSpans` | эмитятся все 5 метрик `nats_*` и спаны `natskit.publish`/`natskit.handle`. |
 | `TestBus_ConsumerSpanIsChildOfProducer` | consumer-спан — child producer-спана (trace-context через `nats.Header`). |
 | `TestBus_PublishMetricSubjectIsOptIn` | label `subject` publish-метрик появляется только с `WithMetricSubject`. |
+| `TestBus_ProducerSpanNameIsTemplateNotSubject` | имя producer-спана — `natskit.publish` или шаблон из `WithMetricSubject`, не subject с id. |
+| `TestBus_TraceParentContinuesEventTrace` / `TestStreamBus_PublishBatchTraceParent` | `WithTraceParent` (`StreamMsg.TraceParent`): producer-спан — ребёнок контекста события со ссылкой на span публикатора, потребитель — в трассе события. |
 | `TestStreamBus_ConsumeMetricsUseFilterSubject` | label `subject` и имя consumer-спана — фильтр подписки, реальный subject — в атрибуте. |
 | `TestStreamBus_Disabled` / `TestNewStreamBus_RejectsInvalidConfig` / `TestNewStreamBus_ChecksFormatWhenDisabled` | выключенный JetStream отдаёт `ErrJetStreamDisabled` (и из `CheckStreams`); невалидный DLQ-subject — `ErrConfig`; формат JetStream-полей проверяется и у выключенного. |
 | `TestStreamBus_CheckStreams` | фильтр, накрытый стримом целиком, проходит; пересечения мало — `ErrNoStream` с фильтром в тексте; без фильтров — только проверка JetStream. |

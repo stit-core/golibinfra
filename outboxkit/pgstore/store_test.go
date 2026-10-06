@@ -8,6 +8,9 @@ import (
 	"testing"
 	"time"
 
+	"go.opentelemetry.io/otel/baggage"
+	"go.opentelemetry.io/otel/trace"
+
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
@@ -465,6 +468,53 @@ func TestPublish_RejectsPayloadOverJSONBLimit(t *testing.T) {
 	err = tr.WithTx(ctx, func(ctx context.Context) error { return ob.Publisher().Publish(ctx, "evt", v) })
 	if !errors.Is(err, outboxkit.ErrPayloadTooLarge) {
 		t.Fatalf("Publish of numbers in exponent form = %v, want ErrPayloadTooLarge", err)
+	}
+}
+
+// Строка хранит W3C trace-context запроса и отдаёт его воркеру как TraceParent: доставка
+// продолжает трассу запроса (KO13). Baggage не хранится; строка без span'а в ctx — без контекста.
+func TestStore_KeepsRequestTraceContext(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+	sc := trace.NewSpanContext(trace.SpanContextConfig{
+		TraceID: trace.TraceID{0xa1}, SpanID: trace.SpanID{0xb2}, TraceFlags: trace.FlagsSampled,
+	})
+	member, err := baggage.NewMember("user", "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bag, err := baggage.New(member)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reqCtx := baggage.ContextWithBaggage(trace.ContextWithSpanContext(ctx, sc), bag)
+	insert := func(ctx context.Context, subject string) {
+		t.Helper()
+		if err := tr.WithTx(ctx, func(ctx context.Context) error {
+			return s.Insert(ctx, subject, payload(t, sample{N: 1}), outboxkit.DefaultMaxPayloadBytes)
+		}); err != nil {
+			t.Fatalf("insert %s: %v", subject, err)
+		}
+	}
+	insert(reqCtx, "traced")
+	insert(ctx, "plain")
+
+	got := map[string]trace.SpanContext{}
+	for _, m := range list(t, tr, s, ctx, 10) {
+		got[m.Subject] = m.TraceParent
+	}
+	if p := got["traced"]; p.TraceID() != sc.TraceID() || p.SpanID() != sc.SpanID() || !p.IsSampled() || !p.IsRemote() {
+		t.Fatalf("traced row: TraceParent = %+v, want the request span context", p)
+	}
+	if got["plain"].IsValid() {
+		t.Fatalf("plain row: TraceParent = %+v, want none", got["plain"])
+	}
+	var stored string
+	if err := db.QueryRow(ctx, `SELECT trace_context::text FROM outbox WHERE subject = 'traced'`).Scan(&stored); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(stored, "traceparent") || strings.Contains(stored, "secret") {
+		t.Fatalf("stored trace context %s: want traceparent without baggage", stored)
 	}
 }
 

@@ -25,8 +25,8 @@ func TableMigrations(table string) pgkit.Source {
 
 // tableMigrationsFS: DDL целиком идемпотентен (IF NOT EXISTS) — потребитель,
 // пришедший со своим зеркалом схемы, применяет источник поверх готовой таблицы.
-// Версия 1 — уже вся схема SchemaSQL, поэтому 0002 лишь доводит до неё таблицы
-// без next_attempt_at, а её откат схему версии 1 не трогает.
+// Версия 1 — уже вся схема SchemaSQL, поэтому 0002 и 0003 лишь доводят до неё таблицы
+// без next_attempt_at и trace_context, а их откат схему версии 1 не трогает.
 func tableMigrationsFS(table string) fstest.MapFS {
 	return fstest.MapFS{
 		"migrations/0001_outbox.up.sql":   &fstest.MapFile{Data: []byte(SchemaSQL(table) + "\n\n" + partitionsDDL(table))},
@@ -36,6 +36,12 @@ func tableMigrationsFS(table string) fstest.MapFS {
 		},
 		"migrations/0002_outbox_next_attempt.down.sql": &fstest.MapFile{
 			Data: []byte("-- noop: схема версии 1 уже с next_attempt_at\n"),
+		},
+		"migrations/0003_outbox_trace_context.up.sql": &fstest.MapFile{
+			Data: fmt.Appendf(nil, "ALTER TABLE %s ADD COLUMN IF NOT EXISTS trace_context JSONB;\n", table),
+		},
+		"migrations/0003_outbox_trace_context.down.sql": &fstest.MapFile{
+			Data: []byte("-- noop: схема версии 1 уже с trace_context\n"),
 		},
 	}
 }

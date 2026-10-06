@@ -30,6 +30,7 @@ func SchemaSQL(table string) string {
     last_error      TEXT,
     next_attempt_at TIMESTAMPTZ,
     dead_at         TIMESTAMPTZ,
+    trace_context   JSONB,
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 

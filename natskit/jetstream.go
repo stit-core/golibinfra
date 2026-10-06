@@ -63,13 +63,14 @@ type StreamMsg struct {
 	MsgID string
 	// Header — прикладные заголовки сообщения (аналог WithHeader).
 	Header nats.Header
-	// MetricSubject — значение label `subject` publish-метрик (аналог
-	// WithMetricSubject); пусто — label отсутствует.
+	// MetricSubject — шаблон subject'а (аналог WithMetricSubject); пусто — без label и шаблона.
 	MetricSubject string
+	// TraceParent — контекст трассы события (аналог WithTraceParent).
+	TraceParent trace.SpanContext
 }
 
 func (m StreamMsg) spec() PublishSpec {
-	return PublishSpec{MsgID: m.MsgID, Header: m.Header, MetricSubject: m.MetricSubject}
+	return PublishSpec{MsgID: m.MsgID, Header: m.Header, MetricSubject: m.MetricSubject, TraceParent: m.TraceParent}
 }
 
 // StreamChecker — проверка стримов публикатора на старте; её реализует StreamBus natskit

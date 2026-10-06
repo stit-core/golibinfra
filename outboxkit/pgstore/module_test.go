@@ -355,14 +355,16 @@ func TestTableMigrations_OverExistingTable(t *testing.T) {
 	if err := pgkit.MigrateUpAll(ctx, fix.DSN, time.Minute, pgstore.TableMigrations(table)); err != nil {
 		t.Fatalf("MigrateUpAll: %v", err)
 	}
-	var exists bool
-	if err := db.QueryRow(ctx,
-		`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = 'next_attempt_at')`,
-		table).Scan(&exists); err != nil {
-		t.Fatalf("column check: %v", err)
-	}
-	if !exists {
-		t.Fatal("migration 0002 did not add next_attempt_at to the legacy table")
+	for _, column := range []string{"next_attempt_at", "trace_context"} {
+		var exists bool
+		if err := db.QueryRow(ctx,
+			`SELECT EXISTS(SELECT 1 FROM information_schema.columns WHERE table_name = $1 AND column_name = $2)`,
+			table, column).Scan(&exists); err != nil {
+			t.Fatalf("column check: %v", err)
+		}
+		if !exists {
+			t.Fatalf("TableMigrations did not add %s to the legacy table", column)
+		}
 	}
 }
 

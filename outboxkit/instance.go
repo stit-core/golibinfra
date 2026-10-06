@@ -80,7 +80,7 @@ func (o *Outbox) RegisterBacklogGauges() (metric.Registration, error) {
 	if !ok {
 		return noop.Registration{}, nil
 	}
-	return RegisterBacklogGauges(o.name, reporter)
+	return registerBacklogGauges(o.name, reporter, o.instr.metricSubject)
 }
 
 // ReviveDead возвращает dead-строки инстанса в очередь и считает их в
@@ -101,8 +101,9 @@ func (o *Outbox) ReviveDead(ctx context.Context, filter ReviveFilter) (int64, er
 }
 
 type instanceOptions struct {
-	cfg      *Config
-	subjects []string
+	cfg           *Config
+	subjects      []string
+	metricSubject func(string) string
 }
 
 // InstanceOption — опция сборки Instance.
@@ -119,6 +120,13 @@ func WithInstanceConfig(cfg Config) InstanceOption {
 // остальные (ErrSubjectNotDeclared). Без опции старт проверяет только, что JetStream включён.
 func WithSubjects(filters ...string) InstanceOption {
 	return func(o *instanceOptions) { o.subjects = append(o.subjects, filters...) }
+}
+
+// WithMetricSubject сворачивает subject события в шаблон (`orders.42.created` → `orders.*.created`)
+// для label `subject` метрик и backlog-gauge'ей инстанса и шаблона в сигналах natskit; без опции
+// label нет. Subject — тип события, id — в payload; шаблоны — конечное множество.
+func WithMetricSubject(fn func(subject string) string) InstanceOption {
+	return func(o *instanceOptions) { o.metricSubject = fn }
 }
 
 // Instance собирает именованный outbox поверх таблицы table: store и схему
@@ -159,6 +167,7 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 						return nil, fmt.Errorf("outboxkit: instance %s: %w", name, err)
 					}
 					ob.bus.subjects = o.subjects
+					ob.instr.metricSubject = o.metricSubject
 					return ob, nil
 				},
 				fx.ResultTags(tag),

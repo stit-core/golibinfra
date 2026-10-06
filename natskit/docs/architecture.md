@@ -28,7 +28,7 @@ retry-политика бизнес-уровня, выбор subject'ов и str
 | Файл | Роль |
 |---|---|
 | `bus.go` | `Bus`-интерфейс (`Publish`/`Subscribe`/`SubscribeQueue`), `natsBus` (Core NATS), `ErrTerminal`, дженерики `PublishJSON[T]`/`SubscribeJSON[T]`/`SubscribeQueueJSON[T]`, `decodeJSON`. |
-| `publish.go` | `PublishOption` и `PublishSpec` — общие опции публикации обоих транспортов (`WithMsgID`, `WithHeader`, `WithMetricSubject`). |
+| `publish.go` | `PublishOption` и `PublishSpec` — общие опции публикации обоих транспортов (`WithMsgID`, `WithHeader`, `WithMetricSubject`, `WithTraceParent`). |
 | `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `StreamChecker` (`CheckStreams` — стримы публикатора), `ensureStreams`/`reconcileStream`, deadline + `InProgress` обработчика (`keepInProgress`), poison-обработка (`failStream`/`terminalReason`/`deadLetter`), `StreamMsg`, `SubjectMatches`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
 | `subscription.go` | `Handler`, `Subscription` (`Unsubscribe`/`Drain`), внутренняя `subscription` и `inflightGroup` — учёт работающих обработчиков. |
 | `conn.go` | `Conn` — соединение + реестр подписок; `NewConn` (аутентификация, handlers nats.go → logkit), `Healthy`, graceful `Close`/`CloseContext`, `redactURL`, ctx обработчиков. |

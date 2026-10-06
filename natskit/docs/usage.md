@@ -32,13 +32,15 @@ func SubscribeQueueJSON[T any](b Bus, ctx context.Context, subject, queue string
 ```go
 func WithMsgID(id string) PublishOption            // Nats-Msg-Id: дедуп стримом в окне Duplicates
 func WithHeader(key, value string) PublishOption   // прикладной заголовок (event-type, schema-version…)
-func WithMetricSubject(pattern string) PublishOption // значение label `subject` publish-метрик
+func WithMetricSubject(pattern string) PublishOption // шаблон: label `subject`, имя producer-спана
+func WithTraceParent(sc trace.SpanContext) PublishOption // producer-спан — ребёнок контекста события
 
 // Разобранные опции — для фейков шины вне кита (testkit/natstest).
 type PublishSpec struct {
 	MsgID         string
 	Header        nats.Header
 	MetricSubject string
+	TraceParent   trace.SpanContext
 }
 
 func NewPublishSpec(opts ...PublishOption) PublishSpec
@@ -68,7 +70,8 @@ type StreamMsg struct {
 	Payload       []byte
 	MsgID         string      // → Nats-Msg-Id (дедуп в окне Duplicates)
 	Header        nats.Header // прикладные заголовки (аналог WithHeader)
-	MetricSubject string      // label `subject` publish-метрик (аналог WithMetricSubject)
+	MetricSubject string            // шаблон subject'а (аналог WithMetricSubject)
+	TraceParent   trace.SpanContext // контекст трассы события (аналог WithTraceParent)
 }
 
 // Дженерики.

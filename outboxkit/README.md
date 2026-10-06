@@ -66,9 +66,12 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 
 `OUTBOX_REQUIRE_TX=true` (default) отвергает `Publish` вне транзакции
 (`outboxkit.ErrNoTx`), `OUTBOX_MAX_PAYLOAD_BYTES` — тело больше предела в представлении
-хранилища, которое опубликует воркер (JSONB `pgstore`; `outboxkit.ErrPayloadTooLarge`). Строка, которую брокер `OUTBOX_MAX_ATTEMPTS` раз (default
-`25`, ≈ 1 ч 24 мин с backoff; `-1` — без предела) не принял, становится dead — ERROR
-`outboxkit: event dead` в логе; сбой брокера целиком попыток не тратит.
+хранилища, которое опубликует воркер (JSONB `pgstore`; `outboxkit.ErrPayloadTooLarge`). Строка,
+которую брокер `OUTBOX_MAX_ATTEMPTS` раз (default `25`, ≈ 1 ч 24 мин с backoff; `-1` — без
+предела) не принял, становится dead — ERROR `outboxkit: event dead` в логе; сбой брокера целиком
+попыток не тратит. Строка хранит trace-context запроса: потребитель события — в его трассе.
+Subject — тип события, id — в payload: метрики несут label `instance`, а `subject` — только
+шаблоном `outboxkit.WithMetricSubject` инстанса.
 
 ## Документация
 
@@ -80,9 +83,9 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 - [docs/configuration.md](docs/configuration.md) — полный справочник ENV,
   тюнинг publish-mode / max-attempts / backoff / payload / tick-timeout / retention,
   миграции и таблицы.
-- [docs/observability.md](docs/observability.md) — метрики (label `instance`), лог
-  перехода в dead, спаны; `outbox_lag_seconds` / `outbox_pending_count` через
-  `BacklogReporter`.
+- [docs/observability.md](docs/observability.md) — метрики (label `instance`, шаблон
+  `subject`), лог перехода в dead, спаны и трасса события; `outbox_lag_seconds` /
+  `outbox_pending_count` через `BacklogReporter`.
 - [docs/usage.md](docs/usage.md) — рецепты: single-instance `Module`,
   multi-instance `outboxkit.Instance`, оживление dead-строк, ручной drain,
   `BacklogReporter`.

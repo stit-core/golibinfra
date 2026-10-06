@@ -71,7 +71,8 @@ func (t *fakeTransport) PublishBatch(ctx context.Context, msgs []outboxkit.OutMs
 захватывает опубликованные `StreamMsg`: `NewStreamTransport` отдаёт голый id
 (`"42"`), `NewStreamTransportFor(sb, ns)` — namespace'ный (`"account:42"`), один
 id в двух namespace'ах даёт разные `Msg-Id` (иначе stream-дедуп уронил бы второй
-факт), а `MetricSubject` равен имени инстанса. Ошибки соединения, JetStream, таймаута
+факт), `MetricSubject` — шаблон из `OutMsg` (без `WithMetricSubject` — пусто), `TraceParent`
+строки доходит до `StreamMsg` обоими путями. Ошибки соединения, JetStream, таймаута
 `PubAck` и `ctx` транспорт оборачивает в `ErrUnavailable` — у одиночной публикации, у строки
 батча и у батча целиком; `ErrMaxPayload` остаётся неудачей строки, «нет ответа от стрима» — тоже,
 пока проверка JetStream шины (`natskit.StreamChecker`) проходит. С Docker — сервер NATS без

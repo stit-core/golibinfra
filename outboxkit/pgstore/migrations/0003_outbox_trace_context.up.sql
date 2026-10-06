@@ -1,0 +1,1 @@
+ALTER TABLE outbox ADD COLUMN IF NOT EXISTS trace_context JSONB;

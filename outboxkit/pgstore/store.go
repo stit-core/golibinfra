@@ -10,6 +10,9 @@ import (
 	"regexp"
 	"time"
 
+	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
+
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
@@ -94,7 +97,7 @@ func NewStoreFor(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error
 }
 
 func newStore(db *pgkit.DB, table string, src pgkit.Source, opts ...StoreOption) (*Store, error) {
-	const cols = `id, created_at, subject, payload, attempts,
+	const cols = `id, created_at, subject, payload, attempts, trace_context,
     (next_attempt_at IS NULL OR next_attempt_at <= NOW()) AS due`
 	s := &Store{
 		db:    db,
@@ -106,8 +109,8 @@ func newStore(db *pgkit.DB, table string, src pgkit.Source, opts ...StoreOption)
 		insertSQL: fmt.Sprintf(`WITH p AS (
     SELECT j AS payload, octet_length(j::text) AS size FROM (SELECT $2::jsonb AS j) AS raw
 ), ins AS (
-    INSERT INTO %s (subject, payload, created_at)
-    SELECT $1, payload, clock_timestamp() FROM p WHERE size <= $3
+    INSERT INTO %s (subject, payload, created_at, trace_context)
+    SELECT $1, payload, clock_timestamp(), $4::jsonb FROM p WHERE size <= $3
     RETURNING 1
 )
 SELECT size, EXISTS (SELECT 1 FROM ins) FROM p`, table),
@@ -170,7 +173,7 @@ func (s *Store) Insert(ctx context.Context, subject string, payload json.RawMess
 		size     int
 		inserted bool
 	)
-	if err := s.db.QueryRow(ctx, s.insertSQL, subject, []byte(payload), maxBytes).Scan(&size, &inserted); err != nil {
+	if err := s.db.QueryRow(ctx, s.insertSQL, subject, []byte(payload), maxBytes, traceContext(ctx)).Scan(&size, &inserted); err != nil {
 		return fmt.Errorf("outboxkit/pgstore: insert: %w", err)
 	}
 	if !inserted {
@@ -197,9 +200,11 @@ func (s *Store) ListUnpublished(ctx context.Context, limit int, mode outboxkit.P
 	for rows.Next() {
 		var m outboxkit.Message
 		var due bool
-		if err := rows.Scan(&m.ID, &m.CreatedAt, &m.Subject, &m.Payload, &m.Attempts, &due); err != nil {
+		var tc []byte
+		if err := rows.Scan(&m.ID, &m.CreatedAt, &m.Subject, &m.Payload, &m.Attempts, &tc, &due); err != nil {
 			return nil, fmt.Errorf("outboxkit/pgstore: scan: %w", err)
 		}
+		m.TraceParent = traceParent(tc)
 		if !due {
 			break
 		}
@@ -209,6 +214,34 @@ func (s *Store) ListUnpublished(ctx context.Context, limit int, mode outboxkit.P
 		return nil, listErr(err)
 	}
 	return msgs, nil
+}
+
+// traceContext — W3C trace-context запроса из ctx для строки (без baggage: его не храним); nil —
+// span'а в ctx нет.
+func traceContext(ctx context.Context) []byte {
+	carrier := propagation.MapCarrier{}
+	propagation.TraceContext{}.Inject(ctx, carrier)
+	if len(carrier) == 0 {
+		return nil
+	}
+	data, err := json.Marshal(carrier)
+	if err != nil {
+		return nil
+	}
+	return data
+}
+
+// traceParent — span context из сохранённого trace-context строки; невалидный — его нет или он
+// испорчен: событие публикуется в трассе тика.
+func traceParent(data []byte) trace.SpanContext {
+	if len(data) == 0 {
+		return trace.SpanContext{}
+	}
+	var carrier propagation.MapCarrier
+	if err := json.Unmarshal(data, &carrier); err != nil {
+		return trace.SpanContext{}
+	}
+	return trace.SpanContextFromContext(propagation.TraceContext{}.Extract(context.Background(), carrier))
 }
 
 func listErr(err error) error {

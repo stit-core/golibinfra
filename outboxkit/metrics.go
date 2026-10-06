@@ -30,7 +30,9 @@ type BacklogReporter interface {
 }
 
 type outboxInstruments struct {
-	instance        attribute.KeyValue
+	instance attribute.KeyValue
+	// metricSubject — WithMetricSubject инстанса; nil — label `subject` нет.
+	metricSubject   func(subject string) string
 	insertedTotal   metric.Int64Counter
 	processedTotal  metric.Int64Counter
 	deadTotal       metric.Int64Counter
@@ -72,17 +74,41 @@ func newOutboxInstruments(instance string) *outboxInstruments {
 	}
 }
 
-// RegisterBacklogGauges регистрирует ObservableGauge'и
-// `outbox_lag_seconds{instance,subject}` и `outbox_pending_count{instance,subject}`
-// поверх BacklogReporter. Возвращает Registration — вызвать Unregister на shutdown.
+// subject — label `subject` сигнала: шаблон из WithMetricSubject; без него label нет — id в
+// subject размножил бы серии.
+func (in *outboxInstruments) subject(subject string) []attribute.KeyValue {
+	if in.metricSubject == nil {
+		return nil
+	}
+	return []attribute.KeyValue{attribute.String("subject", in.metricSubject(subject))}
+}
+
+// template — шаблон subject'а для сигналов брокера; пусто без WithMetricSubject.
+func (in *outboxInstruments) template(subject string) string {
+	if in.metricSubject == nil {
+		return ""
+	}
+	return in.metricSubject(subject)
+}
+
+// RegisterBacklogGauges регистрирует ObservableGauge'и `outbox_lag_seconds{instance}` и
+// `outbox_pending_count{instance}` поверх BacklogReporter: самое старое событие и число
+// неопубликованных по всей очереди инстанса. Возвращает Registration — вызвать Unregister на
+// shutdown.
 func RegisterBacklogGauges(instance string, reporter BacklogReporter) (metric.Registration, error) {
+	return registerBacklogGauges(instance, reporter, nil)
+}
+
+// registerBacklogGauges: fold — WithMetricSubject инстанса, снимки сворачиваются по шаблону
+// (самое старое, сумма); nil — одна серия на инстанс.
+func registerBacklogGauges(instance string, reporter BacklogReporter, fold func(string) string) (metric.Registration, error) {
 	m := otelkit.Meter("outboxkit")
 	lag := otelkit.Must(m.Float64ObservableGauge("outbox_lag_seconds",
-		metric.WithDescription("Age of oldest unpublished event per subject"),
+		metric.WithDescription("Age of oldest unpublished event"),
 		metric.WithUnit("s"),
 	))
 	pending := otelkit.Must(m.Int64ObservableGauge("outbox_pending_count",
-		metric.WithDescription("Number of unpublished events per subject"),
+		metric.WithDescription("Number of unpublished events"),
 	))
 	backlogErrors := otelkit.Must(m.Int64Counter("outbox_backlog_errors_total",
 		metric.WithDescription("Failed backlog snapshots behind outbox_lag_seconds/outbox_pending_count"),
@@ -97,10 +123,28 @@ func RegisterBacklogGauges(instance string, reporter BacklogReporter) (metric.Re
 			backlogErrors.Add(ctx, 1, metric.WithAttributes(inst))
 			return nil //nolint:nilerr // сбой снимка учтён метрикой, экспорт процесса не валим
 		}
+		type series struct {
+			oldest  time.Duration
+			pending int64
+		}
+		folded := map[string]series{}
 		for _, b := range backlog {
-			attrs := metric.WithAttributes(inst, attribute.String("subject", b.Subject))
-			o.ObserveFloat64(lag, b.Oldest.Seconds(), attrs)
-			o.ObserveInt64(pending, b.Pending, attrs)
+			key := ""
+			if fold != nil {
+				key = fold(b.Subject)
+			}
+			s := folded[key]
+			s.oldest = max(s.oldest, b.Oldest)
+			s.pending += b.Pending
+			folded[key] = s
+		}
+		for key, s := range folded {
+			kv := []attribute.KeyValue{inst}
+			if fold != nil {
+				kv = append(kv, attribute.String("subject", key))
+			}
+			o.ObserveFloat64(lag, s.oldest.Seconds(), metric.WithAttributes(kv...))
+			o.ObserveInt64(pending, s.pending, metric.WithAttributes(kv...))
 		}
 		return nil
 	}, lag, pending)

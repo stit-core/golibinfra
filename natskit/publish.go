@@ -3,6 +3,7 @@ package natskit
 import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
+	"go.opentelemetry.io/otel/trace"
 )
 
 // PublishOption настраивает одну публикацию — Bus.Publish и
@@ -16,6 +17,7 @@ type PublishSpec struct {
 	MsgID         string
 	Header        nats.Header
 	MetricSubject string
+	TraceParent   trace.SpanContext
 }
 
 // NewPublishSpec собирает PublishSpec из опций.
@@ -46,11 +48,18 @@ func WithHeader(key, value string) PublishOption {
 	}
 }
 
-// WithMetricSubject задаёт значение label `subject` publish-метрик: шаблон
-// (`alerts.employee.*`), а не конкретный subject. Без него label отсутствует —
-// кит не заводит серию на каждый id.
+// WithMetricSubject задаёт шаблон subject'а (`alerts.employee.*`): значение label `subject`
+// publish-метрик, имя producer-спана и `messaging.destination.template`. Без него label и шаблона
+// нет, спан — `natskit.publish`: кит не заводит серию и имя на каждый id.
 func WithMetricSubject(pattern string) PublishOption {
 	return func(s *PublishSpec) { s.MetricSubject = pattern }
+}
+
+// WithTraceParent делает producer-span ребёнком контекста события (например, запроса, который
+// записал событие в outbox), а span из ctx публикации — ссылкой (link) на него: трасса доставки
+// продолжает трассу события, а не публикатора. Невалидный контекст ничего не меняет.
+func WithTraceParent(sc trace.SpanContext) PublishOption {
+	return func(s *PublishSpec) { s.TraceParent = sc }
 }
 
 // Headers — заголовки сообщения: копия заданных вызывающим плюс `Nats-Msg-Id`.

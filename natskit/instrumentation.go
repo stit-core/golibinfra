@@ -112,7 +112,8 @@ func (in *natsInstruments) subjectAttrs(filter string, extra ...attribute.KeyVal
 }
 
 // startPublishSpan создаёт producer-span, собирает nats.Msg с заголовками
-// вызывающего и инжектит в них trace-context.
+// вызывающего и инжектит в них trace-context. Имя спана — шаблон subject'а или без него:
+// реальный subject с id размножил бы имена.
 func (in *natsInstruments) startPublishSpan(ctx context.Context, subject string, data []byte, po PublishSpec) (*nats.Msg, context.Context, trace.Span) {
 	msg := &nats.Msg{Subject: subject, Data: data, Header: po.Headers()}
 	attrs := []attribute.KeyValue{
@@ -122,16 +123,20 @@ func (in *natsInstruments) startPublishSpan(ctx context.Context, subject string,
 		semconv.MessagingOperationTypeSend,
 		attribute.String("instance", in.instance),
 	}
-	name := subject
+	name := "natskit.publish"
 	if po.MetricSubject != "" {
-		name = po.MetricSubject
+		name += " " + po.MetricSubject
 		attrs = append(attrs, semconv.MessagingDestinationTemplate(po.MetricSubject))
 	}
-	ctx, span := in.tracer.Start(
-		ctx, "natskit.publish "+name,
-		trace.WithSpanKind(trace.SpanKindProducer),
-		trace.WithAttributes(attrs...),
-	)
+	opts := []trace.SpanStartOption{trace.WithSpanKind(trace.SpanKindProducer), trace.WithAttributes(attrs...)}
+	parent := ctx
+	if po.TraceParent.IsValid() {
+		if publisher := trace.SpanContextFromContext(ctx); publisher.IsValid() {
+			opts = append(opts, trace.WithLinks(trace.Link{SpanContext: publisher}))
+		}
+		parent = trace.ContextWithRemoteSpanContext(ctx, po.TraceParent)
+	}
+	ctx, span := in.tracer.Start(parent, name, opts...)
 	in.prop.Inject(ctx, natsHeaderCarrier(msg.Header))
 	return msg, ctx, span
 }

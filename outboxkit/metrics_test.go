@@ -19,12 +19,17 @@ func TestRegisterBacklogGauges_ObservesSnapshot(t *testing.T) {
 	if err != nil {
 		t.Fatalf("RegisterBacklogGauges: %v", err)
 	}
+	// Одна серия на инстанс: самое старое и сумма по всем subject'ам — id в subject не размножает
+	// серии (KO21).
 	rm := collect()
-	if n := len(rm.Find("outbox_lag_seconds", "instance", "orders")); n != 2 {
-		t.Fatalf("outbox_lag_seconds points = %d, want 2", n)
+	if n := len(rm.Find("outbox_lag_seconds", "instance", "orders")); n != 1 {
+		t.Fatalf("outbox_lag_seconds points = %d, want 1", n)
 	}
-	if n := len(rm.Find("outbox_pending_count", "instance", "orders")); n != 2 {
-		t.Fatalf("outbox_pending_count points = %d, want 2", n)
+	if got := rm.Value("outbox_lag_seconds", "instance", "orders"); got != 3 {
+		t.Fatalf("outbox_lag_seconds = %v, want 3 (the oldest)", got)
+	}
+	if got := rm.Value("outbox_pending_count", "instance", "orders"); got != 6 {
+		t.Fatalf("outbox_pending_count = %v, want 6 (the sum)", got)
 	}
 
 	if err := reg.Unregister(); err != nil {

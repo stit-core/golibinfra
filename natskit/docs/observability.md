@@ -66,18 +66,21 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 
 | Спан | Kind | Имя | Атрибуты |
 |---|---|---|---|
-| Producer | `SpanKindProducer` | `natskit.publish <шаблон или subject>` | `messaging.system=nats`, `messaging.destination.name=<subject>`, `messaging.operation.type=send`, `messaging.message.body.size`, `instance`; при `WithMetricSubject` — ещё `messaging.destination.template` |
+| Producer | `SpanKindProducer` | `natskit.publish <шаблон>`, без `WithMetricSubject` — `natskit.publish` | `messaging.system=nats`, `messaging.destination.name=<subject>`, `messaging.operation.type=send`, `messaging.message.body.size`, `instance`; при `WithMetricSubject` — ещё `messaging.destination.template` |
 | Consumer | `SpanKindConsumer` | `natskit.handle <фильтр подписки>` | `messaging.system=nats`, `messaging.destination.name` = реальный subject, `messaging.destination.template=<фильтр подписки>`, `messaging.operation.type=process`, `messaging.message.body.size`, `instance` |
 
-Имя consumer-спана — фильтр подписки, а не реальный subject: для
-`orders.*.created` иначе получилось бы имя на каждый id. Конкретный subject
-остаётся в `messaging.destination.name`.
+Имя спана — шаблон или фильтр подписки, а не реальный subject: для
+`orders.*.created` иначе получилось бы имя на каждый id, а имя спана у бэкендов трассировки —
+индексируемое поле и label span-метрик. Конкретный subject остаётся в
+`messaging.destination.name`.
 
 (Семантические соглашения — `semconv/v1.41.0`.)
 
 - **Producer-спан** открывается в `startPublishSpan`, после чего W3C
   trace-context (`traceparent`/`tracestate`) инжектится в `nats.Header`
-  публикуемого сообщения.
+  публикуемого сообщения. С `WithTraceParent(sc)` (`StreamMsg.TraceParent`) спан — ребёнок
+  контекста события `sc`, а span из `ctx` публикации — ссылка (link) на него: так `outboxkit`
+  продолжает трассу запроса, записавшего событие, а не тика воркера.
 - **Consumer-спан** открывается в `startConsumerSpan`: контекст экстрактится из
   header'ов входящего сообщения, спан стартует как child producer-спана. Так
   трасса остаётся связной даже через персист JetStream. `ctx` обработчика —

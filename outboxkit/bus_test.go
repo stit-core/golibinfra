@@ -27,9 +27,15 @@ func TestBusPublishSerializesOnce(t *testing.T) {
 	if got := string(repo.inserted[0].payload); got != `{"id":7}` {
 		t.Fatalf("payload = %s, want {\"id\":7}", got)
 	}
-	want := []string{"instance", "orders", "subject", "order.created", "status", "ok"}
-	if got := collect().Value("outbox_events_inserted_total", want...); got != 1 {
+	rm := collect()
+	if got := rm.Value("outbox_events_inserted_total", "instance", "orders", "status", "ok"); got != 1 {
 		t.Fatalf("inserted counter = %v, want 1", got)
+	}
+	// Без WithMetricSubject label subject нет: id в subject размножил бы серии (KO11).
+	for _, s := range rm.Find("outbox_events_inserted_total", "instance", "orders") {
+		if _, ok := s.Labels["subject"]; ok {
+			t.Fatalf("series %v carries subject without WithMetricSubject", s.Labels)
+		}
 	}
 }
 

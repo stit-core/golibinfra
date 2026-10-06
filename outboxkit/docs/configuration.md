@@ -134,6 +134,7 @@ CREATE TABLE outbox (
     last_error      TEXT,
     next_attempt_at TIMESTAMPTZ,
     dead_at         TIMESTAMPTZ,
+    trace_context   JSONB,
     PRIMARY KEY (id, created_at)
 ) PARTITION BY RANGE (created_at);
 ```
@@ -146,7 +147,7 @@ IS NULL AND dead_at IS NULL` и партиции на текущий месяц 
 | Колонка | Назначение |
 |---|---|
 | `id` | `BIGSERIAL`; уходит как `Nats-Msg-Id` (с namespace в multi-instance). |
-| `subject` | NATS-subject публикации; label метрик. |
+| `subject` | NATS-subject публикации; label метрик — шаблоном `WithMetricSubject`. |
 | `payload` | JSON события (сериализует `outboxkit.Bus`). |
 | `created_at` | Момент вставки (`clock_timestamp()` базы в `Insert`); ключ партиционирования и `ORDER BY`. |
 | `published_at` | Время `MarkPublished` (`NOW()` базы); `NULL` = неопубликовано. |
@@ -154,6 +155,7 @@ IS NULL AND dead_at IS NULL` и партиции на текущий месяц 
 | `last_error` | Текст последней ошибки (обрезается до 1000 рун). |
 | `next_attempt_at` | Момент, раньше которого строка не вычитывается (backoff); `NULL` = готова сейчас. |
 | `dead_at` | Время пометки dead; `NULL` = не dead. |
+| `trace_context` | W3C trace-context запроса, записавшего событие (`traceparent`, `tracestate`); producer-спан публикации — его ребёнок. `NULL` — span'а в ctx не было. |
 
 Таблица multi-instance-инстанса заводится тем же набором миграций:
 `pgstore.TableMigrations(table)` возвращает `pgkit.Source` для произвольного

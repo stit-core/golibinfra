@@ -66,9 +66,6 @@ func (b *Bus) Publish(ctx context.Context, subject string, payload any) error {
 }
 
 func (b *Bus) inserted(ctx context.Context, subject, status string) {
-	b.instr.insertedTotal.Add(ctx, 1, metric.WithAttributes(
-		b.instr.instance,
-		attribute.String("subject", subject),
-		attribute.String("status", status),
-	))
+	b.instr.insertedTotal.Add(ctx, 1, metric.WithAttributes(append(b.instr.subject(subject),
+		b.instr.instance, attribute.String("status", status))...))
 }
