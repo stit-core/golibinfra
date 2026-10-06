@@ -1,7 +1,8 @@
 # authnkit
 
 Криптографически-корректные кирпичики для аутентификации: `Hasher` поверх
-Argon2id, JWT sign/verify на HS256 с типом токена (`HS256JWT`, go-jose),
+Argon2id, JWT sign/verify на HS256 с типом токена, `iss`/`aud` из конфига и ротацией
+секрета (`HS256JWT`, go-jose; `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_PREVIOUS_SECRET`),
 TOTP-генератор по RFC 6238 (`TOTPGenerator`), одноразовые непрозрачные токены
 (`NewToken`, `HashToken`), in-process RBAC-реестр (`Registry`) и сессии
 refresh-токенов `authnkit/session` (ротация, отзыв сессии при повторе токена,

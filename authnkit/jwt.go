@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"slices"
 	"time"
 
 	jose "github.com/go-jose/go-jose/v4"
@@ -31,23 +32,36 @@ const (
 	TokenTypeAccess = "access"
 )
 
-// JWTConfig — секрет, срок жизни access-токена и допуск рассинхрона часов.
+// JWTConfig — секреты подписи, срок жизни access-токена, допуск рассинхрона часов и
+// привязка токена к выпускающему (iss) и получателям (aud).
 type JWTConfig struct {
-	Secret    string        `envconfig:"JWT_SECRET" required:"true"`
-	AccessTTL time.Duration `envconfig:"JWT_ACCESS_TTL" default:"15m"`
-	Leeway    time.Duration `envconfig:"JWT_LEEWAY" default:"60s"`
+	Secret string `envconfig:"JWT_SECRET" required:"true"`
+	// PreviousSecret — секрет до ротации: подписанные им токены ещё принимаются, новые
+	// подписывает Secret; пусто — ротации нет.
+	PreviousSecret string        `envconfig:"JWT_PREVIOUS_SECRET" default:""`
+	AccessTTL      time.Duration `envconfig:"JWT_ACCESS_TTL" default:"15m"`
+	Leeway         time.Duration `envconfig:"JWT_LEEWAY" default:"60s"`
+	// Issuer и Audience — iss и aud: Sign* проставляет их, Parse* требует совпадения iss и
+	// пересечения aud; пустые не пишутся и не проверяются — тогда сервисы на общем секрете
+	// принимают токены друг друга.
+	Issuer   string   `envconfig:"JWT_ISSUER" default:""`
+	Audience []string `envconfig:"JWT_AUDIENCE" default:""`
 }
 
-// Validate требует секрет не короче MinSecretLen и неотрицательные TTL/leeway;
-// нарушение → ErrConfig. Нулевые TTL/Leeway означают дефолты кита.
+// Validate требует секреты не короче MinSecretLen, неотрицательные TTL/leeway и
+// непустые значения aud; нарушение → ErrConfig. Нулевые TTL/Leeway означают дефолты кита.
 func (c JWTConfig) Validate() error {
 	switch {
 	case len(c.Secret) < MinSecretLen:
 		return fmt.Errorf("%w: JWT secret must be at least %d bytes", ErrConfig, MinSecretLen)
+	case c.PreviousSecret != "" && len(c.PreviousSecret) < MinSecretLen:
+		return fmt.Errorf("%w: JWT previous secret must be at least %d bytes", ErrConfig, MinSecretLen)
 	case c.AccessTTL < 0:
 		return fmt.Errorf("%w: JWT TTL must not be negative", ErrConfig)
 	case c.Leeway < 0:
 		return fmt.Errorf("%w: JWT leeway must not be negative", ErrConfig)
+	case slices.Contains(c.Audience, ""):
+		return fmt.Errorf("%w: JWT audience has an empty value", ErrConfig)
 	}
 	return nil
 }
@@ -85,7 +99,7 @@ var (
 // отвергаются до проверки подписи.
 var hs256Only = []jose.SignatureAlgorithm{jose.HS256}
 
-// JWTOption — опция NewHS256JWT: WithClock, WithIssuer, WithAudience.
+// JWTOption — опция NewHS256JWT: WithClock.
 type JWTOption interface{ applyJWT(*options) }
 
 // TOTPOption — опция NewTOTP: WithClock.
@@ -95,9 +109,7 @@ type TOTPOption interface{ applyTOTP(*options) }
 type UsedCodeStoreOption interface{ applyUsedCodeStore(*options) }
 
 type options struct {
-	clock    clockkit.Clock
-	issuer   string
-	audience []string
+	clock clockkit.Clock
 }
 
 // ClockOption — подмена часов; принимается всеми конструкторами кита.
@@ -116,23 +128,6 @@ func (o ClockOption) apply(dst *options) {
 func (o ClockOption) applyJWT(dst *options)           { o.apply(dst) }
 func (o ClockOption) applyTOTP(dst *options)          { o.apply(dst) }
 func (o ClockOption) applyUsedCodeStore(dst *options) { o.apply(dst) }
-
-// jwtOption — опция, применимая только к NewHS256JWT: тип, а не пометка в
-// doc-комментарии, чтобы iss/aud нельзя было молча передать в NewTOTP.
-type jwtOption func(*options)
-
-func (f jwtOption) applyJWT(dst *options) { f(dst) }
-
-// WithIssuer — iss токена: Sign* проставляет его, Parse* требует совпадения.
-func WithIssuer(issuer string) JWTOption {
-	return jwtOption(func(o *options) { o.issuer = issuer })
-}
-
-// WithAudience — aud токена: Sign* проставляет его, Parse* требует пересечения
-// с ним — токен соседнего сервиса на общем секрете не пройдёт.
-func WithAudience(audience ...string) JWTOption {
-	return jwtOption(func(o *options) { o.audience = audience })
-}
 
 func defaultOptions() options { return options{clock: clockkit.Real{}} }
 
@@ -162,7 +157,8 @@ func usedCodeStoreOptions(opts []UsedCodeStoreOption) options {
 
 // HS256JWT — JWTSigner и JWTParser на HS256 поверх go-jose.
 type HS256JWT struct {
-	secret    []byte
+	// keys — секреты проверки: текущий, затем предыдущий (ротация).
+	keys      [][]byte
 	signer    jose.Signer
 	accessTTL time.Duration
 	leeway    time.Duration
@@ -177,23 +173,25 @@ func NewHS256JWT(cfg JWTConfig, opts ...JWTOption) (*HS256JWT, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	secret := []byte(cfg.Secret)
+	keys := [][]byte{[]byte(cfg.Secret)}
+	if cfg.PreviousSecret != "" {
+		keys = append(keys, []byte(cfg.PreviousSecret))
+	}
 	signer, err := jose.NewSigner(
-		jose.SigningKey{Algorithm: jose.HS256, Key: secret},
+		jose.SigningKey{Algorithm: jose.HS256, Key: keys[0]},
 		(&jose.SignerOptions{}).WithType("JWT"),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("authnkit: signer: %w", err)
 	}
-	o := jwtOptions(opts)
 	return &HS256JWT{
-		secret:    secret,
+		keys:      keys,
 		signer:    signer,
 		accessTTL: durationOr(cfg.AccessTTL, DefaultAccessTTL),
 		leeway:    durationOr(cfg.Leeway, DefaultLeeway),
-		issuer:    o.issuer,
-		audience:  o.audience,
-		clock:     o.clock,
+		issuer:    cfg.Issuer,
+		audience:  slices.Clone(cfg.Audience),
+		clock:     jwtOptions(opts).clock,
 		instr:     newJWTInstruments(),
 	}, nil
 }
@@ -206,7 +204,7 @@ func durationOr(d, fallback time.Duration) time.Duration {
 }
 
 // Sign копирует claims, проставляет exp = now+ttl, iat = now и (если заданы
-// опциями) iss/aud. ttl <= 0 → ErrConfig.
+// конфигом) iss/aud; подпись — текущим секретом. ttl <= 0 → ErrConfig.
 func (h *HS256JWT) Sign(ctx context.Context, claims map[string]any, ttl time.Duration) (string, error) {
 	if ttl <= 0 {
 		return "", fmt.Errorf("%w: token ttl must be > 0", ErrConfig)
@@ -242,8 +240,9 @@ func (h *HS256JWT) SignAccess(ctx context.Context, claims map[string]any) (strin
 	return h.Sign(ctx, all, h.accessTTL)
 }
 
-// Parse проверяет HS256-подпись, обязательный exp, сроки с leeway и заданные
-// опциями iss/aud. Тип токена не проверяется — для access есть ParseAccess.
+// Parse проверяет HS256-подпись (текущим секретом, затем предыдущим), обязательный exp,
+// сроки с leeway и заданные конфигом iss/aud. Тип токена не проверяется — для access
+// есть ParseAccess.
 func (h *HS256JWT) Parse(ctx context.Context, token string) (map[string]any, error) {
 	return h.parse(ctx, token, "")
 }
@@ -261,7 +260,13 @@ func (h *HS256JWT) parse(ctx context.Context, token, wantType string) (map[strin
 
 	var std jwt.Claims
 	var all map[string]any
-	if err := tok.Claims(h.secret, &std, &all); err != nil {
+	err = jose.ErrCryptoFailure
+	for _, key := range h.keys {
+		if err = tok.Claims(key, &std, &all); !errors.Is(err, jose.ErrCryptoFailure) {
+			break
+		}
+	}
+	if err != nil {
 		if errors.Is(err, jose.ErrCryptoFailure) {
 			return h.fail(ctx, "signature_invalid", ErrTokenSignature)
 		}

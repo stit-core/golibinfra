@@ -29,8 +29,6 @@ type JWTParser interface {
 func NewHS256JWT(cfg JWTConfig, opts ...JWTOption) (*HS256JWT, error) // реализует и JWTSigner, и JWTParser
 func (c JWTConfig) Validate() error
 func WithClock(c clockkit.Clock) ClockOption // JWTOption + TOTPOption + UsedCodeStoreOption
-func WithIssuer(issuer string) JWTOption     // только NewHS256JWT
-func WithAudience(aud ...string) JWTOption   // только NewHS256JWT
 
 const ClaimTokenType = "typ" // значение TokenTypeAccess
 var ErrTokenExpired, ErrTokenMalformed, ErrTokenSignature, ErrWrongTokenType, ErrTokenAudience error
@@ -174,17 +172,21 @@ case errors.Is(err, authnkit.ErrTokenMalformed):
 ### Изоляция по iss/aud
 
 Общий `JWT_SECRET` на несколько сервисов означает, что подпись сходится
-везде. `WithIssuer`/`WithAudience` привязывают токен к выпускающему и
-принимающему:
+везде. `JWT_ISSUER`/`JWT_AUDIENCE` (`JWTConfig.Issuer`/`Audience`) привязывают
+токен к выпускающему и получателям — у `Module` так же, как у `NewHS256JWT`:
 
-```go
-issuer, _ := authnkit.NewHS256JWT(cfg, authnkit.WithIssuer("auth"), authnkit.WithAudience("billing"))
-// billing принимает только токены с aud=billing
-billing, _ := authnkit.NewHS256JWT(cfg, authnkit.WithAudience("billing"))
+```bash
+# auth выпускает токены для billing и users
+JWT_ISSUER=auth JWT_AUDIENCE=billing,users
+# billing принимает только токены с aud=billing (и iss=auth)
+JWT_ISSUER=auth JWT_AUDIENCE=billing
 ```
 
-Опции симметричны: заданный `iss`/`aud` и проставляется при `Sign*`, и
-требуется при `Parse*` (иначе `ErrTokenAudience`). Не заданы — не проверяются.
+`iss`/`aud` симметричны: заданные и проставляются при `Sign*`, и требуются при
+`Parse*` (иначе `ErrTokenAudience`): `iss` — совпадение, `aud` — пересечение. Не
+заданы — не проверяются; без `JWT_AUDIENCE` сервисы на общем секрете принимают
+токены друг друга. Смена секрета без разлогина — `JWT_PREVIOUS_SECRET`
+([configuration.md § Ротация секрета](configuration.md#ротация-секрета)).
 
 ## TOTP (2FA)
 

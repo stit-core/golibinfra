@@ -85,8 +85,12 @@ base64 (`RawStdEncoding.Strict`: мусор в хвостовых битах —
   `ErrTokenSignature` / `ErrTokenMalformed` — потребитель матчит их через
   `errors.Is`, не разбирая ошибки go-jose.
 - `ParseAccess` дополнительно требует `typ=access` (`ErrWrongTokenType`).
-- `WithIssuer` / `WithAudience` включают симметричную проверку `iss`/`aud`:
-  что проставлено при подписи, то требуется при разборе (`ErrTokenAudience`).
+- `JWTConfig.Issuer` / `Audience` (`JWT_ISSUER`, `JWT_AUDIENCE`) включают симметричную
+  проверку `iss`/`aud`: что проставлено при подписи, то требуется при разборе
+  (`ErrTokenAudience`). Конфиг, а не опции конструктора: `Module` собирает JWT из
+  конфига, и сервис на общем секрете задаёт свой `aud` переменной окружения.
+- Ротация: подпись — `Secret`, проверка — `Secret`, затем `PreviousSecret`
+  (`JWT_PREVIOUS_SECRET`); два HMAC дёшевы, `kid` не нужен.
 - Часы — `clockkit.Clock` (`WithClock`); по умолчанию `clockkit.Real{}`.
 
 Claims на выходе — `map[string]any`. Числовые значения (`exp`, `iat`, любые

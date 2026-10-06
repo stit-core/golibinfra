@@ -119,9 +119,23 @@ func TestNewConfigsFromEnv(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewJWTConfig: %v", err)
 		}
-		if c.AccessTTL.Minutes() != 5 || c.Leeway != authnkit.DefaultLeeway {
+		if c.AccessTTL.Minutes() != 5 || c.Leeway != authnkit.DefaultLeeway || c.Issuer != "" || len(c.Audience) != 0 || c.PreviousSecret != "" {
 			t.Fatalf("config = %+v", c)
 		}
+		t.Setenv("JWT_ISSUER", "auth")
+		t.Setenv("JWT_AUDIENCE", "billing,users")
+		t.Setenv("JWT_PREVIOUS_SECRET", "env-previous-key-of-at-least-32-bytes!")
+		if c, err = authnkit.NewJWTConfig(); err != nil {
+			t.Fatalf("NewJWTConfig: %v", err)
+		}
+		if c.Issuer != "auth" || len(c.Audience) != 2 || c.Audience[1] != "users" || c.PreviousSecret == "" {
+			t.Fatalf("iss, aud and previous secret from env: %+v", c)
+		}
+		t.Setenv("JWT_PREVIOUS_SECRET", "short")
+		if _, err := authnkit.NewJWTConfig(); !errors.Is(err, authnkit.ErrConfig) {
+			t.Fatalf("short JWT_PREVIOUS_SECRET: expected ErrConfig, got %v", err)
+		}
+		t.Setenv("JWT_PREVIOUS_SECRET", "")
 
 		t.Setenv("JWT_SECRET", "short")
 		if _, err := authnkit.NewJWTConfig(); !errors.Is(err, authnkit.ErrConfig) {
@@ -158,4 +172,34 @@ func TestNewConfigsFromEnv(t *testing.T) {
 			t.Fatalf("TOTP_ISSUER with ':': expected ErrConfig, got %v", err)
 		}
 	})
+}
+
+// Сервисы на общем JWT_SECRET со своим JWT_AUDIENCE, собранные Module из ENV, не принимают
+// токены друг друга.
+func TestModule_AudienceFromEnvIsolatesServices(t *testing.T) {
+	t.Setenv("JWT_SECRET", "shared-secret-key-of-at-least-32-bytes!")
+	t.Setenv("TOTP_ISSUER", "svc")
+	service := func(audience string) (authnkit.JWTSigner, authnkit.JWTParser) {
+		t.Setenv("JWT_AUDIENCE", audience)
+		var (
+			s authnkit.JWTSigner
+			p authnkit.JWTParser
+		)
+		app := fx.New(fx.NopLogger,
+			fx.Provide(authnkit.NewArgon2idParams, authnkit.NewJWTConfig, authnkit.NewTOTPConfig),
+			authnkit.Module, fx.Populate(&s, &p))
+		if err := app.Err(); err != nil {
+			t.Fatalf("graph: %v", err)
+		}
+		return s, p
+	}
+	billing, _ := service("billing")
+	_, users := service("users")
+	tok, err := billing.SignAccess(t.Context(), map[string]any{"sub": "42"})
+	if err != nil {
+		t.Fatalf("SignAccess: %v", err)
+	}
+	if _, err := users.ParseAccess(t.Context(), tok); !errors.Is(err, authnkit.ErrTokenAudience) {
+		t.Fatalf("token of billing parsed by users: %v, want ErrTokenAudience", err)
+	}
 }

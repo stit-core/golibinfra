@@ -20,9 +20,7 @@ blocked-by: —
   §6; находки — `M/kits-audit/summary.md` и отчёты углов (`M` — `/home/mm/.cache/stit-audit-program/`).
 - **Потребитель** — шаблон: `fix-reference-code` S9 (сессии, токены, IP, аудит, `config` без ctx) и
   S11 (бизнес-метрики с проверкой записи); что он снимает и меняет на bump — «Handoff».
-- **Код китов:**
-  - authnkit: `authnkit/module.go:26` — `NewHS256JWT` без iss/aud, хотя опции есть;
-  - logkit: `logkit/attrs.go:11`.
+- **Код китов:** logkit — `logkit/attrs.go:11`.
 - **Правила шага:** README и `docs/` кита — тем же коммитом (`make envdoc-check`); breaking — `!` и
   `BREAKING CHANGE:`. Новая зависимость в `go.mod` не нужна ни одному шагу.
 
@@ -78,10 +76,12 @@ blocked-by: —
   lifecycle` → H31, H32, H33 PASS
   - Подтверждено: HX02 a–c, HX03, HO07, H31–H33 PASS (H33, HX03 — с паузой дренажа, HX02b — под
     решение; оригиналы — `M/exs8/orig/`); прочие исходы `exp` и `lifecycle` — как на базе
-- [ ] **AC9** — Если `authnkit.Module` получил iss/aud из конфига, токен с чужими iss/aud
+- [x] **AC9** — Если `authnkit.Module` получил iss/aud из конфига, токен с чужими iss/aud
   отвергается. Токен, подписанный предыдущим секретом (`JWT_PREVIOUS_SECRET`), принимается; новые
   подписываются текущим. Проверка: `correctness-security/run.sh <rev> unit` → E06 PASS;
   `go test -race ./authnkit/` → PASS
+  - Подтверждено: E06 PASS (свой `JWT_AUDIENCE` у сервиса, оригинал — `M/exs8/orig/`); authnkit PASS,
+    `TestHS256JWT_PreviousSecret`, `TestModule_AudienceFromEnvIsolatesServices`; 6 мутантов красные
 - [ ] **AC10** — Атрибут лога регистрируется без `slog` в сигнатуре потребителя. Проверка:
   `go doc ./logkit Attr` → без `slog`; `go test -race ./logkit/` → PASS
 - [ ] **AC11** — Тег `v1.3.0` готов:
@@ -141,8 +141,9 @@ blocked-by: —
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: —
   - Сделано: `Server.Stop` — `draining`, пауза, дедлайн с отменой ctx и `Close`; ⅔ бюджета в `OnStop`;
     `healthkit.PanicError`; `Healthcheck`/`CheckHealth`; 8 мутантов — красные
-- [ ] **S11** — authnkit: iss и aud из конфига `Module`, ротация секрета через предыдущий секрет (C)
+- [x] **S11** — authnkit: iss и aud из конфига `Module`, ротация секрета через предыдущий секрет (C)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S5
+  - Сделано: `JWTConfig.Issuer`/`Audience`/`PreviousSecret`; опции `WithIssuer`/`WithAudience` удалены
 - [ ] **S12** — logkit: `Attr` без slog в сигнатуре (C)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: —
 
@@ -172,18 +173,14 @@ blocked-by: —
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его, base64url — нет (`logkit-redact-gaps`).
   SHA-256, а не Argon2id: полная энтропия. Поиск — по хешу в SQL, в памяти — `subtle`. `NewToken`
   без ошибки: `crypto/rand.Read` с Go 1.24 её не возвращает.
-- **Сессии.**
-  - Раскладка: `authnkit/session` — `Store`, `Token`, `Config`, ошибки; `session/pgstore` — хранилище
-    с метриками (как auditkit, bruteforcekit), миграции, `Module`, очистка; `testkit/sessiontest`.
-  - Ротация — один оператор: условный `UPDATE … WHERE used_at IS NULL AND revoked_at IS NULL` и
-    вставка следующего токена в `WITH`; срок следующего — `min(now + IdleTTL, срок сессии)`.
-  - Повтор использованного токена — отзыв сессии и `*ReusedError` (для аудита), без окна прощения;
-    `Rotate` в транзакции — `ErrInTx` (откат не отменяет отзыв); `Issue`, `Revoke`, `RevokeAll` — в
-    транзакции из ctx. Время — часы приложения (`WithClock`); цена — расхождение часов реплик.
-  - Старт — таблица версий против последней миграции кита (`ErrSchema`) после `pgkit.Migrated`.
-    Очистка — по абсолютному сроку: повтор токенов отозванной сессии виден до него.
-  - Метрики `authn_session_*{result|reason}`; дефолты `SESSION_IDLE_TTL` 168h, `SESSION_ABSOLUTE_TTL`
-    720h. Stateless refresh JWT удалён — одна механика refresh; `typ` остаётся у access.
+- **Сессии.** `authnkit/session` — `Store`, `Token`, `Config`, ошибки; `session/pgstore` — хранилище с
+  метриками (как auditkit, bruteforcekit), миграции, `Module`, очистка; `testkit/sessiontest`. Ротация
+  — один оператор: условный `UPDATE … WHERE used_at IS NULL AND revoked_at IS NULL` и вставка
+  следующего токена в `WITH`, срок — `min(now + IdleTTL, срок сессии)`. Повтор токена — отзыв сессии
+  и `*ReusedError`, без окна прощения; `Rotate` в транзакции — `ErrInTx`; `Issue`, `Revoke`,
+  `RevokeAll` — в транзакции из ctx. Часы приложения (`WithClock`). Старт — версия схемы против
+  последней миграции кита (`ErrSchema`); очистка — по абсолютному сроку. Метрики
+  `authn_session_*`; `SESSION_IDLE_TTL` 168h, `SESSION_ABSOLUTE_TTL` 720h. Stateless refresh JWT удалён.
 - **config.** `Load(dst, sources...)` и `Source.Apply(dst)` без ctx. Удалённый источник сам
   ограничивает свой I/O. ctx в графе даёт любому конструктору вечный контекст (FX-10).
 - **natskit.**
@@ -208,8 +205,8 @@ blocked-by: —
   «ctx отменён, ответа на закрытом пуле клиент не получил» (хендлер без ctx не остановить).
 - **JWT.** `JWT_ISSUER` и `JWT_AUDIENCE` из конфига; пустые — не пишутся и не проверяются. Одному
   сервису на своём секрете они не нужны, общий секрет без `aud` небезопасен — это сказано в доке.
-  Ротация: подпись текущим секретом, проверка — текущим, затем `JWT_PREVIOUS_SECRET`; `kid` не
-  нужен, два HMAC дёшевы.
+  Опции `WithIssuer`/`WithAudience` удалены: один способ, а `Module` знает только конфиг. Ротация:
+  подпись текущим секретом, проверка — текущим, затем `JWT_PREVIOUS_SECRET`; `kid` не нужен.
 - **logkit.** `type Attr func(ctx) (any, bool)`, кит оборачивает значение в `slog.AnyValue`.
 - **Релиз.** Раздел «Гейт» называет `make gate-clean` (с integration), `make test-full`, apidiff и
   env-diff против v1.2.0 и сборку шаблона через `replace`.
@@ -261,7 +258,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап S1–S7 принят (`M/validation-harden-authn-release-A.md`, перепроверка `cd654a7` — PASS),
-остатки R1–R5 закрыты (R5 — в S8). S8–S10 сделаны; дальше S11 (iss/aud JWT), S12, релиз S13.
+остатки R1–R5 закрыты (R5 — в S8). S8–S11 сделаны; дальше S12 (`logkit.Attr`), релиз S13.
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
@@ -295,3 +292,6 @@ blocked-by: —
   ERROR → за балансировщиком пауза 5–10 с, сумма бюджетов — в `fx.StopTimeout`.
 - Изменения — httpkit: `Healthcheck(ctx)`, `CheckHealth(ctx, addr)` → подкоманда `api healthcheck`;
   healthkit: `PanicError` — panic проверки в `Run` и `WithTimeout`.
+- Breaking — authnkit: `WithIssuer`, `WithAudience` удалены → `JWTConfig.Issuer`, `Audience`
+  (`JWT_ISSUER`, `JWT_AUDIENCE` через запятую); сервисам на общем `JWT_SECRET` — свой `JWT_AUDIENCE`.
+- Изменения — authnkit: ротация секрета — `JWTConfig.PreviousSecret` (`JWT_PREVIOUS_SECRET`).
