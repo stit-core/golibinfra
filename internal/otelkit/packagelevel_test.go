@@ -48,8 +48,9 @@ func TestInstrumentsAreNotPackageLevel(t *testing.T) {
 }
 
 // Страж видит инструмент в коде инициализации пакета — инициализаторе var, init() и
-// sync.OnceValue/OnceValues/OnceFunc — напрямую и через функцию, метод и значение функции
-// пакета; замыкание, которое выполнит позже конструктор fx, — нет.
+// sync.OnceValue/OnceValues/OnceFunc — напрямую и через функцию (и generic), метод, значение
+// функции пакета и замыкание, которое init() зовёт; замыкание, которое выполнит позже
+// конструктор fx, — нет.
 func TestPackageLevelInstruments_SeesPackageHelpers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kit.go")
@@ -81,6 +82,15 @@ var viaInit any
 
 func init() { viaInit = newCounter() }
 
+var viaGeneric = gen[int]()
+
+var viaClosure any
+
+func init() {
+	f := func() { viaClosure = newCounter() }
+	f()
+}
+
 type factory struct{}
 
 func (factory) counter() any { return meter() }
@@ -89,6 +99,8 @@ func provide(constructor func() any) any { return constructor }
 
 func newCounter() any { return meter() }
 
+func gen[T any]() any { return meter() }
+
 func meter() any { return otelkit.Meter("kit") }
 `
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
@@ -96,7 +108,7 @@ func meter() any { return otelkit.Meter("kit") }
 	}
 	want := []string{
 		"kit.go:9 otelkit.Meter", "kit.go:11 newCounter", "kit.go:15 newCounter", "kit.go:17 sync.OnceValue",
-		"kit.go:19 counter", "kit.go:23 mk", "kit.go:27 newCounter",
+		"kit.go:19 counter", "kit.go:23 mk", "kit.go:27 newCounter", "kit.go:29 gen", "kit.go:35 f",
 	}
 	if got := packageLevelInstruments(t, dir, []string{path}); !slices.Equal(got, want) {
 		t.Fatalf("found %v, want %v", got, want)
@@ -194,12 +206,14 @@ func (m makers) learn(decl ast.Decl, fs fileScope) bool {
 	return grown
 }
 
-// isMaker — e — функция, создающая инструмент: функция, метод или значение функции пакета из
-// makers либо литерал функции, который зовёт шов или их.
+// isMaker — e — функция, создающая инструмент: функция (и generic), метод или значение функции
+// пакета из makers либо литерал функции, который зовёт шов или их.
 func (m makers) isMaker(e ast.Expr, fs fileScope) bool {
 	switch e := e.(type) {
 	case *ast.Ident:
 		return m.funcs[e.Name]
+	case *ast.IndexExpr, *ast.IndexListExpr:
+		return m.isMaker(generic(e), fs)
 	case *ast.SelectorExpr:
 		return !fs.isImport(e.X) && m.methods[e.Sel.Name]
 	case *ast.FuncLit:
@@ -208,18 +222,29 @@ func (m makers) isMaker(e ast.Expr, fs fileScope) bool {
 	return false
 }
 
-// creating — вызовы в n, которые создают инструмент: шов или функция из makers. Замыкание
-// выполнится позже (конструктор fx) и пропускается, кроме аргумента sync.OnceValue,
-// OnceValues и OnceFunc: его результат живёт в пакете.
+// creating — вызовы в n, которые создают инструмент: шов, функция из makers или локальное
+// значение функции (f := func…), которое их зовёт. Замыкание выполнится позже (конструктор fx) и
+// пропускается, кроме аргумента sync.OnceValue, OnceValues и OnceFunc: его результат живёт в
+// пакете.
 func (m makers) creating(n ast.Node, fs fileScope) []*ast.CallExpr {
 	var out []*ast.CallExpr
 	eager := map[*ast.FuncLit]bool{}
+	local := map[string]bool{}
 	ast.Inspect(n, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.FuncLit:
 			return eager[n]
+		case *ast.AssignStmt:
+			if len(n.Lhs) == len(n.Rhs) {
+				for i, rhs := range n.Rhs {
+					if id, ok := n.Lhs[i].(*ast.Ident); ok && m.isMaker(rhs, fs) {
+						local[id.Name] = true
+					}
+				}
+			}
 		case *ast.CallExpr:
-			made := fs.isSeam(n.Fun) || m.isMaker(n.Fun, fs)
+			id, isIdent := n.Fun.(*ast.Ident)
+			made := fs.isSeam(n.Fun) || m.isMaker(n.Fun, fs) || isIdent && local[id.Name]
 			if fs.isOnce(n.Fun) {
 				for _, arg := range n.Args {
 					if lit, ok := arg.(*ast.FuncLit); ok {
@@ -285,9 +310,20 @@ func (fs fileScope) isOnce(fun ast.Expr) bool {
 	return path == "sync" && (name == "OnceValue" || name == "OnceValues" || name == "OnceFunc")
 }
 
+// generic — e без аргументов типа: gen[int] → gen.
+func generic(e ast.Expr) ast.Expr {
+	switch g := e.(type) {
+	case *ast.IndexExpr:
+		return g.X
+	case *ast.IndexListExpr:
+		return g.X
+	}
+	return e
+}
+
 // callee — вызванное для сообщения: «pkg.Name», «x.method», «name» или «method».
 func callee(call *ast.CallExpr) string {
-	switch fn := call.Fun.(type) {
+	switch fn := generic(call.Fun).(type) {
 	case *ast.Ident:
 		return fn.Name
 	case *ast.SelectorExpr:

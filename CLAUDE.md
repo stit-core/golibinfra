@@ -109,10 +109,11 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - Инструменты — в конструкторе кита (`otelkit.Meter`/`otelkit.Tracer` при сборке объекта), не
   на уровне пакета: пакетный инструмент делегат OTel привязывает к первому провайдеру процесса.
   `TestInstrumentsAreNotPackageLevel` (`internal/otelkit`) ловит его в коде инициализации пакета
-  (`var`, `init()`, `sync.OnceValue`/`OnceValues`/`OnceFunc`) — напрямую и через функцию, метод или
-  значение функции пакета; присваивание пакетной переменной из функции держит ревью. Запись в
-  тестах проверяет `testkit/metrictest` — кит через провайдер процесса (`Collect`), код с
-  переданным `Meter` — через `NewProvider`; глобальный `MeterProvider` тест не ставит.
+  (`var`, `init()`, `sync.OnceValue`/`OnceValues`/`OnceFunc`) — напрямую и через функцию (и
+  generic), метод, значение функции пакета или замыкание, которое зовёт `init()`; присваивание
+  пакетной переменной из функции держит ревью. Запись в тестах проверяет `testkit/metrictest` —
+  кит через провайдер процесса (`Collect`), код с переданным `Meter` — через `NewProvider`;
+  глобальный `MeterProvider` тест не ставит.
 - **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
   business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 - Гистограммы длительности — в секундах, `WithUnit("s")` + общие границы
