@@ -1,10 +1,11 @@
 # Токены вида UPPER_SNAKE из доков, которые не являются envconfig-тегами китов:
-# стандартные переменные, которые читают сами зависимости (OTel SDK, otelgrpc, grpc-go),
+# стандартные переменные, которые читают сами зависимости (OTel SDK, otelgrpc, grpc-go, net/http),
 # и константы протоколов. По одному на строку, `#` — комментарий.
 OTEL_EXPORTER_OTLP_TIMEOUT
 OTEL_SEMCONV_STABILITY_OPT_IN
 NOT_SERVING
 DOCKER_HOST
+HTTP_PROXY
 TESTCONTAINERS_HOST_OVERRIDE
 TESTCONTAINERS_RYUK_DISABLED
 OTEL_RESOURCE_ATTRIBUTES

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
@@ -30,14 +31,15 @@ func Healthcheck(ctx context.Context) int {
 	return 1
 }
 
-// CheckHealth — GET /health сервиса, слушающего addr (HTTP_ADDR; адрес без хоста — loopback).
-// nil — ответ 200 не дольше 3 секунд.
+// CheckHealth — GET /health сервиса, слушающего addr (HTTP_ADDR), напрямую, мимо прокси окружения;
+// адрес без хоста или с хостом «все интерфейсы» (`0.0.0.0`, `[::]`) — loopback. nil — ответ 200
+// не дольше 3 секунд.
 func CheckHealth(ctx context.Context, addr string) error {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return fmt.Errorf("httpkit: healthcheck: HTTP_ADDR %q: %w", addr, err)
 	}
-	if host == "" {
+	if ip, perr := netip.ParseAddr(host); host == "" || perr == nil && ip.IsUnspecified() {
 		host = "127.0.0.1"
 	}
 	url := "http://" + net.JoinHostPort(host, port) + "/health"
@@ -45,7 +47,9 @@ func CheckHealth(ctx context.Context, addr string) error {
 	if err != nil {
 		return fmt.Errorf("httpkit: healthcheck: %w", err)
 	}
-	resp, err := (&http.Client{Timeout: healthcheckTimeout}).Do(req)
+	// Транспорт без Proxy: HTTP_PROXY окружения увёл бы проверку своего процесса на прокси.
+	client := &http.Client{Timeout: healthcheckTimeout, Transport: &http.Transport{DisableKeepAlives: true}}
+	resp, err := client.Do(req)
 	if err != nil {
 		return fmt.Errorf("httpkit: healthcheck: %w", err)
 	}
