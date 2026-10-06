@@ -67,7 +67,7 @@ _, err := jwt.ParseAccess(ctx, tok) // ErrTokenExpired
 Юнит-тест сценария (вход, обновление, блокировка пользователя) берёт фейк
 `sessiontest.New(cfg, clock)` — in-memory `session.Store` с семантикой pgstore;
 `Active(subject)` показывает, сколько сессий открыто после `RevokeAll`.
-`sessiontest.Run(t, newStore)` — общий контракт `session.Store`: его проходят и
+`sessiontest.RunContract(t, newStore)` — общий контракт `session.Store`: его проходят и
 фейк, и `pgstore.Store`, так что поведение в юнит-тесте не расходится с продом.
 Откат транзакции фейк не видит — `RevokeAll` в откатанной транзакции
 проверяется на pgstore.

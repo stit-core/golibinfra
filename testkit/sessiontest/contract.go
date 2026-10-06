@@ -19,10 +19,10 @@ var contractConfig = session.Config{IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Ho
 
 var contractStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
-// Run прогоняет контракт session.Store: newStore вызывается на каждый кейс и отдаёт
+// RunContract прогоняет контракт session.Store: newStore вызывается на каждый кейс и отдаёт
 // хранилище с переданными Config и часами (время двигает набор). Хранилище может
 // быть общим для кейсов — subject у каждого кейса свой.
-func Run(t *testing.T, newStore func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store) {
+func RunContract(t *testing.T, newStore func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store) {
 	t.Helper()
 	cases := []struct {
 		name string

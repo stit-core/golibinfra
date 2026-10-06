@@ -39,7 +39,7 @@ func newStore(t *testing.T, db *pgkit.DB, clock clockkit.Clock) *pgstore.Store {
 // Хранилище держит общий контракт session.Store — тот же, что фейк sessiontest.
 func TestStore_Contract(t *testing.T) {
 	_, db := startDB(t)
-	sessiontest.Run(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {
+	sessiontest.RunContract(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {
 		s, err := pgstore.NewStore(db, cfg, pgstore.WithClock(clock))
 		if err != nil {
 			t.Fatalf("NewStore: %v", err)

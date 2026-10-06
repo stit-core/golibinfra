@@ -14,7 +14,7 @@ import (
 // Фейк держит тот же контракт, что pgstore: юнит-тест сценария на нём не
 // расходится с продом.
 func TestStore_Contract(t *testing.T) {
-	sessiontest.Run(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {
+	sessiontest.RunContract(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {
 		s, err := sessiontest.New(cfg, clock)
 		if err != nil {
 			t.Fatalf("New: %v", err)

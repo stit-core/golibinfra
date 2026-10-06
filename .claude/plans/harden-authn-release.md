@@ -64,7 +64,7 @@ blocked-by: —
   Проверка: `go test -race ./authnkit/... ./testkit/sessiontest/` с Docker → PASS;
   `grep -rn "SignRefresh\|ParseRefresh\|JWT_REFRESH_TTL" --include=*.go --include=*.md --exclude-dir=plans .`
   → пусто
-  - Подтверждено: PASS, grep пуст; `sessiontest.Run` — по фейку и pgstore, его мутанты красные
+  - Подтверждено: PASS, grep пуст; `sessiontest.RunContract` — по фейку и pgstore, его мутанты красные
 - [x] **AC5** — `config.Load` и `config.Source` работают без ctx; в доках нет
   `fx.Provide(context.Background)`. Проверка: `go test -race ./config/` → PASS;
   `grep -rn "context" config/` → пусто
@@ -124,7 +124,7 @@ blocked-by: —
   - Сделано: PASS; 4 мутанта ротации — красные; лесенка; без миграций — `ErrSchema` на старте
 - [x] **S6** — B6: фейк `testkit/sessiontest` и общий контрактный набор — по фейку и по pgstore
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S5
-  - Сделано: `sessiontest.New`, `Active`, `Run` (10 кейсов) — по фейку и pgstore
+  - Сделано: `sessiontest.New`, `Active`, `RunContract` (10 кейсов) — по фейку и pgstore
 - [x] **S7** — B8: `config.Load` и `Source.Apply` без ctx, README без ctx в графе (KAPI-10)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: —
   - Сделано: `Load(dst, sources...)`, `Source.Apply(dst)`; README и тест графа без ctx
@@ -272,7 +272,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`); круг фиксов B1,
-B2, N1–N8 сделан (N10 — в S8), дальше перепроверка валидатором, затем S8 (natskit). Хвост для
+B2, N1–N9 сделан (N10 — в S8), дальше перепроверка валидатором, затем S8 (natskit). Хвост для
 S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
 (1 прогон из 4), а дока обещает «снимает интерес сразу».
 
@@ -293,6 +293,6 @@ S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта
   `SESSION_CLEANUP_INTERVAL`; старые refresh-JWT недействительны — вход заново один раз.
 - Изменения — `authnkit/session`: `Store` (`Rotate` вне транзакции, `RevokeAll` в транзакции из
   ctx), `Token`, `ReusedError`; `session/pgstore`: `NewStore`, `WithClock`, `CheckSchema`,
-  `Cleanup`, `Module`, `authn_session_*`; `testkit/sessiontest`: фейк `New`/`Active`, контракт `Run`.
+  `Cleanup`, `Module`, `authn_session_*`; `testkit/sessiontest`: фейк `New`/`Active`, `RunContract`.
 - Breaking — config: `Load(ctx, dst, …)` → `Load(dst, …)`, `Source.Apply(ctx, dst)` → `Apply(dst)`
   → убрать ctx и `fx.Provide(context.Background)`; свой `Source` с I/O ограничивает время сам.
