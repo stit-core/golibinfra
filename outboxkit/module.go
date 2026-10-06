@@ -21,13 +21,18 @@ var Module = fx.Module(
 			if err := checkIdleInTx(in.Cfg, in.Pool); err != nil {
 				return nil, err
 			}
-			return New(DefaultInstance, in.Repo, in.Tr, in.Tx, in.Cfg, in.Log)
+			return New(DefaultInstance, in.Cfg, in.Repo, in.Tr, in.Tx, in.Log)
 		},
 		func(o *Outbox) *Bus { return o.bus },
 		func(o *Outbox) Publisher { return o.Publisher() },
 		func(o *Outbox) *Worker { return o.Worker() },
 	),
-	timerkit.Provide(func(o *Outbox) timerkit.Job { return o.Job() }),
+	// Зависимость от pgkit.Migrated ставит хук job'ов в очередь после миграций: drain читает
+	// таблицу outbox'а.
+	timerkit.ProvideJob(
+		func(o *Outbox, _ pgkit.Migrated) timerkit.Job { return o.Job() },
+		fx.ParamTags(``, `optional:"true"`),
+	),
 	fx.Invoke(registerInstanceGauges),
 	fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) { checkStreams(lc, sb, DefaultInstance, nil) }),
 )

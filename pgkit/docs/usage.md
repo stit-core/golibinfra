@@ -190,7 +190,7 @@ type params struct {
 Свой источник в группу (например, миграции внутреннего пакета приложения):
 
 ```go
-pgkit.ProvideMigrations(pgkit.Source{Name: "billing", FS: billingFS, Dir: "migrations"})
+pgkit.SupplyMigrations(pgkit.Source{Name: "billing", FS: billingFS, Dir: "migrations"})
 ```
 
 ### Программно
@@ -254,7 +254,7 @@ fx.New(
     httpkit.Module,
     fx.Provide(pgkit.NewPoolConfig, httpkit.NewConfig),
 
-    healthkit.Provide(pgkit.Probe),      // /ready → 503, если SELECT 1 не проходит
-    healthkit.Provide(pgkit.ReplicaProbe), // без PG_REPLICA_DSN проходит без запроса
+    healthkit.ProvideProbe(pgkit.Probe),      // /ready → 503, если SELECT 1 не проходит
+    healthkit.ProvideProbe(pgkit.ReplicaProbe), // без PG_REPLICA_DSN проходит без запроса
 )
 ```

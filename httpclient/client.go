@@ -93,18 +93,28 @@ func (c Config) Validate() error {
 // и не считается провалом breaker'а.
 type BeforeAttemptFunc func(ctx context.Context, attempt int) error
 
-// Option — параметр сборки клиента, не выражаемый через ENV.
+// Option — параметр сборки клиента, не выражаемый через ENV. Опция с nil ничего не меняет.
 type Option func(*Client)
 
 // WithTransport подменяет базовый транспорт (TLS, proxy, тесты). Поверх него
-// всё равно ставится otelhttp.Transport.
+// всё равно ставится otelhttp.Transport. Транспорт у клиента один: второй
+// WithTransport — ErrConfig из New.
 func WithTransport(rt http.RoundTripper) Option {
-	return func(c *Client) { c.base = rt }
+	return func(c *Client) {
+		if rt != nil {
+			c.transports = append(c.transports, rt)
+		}
+	}
 }
 
-// WithBeforeAttempt вешает hook перед каждой попыткой (rate-limiter, подпись).
+// WithBeforeAttempt добавляет hook перед каждой попыткой (rate-limiter, подпись):
+// hook'и идут в порядке опций, ошибка первого прерывает запрос.
 func WithBeforeAttempt(fn BeforeAttemptFunc) Option {
-	return func(c *Client) { c.before = fn }
+	return func(c *Client) {
+		if fn != nil {
+			c.before = append(c.before, fn)
+		}
+	}
 }
 
 // Client — HTTP-клиент на любое число upstream-хостов: breaker и метрики
@@ -117,21 +127,30 @@ type Client struct {
 	breakers *breakerSet
 	instr    *instruments
 	tracer   trace.Tracer
-	before   BeforeAttemptFunc
+	before   []BeforeAttemptFunc
+	// transports — транспорты из опций; New берёт единственный и отвергает второй.
+	transports []http.RoundTripper
 }
 
-// New собирает клиент: невалидный конфиг — ErrConfig; применяет опции и оборачивает
-// транспорт в otelhttp — спаны попыток без его метрик.
+// New собирает клиент: невалидный конфиг и второй WithTransport — ErrConfig; применяет
+// опции по порядку и оборачивает транспорт в otelhttp — спаны попыток без его метрик.
 func New(cfg Config, opts ...Option) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
 	c := &Client{cfg: cfg, instr: newInstruments(), tracer: otelkit.Tracer("httpclient")}
 	for _, o := range opts {
-		o(c)
+		if o != nil {
+			o(c)
+		}
 	}
-	if c.base == nil {
+	switch len(c.transports) {
+	case 0:
 		c.base = defaultTransport()
+	case 1:
+		c.base = c.transports[0]
+	default:
+		return nil, fmt.Errorf("%w: WithTransport given %d times, the client has one base transport", ErrConfig, len(c.transports))
 	}
 	// Без метрик otelhttp: его http.client.request.duration в Prometheus сливается с гистограммой кита.
 	transport := otelhttp.NewTransport(&resendTransport{next: c.base},
@@ -230,8 +249,8 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 				return nil, clientSide(err)
 			}
 		}
-		if c.before != nil {
-			if err := c.before(ctx, attempt); err != nil {
+		for _, before := range c.before {
+			if err := before(ctx, attempt); err != nil {
 				return nil, clientSide(fmt.Errorf("httpclient: before attempt %d: %w", attempt, err))
 			}
 		}

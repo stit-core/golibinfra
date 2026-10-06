@@ -16,7 +16,7 @@ huma (`api.UseMiddleware`), потому что ему нужен доступ �
 
 `*http.Server` собирается в `NewServer` из `Config` (`Addr`, `ReadTimeout`,
 `ReadHeaderTimeout`, `WriteTimeout`, `IdleTimeout`); handler — chi router.
-`ErrorLog` сервера направлен в `logkit` (опция `WithLogger`), поэтому ошибки
+`ErrorLog` сервера направлен в `logkit` (логгер `NewServer`), поэтому ошибки
 net/http (`TLS handshake error`, `Accept error`) идут в тот же sink, что и
 остальные логи сервиса.
 
@@ -59,7 +59,7 @@ fx выполняет `OnStart` в порядке добавления хуко�
 сразу регистрирует `/openapi.json` и `/docs`, после чего chi запрещает
 `router.Use(...)`. Контракт:
 
-1. `NewServer(cfg, opts...)` — проверка `Config` и схем, router + `*http.Server`, цепочка кита
+1. `NewServer(cfg, log, opts...)` — проверка `Config` и схем, router + `*http.Server`, цепочка кита
    (таблица ниже) и middleware из `WithMiddleware` внутри неё. Эту же функцию зовёт `Module`.
 2. `router.Use(middleware...)` — до `BindAPI` можно добавить ещё middleware внутрь цепочки.
 3. `BindAPI()` — создаёт `huma.API` и ставит `HumaAuth` первым huma-middleware.
@@ -70,8 +70,9 @@ fx выполняет `OnStart` в порядке добавления хуко�
 
 ### Точки расширения
 
-- `WithSecuritySchemes(entries...)` / fx-группа `httpkit.security_scheme` —
-  `components.securitySchemes`; дефолтных схем httpkit не выставляет.
+- `WithSecuritySchemes(entries...)` / `ProvideSecurityScheme(ctor)` (fx-группа
+  `httpkit.security_scheme`) — `components.securitySchemes`; дефолтных схем httpkit не
+  выставляет.
 - `WithMiddleware(mw...)` / значение `httpkit.Middlewares` в графе — chi-middleware
   потребителя в порядке слайса (первый — внешний); в `Module` они встают
   **внутрь** цепочки кита, поэтому их panic ловит `Recovery`, а их ответы попадают
@@ -136,7 +137,7 @@ preflight, лимитер, лимит тела, идемпотентность.
 - `[]healthkit.Probe` (группа `healthkit.probes`) → `/ready`; две пробы с одним именем —
   ошибка сборки графа (`ErrConfig`). Тип именованный:
   `httpkit.Probe` — alias `healthkit.Probe`, а `pgkit.Probe`, `natskit.Probe`,
-  `cachekit.Probe` возвращают его же. Регистрация — `healthkit.Provide(ctor)`.
+  `cachekit.Probe` возвращают его же. Регистрация — `healthkit.ProvideProbe(ctor)`.
 
 ## Wrapper ответа
 
@@ -199,7 +200,7 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 - **Ответы huma.** Transformer сервера (`BindAPI`) видит каждое тело до записи
   статуса: ставит `request_id` и `Retry-After` в копию ошибки (общий
   package-level `APIError` не мутируется) и пишет причину 5xx в логгер
-  `WithLogger` (без него — `logkit.Nop()`, причина теряется).
+  `NewServer` (с `logkit.Nop()` причина теряется).
 - **Ответы мимо huma** — `Recovery` (500), `RateLimit` (429), `Idempotency`,
   `HumaAuth` и маршрутизатор: неизвестный путь — `404 NOT_FOUND`, метод —
   `405 METHOD_NOT_ALLOWED` с `Allow`. Их пишет кит сам той же формой.
@@ -224,7 +225,7 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 
 ## Аутентификация
 
-`HumaAuth(log, extract)` проверяет операции с непустым `Operation().Security`. Чтобы
+`HumaAuth(extract, log)` проверяет операции с непустым `Operation().Security`. Чтобы
 забытый `Security` не открывал операцию молча, открытость явная: когда в
 `components.securitySchemes` есть схема, у каждой операции — `Security` со схемой из
 `components` или пометка `httpkit.Public(op)` (в `Operation.Metadata`); пустой `Security`
@@ -254,7 +255,7 @@ Debug), `*APIError` от extractor'а сохраняет свой статус �
 сервера или из хендлера, — она не видит: маршруты регистрируют в Invoke или конструкторе.
 Затем, если в графе нет `AuthExtractor`, а у операции есть `Security`, `Module` не
 стартует с `ErrAuthNotConfigured` и именами таких операций. Без fx `CheckRoutes` зовут
-сами, а `HumaAuth(log, nil)` на защищённой операции отвечает `500 AUTH_NOT_CONFIGURED`
+сами, а `HumaAuth(nil, log)` на защищённой операции отвечает `500 AUTH_NOT_CONFIGURED`
 со строкой `auth not configured` и `operation` в логе.
 
 Middleware работает с `huma.Context` (`*http.Request` достаётся из адаптера или
@@ -293,7 +294,7 @@ prod-адаптере chi, и на `testkit/handlertest`.
 
 ## Health / readiness
 
-`RegisterHealth(api, log, probeTimeout, probes...)`:
+`RegisterHealth(api, probeTimeout, log, probes...)`:
 
 - `GET /health` — liveness, всегда `{"status":"ok"}`.
 - `GET /ready` — прогоняет пробы **параллельно**, каждую под своим таймаутом

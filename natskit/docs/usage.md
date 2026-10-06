@@ -16,7 +16,7 @@ type Bus interface {
 	SubscribeQueue(ctx context.Context, subject, queue string, handler Handler) (Subscription, error)
 }
 
-func NewBus(conn *Conn, log logkit.Logger, cfg Config) (Bus, error) // низкоуровнево; обычный путь — Client.Bus()
+func NewBus(cfg Config, conn *Conn, log logkit.Logger) (Bus, error) // низкоуровнево; обычный путь — Client.Bus()
 
 // Дженерики: marshal/unmarshal JSON за вызывающего.
 func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T, opts ...PublishOption) error
@@ -54,7 +54,7 @@ type StreamBus interface {
 	SubscribeStream(ctx context.Context, stream, subject, durable string, handler Handler) (Subscription, error)
 }
 
-func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error)
+func NewStreamBus(cfg Config, conn *Conn, log logkit.Logger) (StreamBus, error)
 
 // Проверка стримов публикатора на старте; реализует StreamBus из New/Module, фейки — нет.
 type StreamChecker interface {
@@ -132,7 +132,7 @@ fx.New(
 	logkit.Module,
 	fx.Provide(logkit.NewConfig, natskit.NewConfig),
 	natskit.Module(""),
-	natskit.HealthProbe(""), // опц. проба инстанса в группе healthkit.Group (= healthkit.Provide(natskit.Probe))
+	natskit.ProvideProbe(""), // опц. проба инстанса в группе healthkit.ProbesGroup
 	fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) {
 		natskit.SubscribeOnStart(lc, func(ctx context.Context) (natskit.Subscription, error) {
 			return natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "orders.created", "billing", handleOrder)

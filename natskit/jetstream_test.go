@@ -22,7 +22,7 @@ import (
 func TestStreamBus_Disabled(t *testing.T) {
 	cfg := natskit.Config{}
 	conn := natskit.ExportConn(&natsgo.Conn{})
-	sb, err := natskit.NewStreamBus(conn, logkit.Nop(), cfg)
+	sb, err := natskit.NewStreamBus(cfg, conn, logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewStreamBus disabled: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestStreamBus_CheckStreams(t *testing.T) {
 // различает их CheckStreams — для публикатора это выключенный JetStream.
 func TestStreamBus_CheckStreamsServerWithoutJetStream(t *testing.T) {
 	fix := testkit.StartNATS(t)
-	sb, err := natskit.NewStreamBus(connect(t, fix.URL), logkit.Nop(), jsConfig())
+	sb, err := natskit.NewStreamBus(jsConfig(), connect(t, fix.URL), logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewStreamBus without streams: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestStreamBus_CheckStreamsServerWithoutJetStream(t *testing.T) {
 func TestNewStreamBus_RejectsInvalidConfig(t *testing.T) {
 	cfg := jsConfig("ORDERS")
 	cfg.JetStream.DLQSubject = "dlq orders"
-	if _, err := natskit.NewStreamBus(natskit.ExportConn(&natsgo.Conn{}), logkit.Nop(), cfg); !errors.Is(err, natskit.ErrConfig) {
+	if _, err := natskit.NewStreamBus(cfg, natskit.ExportConn(&natsgo.Conn{}), logkit.Nop()); !errors.Is(err, natskit.ErrConfig) {
 		t.Fatalf("NewStreamBus err = %v, want ErrConfig", err)
 	}
 }
@@ -254,7 +254,7 @@ func TestStreamBus_MaxDeliverDLQ(t *testing.T) {
 	cfg.JetStream.MaxDeliver = 3
 	cfg.JetStream.DLQSubject = "DLQ." + stream
 	conn := connect(t, natsURL(t))
-	sb, err := natskit.NewStreamBus(conn, log, cfg)
+	sb, err := natskit.NewStreamBus(cfg, conn, log)
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestStreamBus_TermWithoutDLQ(t *testing.T) {
 	cfg := jsConfig(stream)
 	cfg.JetStream.AckWait = 2 * time.Second
 	cfg.JetStream.MaxDeliver = 2
-	sb, err := natskit.NewStreamBus(connect(t, natsURL(t)), log, cfg)
+	sb, err := natskit.NewStreamBus(cfg, connect(t, natsURL(t)), log)
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -368,7 +368,7 @@ func TestStreamBus_HandlerErrorLogged(t *testing.T) {
 	log := &memLogger{}
 	cfg := jsConfig(stream)
 	cfg.JetStream.NakBackoff = time.Minute // за время теста — одна доставка
-	sb, err := natskit.NewStreamBus(connect(t, natsURL(t)), log, cfg)
+	sb, err := natskit.NewStreamBus(cfg, connect(t, natsURL(t)), log)
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -411,7 +411,7 @@ func TestStreamBus_TerminalErrorSkipsRetries(t *testing.T) {
 	cfg.JetStream.MaxDeliver = 10
 	cfg.JetStream.DLQSubject = "DLQ." + stream
 	conn := connect(t, natsURL(t))
-	sb, err := natskit.NewStreamBus(conn, log, cfg)
+	sb, err := natskit.NewStreamBus(cfg, conn, log)
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestStreamBus_DecodeErrorGoesToDLQ(t *testing.T) {
 	cfg.JetStream.MaxDeliver = 10
 	cfg.JetStream.DLQSubject = "DLQ." + stream
 	conn := connect(t, natsURL(t))
-	sb, err := natskit.NewStreamBus(conn, logkit.Nop(), cfg)
+	sb, err := natskit.NewStreamBus(cfg, conn, logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestStreamBus_PanicGoesPoisonPath(t *testing.T) {
 	cfg := jsConfig(stream)
 	cfg.JetStream.AckWait = 2 * time.Second
 	cfg.JetStream.MaxDeliver = 2
-	sb, err := natskit.NewStreamBus(connect(t, natsURL(t)), log, cfg)
+	sb, err := natskit.NewStreamBus(cfg, connect(t, natsURL(t)), log)
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -661,7 +661,7 @@ func TestStreamBus_DLQPublishFailureKeepsMessage(t *testing.T) {
 	cfg.JetStream.NakBackoff = 300 * time.Millisecond
 	cfg.JetStream.NakMaxBackoff = time.Minute
 	cfg.JetStream.DLQSubject = dlqSubject
-	sb, err := natskit.NewStreamBus(connect(t, url), log, cfg)
+	sb, err := natskit.NewStreamBus(cfg, connect(t, url), log)
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -828,7 +828,7 @@ func TestStreamBus_PublishBatchLostAckTimesOut(t *testing.T) {
 	})
 	cfg := jsConfig(stream)
 	cfg.JetStream.PublishAsyncTimeout = 500 * time.Millisecond
-	sb, err := natskit.NewStreamBus(natskit.ExportConn(nc), logkit.Nop(), cfg)
+	sb, err := natskit.NewStreamBus(cfg, natskit.ExportConn(nc), logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
@@ -895,7 +895,7 @@ func TestStreamBus_EnsureStreamsKeepsOperatorTuning(t *testing.T) {
 	}
 
 	for i := range 2 { // второй старт — идемпотентен
-		if _, err := natskit.NewStreamBus(connect(t, url), logkit.Nop(), jsConfig(stream)); err != nil {
+		if _, err := natskit.NewStreamBus(jsConfig(stream), connect(t, url), logkit.Nop()); err != nil {
 			t.Fatalf("NewStreamBus #%d: %v", i, err)
 		}
 	}
@@ -925,7 +925,7 @@ func TestStreamBus_WarnsOnStreamConfigDrift(t *testing.T) {
 	}
 
 	log := &memLogger{}
-	if _, err := natskit.NewStreamBus(connect(t, url), log, jsConfig(stream)); err != nil {
+	if _, err := natskit.NewStreamBus(jsConfig(stream), connect(t, url), log); err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
 
@@ -943,7 +943,7 @@ func TestStreamBus_EnsureStreamsCreatesMissing(t *testing.T) {
 	stream := nameFor(t)
 	cfg := jsConfig(stream)
 	cfg.JetStream.Duplicates = 30 * time.Second
-	if _, err := natskit.NewStreamBus(connect(t, url), logkit.Nop(), cfg); err != nil {
+	if _, err := natskit.NewStreamBus(cfg, connect(t, url), logkit.Nop()); err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
 
@@ -960,7 +960,7 @@ func TestStreamBus_UnmanagedStreams(t *testing.T) {
 	cfg := jsConfig(stream)
 	cfg.JetStream.StreamManaged = false
 
-	if _, err := natskit.NewStreamBus(connect(t, url), logkit.Nop(), cfg); err == nil {
+	if _, err := natskit.NewStreamBus(cfg, connect(t, url), logkit.Nop()); err == nil {
 		t.Fatal("want error: unmanaged stream is missing")
 	}
 
@@ -968,7 +968,7 @@ func TestStreamBus_UnmanagedStreams(t *testing.T) {
 	if _, err := js.CreateStream(context.Background(), jetstream.StreamConfig{Name: stream, Subjects: []string{"EXTRA_" + stream + ".>"}}); err != nil {
 		t.Fatalf("create stream: %v", err)
 	}
-	if _, err := natskit.NewStreamBus(connect(t, url), logkit.Nop(), cfg); err != nil {
+	if _, err := natskit.NewStreamBus(cfg, connect(t, url), logkit.Nop()); err != nil {
 		t.Fatalf("NewStreamBus with existing unmanaged stream: %v", err)
 	}
 	if got := streamConfig(t, js, stream); !slices.Equal(got.Subjects, []string{"EXTRA_" + stream + ".>"}) {

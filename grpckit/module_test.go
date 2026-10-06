@@ -90,13 +90,40 @@ func TestQuickStartGraphIsValid(t *testing.T) {
 		fx.Provide(logkit.NewConfig),
 		grpckit.Module,
 		fx.Provide(grpckit.NewConfig),
-		fx.Provide(fx.Annotate(
-			func() grpckit.ServiceRegistrar { return func(*grpc.Server) {} },
-			fx.ResultTags(`group:"`+grpckit.ServicesGroup+`"`),
-		)),
+		grpckit.ProvideService(func() grpckit.ServiceRegistrar { return func(*grpc.Server) {} }),
 	)
 	if err != nil {
 		t.Fatalf("quick start graph: %v", err)
+	}
+}
+
+// ProvideService кладёт в группу и один регистратор, и срез; конструктор другого типа валит
+// сборку графа, а не теряет сервис.
+func TestProvideService(t *testing.T) {
+	type in struct {
+		fx.In
+		Services []grpckit.ServiceRegistrar `group:"grpckit.services"`
+	}
+	var got []grpckit.ServiceRegistrar
+	noop := func(*grpc.Server) {}
+	app := fx.New(fx.NopLogger,
+		grpckit.ProvideService(func() grpckit.ServiceRegistrar { return noop }),
+		grpckit.ProvideService(func() ([]grpckit.ServiceRegistrar, error) {
+			return []grpckit.ServiceRegistrar{noop, noop}, nil
+		}),
+		fx.Invoke(func(i in) { got = i.Services }),
+	)
+	if err := app.Err(); err != nil {
+		t.Fatalf("fx.New: %v", err)
+	}
+	if len(got) != 3 {
+		t.Fatalf("services in group: got %d, want 3", len(got))
+	}
+	for _, ctor := range []any{nil, noop, func() error { return nil }, func() func(*grpc.Server) { return noop }} {
+		err := fx.New(fx.NopLogger, grpckit.ProvideService(ctor)).Err()
+		if err == nil || !strings.Contains(err.Error(), "grpckit: ProvideService") {
+			t.Fatalf("ProvideService(%T) = %v, want the type check error", ctor, err)
+		}
 	}
 }
 
@@ -108,11 +135,8 @@ func TestModuleWiresServicesGroupAndHealthProbes(t *testing.T) {
 	probeErr := make(chan error, 1)
 	probeErr <- errors.New("dependency is down")
 	startApp(t,
-		fx.Provide(fx.Annotate(
-			func() grpckit.ServiceRegistrar { return echoRegistrar(ok, ok) },
-			fx.ResultTags(`group:"`+grpckit.ServicesGroup+`"`),
-		)),
-		healthkit.Provide(func() healthkit.Probe {
+		grpckit.ProvideService(func() grpckit.ServiceRegistrar { return echoRegistrar(ok, ok) }),
+		healthkit.ProvideProbe(func() healthkit.Probe {
 			return healthkit.New("dep", func(context.Context) error {
 				err := <-probeErr
 				probeErr <- err
@@ -182,10 +206,7 @@ func TestModuleAppliesAuthenticatorFromGraph(t *testing.T) {
 	addr := freeAddr(t)
 	t.Setenv("GRPC_ADDR", addr)
 	startApp(t,
-		fx.Provide(fx.Annotate(
-			func() grpckit.ServiceRegistrar { return echoRegistrar(ok, ok) },
-			fx.ResultTags(`group:"`+grpckit.ServicesGroup+`"`),
-		)),
+		grpckit.ProvideService(func() grpckit.ServiceRegistrar { return echoRegistrar(ok, ok) }),
 		fx.Provide(func() grpckit.Authenticator { return &stubAuth{err: errors.New("nope")} }),
 	)
 

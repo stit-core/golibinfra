@@ -48,7 +48,7 @@ type natsBus struct {
 // NewBus собирает Core-шину поверх соединения; обычный путь — Client.Bus(). Соединение уже
 // открыто, поэтому проверяются только поля шины: NATS_MAX_IN_FLIGHT >= 1, NATS_HANDLER_TIMEOUT
 // >= 0, иначе ErrConfig.
-func NewBus(conn *Conn, log logkit.Logger, cfg Config) (Bus, error) {
+func NewBus(cfg Config, conn *Conn, log logkit.Logger) (Bus, error) {
 	if err := cfg.validateBus(); err != nil {
 		return nil, err
 	}

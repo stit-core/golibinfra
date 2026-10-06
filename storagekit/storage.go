@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/google/uuid"
+	"git.stit.tech/stit-core/golibinfra/idkit"
 )
 
 // DefaultContentType подставляется вместо пустого content-type: S3 всё равно
@@ -115,14 +115,10 @@ func NormalizeContentType(contentType string) string {
 	return contentType
 }
 
-// NewKey — `<uuidv7>.<ext>`; ext выводится из contentType. uuidv7 даёт
+// NewKey — `<uuidv7>.<ext>` (id — idkit.NewV7); ext выводится из contentType. uuidv7 даёт
 // лексикографически возрастающие ключи (k-sortable по времени).
-func NewKey(contentType string) (string, error) {
-	id, err := uuid.NewV7()
-	if err != nil {
-		return "", fmt.Errorf("%w: uuid: %w", ErrUploadFailed, err)
-	}
-	return id.String() + extFor(contentType), nil
+func NewKey(contentType string) string {
+	return idkit.NewV7() + extFor(contentType)
 }
 
 // canonicalExt фиксирует расширение частых типов: mime-база ОС отличается от

@@ -7,7 +7,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 )
 
-// Probe — health-проба пула primary для fx-группы healthkit.Group.
+// Probe — health-проба пула primary для fx-группы healthkit.ProbesGroup.
 func Probe(db *DB) healthkit.Probe {
 	return healthkit.New("pgkit", func(ctx context.Context) error {
 		var one int

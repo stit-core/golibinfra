@@ -141,7 +141,7 @@ func TestOTel_SpanNameAndClientAddressBehindConsumerMiddleware(t *testing.T) {
 
 	type key struct{}
 	r := chi.NewRouter()
-	r.Use(RequestID(), ClientIP(logkit.Nop(), 0), OTel(), Metrics())
+	r.Use(RequestID(), ClientIP(0, logkit.Nop()), OTel(), Metrics())
 	r.Use(func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 			next.ServeHTTP(w, req.WithContext(context.WithValue(req.Context(), key{}, "v")))

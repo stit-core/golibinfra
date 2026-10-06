@@ -6,7 +6,7 @@
 gRPC-коду; recovery; опц. auth через порт `Authenticator` с обезличенным
 `Unauthenticated` наружу), observability через `otelgrpc` StatsHandler
 (`rpc.server.*`), встроенные health- и (опц.) reflection-сервисы. Доменные
-gRPC-сервисы регистрируются через fx value-group `grpckit.services` — кит владеет
+gRPC-сервисы регистрируются в fx value-group `grpckit.services` (`grpckit.ProvideService`) — кит владеет
 транспортом, интерсепторами и lifecycle, а gen-стабы и бизнес-логика живут в
 сервис-репо.
 
@@ -20,7 +20,7 @@ import "git.stit.tech/stit-core/golibinfra/grpckit"
 
 ## Быстрый старт
 
-Регистрация доменного сервиса через fx value-group `grpckit.services`:
+Регистрация доменного сервиса — `grpckit.ProvideService` в fx value-group `grpckit.services`:
 потребитель отдаёт `grpckit.ServiceRegistrar` (`func(*grpc.Server)`), кит
 навешивает его на сервер до `Serve`. `Module` сам форсит конструирование сервера
 — зависеть от `*grpckit.Server` в графе не нужно.
@@ -48,10 +48,7 @@ func main() {
 		grpckit.Module,
 		fx.Provide(grpckit.NewConfig), // Config сервера из ENV
 		fx.Provide(newGreeterServer),
-		fx.Provide(fx.Annotate(
-			newGreeterRegistrar,
-			fx.ResultTags(`group:"grpckit.services"`),
-		)),
+		grpckit.ProvideService(newGreeterRegistrar),
 	).Run()
 }
 ```
@@ -73,6 +70,7 @@ mTLS, свои интерсепторы и прямой (не-fx) `New` — см
 | --- | --- | --- |
 | `Module` | `fx.Options` | `*Server` + lifecycle (listen, serve, graceful stop); `fx.Invoke` гарантирует старт. |
 | `ServicesGroup` | `const = "grpckit.services"` | Имя fx value-group регистраторов доменных сервисов. |
+| `ProvideService(ctor, anns...)` | `fx.Option` | Конструктор `ServiceRegistrar` (или `[]ServiceRegistrar`) в группу `ServicesGroup`; другой тип результата — ошибка сборки графа. |
 | `NewConfig` | `func() (Config, error)` | `Config` из ENV + `Validate`. |
 | `Config.Validate` | `func() error` | Проверка контракта конфига; ошибка оборачивает `ErrConfig`. |
 | `New` | `func(Config, logkit.Logger, ...ServerOption) (*Server, error)` | Сборка сервера без прослушивания порта. |

@@ -161,7 +161,7 @@ func newBus(t *testing.T, conn *natskit.Conn, log logkit.Logger, cfg natskit.Con
 	if cfg.Backpressure.MaxInFlight == 0 {
 		cfg.Backpressure.MaxInFlight = 100
 	}
-	bus, err := natskit.NewBus(conn, log, cfg)
+	bus, err := natskit.NewBus(cfg, conn, log)
 	if err != nil {
 		t.Fatalf("NewBus: %v", err)
 	}
@@ -170,7 +170,7 @@ func newBus(t *testing.T, conn *natskit.Conn, log logkit.Logger, cfg natskit.Con
 
 func newStreamBus(t *testing.T, cfg natskit.Config) natskit.StreamBus {
 	t.Helper()
-	sb, err := natskit.NewStreamBus(connect(t, natsURL(t)), logkit.Nop(), cfg)
+	sb, err := natskit.NewStreamBus(cfg, connect(t, natsURL(t)), logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}

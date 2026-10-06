@@ -12,27 +12,27 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Group — имя fx-группы, из которой Module забирает job'ы.
-const Group = "timerkit.jobs"
+// JobsGroup — имя fx-группы, из которой Module забирает job'ы.
+const JobsGroup = "timerkit.jobs"
 
-// scheduler — маркер Module в графе: Provide требует его, поэтому job без
+// scheduler — маркер Module в графе: ProvideJob требует его, поэтому job без
 // запускающего модуля — ошибка сборки графа (missing type timerkit.scheduler).
 // Неэкспортируемый: подложить его в граф в обход Module нельзя.
 type scheduler struct{}
 
-// Module запускает все job'ы группы Group в fx-lifecycle приложения.
+// Module запускает все job'ы группы JobsGroup в fx-lifecycle приложения.
 var Module = fx.Module(
 	"timerkit",
 	fx.Supply(scheduler{}),
 	fx.Invoke(startJobs),
 )
 
-// Provide регистрирует конструктор Job (или []Job — группа собирается через
-// flatten) в группу Group и требует Module в графе. Конструктор неверного типа
+// ProvideJob регистрирует конструктор Job (или []Job — группа собирается через
+// flatten) в группу JobsGroup и требует Module в графе. Конструктор неверного типа
 // и граф без Module отвергаются при сборке: иначе job молча не запускается.
 // Дополнительные аннотации (например fx.ParamTags) применяются до групповой;
 // свой fx.ResultTags передавать нельзя.
-func Provide(ctor any, anns ...fx.Annotation) fx.Option {
+func ProvideJob(ctor any, anns ...fx.Annotation) fx.Option {
 	tag, err := groupTag(ctor)
 	if err != nil {
 		return fx.Error(err)
@@ -53,17 +53,17 @@ var (
 func groupTag(ctor any) (string, error) {
 	t := reflect.TypeOf(ctor)
 	if t == nil || t.Kind() != reflect.Func {
-		return "", fmt.Errorf("timerkit: Provide expects a constructor function returning timerkit.Job or []timerkit.Job, got %T", ctor)
+		return "", fmt.Errorf("timerkit: ProvideJob expects a constructor function returning timerkit.Job or []timerkit.Job, got %T", ctor)
 	}
 	if t.NumOut() > 0 {
 		switch t.Out(0) {
 		case jobType:
-			return `group:"` + Group + `"`, nil
+			return `group:"` + JobsGroup + `"`, nil
 		case jobsType:
-			return `group:"` + Group + `,flatten"`, nil
+			return `group:"` + JobsGroup + `,flatten"`, nil
 		}
 	}
-	return "", fmt.Errorf("timerkit: Provide constructor must return timerkit.Job or []timerkit.Job as its first result, got %v", t)
+	return "", fmt.Errorf("timerkit: ProvideJob constructor must return timerkit.Job or []timerkit.Job as its first result, got %v", t)
 }
 
 type params struct {

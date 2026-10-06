@@ -11,7 +11,7 @@ import (
 
 // Module provide'ит anthropickit.API. Config собирает приложение: дешёвый путь —
 // fx.Provide(anthropickit.NewConfig). Опции (WithPriceTable и т.п.) — через свой
-// конструктор поверх New. Health-проба opt-in: healthkit.Provide(anthropickit.Probe).
+// конструктор поверх New. Health-проба opt-in: healthkit.ProvideProbe(anthropickit.Probe).
 var Module = fx.Module(
 	"anthropickit",
 	fx.Provide(

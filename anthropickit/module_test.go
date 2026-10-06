@@ -73,7 +73,7 @@ func TestModule_ProvidesAPIAndOptionalProbe(t *testing.T) {
 		fx.Provide(NewConfig),
 		fx.Provide(logkit.Nop),
 		Module,
-		healthkit.Provide(Probe),
+		healthkit.ProvideProbe(Probe),
 		fx.Invoke(func(api API, in struct {
 			fx.In
 			Probes []healthkit.Probe `group:"healthkit.probes"`
@@ -101,7 +101,7 @@ func TestModule_DocsFxExampleValidates(t *testing.T) {
 		fx.Provide(NewConfig, logkit.NewConfig),
 		logkit.Module,
 		Module,
-		healthkit.Provide(Probe),
+		healthkit.ProvideProbe(Probe),
 		fx.Invoke(func(API) {}),
 	); err != nil {
 		t.Fatalf("the fx example from docs/usage.md does not build: %v", err)

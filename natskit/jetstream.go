@@ -133,7 +133,7 @@ func (disabledStreamBus) CheckStreams(context.Context, ...string) error {
 // NewStreamBus собирает JetStream-шину и декларирует стримы конфига; при
 // выключенном JetStream отдаёт заглушку, все методы которой возвращают
 // ErrJetStreamDisabled.
-func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error) {
+func NewStreamBus(cfg Config, conn *Conn, log logkit.Logger) (StreamBus, error) {
 	if !cfg.JetStream.Enabled {
 		return disabledStreamBus{}, nil
 	}

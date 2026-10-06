@@ -119,7 +119,7 @@ func TestMigrateModule_KitsThenAppDir(t *testing.T) {
 			pgkit.PoolConfig{DSN: pg.DSN},
 			pgkit.MigrateRunnerConfig{Path: dir, Timeout: time.Minute},
 		),
-		pgkit.ProvideMigrations(pgkit.Source{Name: "b", FS: kit, Dir: "migrations"}),
+		pgkit.SupplyMigrations(pgkit.Source{Name: "b", FS: kit, Dir: "migrations"}),
 		pgkit.MigrateModule,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -147,7 +147,7 @@ func TestMigrateModule_EmptyPathSkipsApp(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(pgkit.PoolConfig{DSN: pg.DSN}, pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute}),
-		pgkit.ProvideMigrations(pgkit.Source{Name: "c", FS: kit, Dir: "migrations"}),
+		pgkit.SupplyMigrations(pgkit.Source{Name: "c", FS: kit, Dir: "migrations"}),
 		pgkit.MigrateModule,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)

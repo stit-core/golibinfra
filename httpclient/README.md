@@ -19,11 +19,12 @@ fx.New(
     fx.Provide(httpclient.NewConfig), // HTTPCLIENT_* из ENV (caller провайдит явно)
     httpclient.Module,                // *httpclient.Client, idle-соединения закрываются на OnStop
 
-    // Опции, которые нельзя задать через ENV, приезжают fx-группой:
-    httpclient.ProvideOption(func(rl *Limiter) httpclient.Option { // Limiter — тип сервиса
-        return httpclient.WithBeforeAttempt(func(ctx context.Context, _ int) error {
-            return rl.Wait(ctx)
-        })
+    // Опции, которые нельзя задать через ENV, — одним значением, в порядке слайса:
+    fx.Provide(func(rl *Limiter, q *Quota) httpclient.Options { // Limiter, Quota — типы сервиса
+        return httpclient.Options{
+            httpclient.WithBeforeAttempt(func(ctx context.Context, _ int) error { return rl.Wait(ctx) }),
+            httpclient.WithBeforeAttempt(q.Take), // hook'и складываются: сначала лимитер, затем квота
+        }
     }),
 
     fx.Invoke(func(hc *httpclient.Client) error {
@@ -195,12 +196,11 @@ func NewConfigPrefixed(prefix string) (Config, error)
 func (c Config) Validate() error
 
 var Module fx.Option                      // *Client + OnStop → Close
-func ProvideOption(ctor any) fx.Option    // конструктор Option в группу "httpclient.options"
-const OptionGroup = "httpclient.options"
-type Params struct{ … }                   // вход Module: Config + Options
+type Options []Option                     // опции в графе: одно значение, порядок слайса
+type Params struct{ … }                   // вход Module: Config + опциональные Options
 
-func WithTransport(rt http.RoundTripper) Option
-func WithBeforeAttempt(fn BeforeAttemptFunc) Option
+func WithTransport(rt http.RoundTripper) Option     // один на клиент: второй — ErrConfig из New
+func WithBeforeAttempt(fn BeforeAttemptFunc) Option // hook'и складываются в порядке опций
 type BeforeAttemptFunc func(ctx context.Context, attempt int) error
 
 func AllowRetry(ctx context.Context) context.Context

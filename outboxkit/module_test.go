@@ -296,7 +296,7 @@ func TestInstance_WithSubjectsChecksStreamsOnStart(t *testing.T) {
 // Выключенный JetStream и subject'ы без стрима — ошибка старта с именем инстанса, а не
 // тики, которые падают каждую секунду, пока события копятся в таблице.
 func TestOutbox_StreamsCheckedOnStart(t *testing.T) {
-	disabled, err := natskit.NewStreamBus(nil, nil, natskit.Config{})
+	disabled, err := natskit.NewStreamBus(natskit.Config{}, nil, nil)
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}

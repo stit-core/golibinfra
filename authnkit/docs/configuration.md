@@ -1,23 +1,23 @@
 # authnkit — конфигурация
 
-Три публичных конфига: `Argon2idParams` (параметры хэширования), `JWTConfig`
+Три публичных конфига: `Argon2idConfig` (параметры хэширования), `JWTConfig`
 (секрет, TTL и leeway токенов) и `TOTPConfig` (issuer и окно TOTP). Все —
 **part of public API**: имена/типы полей и их envconfig-теги менять = breaking
 change; выпускается minor-релизом, помечается `!` в Conventional Commit и строкой
 миграции в аннотации тега (см. [корневой README § Версионирование](../../README.md)).
 
 У каждого есть `Validate() error`: нарушение окна → `ErrConfig`. `Validate`
-вызывают и конструкторы конфигов из ENV (`NewArgon2idParams` / `NewJWTConfig` /
+вызывают и конструкторы конфигов из ENV (`NewArgon2idConfig` / `NewJWTConfig` /
 `NewTOTPConfig`), и конструкторы примитивов (`NewArgon2idHasher` /
 `NewHS256JWT` / `NewTOTP`), поэтому невалидный конфиг валит старт приложения,
 а не первый запрос.
 
 RBAC конфига не имеет: `Registry` наполняется кодом через `Register`.
 
-## Argon2idParams
+## Argon2idConfig
 
 Параметры Argon2id. Передаются в `NewArgon2idHasher(p)` напрямую либо читаются
-из ENV через `NewArgon2idParams()`.
+из ENV через `NewArgon2idConfig()`.
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|

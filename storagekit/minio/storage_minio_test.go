@@ -66,7 +66,7 @@ func newStorage(t *testing.T, mutate ...func(*storagekit.Config)) (*skminio.Stor
 
 func mustStorage(t *testing.T, client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) *skminio.Storage {
 	t.Helper()
-	st, err := skminio.NewStorage(client, cfg, urls, log)
+	st, err := skminio.NewStorage(cfg, client, urls, log)
 	if err != nil {
 		t.Fatalf("NewStorage: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestStorage_PutUnknownSizeAllocatesOnePart(t *testing.T) {
 	unset := cfg
 	unset.PartSize = 0
 	urls := storagekit.NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle)
-	if _, err := skminio.NewStorage(client, unset, urls, logkit.Nop()); !errors.Is(err, storagekit.ErrConfig) {
+	if _, err := skminio.NewStorage(unset, client, urls, logkit.Nop()); !errors.Is(err, storagekit.ErrConfig) {
 		t.Fatalf("NewStorage without PartSize: %v, want ErrConfig", err)
 	}
 

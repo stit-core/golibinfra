@@ -76,7 +76,7 @@ h.ServeHTTP(rec, req)
 ```
 
 Для `RateLimit` задайте `req.RemoteAddr` (без `ClientIP` в цепочке ключ — адрес
-соединения; с `ClientIP(log, hops)` и `X-Forwarded-For` — запись прокси), чтобы запросы
+соединения; с `ClientIP(hops, log)` и `X-Forwarded-For` — запись прокси), чтобы запросы
 попали в один bucket; адреса одной IPv6 `/64` — тоже один bucket.
 
 Строки `AccessLog` проверяются логгером в буфер:
@@ -121,7 +121,7 @@ app := fx.New(
     fx.Supply(cfg),
     fx.Provide(func() logkit.Logger { return logkit.Nop() }),
     httpkit.Module,
-    healthkit.Provide(func() healthkit.Probe { return failingProbe }),
+    healthkit.ProvideProbe(func() healthkit.Probe { return failingProbe }),
     fx.Populate(&srv),
 )
 _ = app.Start(ctx)

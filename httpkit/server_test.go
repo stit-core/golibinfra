@@ -10,6 +10,8 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
+
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 func validConfig() Config {
@@ -31,7 +33,7 @@ func validConfig() Config {
 // mustNewServer — NewServer для теста: ошибка конструктора — t.Fatalf.
 func mustNewServer(t *testing.T, cfg Config, opts ...ServerOption) *Server {
 	t.Helper()
-	s, err := NewServer(cfg, opts...)
+	s, err := NewServer(cfg, logkit.Nop(), opts...)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}

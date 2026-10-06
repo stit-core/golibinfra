@@ -14,7 +14,7 @@ import (
 
 func defaultHasher(t *testing.T) *Argon2idHasher {
 	t.Helper()
-	return newHasherOrFail(t, Argon2idParams{
+	return newHasherOrFail(t, Argon2idConfig{
 		Time:    1,
 		Memory:  8 * 1024,
 		Threads: 1,
@@ -23,7 +23,7 @@ func defaultHasher(t *testing.T) *Argon2idHasher {
 	})
 }
 
-func newHasherOrFail(t *testing.T, p Argon2idParams) *Argon2idHasher {
+func newHasherOrFail(t *testing.T, p Argon2idConfig) *Argon2idHasher {
 	t.Helper()
 	h, err := NewArgon2idHasher(p)
 	if err != nil {
@@ -73,7 +73,7 @@ func TestHashSaltIsRandom(t *testing.T) {
 
 // Невалидные параметры валят конструктор, а не первый Hash.
 func TestNewArgon2idHasher_InvalidParams(t *testing.T) {
-	cases := map[string]Argon2idParams{
+	cases := map[string]Argon2idConfig{
 		"zero":           {},
 		"t=0":            {Time: 0, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16},
 		"t above window": {Time: MaxTime + 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16},
@@ -230,9 +230,9 @@ func TestVerify_CostAboveWindowCostsNothing(t *testing.T) {
 	}
 }
 
-func TestArgon2idParams_CostCeiling(t *testing.T) {
+func TestArgon2idConfig_CostCeiling(t *testing.T) {
 	// m*t ровно на потолке — валидно, шаг выше — ErrConfig.
-	atCeiling := Argon2idParams{Time: MaxTime, Memory: MaxCostKiBPasses / MaxTime, Threads: 1, KeyLen: 32, SaltLen: 16}
+	atCeiling := Argon2idConfig{Time: MaxTime, Memory: MaxCostKiBPasses / MaxTime, Threads: 1, KeyLen: 32, SaltLen: 16}
 	if err := atCeiling.Validate(); err != nil {
 		t.Fatalf("стоимость на потолке отвергнута: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestArgon2idParams_CostCeiling(t *testing.T) {
 	if err := above.Validate(); !errors.Is(err, ErrConfig) {
 		t.Fatalf("стоимость выше потолка: ожидали ErrConfig, получили %v", err)
 	}
-	if err := (Argon2idParams{Time: 3, Memory: 64 * 1024, Threads: 4, KeyLen: 32, SaltLen: 16}).Validate(); err != nil {
+	if err := (Argon2idConfig{Time: 3, Memory: 64 * 1024, Threads: 4, KeyLen: 32, SaltLen: 16}).Validate(); err != nil {
 		t.Fatalf("дефолтные параметры кита вне окна: %v", err)
 	}
 }
@@ -281,7 +281,7 @@ func TestVerify_NonCanonicalBase64(t *testing.T) {
 
 func TestNeedsRehash(t *testing.T) {
 	ctx := t.Context()
-	base := Argon2idParams{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16}
+	base := Argon2idConfig{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16}
 	h := newHasherOrFail(t, base)
 	encoded, err := h.Hash(ctx, "abc")
 	if err != nil {
@@ -292,7 +292,7 @@ func TestNeedsRehash(t *testing.T) {
 	}
 
 	// Изменение любого из пяти параметров — сигнал перехэшировать.
-	changed := map[string]Argon2idParams{
+	changed := map[string]Argon2idConfig{
 		"time":    {Time: 2, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16},
 		"memory":  {Time: 1, Memory: 16 * 1024, Threads: 1, KeyLen: 32, SaltLen: 16},
 		"threads": {Time: 1, Memory: 8 * 1024, Threads: 2, KeyLen: 32, SaltLen: 16},
@@ -322,7 +322,7 @@ func TestNeedsRehash(t *testing.T) {
 func TestVerifyDummy(t *testing.T) {
 	ctx := t.Context()
 	for _, saltLen := range []uint32{MinSaltLen, 16, MaxSaltLen} {
-		h := newHasherOrFail(t, Argon2idParams{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: saltLen})
+		h := newHasherOrFail(t, Argon2idConfig{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 32, SaltLen: saltLen})
 		encoded, err := h.Hash(ctx, "abc")
 		if err != nil {
 			t.Fatalf("Hash: %v", err)
@@ -352,13 +352,13 @@ var _ Hasher = (*Argon2idHasher)(nil)
 // ждут слот, и ожидание прерывает ctx.
 func TestArgon2id_Concurrency(t *testing.T) {
 	for _, threads := range []uint8{1, 2, MaxThreads} {
-		h := newHasherOrFail(t, Argon2idParams{Time: 1, Memory: MinMemoryKiB, Threads: threads, KeyLen: 32, SaltLen: 16})
+		h := newHasherOrFail(t, Argon2idConfig{Time: 1, Memory: MinMemoryKiB, Threads: threads, KeyLen: 32, SaltLen: 16})
 		if want := max(1, runtime.GOMAXPROCS(0)/int(threads)); cap(h.slots) != want {
 			t.Fatalf("threads=%d: slots = %d, want max(1, GOMAXPROCS/threads) = %d", threads, cap(h.slots), want)
 		}
 	}
 
-	h := newHasherOrFail(t, Argon2idParams{Time: 1, Memory: MinMemoryKiB, Threads: 2, KeyLen: 32, SaltLen: 16})
+	h := newHasherOrFail(t, Argon2idConfig{Time: 1, Memory: MinMemoryKiB, Threads: 2, KeyLen: 32, SaltLen: 16})
 	encoded, err := h.Hash(t.Context(), "p")
 	if err != nil {
 		t.Fatalf("Hash: %v", err)

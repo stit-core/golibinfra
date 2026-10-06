@@ -35,7 +35,7 @@ func main() {
 	ctx := context.Background()
 
 	// 1. Пароль: хэш → проверка → перехэш при смене параметров.
-	hasher, err := authnkit.NewArgon2idHasher(authnkit.Argon2idParams{
+	hasher, err := authnkit.NewArgon2idHasher(authnkit.Argon2idConfig{
 		Time: 3, Memory: 64 * 1024, Threads: 4, KeyLen: 32, SaltLen: 16,
 	})
 	if err != nil {
@@ -83,7 +83,7 @@ func main() {
 ## Документация
 
 - [docs/architecture.md](docs/architecture.md) — устройство примитивов (hashing / JWT / TOTP / токены / RBAC) и сессий refresh, границы кита, проектные решения (WHY).
-- [docs/configuration.md](docs/configuration.md) — полный справочник ENV: `Argon2idParams`, `JWTConfig`, `TOTPConfig`, `session.Config`, окна параметров и их `Validate`.
+- [docs/configuration.md](docs/configuration.md) — полный справочник ENV: `Argon2idConfig`, `JWTConfig`, `TOTPConfig`, `session.Config`, окна параметров и их `Validate`.
 - [docs/observability.md](docs/observability.md) — метрики и labels (единый источник правды).
 - [docs/usage.md](docs/usage.md) — рецепты: fx Module и прямой конструктор, хэш пароля, sign/verify JWT, одноразовые токены, сессии refresh, TOTP с защитой от replay, проверка прав.
 - [docs/testing.md](docs/testing.md) — `testkit/authntest`: `DeterministicHasher`; `WithClock` для JWT/TOTP; сессии: фейк и контракт `testkit/sessiontest`, Postgres с управляемыми часами.

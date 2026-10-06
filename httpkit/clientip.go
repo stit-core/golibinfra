@@ -26,7 +26,7 @@ func ClientIPFrom(ctx context.Context) string {
 // N — N-я справа запись X-Forwarded-For, левее неё — то, что прислал сам клиент; запись
 // короче N или не IP — адрес соединения. X-Real-IP не читается. X-Forwarded-For при 0 — одна
 // строка Warn на middleware: за прокси без настройки все клиенты делят его адрес.
-func ClientIP(log logkit.Logger, trustProxyHops int) func(http.Handler) http.Handler {
+func ClientIP(trustProxyHops int, log logkit.Logger) func(http.Handler) http.Handler {
 	var warnOnce sync.Once
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

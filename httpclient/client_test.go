@@ -466,6 +466,64 @@ func TestClient_BeforeAttemptErrorAborts(t *testing.T) {
 	}
 }
 
+// Регрессия KX50: hook'и не заменяют друг друга — лимитер и подпись срабатывают оба, в
+// порядке опций.
+func TestClient_BeforeAttemptHooksChainInOrder(t *testing.T) {
+	var calls atomic.Int32
+	srv := statusServer(t, &calls, http.StatusOK)
+
+	var order []string
+	hook := func(name string) Option {
+		return WithBeforeAttempt(func(context.Context, int) error {
+			order = append(order, name)
+			return nil
+		})
+	}
+	c := newTestClient(t, Config{}, hook("limiter"), hook("signer"))
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+	if strings.Join(order, ",") != "limiter,signer" {
+		t.Fatalf("hooks ran %v, want limiter,signer", order)
+	}
+}
+
+// Транспорт у клиента один: второй WithTransport не теряется молча, а валит сборку.
+func TestNew_SecondTransportIsErrConfig(t *testing.T) {
+	rt := rtFunc(func(*http.Request) (*http.Response, error) { return nil, errors.New("unused") })
+	_, err := New(validConfig(), WithTransport(rt), WithTransport(rt))
+	if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "WithTransport") {
+		t.Fatalf("New with two transports = %v, want ErrConfig naming WithTransport", err)
+	}
+}
+
+func TestNew_NilOptionsIgnored(t *testing.T) {
+	var calls atomic.Int32
+	srv := statusServer(t, &calls, http.StatusOK)
+
+	var hooked atomic.Int32
+	c, err := New(validConfig(), nil, WithTransport(nil), WithBeforeAttempt(nil),
+		WithBeforeAttempt(func(context.Context, int) error { hooked.Add(1); return nil }), WithBeforeAttempt(nil))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	if _, ok := c.base.(*http.Transport); !ok {
+		t.Fatalf("WithTransport(nil) must keep the default transport, got %T", c.base)
+	}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	resp, err := c.Do(req)
+	if err != nil {
+		t.Fatalf("Do: %v", err)
+	}
+	resp.Body.Close()
+	if hooked.Load() != 1 {
+		t.Fatalf("hook calls = %d, want 1: WithBeforeAttempt(nil) must not drop the hook", hooked.Load())
+	}
+}
+
 func TestClient_RequestIDForward(t *testing.T) {
 	var got []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

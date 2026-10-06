@@ -14,5 +14,5 @@ var Module = fx.Module(
 	fx.Provide(
 		fx.Annotate(NewStore, fx.As(new(auditkit.Logger))),
 	),
-	pgkit.ProvideMigrations(Migrations),
+	pgkit.SupplyMigrations(Migrations),
 )

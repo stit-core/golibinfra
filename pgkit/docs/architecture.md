@@ -200,9 +200,9 @@ golang-migrate не принимает `ctx`, поэтому дедлайн вы
 ### fx: `MigrateModule` и группа `pgkit.migrations` (`migrate_module.go`)
 
 Киты регистрируют свой источник в fx-группе `pgkit.MigrationsGroup`
-(`"pgkit.migrations"`): `auditkit/pgstore`, `outboxkit/pgstore`,
-`bruteforcekit/pgstore` — через `pgkit.ProvideMigrations(src)` внутри своих
-`Module`, `outboxkit.Instance` — схему таблицы инстанса.
+(`"pgkit.migrations"`): хранилища китов (`<kit>/pgstore`) — через
+`pgkit.SupplyMigrations(src)` внутри своих `Module`, `outboxkit.Instance` — схему таблицы
+инстанса.
 `MigrateModule` в `OnStart` собирает группу, сортирует источники по имени (порядок
 fx-группы не определён), добавляет последним каталог приложения из
 `PG_MIGRATIONS_PATH` (если он не пуст) и вызывает `MigrateUpAll` под
@@ -255,7 +255,7 @@ WHY роутинг — explicit, а не автоматический: kit не 
 `Probe(db)` (`Name` — `pgkit`) выполняет `SELECT 1` на пуле primary,
 `ReplicaProbe(rw)` (`Name` — `pgkit/replica`) — на пуле реплики; без реплики
 вторая проходит без запроса, потому что мастер уже покрыт первой. Обе
-регистрируются в fx-группе `healthkit.probes` через `healthkit.Provide`; `httpkit`
+регистрируются в fx-группе `healthkit.probes` через `healthkit.ProvideProbe`; `httpkit`
 собирает группу в `/ready`.
 
 ## fx-композиция (`module.go`, `migrate_module.go`)

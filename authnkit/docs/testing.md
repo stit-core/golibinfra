@@ -59,7 +59,7 @@ _, err := jwt.ParseAccess(ctx, tok) // ErrTokenExpired
 
 Секрет в тестовых `JWTConfig` — не короче 32 байт, иначе конструктор вернёт
 `ErrConfig`; то же с `TOTPConfig.Issuer` (непустой, без `:` и `/`) и
-`Argon2idParams` (окно). Для TOTP валидный код генерируй через
+`Argon2idConfig` (окно). Для TOTP валидный код генерируй через
 `totp.GenerateCode(secret, clock.Now())` (`github.com/pquerna/otp/totp`).
 
 ## Сессии refresh
@@ -78,7 +78,7 @@ _, err := jwt.ParseAccess(ctx, tok) // ErrTokenExpired
 ```go
 pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
 clock := clockkit.NewTickable(time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC))
-sessions, _ := pgstore.NewStore(pg.DB(t), cfg, pgstore.WithClock(clock))
+sessions, _ := pgstore.NewStore(cfg, pg.DB(t), pgstore.WithClock(clock))
 tok, _ := sessions.Issue(ctx, "user-1")
 clock.Advance(cfg.IdleTTL)
 _, err := sessions.Rotate(ctx, tok.Value) // session.ErrExpired

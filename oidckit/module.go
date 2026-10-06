@@ -88,9 +88,9 @@ var Module = fx.Module(
 		NewExtractor,
 
 		func(e *Extractor) httpkit.AuthExtractor { return e.Extract },
-		fx.Annotate(NewSecurityScheme, fx.ResultTags(`group:"httpkit.security_scheme"`)),
 	),
-	healthkit.Provide(func(b *BFF) healthkit.Probe { return b.Probe() }),
+	httpkit.ProvideSecurityScheme(NewSecurityScheme),
+	healthkit.ProvideProbe(func(b *BFF) healthkit.Probe { return b.Probe() }),
 	fx.Invoke(RegisterIdentityLogAttr),
 	fx.Invoke(warmup),
 	fx.Invoke(RegisterRoutes),

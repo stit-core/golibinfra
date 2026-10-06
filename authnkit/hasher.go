@@ -74,9 +74,9 @@ type Hasher interface {
 	VerifyDummy(ctx context.Context)
 }
 
-// Argon2idParams — параметры Argon2id и одновременно окно, в котором
+// Argon2idConfig — параметры Argon2id и одновременно окно, в котором
 // принимаются параметры PHC-строки из хранилища.
-type Argon2idParams struct {
+type Argon2idConfig struct {
 	Time    uint32 `envconfig:"ARGON2_TIME" default:"3"`
 	Memory  uint32 `envconfig:"ARGON2_MEMORY_KIB" default:"65536"`
 	Threads uint8  `envconfig:"ARGON2_THREADS" default:"4"`
@@ -85,14 +85,14 @@ type Argon2idParams struct {
 }
 
 // Validate — параметры внутри окна; вне окна → ErrConfig.
-func (p Argon2idParams) Validate() error {
+func (p Argon2idConfig) Validate() error {
 	if err := p.check(); err != nil {
 		return fmt.Errorf("%w: argon2id: %w", ErrConfig, err)
 	}
 	return nil
 }
 
-func (p Argon2idParams) check() error {
+func (p Argon2idConfig) check() error {
 	switch {
 	case p.Time < MinTime || p.Time > MaxTime:
 		return fmt.Errorf("t must be within %d..%d", MinTime, MaxTime)
@@ -114,14 +114,14 @@ func (p Argon2idParams) check() error {
 // Одновременно считает не больше max(1, GOMAXPROCS/Threads) хэшей (каждый
 // держит Memory КиБ); ожидание слота прерывает ctx.
 type Argon2idHasher struct {
-	p      Argon2idParams
+	p      Argon2idConfig
 	instr  *hashInstruments
 	slots  chan struct{}
 	derive func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
 }
 
 // NewArgon2idHasher — хэшер с параметрами p; параметры вне окна → ErrConfig.
-func NewArgon2idHasher(p Argon2idParams) (*Argon2idHasher, error) {
+func NewArgon2idHasher(p Argon2idConfig) (*Argon2idHasher, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
@@ -198,7 +198,7 @@ func (h *Argon2idHasher) VerifyDummy(ctx context.Context) {
 }
 
 // idKey считает Argon2id в одном из слотов хэшера.
-func (h *Argon2idHasher) idKey(ctx context.Context, password, salt []byte, p Argon2idParams) ([]byte, error) {
+func (h *Argon2idHasher) idKey(ctx context.Context, password, salt []byte, p Argon2idConfig) ([]byte, error) {
 	select {
 	case h.slots <- struct{}{}:
 	case <-ctx.Done():
@@ -219,7 +219,7 @@ func (h *Argon2idHasher) NeedsRehash(encoded string) bool {
 }
 
 type phc struct {
-	params Argon2idParams
+	params Argon2idConfig
 	salt   []byte
 	hash   []byte
 }
@@ -271,7 +271,7 @@ func parsePHC(encoded string) (phc, error) {
 		return phc{}, fmt.Errorf("%w: hash or salt too long", ErrInvalidHash)
 	}
 
-	p := Argon2idParams{
+	p := Argon2idConfig{
 		Time:    uint32(iterations), //nolint:gosec // ParseUint с bitSize 32
 		Memory:  uint32(memory),     //nolint:gosec // ParseUint с bitSize 32
 		Threads: uint8(threads),     //nolint:gosec // ParseUint с bitSize 8

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"reflect"
 	"slices"
 	"strings"
 	"time"
@@ -11,13 +12,45 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/fx"
 
-	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // SecuritySchemeGroup — fx-группа схем безопасности OpenAPI (SecuritySchemeEntry).
 const SecuritySchemeGroup = "httpkit.security_scheme"
+
+// ProvideSecurityScheme регистрирует конструктор SecuritySchemeEntry (или []SecuritySchemeEntry —
+// группа собирается через flatten) в группу SecuritySchemeGroup. Конструктор неверного типа
+// отвергается при сборке графа: иначе схема молча не попадает в OpenAPI. Дополнительные
+// аннотации применяются до групповой; свой fx.ResultTags передавать нельзя.
+func ProvideSecurityScheme(ctor any, anns ...fx.Annotation) fx.Option {
+	tag, err := securitySchemeTag(ctor)
+	if err != nil {
+		return fx.Error(err)
+	}
+	return fx.Provide(fx.Annotate(ctor, append(anns, fx.ResultTags(tag))...))
+}
+
+var (
+	schemeType  = reflect.TypeFor[SecuritySchemeEntry]()
+	schemesType = reflect.TypeFor[[]SecuritySchemeEntry]()
+)
+
+func securitySchemeTag(ctor any) (string, error) {
+	t := reflect.TypeOf(ctor)
+	if t == nil || t.Kind() != reflect.Func {
+		return "", fmt.Errorf("httpkit: ProvideSecurityScheme expects a constructor function returning httpkit.SecuritySchemeEntry or []httpkit.SecuritySchemeEntry, got %T", ctor)
+	}
+	if t.NumOut() > 0 {
+		switch t.Out(0) {
+		case schemeType:
+			return `group:"` + SecuritySchemeGroup + `"`, nil
+		case schemesType:
+			return `group:"` + SecuritySchemeGroup + `,flatten"`, nil
+		}
+	}
+	return "", fmt.Errorf("httpkit: ProvideSecurityScheme constructor must return httpkit.SecuritySchemeEntry or []httpkit.SecuritySchemeEntry as its first result, got %v", t)
+}
 
 // Module — сервер, huma.API и /health + /ready; Config регистрирует caller
 // (`fx.Provide(httpkit.NewConfig)` или из App-структуры). HTTP слушает после
@@ -32,10 +65,7 @@ var Module = fx.Options(
 			newServer,
 			func(s *Server) huma.API { return s.API() },
 		),
-		fx.Invoke(fx.Annotate(
-			registerHealth,
-			fx.ParamTags(``, ``, ``, `group:"`+healthkit.Group+`"`),
-		)),
+		fx.Invoke(registerHealth),
 	),
 	fx.Invoke(serve),
 )
@@ -72,25 +102,34 @@ type serverIn struct {
 	Schemes      []SecuritySchemeEntry `group:"httpkit.security_scheme"`
 }
 
+// healthIn — fx.In, а не fx.Annotate: ошибка графа (нет Logger, нет Config) называет функции
+// кита и *httpkit.Server, а не reflect.makeFuncStub.
+type healthIn struct {
+	fx.In
+
+	Server *Server
+	Probes []Probe `group:"healthkit.probes"`
+}
+
 // registerHealth отвергает две пробы с одним именем: /ready гонял бы обе, а в логе
 // readiness probe failed их не различить.
-func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe) error {
-	names := make(map[string]bool, len(probes))
-	for _, p := range probes {
+func registerHealth(in healthIn) error {
+	names := make(map[string]bool, len(in.Probes))
+	for _, p := range in.Probes {
 		if names[p.Name] {
 			return fmt.Errorf("%w: readiness probe %q is provided twice", ErrConfig, p.Name)
 		}
 		names[p.Name] = true
 	}
-	RegisterHealth(api, log, cfg.ReadyProbeTimeout, probes...)
+	s := in.Server
+	RegisterHealth(s.API(), s.cfg.ReadyProbeTimeout, s.log, in.Probes...)
 	return nil
 }
 
 // newServer — NewServer из графа: схемы и конфиг проверяются уже в fx.New, а не на OnStart.
 func newServer(in serverIn) (*Server, error) {
-	opts := make([]ServerOption, 0, 6+len(in.HumaConfigs))
+	opts := make([]ServerOption, 0, 5+len(in.HumaConfigs))
 	opts = append(opts,
-		WithLogger(in.Log),
 		WithSecuritySchemes(in.Schemes...),
 		WithAuthExtractor(in.Extract),
 		WithIdempotencyStore(in.Store),
@@ -100,7 +139,7 @@ func newServer(in serverIn) (*Server, error) {
 	for _, fn := range in.HumaConfigs {
 		opts = append(opts, WithHumaConfig(fn))
 	}
-	s, err := NewServer(in.Config, opts...)
+	s, err := NewServer(in.Config, in.Log, opts...)
 	if err != nil {
 		return nil, err
 	}
@@ -120,7 +159,7 @@ type serveIn struct {
 // serve вешает хук сервера. Это Invoke уровня Module, а не конструктор: хуки идут
 // в порядке добавления, и сервер обязан быть последним, чей хук добавлен.
 func serve(in serveIn) {
-	s, sd, log := in.Server, in.Shutdowner, in.Server.opts.log
+	s, sd, log := in.Server, in.Shutdowner, in.Server.log
 	in.Lifecycle.Append(fx.Hook{
 		OnStart: func(ctx context.Context) error {
 			// На OnStart все Invoke уже выполнены: операции зарегистрированы целиком.

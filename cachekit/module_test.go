@@ -45,7 +45,7 @@ func TestModule_PingOnStartFailsFast(t *testing.T) {
 		fx.NopLogger,
 		fx.Supply(cfg),
 		cachekit.Module,
-		healthkit.Provide(cachekit.Probe),
+		healthkit.ProvideProbe(cachekit.Probe),
 		fx.Invoke(func(cachekit.Cache) {}),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -67,9 +67,9 @@ func TestModule_StartsWithoutPingAndClosesOnStop(t *testing.T) {
 		t,
 		fx.Supply(cfg),
 		cachekit.Module,
-		healthkit.Provide(cachekit.Probe),
+		healthkit.ProvideProbe(cachekit.Probe),
 		fx.Populate(&cache),
-		fx.Populate(fx.Annotate(&probes, fx.ParamTags(`group:"`+healthkit.Group+`"`))),
+		fx.Populate(fx.Annotate(&probes, fx.ParamTags(`group:"`+healthkit.ProbesGroup+`"`))),
 	)
 	app.RequireStart()
 

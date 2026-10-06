@@ -10,7 +10,7 @@ import (
 )
 
 // Module не provide'ит Config (caller регистрирует его сам) и не кладёт Probe в
-// граф: пробу регистрирует потребитель через healthkit.Provide(cachekit.Probe).
+// граф: пробу регистрирует потребитель через healthkit.ProvideProbe(cachekit.Probe).
 var Module = fx.Module(
 	"cachekit",
 	fx.Provide(newCacheWithLifecycle),

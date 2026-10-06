@@ -17,7 +17,7 @@ import (
 func Module(name string) fx.Option {
 	if name == "" {
 		return fx.Module(
-			"natskit",
+			kitName(name),
 			fx.Provide(
 				newDefaultClient,
 				func(c *Client) Bus { return c.Bus() },
@@ -31,7 +31,7 @@ func Module(name string) fx.Option {
 
 	tag := nameTag(name)
 	return fx.Module(
-		"natskit:"+name,
+		kitName(name),
 		fx.Provide(
 			fx.Annotate(
 				func(lc fx.Lifecycle, cfg Config, log logkit.Logger) (*Client, error) {
@@ -67,13 +67,13 @@ func ProvideConfig(name string) fx.Option {
 	))
 }
 
-// HealthProbe регистрирует пробу инстанса в fx-группе `healthkit.probes`. Отдельной
+// ProvideProbe регистрирует пробу инстанса в fx-группе `healthkit.probes`. Отдельной
 // опцией, а не внутри Module: caller решает, какие инстансы валят readiness.
-func HealthProbe(name string) fx.Option {
+func ProvideProbe(name string) fx.Option {
 	if name == "" {
-		return healthkit.Provide(Probe)
+		return healthkit.ProvideProbe(Probe)
 	}
-	return healthkit.Provide(Probe, fx.ParamTags(nameTag(name)))
+	return healthkit.ProvideProbe(Probe, fx.ParamTags(nameTag(name)))
 }
 
 // SubscribeOnStart вешает подписку на жизненный цикл fx: subscribe вызывается в
@@ -121,3 +121,12 @@ func newClient(lc fx.Lifecycle, name string, cfg Config, log logkit.Logger) (*Cl
 }
 
 func nameTag(name string) string { return fmt.Sprintf(`name:"%s"`, name) }
+
+// kitName — имя fx-модуля и пробы инстанса: `natskit` у дефолтного, `natskit:<name>` у
+// именованного.
+func kitName(instance string) string {
+	if instance == "" || instance == DefaultInstance {
+		return "natskit"
+	}
+	return "natskit:" + instance
+}

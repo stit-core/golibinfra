@@ -52,8 +52,8 @@ const AppSourceName = "app"
 // объявляет его зависимостью и попадает в очередь после хука миграций.
 type Migrated struct{}
 
-// ProvideMigrations кладёт источник кита в группу MigrationsGroup.
-func ProvideMigrations(src Source) fx.Option {
+// SupplyMigrations кладёт значение источника кита в группу MigrationsGroup.
+func SupplyMigrations(src Source) fx.Option {
 	return fx.Supply(fx.Annotated{Group: MigrationsGroup, Target: src})
 }
 

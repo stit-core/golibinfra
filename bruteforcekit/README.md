@@ -26,7 +26,7 @@ import "git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
 
 `pgstore.Module` отдаёт `*pgstore.Store` как `bruteforcekit.Guard` и
 `bruteforcekit.Cleaner`, регистрирует миграции кита в группе
-`pgkit.MigrateModule` и cleanup-job в группе `timerkit.Group`. Ему нужны `*pgkit.DB`
+`pgkit.MigrateModule` и cleanup-job в группе `timerkit.JobsGroup`. Ему нужны `*pgkit.DB`
 (из `pgkit.Module`), `bruteforcekit.Config` (конфиг кит **не** провайдит сам:
 `fx.Provide(bruteforcekit.NewConfig)`) и `timerkit.Module` — без него граф не
 собирается (`missing type: timerkit.scheduler`): cleanup-job, которую никто не
@@ -77,7 +77,7 @@ func app() *fx.App {
 cfg, err := bruteforcekit.NewConfig()
 if err != nil { /* ... */ }
 
-guard, err := pgstore.NewStore(db, cfg) // *pgkit.DB, bruteforcekit.Config
+guard, err := pgstore.NewStore(cfg, db) // bruteforcekit.Config, *pgkit.DB
 if err != nil { /* ... */ }
 ```
 
@@ -179,7 +179,7 @@ README § Версионирование](../README.md)). `NewConfig()`
 | `BRUTEFORCE_MAX_FAILURES` | `MaxFailures` | `int` (`>= 1`) | `5` | Порог: при достижении этого числа неудач в текущем окне пара `(subject, ip)` блокируется; `1` — блокировка с первой неудачи |
 | `BRUTEFORCE_LOCK_DURATION` | `LockDuration` | `time.Duration` (`> 0`) | `15m` | Длительность блокировки от момента достижения порога (`locked_until = NOW() + LockDuration`) |
 | `BRUTEFORCE_CLEANUP_RETENTION` | `CleanupRetention` | `time.Duration` (`>= 0`) | `24h` | Возраст строки по `last_attempt`, после которого `Cleanup` удаляет её (только если она не под активной блокировкой) |
-| `BRUTEFORCE_CLEANUP_INTERVAL` | `CleanupInterval` | `time.Duration` (`> 0`) | `5m` | Период cleanup-job'а, который `pgstore.Module` кладёт в группу `timerkit.Group`; он же дедлайн одного прогона |
+| `BRUTEFORCE_CLEANUP_INTERVAL` | `CleanupInterval` | `time.Duration` (`> 0`) | `5m` | Период cleanup-job'а, который `pgstore.Module` кладёт в группу `timerkit.JobsGroup`; он же дедлайн одного прогона |
 | `BRUTEFORCE_IPV6_PREFIX` | `IPv6Prefix` | `int` (`[1, 128]`) | `64` | Длина префикса, до которой агрегируются IPv6-адреса; `64` — бакет на `/64`-подсеть, `128` — без агрегации |
 
 ## Observability
@@ -258,14 +258,14 @@ Maintenance-путь, отдельный от `Guard`: его реализуют
 ### `pgstore.Store`
 
 ```go
-func pgstore.NewStore(db *pgkit.DB, cfg bruteforcekit.Config) (*Store, error)
+func pgstore.NewStore(cfg bruteforcekit.Config, db *pgkit.DB) (*Store, error)
 ```
 
 Реализация `Guard` и `Cleaner` на одной таблице `bruteforce_attempts` с
 составным первичным ключом `(subject, ip)`. Конструктор валидирует `cfg`
 (`ErrConfig`). `pgstore.Module` провайдит `*Store` под обоими интерфейсами,
 кладёт `pgstore.Migrations` в группу `pgkit.migrations` и `CleanupJob` — в
-группу `timerkit.Group` (`"timerkit.jobs"`).
+группу `timerkit.JobsGroup` (`"timerkit.jobs"`).
 
 ### `pgstore.CleanupJob`
 
@@ -274,8 +274,8 @@ func pgstore.CleanupJob(s *Store, cfg bruteforcekit.Config) timerkit.Job
 ```
 
 Job `bruteforcekit.cleanup` с интервалом и таймаутом `CleanupInterval`; первый
-прогон — через интервал после старта, схема к этому моменту уже применена.
-`Module` регистрирует его сам, вручную вызывать не нужно.
+прогон — через интервал после старта. `Module` регистрирует его сам с зависимостью от
+optional `pgkit.Migrated`: хук job'ов встаёт за миграциями при любом порядке модулей.
 
 ### Миграции
 

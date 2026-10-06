@@ -77,8 +77,16 @@ func TestClient_ProbeReflectsConnectionState(t *testing.T) {
 		t.Fatalf("New: %v", err)
 	}
 	probe := natskit.Probe(client)
-	if probe.Name != "natskit/probe" {
-		t.Fatalf("probe name = %q", probe.Name)
+	if probe.Name != "natskit:probe" {
+		t.Fatalf("probe name = %q, want natskit:probe — like the instance fx.Module", probe.Name)
+	}
+	defaultClient, err := natskit.New("", clientConfig(natsURL(t)), logkit.Nop())
+	if err != nil {
+		t.Fatalf("New default: %v", err)
+	}
+	t.Cleanup(defaultClient.Close)
+	if name := natskit.Probe(defaultClient).Name; name != "natskit" {
+		t.Fatalf("default instance probe name = %q, want natskit", name)
 	}
 	if err := probe.Run(context.Background()); err != nil {
 		t.Fatalf("probe on a live connection = %v, want nil", err)

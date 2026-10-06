@@ -44,7 +44,7 @@ type readyOutput struct {
 // пробам). Пробы выполняются параллельно, каждая — не дольше probeTimeout. Текст ошибок
 // проб уходит в лог, а не в ответ: там могут быть DSN и адреса. С начала Server.Stop
 // /ready отвечает 503 draining без проб: балансировщик выводит инстанс до закрытия listener'а.
-func RegisterHealth(api huma.API, log logkit.Logger, probeTimeout time.Duration, probes ...Probe) {
+func RegisterHealth(api huma.API, probeTimeout time.Duration, log logkit.Logger, probes ...Probe) {
 	huma.Register(api, Public(huma.Operation{
 		OperationID: "get-health",
 		Method:      http.MethodGet,

@@ -12,8 +12,8 @@ type Hasher interface {
 	NeedsRehash(encoded string) bool
 	VerifyDummy(ctx context.Context)
 }
-func NewArgon2idHasher(p Argon2idParams) (*Argon2idHasher, error)
-func (p Argon2idParams) Validate() error
+func NewArgon2idHasher(p Argon2idConfig) (*Argon2idHasher, error)
+func (p Argon2idConfig) Validate() error
 
 var ErrConfig, ErrInvalidHash, ErrHashParams error // ErrHashParams заворачивает ErrInvalidHash
 
@@ -61,7 +61,7 @@ type ReusedError struct{ SessionID, Subject string } // errors.Is(err, ErrReused
 var ErrConfig, ErrInvalidSubject, ErrInvalid, ErrExpired, ErrReused, ErrInTx error
 func NewConfig() (Config, error) // SESSION_*
 func CheckSubject(subject string) error
-func pgstore.NewStore(db *pgkit.DB, cfg session.Config, opts ...pgstore.Option) (*pgstore.Store, error)
+func pgstore.NewStore(cfg session.Config, db *pgkit.DB, opts ...pgstore.Option) (*pgstore.Store, error)
 func pgstore.WithClock(c clockkit.Clock) pgstore.Option
 func (s *pgstore.Store) CheckSchema(ctx context.Context) error // pgstore.ErrSchema
 func (s *pgstore.Store) Cleanup(ctx context.Context) error
@@ -74,7 +74,7 @@ func (r *Registry) Register(role string, perms ...Permission)
 func (r *Registry) Has(role string, p Permission) bool
 
 // конструкторы конфигов из ENV (для приложений без App-pattern)
-func NewArgon2idParams() (Argon2idParams, error)
+func NewArgon2idConfig() (Argon2idConfig, error)
 func NewJWTConfig() (JWTConfig, error)
 func NewTOTPConfig() (TOTPConfig, error)
 ```
@@ -89,7 +89,7 @@ func NewTOTPConfig() (TOTPConfig, error)
 ## Хэш пароля
 
 ```go
-hasher, err := authnkit.NewArgon2idHasher(authnkit.Argon2idParams{
+hasher, err := authnkit.NewArgon2idHasher(authnkit.Argon2idConfig{
 	Time: 3, Memory: 64 * 1024, Threads: 4, KeyLen: 32, SaltLen: 16,
 })
 if err != nil {
@@ -296,7 +296,7 @@ err = tx.WithTx(ctx, func(ctx context.Context) error {
 В fx — `pgstore.Module` (нужны `pgkit.Module`, `timerkit.Module` и
 `fx.Provide(session.NewConfig)`); его миграции — источник `pgstore.Migrations`
 для `pgkit.MigrateModule` или отдельной команды миграций: без них старт падает
-(`pgstore.ErrSchema`). CLI без fx — `pgstore.NewStore(db, cfg)`.
+(`pgstore.ErrSchema`). CLI без fx — `pgstore.NewStore(cfg, db)`.
 
 ## RBAC
 
@@ -328,8 +328,8 @@ fx.New(
 	//           *TOTPGenerator, *Registry
 	authnkit.Module,
 
-	// Module НЕ provide'ит Argon2idParams, JWTConfig и TOTPConfig — регистрируем сами.
-	fx.Provide(authnkit.NewArgon2idParams, authnkit.NewJWTConfig, authnkit.NewTOTPConfig),
+	// Module НЕ provide'ит Argon2idConfig, JWTConfig и TOTPConfig — регистрируем сами.
+	fx.Provide(authnkit.NewArgon2idConfig, authnkit.NewJWTConfig, authnkit.NewTOTPConfig),
 
 	fx.Invoke(func(h authnkit.Hasher, s authnkit.JWTSigner, p authnkit.JWTParser, r *authnkit.Registry) {
 		r.Register("admin", "users:read", "users:write")
@@ -364,7 +364,7 @@ App-структуры — отдельный `fx.Provide` не нужен. Не
   ждёт в очереди, а не множит по `ARGON2_MEMORY_KIB` на запрос. Ожидание
   ограничено `ctx` запроса — передавай его, а не `context.Background()`.
 - **Стойкость Argon2id растёт со временем, безопасно для старых хэшей.** Параметры
-  зашиты в PHC-строку, поэтому поднятие `Argon2idParams` не ломает проверку ранее
+  зашиты в PHC-строку, поэтому поднятие `Argon2idConfig` не ломает проверку ранее
   выданных хэшей. Перевыпуск под новую стойкость — `NeedsRehash` + `Hash` на
   успешном логине, на стороне потребителя.
 - **Тип токена — часть контракта.** `SignAccess` пишет `typ=access`,

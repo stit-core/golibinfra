@@ -25,7 +25,7 @@ app := fx.New(
 	fx.Provide(anthropickit.NewConfig, logkit.NewConfig), // конфиги из ENV (+ Validate)
 	logkit.Module,                                        // даёт logkit.Logger
 	anthropickit.Module,                                  // даёт anthropickit.API
-	healthkit.Provide(anthropickit.Probe),                // опционально: проба в /ready
+	healthkit.ProvideProbe(anthropickit.Probe),                // опционально: проба в /ready
 	fx.Invoke(func(api anthropickit.API) {
 		// ...
 	}),
@@ -295,7 +295,7 @@ cost, known := anthropickit.Cost("claude-opus-5", usage)
 ## Health-проба
 
 ```go
-healthkit.Provide(anthropickit.Probe) // в fx-граф, если нужно в /ready
+healthkit.ProvideProbe(anthropickit.Probe) // в fx-граф, если нужно в /ready
 ```
 
 Проба зовёт `Models.Get(Config.DefaultModel)` с таймаутом 3 с: ключ, endpoint и

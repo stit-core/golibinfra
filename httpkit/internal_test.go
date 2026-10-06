@@ -65,7 +65,10 @@ func TestServer_ErrorLogGoesToLogkit(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s := mustNewServer(t, validConfig(), WithLogger(log))
+	s, err := NewServer(validConfig(), log)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	if s.srv.ErrorLog == nil {
 		t.Fatal("http.Server.ErrorLog must be wired to logkit")
 	}

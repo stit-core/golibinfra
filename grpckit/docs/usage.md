@@ -3,8 +3,8 @@
 ## Регистрация сервиса через fx-group `grpckit.services`
 
 Идиоматичный путь. Доменный сервис отдаёт `ServiceRegistrar`
-(`func(*grpc.Server)`) во value-group `grpckit.services` (константа
-`grpckit.ServicesGroup`); `grpckit.Module` собирает все стабы и навешивает их до
+(`func(*grpc.Server)`) через `grpckit.ProvideService` во value-group `grpckit.services`
+(константа `grpckit.ServicesGroup`); `grpckit.Module` собирает все стабы и навешивает их до
 `Serve`.
 
 ```go
@@ -18,15 +18,13 @@ fx.New(
 	grpckit.Module,
 	fx.Provide(grpckit.NewConfig),
 	fx.Provide(newGreeterServer),
-	fx.Provide(fx.Annotate(
-		newGreeterRegistrar,
-		fx.ResultTags(`group:"grpckit.services"`),
-	)),
+	grpckit.ProvideService(newGreeterRegistrar),
 )
 ```
 
-Несколько сервисов — несколько провайдеров с тем же тегом
-`group:"grpckit.services"`; порядок применения = порядок в графе. Зависеть от
+Несколько сервисов — несколько `ProvideService` (или один конструктор
+`[]ServiceRegistrar`); конструктор другого типа — ошибка сборки графа, а не молча
+пропавший сервис. Зависеть от
 `*grpckit.Server` не нужно: `Module` форсит его конструирование сам.
 
 ## Authenticator-порт
@@ -90,7 +88,7 @@ srv.SetServing("greeter.Greeter", false) // NOT_SERVING (например, по�
 ### Health по пробам зависимостей
 
 Пробы `healthkit.Probe` из fx-группы `healthkit.probes` (их отдают `pgkit`, `natskit`,
-`cachekit`, `storagekit` и сервис-репо через `healthkit.Provide`) переключают
+`cachekit`, `storagekit` и сервис-репо через `healthkit.ProvideProbe`) переключают
 overall-статус автоматически: каждые `GRPC_HEALTH_INTERVAL` кит прогоняет пробы и
 ставит `SERVING`/`NOT_SERVING`. Ничего подключать не нужно — `Module` читает ту
 же группу, что `/ready` в `httpkit`:
@@ -100,7 +98,7 @@ fx.New(
 	grpckit.Module,
 	fx.Provide(grpckit.NewConfig),
 	pgkit.Module, // отдаёт свою пробу в группу health
-	healthkit.Provide(func(c *myDep) healthkit.Probe {
+	healthkit.ProvideProbe(func(c *myDep) healthkit.Probe {
 		return healthkit.New("mydep", c.Ping)
 	}),
 )

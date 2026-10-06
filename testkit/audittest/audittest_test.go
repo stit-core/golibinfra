@@ -108,7 +108,7 @@ func TestRecorder_ClonesMetadata(t *testing.T) {
 func TestRecorder_RequestIDAndIPFromHTTPContext(t *testing.T) {
 	t.Parallel()
 	r := &audittest.Recorder{}
-	h := httpkit.RequestID()(httpkit.ClientIP(logkit.Nop(), 0)(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
+	h := httpkit.RequestID()(httpkit.ClientIP(0, logkit.Nop())(http.HandlerFunc(func(_ http.ResponseWriter, req *http.Request) {
 		mustLogCtx(t, req.Context(), r, auditkit.Entry{Action: "login", Resource: "auth"})
 		mustLogCtx(t, req.Context(), r, auditkit.Entry{Action: "manual", Resource: "auth", IP: "10.0.0.1", RequestID: "own"})
 	})))

@@ -73,8 +73,7 @@ func NewAPI(t testing.TB, register func(api huma.API), opts ...Option) API {
 			return nil
 		}
 	}
-	s, err := httpkit.NewServer(cfg,
-		httpkit.WithLogger(o.log),
+	s, err := httpkit.NewServer(cfg, o.log,
 		httpkit.WithSecuritySchemes(o.schemes...),
 		httpkit.WithAuthExtractor(o.extract),
 	)

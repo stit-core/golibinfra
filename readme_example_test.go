@@ -35,9 +35,9 @@ func TestReadmeFlagshipExample(t *testing.T) {
 		outboxkit.Module,
 		cachekit.Module,
 		timerkit.Module,
-		healthkit.Provide(pgkit.Probe),
-		healthkit.Provide(natskit.Probe),
-		healthkit.Provide(cachekit.Probe),
+		healthkit.ProvideProbe(pgkit.Probe),
+		natskit.ProvideProbe(""),
+		healthkit.ProvideProbe(cachekit.Probe),
 	)
 	if app != nil {
 		t.Fatalf("ValidateApp: %v", app)

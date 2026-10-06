@@ -95,37 +95,26 @@ func (c Config) Validate() error {
 }
 
 // SecuritySchemeEntry — одна запись в openapi `components.securitySchemes`.
-// Регистрируется caller'ом через fx-группу `httpkit.security_scheme` или
-// опцией WithSecuritySchemes. httpkit не выставляет дефолтных схем.
+// Регистрируется caller'ом через ProvideSecurityScheme (fx-группа
+// `httpkit.security_scheme`) или опцией WithSecuritySchemes. httpkit не выставляет
+// дефолтных схем.
 type SecuritySchemeEntry struct {
 	Name   string
 	Scheme *huma.SecurityScheme
 }
 
-// ServerOption — опция NewServer: логгер, схемы безопасности, extractor, хранилище
-// идемпотентности, middleware потребителя, правка huma.Config, публичные маршруты мимо huma.
-// Опция с nil ничего не задаёт.
+// ServerOption — опция NewServer: схемы безопасности, extractor, хранилище идемпотентности,
+// middleware потребителя, правка huma.Config, публичные маршруты мимо huma. Опция с nil
+// ничего не задаёт.
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
-	log          logkit.Logger
 	schemes      []SecuritySchemeEntry
 	extract      AuthExtractor
 	store        IdempotencyStore
 	middleware   []func(http.Handler) http.Handler
 	humaConfig   []func(*huma.Config)
 	publicRoutes PublicRoutes
-}
-
-// WithLogger отдаёт серверу логгер: access-log, panic, ошибки net/http
-// (`http.Server.ErrorLog`) и причины 5xx хендлеров уходят в него. Без опции логгер —
-// logkit.Nop(): 5xx клиенту нейтральны всё равно, но причина теряется.
-func WithLogger(log logkit.Logger) ServerOption {
-	return func(o *serverOptions) {
-		if log != nil {
-			o.log = log
-		}
-	}
 }
 
 // WithSecuritySchemes добавляет схемы в `components.securitySchemes` OpenAPI.
@@ -185,6 +174,7 @@ func WithPublicRoutes(paths ...string) ServerOption {
 // одного *http.Server.
 type Server struct {
 	cfg  Config
+	log  logkit.Logger
 	opts serverOptions
 
 	router  *chi.Mux
@@ -216,20 +206,27 @@ func draining(ctx context.Context) bool {
 
 // NewServer собирает сервер кита — ту же сборку зовёт Module: цепочка middleware кита и
 // middleware потребителя внутри неё регистрируются сразу, huma.API с HumaAuth — лениво в
-// BindAPI. Невалидный cfg и схема безопасности без имени, без Scheme или дважды — ErrConfig.
-func NewServer(cfg Config, opts ...ServerOption) (*Server, error) {
+// BindAPI. В log уходят access-log, panic, ошибки net/http (`http.Server.ErrorLog`) и
+// причины 5xx хендлеров; nil — logkit.Nop(). Невалидный cfg и схема безопасности без имени,
+// без Scheme или дважды — ErrConfig.
+func NewServer(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	o := serverOptions{log: logkit.Nop()}
+	if log == nil {
+		log = logkit.Nop()
+	}
+	var o serverOptions
 	for _, opt := range opts {
-		opt(&o)
+		if opt != nil {
+			opt(&o)
+		}
 	}
 	if err := checkSchemes(o.schemes); err != nil {
 		return nil, err
 	}
 	r := chi.NewRouter()
-	s := &Server{cfg: cfg, opts: o, router: r}
+	s := &Server{cfg: cfg, log: log, opts: o, router: r}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.WithValue(context.Background(), drainingKey{}, &s.draining))
 	s.srv = &http.Server{
 		Addr: cfg.Addr,
@@ -243,9 +240,9 @@ func NewServer(cfg Config, opts ...ServerOption) (*Server, error) {
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
-		ErrorLog:          slog.NewLogLogger(logkitHandler{log: o.log}, slog.LevelWarn),
+		ErrorLog:          slog.NewLogLogger(logkitHandler{log: log}, slog.LevelWarn),
 	}
-	r.Use(chain(cfg, o)...)
+	r.Use(chain(cfg, log, o)...)
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
 		writeAPIError(req.Context(), w, Error("NOT_FOUND", http.StatusNotFound, "route not found"))
 	})
@@ -258,14 +255,14 @@ func NewServer(cfg Config, opts ...ServerOption) (*Server, error) {
 // chain — цепочка кита: RequestID, ClientIP и OTel первыми (request_id, IP клиента и trace_id
 // в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight попадали в
 // RED-метрики и access-log; middleware потребителя — внутри всей цепочки кита.
-func chain(cfg Config, o serverOptions) []func(http.Handler) http.Handler {
+func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) http.Handler {
 	mws := []func(http.Handler) http.Handler{
 		RequestID(),
-		ClientIP(o.log, cfg.TrustProxyHops),
+		ClientIP(cfg.TrustProxyHops, log),
 		OTel(cfg.QuietPaths...),
-		AccessLog(o.log, cfg.QuietPaths...),
+		AccessLog(log, cfg.QuietPaths...),
 		Metrics(),
-		Recovery(o.log),
+		Recovery(log),
 		SecurityHeaders(cfg.Security),
 		CORS(cfg.CORS),
 		RateLimit(cfg.RateLimit),
@@ -276,7 +273,7 @@ func chain(cfg Config, o serverOptions) []func(http.Handler) http.Handler {
 		if o.extract != nil {
 			idem = append(idem, WithAuth(o.extract))
 		}
-		mws = append(mws, Idempotency(cfg.Idempotency, o.store, o.log, idem...))
+		mws = append(mws, Idempotency(cfg.Idempotency, o.store, log, idem...))
 	}
 	return append(mws, o.middleware...)
 }
@@ -322,7 +319,7 @@ func (s *Server) bindAPI() {
 	}
 	s.api = &registry{API: api}
 	s.api.adapter = &opAdapter{Adapter: api.Adapter(), router: s.router, reg: s.api}
-	s.api.UseMiddleware(HumaAuth(s.opts.log, s.opts.extract))
+	s.api.UseMiddleware(HumaAuth(s.opts.extract, s.log))
 }
 
 func (s *Server) registry() *registry {
@@ -401,7 +398,7 @@ func (s *Server) Stop(ctx context.Context) error {
 	if err := s.srv.Close(); err != nil {
 		return fmt.Errorf("httpkit: close: %w", err)
 	}
-	s.opts.log.Warn(ctx, "http server stop deadline: requests cancelled, connections closed",
+	s.log.Warn(ctx, "http server stop deadline: requests cancelled, connections closed",
 		"requests", inflight, "err", err)
 	return nil
 }
@@ -422,7 +419,7 @@ func (s *Server) transformError(hc huma.Context, _ string, v any) (any, error) {
 		if e.cause != nil {
 			kv = append(kv, "err", e.cause)
 		}
-		s.opts.log.Error(ctx, "handler error", kv...)
+		s.log.Error(ctx, "handler error", kv...)
 	}
 	// Retry-After, выставленный хендлером (huma.ErrorWithHeaders), точнее вычисленного.
 	if ra := e.retryAfter(); ra != "" && responseHeader(hc).Get("Retry-After") == "" {

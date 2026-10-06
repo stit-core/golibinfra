@@ -23,7 +23,7 @@ func TestModule_Graph(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(
-			authnkit.Argon2idParams{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
+			authnkit.Argon2idConfig{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
 			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 			authnkit.TOTPConfig{Issuer: "svc", Skew: 1},
 		),
@@ -48,15 +48,15 @@ func TestModule_Graph(t *testing.T) {
 func TestModule_InvalidConfigFailsGraph(t *testing.T) {
 	cases := map[string]fx.Option{
 		"short jwt secret": fx.Supply(
-			authnkit.Argon2idParams{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
+			authnkit.Argon2idConfig{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
 			authnkit.JWTConfig{Secret: "short"},
 		),
 		"zero argon params": fx.Supply(
-			authnkit.Argon2idParams{},
+			authnkit.Argon2idConfig{},
 			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 		),
 		"argon time above window": fx.Supply(
-			authnkit.Argon2idParams{Time: authnkit.MaxTime + 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
+			authnkit.Argon2idConfig{Time: authnkit.MaxTime + 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
 			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 		),
 	}
@@ -79,7 +79,7 @@ func TestModule_InvalidConfigFailsGraph(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(
-			authnkit.Argon2idParams{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
+			authnkit.Argon2idConfig{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
 			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 			authnkit.TOTPConfig{},
 		),
@@ -95,20 +95,20 @@ func TestNewConfigsFromEnv(t *testing.T) {
 	t.Run("argon2id", func(t *testing.T) {
 		t.Setenv("ARGON2_TIME", "2")
 		t.Setenv("ARGON2_MEMORY_KIB", "16384")
-		p, err := authnkit.NewArgon2idParams()
+		p, err := authnkit.NewArgon2idConfig()
 		if err != nil {
-			t.Fatalf("NewArgon2idParams: %v", err)
+			t.Fatalf("NewArgon2idConfig: %v", err)
 		}
 		if p.Time != 2 || p.Memory != 16384 || p.Threads != 4 || p.KeyLen != 32 || p.SaltLen != 16 {
 			t.Fatalf("params = %+v", p)
 		}
 
 		t.Setenv("ARGON2_TIME", "0")
-		if _, err := authnkit.NewArgon2idParams(); !errors.Is(err, authnkit.ErrConfig) {
+		if _, err := authnkit.NewArgon2idConfig(); !errors.Is(err, authnkit.ErrConfig) {
 			t.Fatalf("ARGON2_TIME=0: expected ErrConfig, got %v", err)
 		}
 		t.Setenv("ARGON2_TIME", "not-a-number")
-		if _, err := authnkit.NewArgon2idParams(); !errors.Is(err, authnkit.ErrConfig) {
+		if _, err := authnkit.NewArgon2idConfig(); !errors.Is(err, authnkit.ErrConfig) {
 			t.Fatalf("ARGON2_TIME=not-a-number: expected ErrConfig, got %v", err)
 		}
 	})
@@ -187,7 +187,7 @@ func TestModule_AudienceFromEnvIsolatesServices(t *testing.T) {
 			p authnkit.JWTParser
 		)
 		app := fx.New(fx.NopLogger,
-			fx.Provide(authnkit.NewArgon2idParams, authnkit.NewJWTConfig, authnkit.NewTOTPConfig),
+			fx.Provide(authnkit.NewArgon2idConfig, authnkit.NewJWTConfig, authnkit.NewTOTPConfig),
 			authnkit.Module, fx.Populate(&s, &p))
 		if err := app.Err(); err != nil {
 			t.Fatalf("graph: %v", err)

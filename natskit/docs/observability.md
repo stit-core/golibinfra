@@ -118,17 +118,17 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 
 ## Health-probe
 
-`natskit.Probe(client) healthkit.Probe` (имя пробы — `natskit/<instance>`)
+`natskit.Probe(client) healthkit.Probe` (имя пробы — как у модуля инстанса: `natskit` или
+`natskit:<instance>`)
 проверяет `Client.Healthy()`: `nil` при статусе `nats.CONNECTED`,
 `natskit.ErrConnectionClosed` (с `LastError`) после окончательного закрытия
 соединения и ошибка со статусом (`RECONNECTING`, `DRAINING`) в промежуточных
 состояниях. `Module` пробу **не** provide'ит автоматически: в readiness
-имеет смысл класть не каждый инстанс. Регистрация — `healthkit.Provide(natskit.Probe)`
-для дефолтного инстанса или `natskit.HealthProbe(name)` для любого:
+имеет смысл класть не каждый инстанс. Регистрация — `natskit.ProvideProbe(name)`:
 
 ```go
-natskit.HealthProbe("")      // дефолтный инстанс
-natskit.HealthProbe("hub")   // именованный
+natskit.ProvideProbe("")      // дефолтный инстанс
+natskit.ProvideProbe("hub")   // именованный
 ```
 
 ## Resource attributes

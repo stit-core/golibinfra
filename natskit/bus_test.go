@@ -232,7 +232,7 @@ func TestBus_SubscribeRejectsCancelledContext(t *testing.T) {
 // Ноль потолка обработчиков — не дефолт кита, а ErrConfig: семафор без веса не пропустил бы
 // ни одного сообщения.
 func TestNewBus_RejectsZeroMaxInFlight(t *testing.T) {
-	if _, err := natskit.NewBus(nil, logkit.Nop(), natskit.Config{}); !errors.Is(err, natskit.ErrConfig) {
+	if _, err := natskit.NewBus(natskit.Config{}, nil, logkit.Nop()); !errors.Is(err, natskit.ErrConfig) {
 		t.Fatalf("NewBus(zero MaxInFlight) err = %v, want ErrConfig", err)
 	}
 }

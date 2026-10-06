@@ -28,7 +28,7 @@ fx.New(
     pgkit.Module,        // *pgxpool.Pool, *pgkit.DB, pgkit.Transactor, *pgkit.ReadWriteDB
     pgkit.MigrateModule, // миграции китов (группа pgkit.migrations) + PG_MIGRATIONS_PATH в OnStart
     fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig),
-    healthkit.Provide(pgkit.Probe), // SELECT 1 в /ready
+    healthkit.ProvideProbe(pgkit.Probe), // SELECT 1 в /ready
 
     fx.Invoke(func(db *pgkit.DB, tx pgkit.Transactor) {
         _ = tx.WithTx(context.Background(), func(ctx context.Context) error {

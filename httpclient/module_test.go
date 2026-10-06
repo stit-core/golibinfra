@@ -1,7 +1,9 @@
 package httpclient
 
 import (
+	"context"
 	"errors"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -85,7 +87,7 @@ func TestModule_ProvidesClientAndClosesOnStop(t *testing.T) {
 	app := fxtest.New(t,
 		fx.Supply(validConfig()),
 		Module,
-		ProvideOption(func() Option { return WithTransport(closableTransport{closed: &closed}) }),
+		fx.Supply(Options{WithTransport(closableTransport{closed: &closed})}),
 		fx.Populate(&client),
 	)
 	app.RequireStart()
@@ -93,7 +95,7 @@ func TestModule_ProvidesClientAndClosesOnStop(t *testing.T) {
 		t.Fatal("client not provided")
 	}
 	if _, ok := client.base.(closableTransport); !ok {
-		t.Fatalf("option from the group was not applied: base is %T", client.base)
+		t.Fatalf("option from Options was not applied: base is %T", client.base)
 	}
 	app.RequireStop()
 	if !closed.Load() {
@@ -110,5 +112,32 @@ func TestModule_InvalidConfigFailsGraph(t *testing.T) {
 	)
 	if err := app.Err(); !errors.Is(err, ErrConfig) {
 		t.Fatalf("want ErrConfig, got %v", err)
+	}
+}
+
+// Опции из графа — одно значение в заданном порядке (KX50): из двух hook'ов не выживает
+// случайный, второе значение Options — ошибка графа, а не молчаливая потеря.
+func TestModule_OptionsApplyInOrder(t *testing.T) {
+	var order []int
+	hook := func(n int) Option {
+		return WithBeforeAttempt(func(context.Context, int) error { order = append(order, n); return nil })
+	}
+	var client *Client
+	app := fxtest.New(t, fx.Supply(validConfig()), Module, fx.Supply(Options{hook(1), hook(2)}), fx.Populate(&client))
+	app.RequireStart()
+	defer app.RequireStop()
+	for _, before := range client.before {
+		if err := before(context.Background(), 0); err != nil {
+			t.Fatalf("hook: %v", err)
+		}
+	}
+	if len(order) != 2 || order[0] != 1 || order[1] != 2 {
+		t.Fatalf("hooks ran %v, want [1 2]", order)
+	}
+
+	err := fx.New(fx.NopLogger, fx.Supply(validConfig()), Module,
+		fx.Supply(Options{hook(1)}), fx.Supply(Options{hook(2)}), fx.Invoke(func(*Client) {})).Err()
+	if err == nil || !strings.Contains(err.Error(), "already provided") {
+		t.Fatalf("second Options value = %v, want an already provided graph error", err)
 	}
 }

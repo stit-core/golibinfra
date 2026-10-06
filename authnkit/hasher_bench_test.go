@@ -7,7 +7,7 @@ import (
 
 func benchHasher(b *testing.B) *Argon2idHasher {
 	b.Helper()
-	h, err := NewArgon2idHasher(Argon2idParams{
+	h, err := NewArgon2idHasher(Argon2idConfig{
 		Time:    3,
 		Memory:  64 * 1024,
 		Threads: 4,

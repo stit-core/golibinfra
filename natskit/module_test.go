@@ -20,7 +20,7 @@ func TestModule_DefaultAndNamedInstancesCoexist(t *testing.T) {
 		natskit.Module(""),
 		natskit.ProvideConfig("hub"),
 		natskit.Module("hub"),
-		natskit.HealthProbe(""),
+		natskit.ProvideProbe(""),
 		fx.Invoke(fx.Annotate(
 			func(local, hub natskit.StreamBus, hubBus natskit.Bus, hubClient *natskit.Client) {},
 			fx.ParamTags(``, `name:"hub"`, `name:"hub"`, `name:"hub"`),
@@ -43,15 +43,15 @@ func TestModule_RequiresCallerProvidedConfig(t *testing.T) {
 	}
 }
 
-func TestModule_NamedInstanceHealthProbe(t *testing.T) {
+func TestModule_NamedInstanceProvideProbe(t *testing.T) {
 	err := fx.ValidateApp(
 		fx.Provide(logkit.Nop),
 		natskit.ProvideConfig("hub"),
 		natskit.Module("hub"),
-		natskit.HealthProbe("hub"),
+		natskit.ProvideProbe("hub"),
 		fx.Invoke(fx.Annotate(
 			func(probes []healthkit.Probe) {},
-			fx.ParamTags(`group:"`+healthkit.Group+`"`),
+			fx.ParamTags(`group:"`+healthkit.ProbesGroup+`"`),
 		)),
 	)
 	if err != nil {
@@ -59,16 +59,16 @@ func TestModule_NamedInstanceHealthProbe(t *testing.T) {
 	}
 }
 
-// Probe совместима с healthkit.Provide — путь, которым пробы регистрируют остальные киты.
-func TestModule_ProbeViaHealthkitProvide(t *testing.T) {
+// Probe совместима с healthkit.ProvideProbe — путь, которым пробы регистрируют остальные киты.
+func TestModule_ProbeViaHealthkitProvideProbe(t *testing.T) {
 	err := fx.ValidateApp(
 		fx.Provide(logkit.Nop),
 		fx.Provide(natskit.NewConfig),
 		natskit.Module(""),
-		healthkit.Provide(natskit.Probe),
+		healthkit.ProvideProbe(natskit.Probe),
 		fx.Invoke(fx.Annotate(
 			func(probes []healthkit.Probe) {},
-			fx.ParamTags(`group:"`+healthkit.Group+`"`),
+			fx.ParamTags(`group:"`+healthkit.ProbesGroup+`"`),
 		)),
 	)
 	if err != nil {
@@ -174,7 +174,7 @@ func TestSubscribeOnStart_SubscribesOnStartDrainsOnStop(t *testing.T) {
 
 // Выключенный JetStream — ошибка старта, а не молча не работающий подписчик.
 func TestSubscribeOnStart_JetStreamDisabledFailsStart(t *testing.T) {
-	sb, err := natskit.NewStreamBus(nil, logkit.Nop(), natskit.Config{})
+	sb, err := natskit.NewStreamBus(natskit.Config{}, nil, logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}

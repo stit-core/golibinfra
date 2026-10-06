@@ -13,7 +13,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 )
 
-func TestProvide_LandsInHealthGroup(t *testing.T) {
+func TestProvideProbe_LandsInHealthGroup(t *testing.T) {
 	type in struct {
 		fx.In
 		Probes []healthkit.Probe `group:"healthkit.probes"`
@@ -21,10 +21,10 @@ func TestProvide_LandsInHealthGroup(t *testing.T) {
 	var got []healthkit.Probe
 	app := fx.New(
 		fx.NopLogger,
-		healthkit.Provide(func() healthkit.Probe {
+		healthkit.ProvideProbe(func() healthkit.Probe {
 			return healthkit.New("pgkit", func(context.Context) error { return nil })
 		}),
-		healthkit.Provide(func() healthkit.Probe {
+		healthkit.ProvideProbe(func() healthkit.Probe {
 			return healthkit.New("natskit", func(context.Context) error { return errors.New("down") })
 		}),
 		fx.Invoke(func(i in) { got = i.Probes }),
@@ -44,7 +44,7 @@ func TestProvide_LandsInHealthGroup(t *testing.T) {
 
 // Регрессия: конструктор неверного типа кладёт значение в группу другим типом,
 // httpkit получает пустой срез и /ready остаётся «ok» без единой проверки.
-func TestProvide_RejectsWrongConstructor(t *testing.T) {
+func TestProvideProbe_RejectsWrongConstructor(t *testing.T) {
 	tests := []struct {
 		name string
 		ctor any
@@ -60,22 +60,22 @@ func TestProvide_RejectsWrongConstructor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := fx.New(fx.NopLogger, healthkit.Provide(tt.ctor))
+			app := fx.New(fx.NopLogger, healthkit.ProvideProbe(tt.ctor))
 			err := app.Err()
 			if err == nil {
 				t.Fatal("want error from fx.New, got nil")
 			}
-			if !strings.Contains(err.Error(), "healthkit: Provide") {
-				t.Fatalf("error must name healthkit.Provide: %v", err)
+			if !strings.Contains(err.Error(), "healthkit: ProvideProbe") {
+				t.Fatalf("error must name healthkit.ProvideProbe: %v", err)
 			}
 		})
 	}
 }
 
-func TestProvide_AcceptsConstructorWithError(t *testing.T) {
+func TestProvideProbe_AcceptsConstructorWithError(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
-		healthkit.Provide(func() (healthkit.Probe, error) {
+		healthkit.ProvideProbe(func() (healthkit.Probe, error) {
 			return healthkit.New("pgkit", func(context.Context) error { return nil }), nil
 		}),
 		fx.Invoke(fx.Annotate(
@@ -84,7 +84,7 @@ func TestProvide_AcceptsConstructorWithError(t *testing.T) {
 					t.Fatalf("probes: got %d, want 1", len(probes))
 				}
 			},
-			fx.ParamTags(`group:"`+healthkit.Group+`"`),
+			fx.ParamTags(`group:"`+healthkit.ProbesGroup+`"`),
 		)),
 	)
 	if err := app.Err(); err != nil {
@@ -94,7 +94,7 @@ func TestProvide_AcceptsConstructorWithError(t *testing.T) {
 
 // Регрессия: именованному инстансу нужен fx.ParamTags, и без вариадика киты
 // писали групповой тег руками — мимо проверки конструктора.
-func TestProvide_WithAnnotations(t *testing.T) {
+func TestProvideProbe_WithAnnotations(t *testing.T) {
 	type cfg struct{ name string }
 	newProbe := func(c cfg) healthkit.Probe {
 		return healthkit.New(c.name, func(context.Context) error { return nil })
@@ -104,29 +104,29 @@ func TestProvide_WithAnnotations(t *testing.T) {
 		var got []healthkit.Probe
 		app := fx.New(
 			fx.NopLogger,
-			fx.Supply(fx.Annotated{Name: "events", Target: cfg{name: "natskit/events"}}),
-			healthkit.Provide(newProbe, fx.ParamTags(`name:"events"`)),
+			fx.Supply(fx.Annotated{Name: "events", Target: cfg{name: "natskit:events"}}),
+			healthkit.ProvideProbe(newProbe, fx.ParamTags(`name:"events"`)),
 			fx.Invoke(fx.Annotate(
 				func(probes []healthkit.Probe) { got = probes },
-				fx.ParamTags(`group:"`+healthkit.Group+`"`),
+				fx.ParamTags(`group:"`+healthkit.ProbesGroup+`"`),
 			)),
 		)
 		if err := app.Err(); err != nil {
 			t.Fatalf("fx: %v", err)
 		}
-		if len(got) != 1 || got[0].Name != "natskit/events" {
-			t.Fatalf("probes = %v, want one named natskit/events", got)
+		if len(got) != 1 || got[0].Name != "natskit:events" {
+			t.Fatalf("probes = %v, want one named natskit:events", got)
 		}
 	})
 
 	t.Run("wrong constructor still rejected", func(t *testing.T) {
 		app := fx.New(
 			fx.NopLogger,
-			healthkit.Provide(func(cfg) error { return nil }, fx.ParamTags(`name:"events"`)),
+			healthkit.ProvideProbe(func(cfg) error { return nil }, fx.ParamTags(`name:"events"`)),
 		)
 		err := app.Err()
-		if err == nil || !strings.Contains(err.Error(), "healthkit: Provide") {
-			t.Fatalf("err = %v, want the healthkit.Provide type check", err)
+		if err == nil || !strings.Contains(err.Error(), "healthkit: ProvideProbe") {
+			t.Fatalf("err = %v, want the healthkit.ProvideProbe type check", err)
 		}
 	})
 }

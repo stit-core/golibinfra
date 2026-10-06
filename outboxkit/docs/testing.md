@@ -46,7 +46,7 @@ in-memory фейках (`testkit/pgtest.Identity` / `Recorder` как транз
 Метрики проверяются `testkit/metrictest` дельтой от начала теста: имена,
 атрибуты (`instance`, `subject`, `status`) и общие бакеты гистограмм.
 `fx`-сборки (`outboxkit.Module`, `outboxkit.Instance`) поднимаются через
-`fxtest`: резолвятся `Publisher`/`Worker`, в группе `timerkit.Group` лежат
+`fxtest`: резолвятся `Publisher`/`Worker`, в группе `timerkit.JobsGroup` лежат
 drain- и maintenance-job'ы, backlog-gauge'и появляются на старте и исчезают
 после `Unregister` на стопе. Проверка старта: выключенный JetStream (заглушка
 `natskit.NewStreamBus` с `Config{}`) валит старт `Module` и `Instance`, фейк с

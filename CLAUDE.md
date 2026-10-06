@@ -66,8 +66,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   stdout + OTel log-bridge; события fx — `FxLogger`), `telemetry` (opt-in OTel
   bootstrap: провайдеры + OTLP-экспортёры; требует в графе `logkit.Config`), `config`
   (композиция ENV-источников для App-конфига), `clockkit` (`Now`/`Since`/`After`/
-  `NewTimer` + фейки), `timerkit` (periodic jobs; регистрация — `timerkit.Provide`,
-  требует `timerkit.Module`; группа `timerkit.Group`),
+  `NewTimer` + фейки), `timerkit` (periodic jobs; регистрация — `timerkit.ProvideJob`,
+  требует `timerkit.Module`; группа `timerkit.JobsGroup`),
   `flagkit`, `tzkit` (Zone/Day/WallTime), `idkit` (UUIDv7 + `Validate`),
   `ptrkit`, `mapkit`, `bizmetric` (конвенция `biz_*`), `healthkit`
   (`Probe{Name, Check}` + `WithTimeout` для `/ready`).
@@ -86,7 +86,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   `testkit/<name>test`
   (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`,
   `handlertest`, `hubtest`, `logtest`, `metrictest`, `natstest`, `oidctest`,
-  `outboxtest`, `pgtest`, `sessiontest`, `storagetest`) — внутри китов test-хелперов нет.
+  `outboxtest`, `pgtest`, `sessiontest`, `storagetest`); в самих китах — только исключения
+  § Стиль «Одна форма API».
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
   `internal/envconf` (ридер ENV — `New*Config` китов и `config.Env`),
@@ -121,13 +122,14 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   `otelkit.DurationBuckets()`; для операций, штатно идущих минутами, —
   `otelkit.LongDurationBuckets()` (сейчас только `anthropickit`). Своих
   bucket-границ киты не заводят.
-- Health-проба кита — именованная `healthkit.Probe{Name, Check}`; в `/ready` и в
-  health-loop `grpckit` попадает через `healthkit.Provide(...)` (fx-группа
-  `healthkit.Group` = `healthkit.probes`).
-- Имя fx-группы кита — `<kit>.<thing>` и всегда экспортируемая константа
-  (`healthkit.Group`, `timerkit.Group`, `grpckit.ServicesGroup`,
-  `pgkit.MigrationsGroup`, `httpkit.SecuritySchemeGroup`, …); имя `fx.Module` —
-  `<kit>` или `<kit>/<sub>` (у параметризованных модулей — `<kit>:<instance>`).
+- Health-проба кита — значение `Probe` (`healthkit.Probe{Name, Check}`; имя — как у `fx.Module`:
+  `<kit>`, `<kit>/<sub>`, у инстанса — `<kit>:<instance>`); в `/ready` и в health-loop `grpckit`
+  попадает через `healthkit.ProvideProbe(ctor)`, у инстанса — `<kit>.ProvideProbe(name)`
+  (fx-группа `healthkit.ProbesGroup` = `healthkit.probes`).
+- Имя fx-группы кита — `<kit>.<thing>`, константа — `<Thing>Group` (`healthkit.ProbesGroup`,
+  `timerkit.JobsGroup`, `grpckit.ServicesGroup`, `pgkit.MigrationsGroup`,
+  `httpkit.SecuritySchemeGroup`); имя `fx.Module` — `<kit>` или `<kit>/<sub>` (у
+  параметризованных модулей — `<kit>:<instance>`).
 
 ## Стиль (инварианты)
 
@@ -135,8 +137,17 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - **fx-first.** Кит с конфигом или ресурсом отдаёт `Module` (`fx.Option`; у хранилищ —
   в `pgstore`, дополнительные — `MigrateModule`, `FactoryModule`); консьюмер собирает
   `App` из них. Хелперы без состояния (`ptrkit`, `mapkit`, `idkit`, `bizmetric`) и
-  `healthkit` (`Provide`) модуля не имеют. Прямой `New*()` без fx допустим, но менее
+  `healthkit` (`ProvideProbe`) модуля не имеют. Прямой `New*()` без fx допустим, но менее
   идиоматичен.
+- **Одна форма API.** Регистрация конструктора в fx-группу — `Provide<Thing>(ctor, anns…)`
+  (проверяет тип результата), значения — `Supply<Thing>(v)`; набор, где важен порядок, —
+  одно значение графа (`httpkit.Middlewares`, `httpclient.Options`), не группа. Конструктор —
+  `(cfg, зависимости…, log, opts…)`, впереди — только `ctx` и имя инстанса; функция над готовым
+  объектом берёт его первым, как приёмник (`RegisterHealth(api, …)`, `Probe(client, cfg)`);
+  логгер — параметр, не опция. Test-хелперы — `testkit/<name>test`; в ките —
+  только in-memory реализации двойного назначения (`cachekit.MemoryCache`,
+  `storagekit.MemoryStorage`, `httpkit.MemoryStore`), фейки часов `clockkit` (часть контракта
+  `Clock`) и маркер транзакции `pgkit.WithTestTx`.
 - **Config провайдит caller.** `Module` не читает ENV сам: `fx.Provide(<kit>.NewConfig)`
   или App-структура. Каждый конфиг имеет `Validate() error` с sentinel'ом
   `<kit>.ErrConfig`; `NewConfig` и конструкторы (`New*`) его зовут, поэтому

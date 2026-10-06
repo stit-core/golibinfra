@@ -3,7 +3,7 @@
 S3-совместимое объектное хранилище: порт `Storage` (`Put`/`Get`/`Stat`/`Delete`),
 presigned-ссылки (`Presigner`), построитель публичного URL (`URLBuilder`),
 генератор ключей `NewKey` и две реализации — боевая (подпакет `minio` поверх
-MinIO/S3) и in-memory (для тестов потребителя).
+MinIO/S3) и in-memory (тесты потребителя и локальный dev).
 
 Kit доменно-нейтрален: стримит байты как есть. Image/file-семантика — валидация
 mime, ограничение размера, декод картинки — на стороне приложения.
@@ -44,7 +44,7 @@ fx.New(
     fx.Provide(storagekit.NewConfig),   // Config из ENV (STORAGE_S3_*)
     storagekit.Module,                  // → *storagekit.URLBuilder
     skminio.Module,                     // → storagekit.Storage, storagekit.Presigner
-    healthkit.Provide(skminio.Probe),   // проба бакета в /ready
+    healthkit.ProvideProbe(skminio.Probe),   // проба бакета в /ready
 )
 ```
 
@@ -97,7 +97,7 @@ response-headers, которые S3 вернёт при скачивании.
 urls := storagekit.NewURLBuilder("https://cdn.example.com", "media", storagekit.URLStylePath)
 url := urls.Build("2026/07/abc.png") // https://cdn.example.com/media/2026/07/abc.png
 
-key, err := storagekit.NewKey("image/png") // "<uuidv7>.png"
+key := storagekit.NewKey("image/png") // "<uuidv7>.png", id — idkit.NewV7
 ```
 
 `Build` собирает `<base>/<bucket>/<key>` (`URLStylePath`) или `<base>/<key>`
@@ -110,16 +110,16 @@ key, err := storagekit.NewKey("image/png") // "<uuidv7>.png"
 `text/csv`, `text/html`), затем mime-база ОС (`mime.ExtensionsByType`);
 `application/octet-stream` и неизвестный тип → ключ без расширения.
 
-### in-memory адаптер (тесты)
+### in-memory адаптер (тесты и локальный dev)
 
 ```go
 mem := storagekit.NewMemoryStorage(storagekit.NewURLBuilder("https://cdn.example.com", "media", storagekit.URLStylePath))
 ref, _ := mem.Put(ctx, bytes.NewReader(data), "image/png", int64(len(data)))
-got, ok := mem.Bytes(ref.Key) // тест-хелпер: копия сохранённых байтов
-keys := mem.Keys()            // тест-хелпер: все ключи
+rc, info, err := mem.Get(ctx, ref.Key) // тот же Storage, что у боевого адаптера
 ```
 
-`MemoryStorage` реализует `Storage` и `Presigner` и проходит тот же контрактный
+`MemoryStorage` — реализация двойного назначения (тесты потребителя и локальный dev без S3):
+реализует `Storage` и `Presigner` и проходит тот же контрактный
 набор, что боевой адаптер (см. § Тестирование). Zero value пригоден:
 `storagekit.MemoryStorage{}` работает, `Ref.URL` тогда — сам ключ.
 
@@ -187,7 +187,7 @@ virtual-hosted), ставьте `STORAGE_S3_URL_STYLE=virtual`, иначе ба�
 
 Health-проба — `minio.Probe(client, cfg)`: `BucketExists` по `STORAGE_S3_BUCKET`
 под именем `storagekit` с дедлайном `STORAGE_S3_PROBE_TIMEOUT`. Регистрируется
-потребителем в группу `healthkit.probes` (`healthkit.Provide`).
+потребителем в группу `healthkit.probes` (`healthkit.ProvideProbe`).
 
 ## API
 
@@ -252,8 +252,6 @@ func (b *URLBuilder) Build(key string) string
 
 ```go
 func NewMemoryStorage(urls *URLBuilder) *MemoryStorage // urls может быть nil
-func (m *MemoryStorage) Bytes(key string) ([]byte, bool) // тест-хелпер: копия байтов
-func (m *MemoryStorage) Keys() []string                  // тест-хелпер: ключи
 ```
 
 Потокобезопасен (`sync.RWMutex`), не персистентен; реализует `Storage` и
@@ -263,7 +261,7 @@ func (m *MemoryStorage) Keys() []string                  // тест-хелпе�
 
 ```go
 func NewClient(cfg storagekit.Config) (*miniogo.Client, error)
-func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) (*Storage, error) // невалидный cfg — ErrConfig
+func NewStorage(cfg storagekit.Config, client *miniogo.Client, urls *storagekit.URLBuilder, log logkit.Logger) (*Storage, error) // невалидный cfg — ErrConfig
 func Probe(client *miniogo.Client, cfg storagekit.Config) healthkit.Probe
 const ProbeName = "storagekit"
 var Module fx.Option // → *miniogo.Client, *Storage, storagekit.Storage, storagekit.Presigner
@@ -300,7 +298,7 @@ mem := storagekit.NewMemoryStorage(storagekit.NewURLBuilder("https://cdn.example
 svc := NewService(mem) // Service зависит от storagekit.Storage
 
 ref, err := svc.Upload(ctx, body, "image/png")
-data, ok := mem.Bytes(ref.Key) // проверить сохранённые байты
+rc, _, err := mem.Get(ctx, ref.Key) // проверить сохранённые байты — через тот же Storage
 ```
 
 Обе реализации проходят один контрактный набор

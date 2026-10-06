@@ -34,7 +34,7 @@ func TestMetricsEmitted(t *testing.T) {
 		t.Fatal("expected error on wrong token type")
 	}
 
-	hasher, err := authnkit.NewArgon2idHasher(authnkit.Argon2idParams{
+	hasher, err := authnkit.NewArgon2idHasher(authnkit.Argon2idConfig{
 		Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8,
 	})
 	if err != nil {

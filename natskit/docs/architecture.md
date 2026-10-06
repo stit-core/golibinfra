@@ -36,7 +36,7 @@ retry-политика бизнес-уровня, выбор subject'ов и str
 | `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewInstanceConfig` (ENV — ридером китов `internal/envconf`, префикс инстанса без fallback на беспрефиксные переменные), `Validate` и `ErrConfig`. |
 | `context.go` | `SubjectFromContext` / `HeadersFromContext` — доступ к subject и header'ам входящего сообщения внутри обработчика. |
 | `instrumentation.go` | `natsInstruments` (5 otel-инструментов через `internal/otelkit`), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
-| `module.go` | fx `Module(name)` (`*Client` + `Bus` + `StreamBus`), `ProvideConfig(name)`, `HealthProbe(name)`, `SubscribeOnStart` — подписка в `OnStart`, drain в `OnStop`. |
+| `module.go` | fx `Module(name)` (`*Client` + `Bus` + `StreamBus`), `ProvideConfig(name)`, `ProvideProbe(name)`, `SubscribeOnStart` — подписка в `OnStart`, drain в `OnStop`. |
 
 ## Bus (Core NATS)
 
@@ -299,8 +299,9 @@ fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
 `ProvideConfig` отвергают такое имя `ErrConfig` при сборке графа.
 
 `Probe` модуль **не** provide'ит: в readiness имеет смысл класть не каждый
-инстанс. Регистрация — `healthkit.Provide(natskit.Probe)` (дефолтный инстанс)
-или `natskit.HealthProbe(name)`; оба кладут `healthkit.Probe` в группу `healthkit.probes`.
+инстанс. Регистрация — `natskit.ProvideProbe(name)` (`""` — дефолтный инстанс): она кладёт
+`healthkit.Probe` в группу `healthkit.probes`. Имя пробы — как у модуля инстанса: `natskit` или
+`natskit:<name>`.
 
 ## Ключевые проектные решения (WHY)
 

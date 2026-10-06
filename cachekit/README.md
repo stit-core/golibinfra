@@ -32,7 +32,7 @@ fx.New(
     fx.Provide(logkit.NewConfig, logkit.New),   // logkit.Logger в графе
     fx.Provide(cachekit.NewConfig),             // REDIS_* из ENV (caller провайдит явно)
     cachekit.Module,                            // Cache: Ping на старте, Close на стопе
-    healthkit.Provide(cachekit.Probe),          // /ready через httpkit
+    healthkit.ProvideProbe(cachekit.Probe),          // /ready через httpkit
 
     fx.Invoke(func(lc fx.Lifecycle, c cachekit.Cache) {
         lc.Append(fx.Hook{OnStart: func(ctx context.Context) error {
@@ -112,7 +112,7 @@ func Probe(c Cache) healthkit.Probe    // Redis PING, имя пробы `cacheki
 ```
 
 `Module` не кладёт пробу в граф сам — регистрирует потребитель:
-`healthkit.Provide(cachekit.Probe)`.
+`healthkit.ProvideProbe(cachekit.Probe)`.
 
 ## API
 

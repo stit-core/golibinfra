@@ -90,7 +90,7 @@ pgxpool.
 | `pgkit.Probe(db)` | `pgkit` | `SELECT 1` на пуле primary |
 | `pgkit.ReplicaProbe(rw)` | `pgkit/replica` | `SELECT 1` на пуле реплики; без реплики проходит без запроса |
 
-Обе регистрируются через `healthkit.Provide` и попадают в `/ready`; ограничение
+Обе регистрируются через `healthkit.ProvideProbe` и попадают в `/ready`; ограничение
 времени одной проверки — `healthkit.WithTimeout`.
 
 ## Источник правды по реестру

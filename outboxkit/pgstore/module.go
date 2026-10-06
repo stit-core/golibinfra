@@ -24,17 +24,17 @@ var Module = fx.Module(
 	),
 	// Зависимость от pgkit.Migrated ставит хуки job'ов в очередь после миграций:
 	// RunOnStart иначе ловит отсутствующую таблицу на чистой БД.
-	timerkit.Provide(
+	timerkit.ProvideJob(
 		func(s *Store, _ pgkit.Migrated) timerkit.Job { return PartitionKeeperJob(s) },
 		fx.ParamTags(``, `optional:"true"`),
 	),
-	timerkit.Provide(
+	timerkit.ProvideJob(
 		func(s *Store, cfg Config, _ pgkit.Migrated) timerkit.Job {
 			return RetentionKeeperJob(s, cfg.RetentionMonths)
 		},
 		fx.ParamTags(``, ``, `optional:"true"`),
 	),
-	pgkit.ProvideMigrations(Migrations),
+	pgkit.SupplyMigrations(Migrations),
 	fx.Invoke(ensurePartitionsOnStart),
 )
 

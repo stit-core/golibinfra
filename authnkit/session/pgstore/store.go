@@ -39,7 +39,7 @@ func WithClock(c clockkit.Clock) Option {
 
 // NewStore собирает Store и валидирует cfg (session.ErrConfig). Конструктор без fx —
 // для CLI; в приложении — Module.
-func NewStore(db *pgkit.DB, cfg session.Config, opts ...Option) (*Store, error) {
+func NewStore(cfg session.Config, db *pgkit.DB, opts ...Option) (*Store, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

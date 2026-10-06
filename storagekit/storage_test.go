@@ -7,8 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/google/uuid"
-
+	"git.stit.tech/stit-core/golibinfra/idkit"
 	"git.stit.tech/stit-core/golibinfra/storagekit"
 )
 
@@ -33,16 +32,12 @@ func TestNewKey_ExtByContentType(t *testing.T) {
 		"":                              "",
 	}
 	for ct, wantExt := range cases {
-		key, err := storagekit.NewKey(ct)
-		if err != nil {
-			t.Fatalf("NewKey(%q): unexpected error: %v", ct, err)
-		}
+		key := storagekit.NewKey(ct)
 		if !strings.HasSuffix(key, wantExt) {
 			t.Errorf("NewKey(%q) = %q, want suffix %q", ct, key, wantExt)
 		}
-		id := strings.TrimSuffix(key, wantExt)
-		if _, perr := uuid.Parse(id); perr != nil {
-			t.Errorf("NewKey(%q) prefix %q is not a uuid: %v", ct, id, perr)
+		if id := strings.TrimSuffix(key, wantExt); !idkit.IsV7(id) {
+			t.Errorf("NewKey(%q) prefix %q is not an idkit UUIDv7", ct, id)
 		}
 	}
 }
@@ -55,10 +50,7 @@ func TestNewKey_ExtFromMimeDatabase(t *testing.T) {
 		t.Fatalf("AddExtensionType: %v", err)
 	}
 
-	key, err := storagekit.NewKey(contentType)
-	if err != nil {
-		t.Fatalf("NewKey: %v", err)
-	}
+	key := storagekit.NewKey(contentType)
 	if !strings.HasSuffix(key, ".stitfix") {
 		t.Fatalf("NewKey(%q) = %q, want suffix %q", contentType, key, ".stitfix")
 	}
@@ -67,10 +59,7 @@ func TestNewKey_ExtFromMimeDatabase(t *testing.T) {
 func TestNewKey_Unique(t *testing.T) {
 	seen := make(map[string]struct{}, 100)
 	for range 100 {
-		k, err := storagekit.NewKey("image/png")
-		if err != nil {
-			t.Fatalf("NewKey: %v", err)
-		}
+		k := storagekit.NewKey("image/png")
 		if _, dup := seen[k]; dup {
 			t.Fatalf("NewKey produced duplicate %q", k)
 		}

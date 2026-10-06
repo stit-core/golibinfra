@@ -30,12 +30,12 @@ func New(name string, cfg Config, log logkit.Logger) (*Client, error) {
 	if err != nil {
 		return nil, err
 	}
-	stream, err := NewStreamBus(conn, log, cfg)
+	stream, err := NewStreamBus(cfg, conn, log)
 	if err != nil {
 		conn.Close()
 		return nil, err
 	}
-	bus, err := NewBus(conn, log, cfg)
+	bus, err := NewBus(cfg, conn, log)
 	if err != nil {
 		conn.Close()
 		return nil, err
@@ -65,9 +65,10 @@ func (c *Client) Close() { c.conn.Close() }
 // CloseContext — Close с бюджетом min(DrainTimeout, дедлайн ctx).
 func (c *Client) CloseContext(ctx context.Context) { c.conn.CloseContext(ctx) }
 
-// Probe — health-проба инстанса для fx-группы `healthkit.probes` (healthkit.Provide / HealthProbe).
+// Probe — health-проба инстанса для fx-группы `healthkit.probes` (регистрация — ProvideProbe);
+// имя — как у fx-модуля инстанса: `natskit` или `natskit:<name>`.
 func Probe(c *Client) healthkit.Probe {
-	return healthkit.New("natskit/"+c.name, func(context.Context) error {
+	return healthkit.New(kitName(c.name), func(context.Context) error {
 		if err := c.Healthy(); err != nil {
 			return fmt.Errorf("natskit: healthy: %w", err)
 		}

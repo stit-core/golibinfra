@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"io"
 	"net/url"
-	"sort"
 	"strconv"
 	"sync"
 	"time"
@@ -58,11 +57,7 @@ func (m *MemoryStorage) Put(ctx context.Context, r io.Reader, contentType string
 		return Ref{}, fmt.Errorf("%w: %w", ErrUploadFailed, err)
 	}
 
-	key, err := NewKey(contentType)
-	if err != nil {
-		return Ref{}, err
-	}
-
+	key := NewKey(contentType)
 	sum := sha256.Sum256(data)
 	m.mu.Lock()
 	if m.objs == nil {
@@ -171,31 +166,6 @@ func (m *MemoryStorage) presign(ctx context.Context, method, key string, ttl tim
 	q.Set("x-presigned-method", method)
 	q.Set("x-presigned-ttl", strconv.FormatInt(int64(ttl.Seconds()), 10))
 	return m.urls.Build(key) + "?" + q.Encode(), nil
-}
-
-// Bytes — тест-хелпер: копия сохранённых байтов по ключу.
-func (m *MemoryStorage) Bytes(key string) ([]byte, bool) {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	obj, ok := m.objs[key]
-	if !ok {
-		return nil, false
-	}
-	out := make([]byte, len(obj.data))
-	copy(out, obj.data)
-	return out, true
-}
-
-// Keys — тест-хелпер: отсортированные ключи всех сохранённых объектов.
-func (m *MemoryStorage) Keys() []string {
-	m.mu.RLock()
-	defer m.mu.RUnlock()
-	keys := make([]string, 0, len(m.objs))
-	for k := range m.objs {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	return keys
 }
 
 func (o memObject) info() ObjectInfo {

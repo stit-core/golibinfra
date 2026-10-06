@@ -244,7 +244,7 @@ func (g *gateTransport) published() []int64 {
 
 func mustWorker(t *testing.T, name string, repo outboxkit.Repository, transport outboxkit.Transport, tr pgkit.Transactor, cfg outboxkit.Config) *outboxkit.Worker {
 	t.Helper()
-	w, err := outboxkit.NewWorker(name, repo, transport, tr, cfg, logkit.Nop())
+	w, err := outboxkit.NewWorker(name, cfg, repo, transport, tr, logkit.Nop())
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}

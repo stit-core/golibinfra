@@ -29,7 +29,7 @@ type Outbox struct {
 
 // New собирает именованный outbox поверх готовых repo/transport/transactor; в log Worker
 // пишет ERROR на каждый переход строки в dead (nil — logkit.Nop()). Невалидный cfg — ErrConfig.
-func New(name string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) (*Outbox, error) {
+func New(name string, cfg Config, repo Repository, tr Transport, tx pgkit.Transactor, log logkit.Logger) (*Outbox, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -53,7 +53,7 @@ func (o *Outbox) Publisher() Publisher { return o.bus }
 // Worker — drain-сторона инстанса (обычно нужна только через Job).
 func (o *Outbox) Worker() *Worker { return o.worker }
 
-// Job — периодический drain инстанса для fx-группы timerkit.Group.
+// Job — периодический drain инстанса для fx-группы timerkit.JobsGroup.
 func (o *Outbox) Job() timerkit.Job {
 	return timerkit.Job{
 		Name:     "outboxkit.publisher." + o.name,
@@ -123,7 +123,7 @@ func WithSubjects(filters ...string) InstanceOption {
 
 // Instance собирает именованный outbox поверх таблицы table: store и схему
 // таблицы (в группу pgkit.MigrationsGroup) из RepositoryFactory, namespace'ный
-// транспорт, drain- и maintenance-job'ы в группе timerkit.Group, backlog-gauge'и и
+// транспорт, drain- и maintenance-job'ы в группе timerkit.JobsGroup, backlog-gauge'и и
 // проверку стримов на старте (checkStreams). *Outbox и Publisher — под fx-тегом
 // `name:"<name>"`; рецепт — docs/usage.md.
 func Instance(name, table string, opts ...InstanceOption) fx.Option {
@@ -154,7 +154,7 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 					if err != nil {
 						return nil, err
 					}
-					ob, err := New(name, repo, NewStreamTransportFor(in.Stream, name), in.Tx, cfg, in.Log)
+					ob, err := New(name, cfg, repo, NewStreamTransportFor(in.Stream, name), in.Tx, in.Log)
 					if err != nil {
 						return nil, fmt.Errorf("outboxkit: instance %s: %w", name, err)
 					}
@@ -174,7 +174,7 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 		),
 		// Зависимость от pgkit.Migrated ставит job'ы обслуживания в очередь
 		// после миграций: партиции создаются поверх уже существующей таблицы.
-		timerkit.Provide(
+		timerkit.ProvideJob(
 			func(ob *Outbox, _ pgkit.Migrated) []timerkit.Job { return ob.Jobs() },
 			fx.ParamTags(tag, `optional:"true"`),
 		),

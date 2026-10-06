@@ -8,7 +8,7 @@ import (
 
 func fuzzHasher(f *testing.F) *Argon2idHasher {
 	f.Helper()
-	h, err := NewArgon2idHasher(Argon2idParams{
+	h, err := NewArgon2idHasher(Argon2idConfig{
 		Time:    1,
 		Memory:  8 * 1024,
 		Threads: 1,

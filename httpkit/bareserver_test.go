@@ -14,12 +14,13 @@ import (
 	"github.com/danielgtaylor/huma/v2/humatest"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Регрессия (NF1): нейтрализация 5xx — свойство пакета, а не опции WithLogger:
-// документированный путь «Без fx» не отдаёт клиенту текст ошибки с DSN.
+// Регрессия (NF1): нейтрализация 5xx — свойство пакета, а не логгера: документированный путь
+// «Без fx» не отдаёт клиенту текст ошибки с DSN.
 func TestServer_NeutralizesUnmappedErrorWithoutLogger(t *testing.T) {
-	// Ровно проводка из docs/usage.md § Прямой запуск без fx, но без WithLogger.
+	// Проводка из docs/usage.md § Прямой запуск без fx с logkit.Nop() вместо логгера.
 	s := mustServer(t, testConfig(t, "127.0.0.1:0"))
 	huma.Get(s.BindAPI(), "/boom", func(context.Context, *struct{}) (*struct{}, error) {
 		return nil, errors.New("pq: dial tcp 10.0.0.5:5432 user=admin password=s3cret")
@@ -65,7 +66,7 @@ func TestHumatest_NeutralizesUnmappedError(t *testing.T) {
 // Регрессия KAPI-08: литерал Config без таймаутов — ErrConfig, а не сервер без защиты от
 // slowloris и лимита тела.
 func TestNewServer_RejectsInvalidConfig(t *testing.T) {
-	if _, err := httpkit.NewServer(httpkit.Config{Addr: "127.0.0.1:0"}); !errors.Is(err, httpkit.ErrConfig) {
+	if _, err := httpkit.NewServer(httpkit.Config{Addr: "127.0.0.1:0"}, logkit.Nop()); !errors.Is(err, httpkit.ErrConfig) {
 		t.Fatalf("NewServer(literal) err = %v, want ErrConfig", err)
 	}
 }
@@ -138,9 +139,12 @@ func TestServer_BindAPIConcurrent(t *testing.T) {
 
 // nil-опции игнорируются: middleware и правка huma.Config без функции не роняют сборку.
 func TestNewServer_NilOptionsIgnored(t *testing.T) {
-	s := mustServer(t, testConfig(t, "127.0.0.1:0"),
+	s, err := httpkit.NewServer(testConfig(t, "127.0.0.1:0"), nil, nil,
 		httpkit.WithMiddleware(nil), httpkit.WithHumaConfig(nil),
-		httpkit.WithLogger(nil), httpkit.WithAuthExtractor(nil), httpkit.WithIdempotencyStore(nil))
+		httpkit.WithAuthExtractor(nil), httpkit.WithIdempotencyStore(nil))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
 	huma.Register(s.BindAPI(), httpkit.Public(operation("ping", http.MethodGet, "/ping")), noBody)
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ping", nil))

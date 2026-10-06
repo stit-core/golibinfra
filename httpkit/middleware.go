@@ -173,13 +173,13 @@ var ErrAuthUnavailable = errors.New("httpkit: auth backend unavailable")
 const codeUnauthorized = "UNAUTHORIZED"
 
 // ErrAuthNotConfigured — у операции с Security нет AuthExtractor: Module не
-// стартует, HumaAuth(log, nil) отвечает на такую операцию 500 AUTH_NOT_CONFIGURED.
+// стартует, HumaAuth(nil, log) отвечает на такую операцию 500 AUTH_NOT_CONFIGURED.
 var ErrAuthNotConfigured = errors.New("httpkit: auth not configured")
 
 // HumaAuth проверяет операции с непустым Operation().Security: extractor кладёт
 // личность в ctx операции; без extractor'а такая операция закрыта (500). Работает
 // на любом huma-адаптере (chi в проде, humatest в тестах потребителя).
-func HumaAuth(log logkit.Logger, extract AuthExtractor) func(huma.Context, func(huma.Context)) {
+func HumaAuth(extract AuthExtractor, log logkit.Logger) func(huma.Context, func(huma.Context)) {
 	return func(ctx huma.Context, next func(huma.Context)) {
 		if len(ctx.Operation().Security) == 0 || authDone(ctx.Context()) {
 			next(ctx)

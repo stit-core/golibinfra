@@ -41,7 +41,7 @@ type Worker struct {
 
 // NewWorker строит Worker; instance — значение label `instance`, в log уходит ERROR на каждый
 // переход строки в dead (nil — logkit.Nop()). Невалидный cfg — ErrConfig.
-func NewWorker(instance string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) (*Worker, error) {
+func NewWorker(instance string, cfg Config, repo Repository, tr Transport, tx pgkit.Transactor, log logkit.Logger) (*Worker, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

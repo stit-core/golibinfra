@@ -29,7 +29,7 @@ func startDB(t *testing.T) (*testkit.PostgresFixture, *pgkit.DB) {
 
 func newStore(t *testing.T, db *pgkit.DB, clock clockkit.Clock) *pgstore.Store {
 	t.Helper()
-	s, err := pgstore.NewStore(db, testConfig, pgstore.WithClock(clock))
+	s, err := pgstore.NewStore(testConfig, db, pgstore.WithClock(clock))
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -40,7 +40,7 @@ func newStore(t *testing.T, db *pgkit.DB, clock clockkit.Clock) *pgstore.Store {
 func TestStore_Contract(t *testing.T) {
 	_, db := startDB(t)
 	sessiontest.RunContract(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {
-		s, err := pgstore.NewStore(db, cfg, pgstore.WithClock(clock))
+		s, err := pgstore.NewStore(cfg, db, pgstore.WithClock(clock))
 		if err != nil {
 			t.Fatalf("NewStore: %v", err)
 		}
@@ -50,7 +50,7 @@ func TestStore_Contract(t *testing.T) {
 
 func TestNewStore_ValidatesConfig(t *testing.T) {
 	t.Parallel()
-	if _, err := pgstore.NewStore(nil, session.Config{}); !errors.Is(err, session.ErrConfig) {
+	if _, err := pgstore.NewStore(session.Config{}, nil); !errors.Is(err, session.ErrConfig) {
 		t.Fatalf("NewStore(zero config) = %v, want ErrConfig", err)
 	}
 }

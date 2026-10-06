@@ -19,24 +19,25 @@ import "git.stit.tech/stit-core/golibinfra/healthkit"
 ```go
 fx.New(
     pgkit.Module, natskit.Module(""), cachekit.Module, httpkit.Module,
-    healthkit.Provide(pgkit.Probe),
-    healthkit.Provide(natskit.Probe),
-    healthkit.Provide(cachekit.Probe),
+    healthkit.ProvideProbe(pgkit.Probe),
+    natskit.ProvideProbe(""),
+    healthkit.ProvideProbe(cachekit.Probe),
 )
 ```
 
 Своя проба — имя плюс проверка:
 
 ```go
-healthkit.Provide(func(s *Sync) healthkit.Probe {
+healthkit.ProvideProbe(func(s *Sync) healthkit.Probe {
     return healthkit.New("hub-sync", func(ctx context.Context) error { return s.Lag(ctx) })
 })
 ```
 
-Именованный инстанс зависимости — через аннотации `fx`:
+Именованный инстанс зависимости — через аннотации `fx` (у natskit — готовая
+`natskit.ProvideProbe("events")`):
 
 ```go
-healthkit.Provide(natskit.Probe, fx.ParamTags(`name:"events"`))
+healthkit.ProvideProbe(newSyncProbe, fx.ParamTags(`name:"events"`))
 ```
 
 ## Конфигурация
@@ -48,7 +49,7 @@ healthkit.Provide(natskit.Probe, fx.ParamTags(`name:"events"`))
 ## API
 
 ```go
-const Group = "healthkit.probes"
+const ProbesGroup = "healthkit.probes"
 
 type Probe struct {
     Name  string
@@ -58,7 +59,7 @@ type Probe struct {
 func New(name string, check func(ctx context.Context) error) Probe
 func (p Probe) Run(ctx context.Context) error
 func WithTimeout(p Probe, d time.Duration) Probe
-func Provide(ctor any, anns ...fx.Annotation) fx.Option
+func ProvideProbe(ctor any, anns ...fx.Annotation) fx.Option
 
 type PanicError struct { // panic проверки
     Probe string
@@ -69,8 +70,8 @@ type PanicError struct { // panic проверки
 
 ### Probe
 
-`Name` — идентификатор зависимости в логе `/ready` (`pgkit`, `natskit/events`,
-`storagekit/minio`). `Check` — сама проверка; ошибку она префиксует именем своего
+`Name` — идентификатор зависимости в логе `/ready` (`pgkit`, `natskit:events`,
+`storagekit`): имя кита, у инстанса — `<kit>:<instance>`, как имя его `fx.Module`. `Check` — сама проверка; ошибку она префиксует именем своего
 кита (`pgkit: ping: …`), чтобы текст в логе был читаем и без `Name`.
 
 ### Run
@@ -87,16 +88,16 @@ health-loop `grpckit` зовут пробы в своих горутинах, г
 обёрнутой вокруг `context.DeadlineExceeded`. `d <= 0` возвращает пробу без
 изменений. Имя пробы сохраняется; panic проверки — `*PanicError`, как у `Run`.
 
-### Provide
+### ProvideProbe
 
 `fx.Provide` с аннотацией `fx.ResultTags` в группу `healthkit.probes`. Конструктор должен возвращать
 `healthkit.Probe` первым результатом (вторым допустим `error`); любой другой тип
 отвергается при сборке графа — `fx.New(...).Err()` возвращает ошибку с текстом
-`healthkit: Provide …`.
+`healthkit: ProvideProbe …`.
 
 Дополнительные аннотации (`fx.ParamTags` для именованного инстанса, `fx.As`)
 применяются до групповой. Свой `fx.ResultTags` передавать нельзя: групповой тег
-ставит сам `Provide` — иначе проверка типа обходится, а проба молча не
+ставит сам `ProvideProbe` — иначе проверка типа обходится, а проба молча не
 попадает в группу.
 
 ## Observability
@@ -113,7 +114,7 @@ health-loop `grpckit` зовут пробы в своих горутинах, г
   упала хотя бы одна. Второго контракта с другой семантикой кит не заводит.
 - **Конструктор возвращает именно `healthkit.Probe`.** dig ключует fx-группу
   парой «имя + тип»: значение другого типа в группе `healthkit.probes` `httpkit` не увидит.
-  `Provide` проверяет тип конструктора и валит сборку графа, а не прод.
+  `ProvideProbe` проверяет тип конструктора и валит сборку графа, а не прод.
 - **Проба не должна быть дорогой.** `/ready` дёргают оркестраторы каждые
   несколько секунд; используйте `PING`/`SELECT 1`, не бизнес-запросы.
 - **Проба обязана уважать `ctx`.** `WithTimeout` вернёт управление и без этого,

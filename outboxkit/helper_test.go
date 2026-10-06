@@ -43,7 +43,7 @@ func valid(c outboxkit.Config) outboxkit.Config {
 // mustNew — outboxkit.New для теста: ошибка конструктора — t.Fatalf.
 func mustNew(t *testing.T, name string, repo outboxkit.Repository, tr outboxkit.Transport, tx pgkit.Transactor, cfg outboxkit.Config, log logkit.Logger) *outboxkit.Outbox {
 	t.Helper()
-	o, err := outboxkit.New(name, repo, tr, tx, cfg, log)
+	o, err := outboxkit.New(name, cfg, repo, tr, tx, log)
 	if err != nil {
 		t.Fatalf("outboxkit.New: %v", err)
 	}

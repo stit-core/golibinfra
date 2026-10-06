@@ -186,7 +186,7 @@ func (e *Engine) observeCursor(cur int64) {
 	e.cursorKnown.Store(true)
 }
 
-// Job оборачивает Engine в timerkit.Job (группа timerkit.Group).
+// Job оборачивает Engine в timerkit.Job (группа timerkit.JobsGroup).
 func (e *Engine) Job() timerkit.Job {
 	return timerkit.Job{
 		Name:       "hubsync." + e.resource,

@@ -18,7 +18,7 @@ const probeTimeout = 3 * time.Second
 // Probe проверяет ключ, endpoint и модель по умолчанию через Models.Get —
 // вызов ничего не тарифицирует. Проба opt-in: Module её не регистрирует, потому
 // что привязка readiness к стороннему платному API — решение деплоя; включают её
-// через healthkit.Provide(anthropickit.Probe).
+// через healthkit.ProvideProbe(anthropickit.Probe).
 func Probe(api API) healthkit.Probe {
 	check := func(ctx context.Context) error {
 		raw := api.Raw()

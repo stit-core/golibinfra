@@ -38,7 +38,7 @@ func testConfig(t *testing.T, addr string) httpkit.Config {
 // mustServer — httpkit.NewServer для теста: ошибка конструктора — t.Fatalf.
 func mustServer(t *testing.T, cfg httpkit.Config, opts ...httpkit.ServerOption) *httpkit.Server {
 	t.Helper()
-	s, err := httpkit.NewServer(cfg, opts...)
+	s, err := httpkit.NewServer(cfg, logkit.Nop(), opts...)
 	if err != nil {
 		t.Fatalf("NewServer: %v", err)
 	}
@@ -70,7 +70,7 @@ func startApp(t *testing.T, opts ...fx.Option) *httpkit.Server {
 
 func startAppWithProbe(t *testing.T, probe healthkit.Probe) *httpkit.Server {
 	t.Helper()
-	return startApp(t, healthkit.Provide(func() healthkit.Probe { return probe }))
+	return startApp(t, healthkit.ProvideProbe(func() healthkit.Probe { return probe }))
 }
 
 func do(t *testing.T, srv *httpkit.Server, method, path string, body io.Reader, headers ...string) *http.Response {
@@ -103,6 +103,56 @@ func bodyString(t *testing.T, resp *http.Response) string {
 		t.Fatalf("read body: %v", err)
 	}
 	return string(b)
+}
+
+// Регрессия KFX-10: ошибка графа без Logger или Config называет функции и типы кита, а не
+// reflect.makeFuncStub.
+func TestModule_GraphErrorNamesKit(t *testing.T) {
+	cases := map[string]fx.Option{
+		"no logkit.Logger":  fx.Supply(testConfig(t, "127.0.0.1:0")),
+		"no httpkit.Config": fx.Provide(logkit.Nop),
+	}
+	for name, deps := range cases {
+		err := fx.ValidateApp(fx.NopLogger, deps, httpkit.Module)
+		if err == nil {
+			t.Fatalf("%s: ValidateApp = nil, want a graph error", name)
+		}
+		if msg := err.Error(); strings.Contains(msg, "makeFuncStub") || !strings.Contains(msg, "*httpkit.Server") ||
+			!strings.Contains(msg, `httpkit".registerHealth`) {
+			t.Fatalf("%s: graph error must name the kit, got: %v", name, err)
+		}
+	}
+}
+
+// ProvideSecurityScheme кладёт в группу и одну схему, и срез; конструктор другого типа валит
+// сборку графа, а не теряет схему.
+func TestProvideSecurityScheme(t *testing.T) {
+	scheme := func(name string) httpkit.SecuritySchemeEntry {
+		return httpkit.SecuritySchemeEntry{Name: name, Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}}
+	}
+	var api huma.API
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")), fx.Provide(logkit.Nop), httpkit.Module,
+		httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry { return scheme("Bearer") }),
+		httpkit.ProvideSecurityScheme(func() ([]httpkit.SecuritySchemeEntry, error) {
+			return []httpkit.SecuritySchemeEntry{scheme("Staff"), scheme("Customer")}, nil
+		}),
+		fx.Populate(&api))
+	if err := app.Err(); err != nil {
+		t.Fatalf("fx.New: %v", err)
+	}
+	got := api.OpenAPI().Components.SecuritySchemes
+	for _, name := range []string{"Bearer", "Staff", "Customer"} {
+		if got[name] == nil {
+			t.Fatalf("security scheme %q is missing from OpenAPI: %v", name, got)
+		}
+	}
+
+	for _, ctor := range []any{nil, scheme("Bearer"), func() error { return nil }, func() *huma.SecurityScheme { return nil }} {
+		err := fx.New(fx.NopLogger, httpkit.ProvideSecurityScheme(ctor)).Err()
+		if err == nil || !strings.Contains(err.Error(), "httpkit: ProvideSecurityScheme") {
+			t.Fatalf("ProvideSecurityScheme(%T) = %v, want the type check error", ctor, err)
+		}
+	}
 }
 
 // Регрессия: пробы китов из группы `healthkit.probes` должны доходить до /ready.
@@ -174,8 +224,8 @@ func TestModule_ReadyProbeTimeout(t *testing.T) {
 	})
 
 	srv := startApp(t,
-		healthkit.Provide(func() healthkit.Probe { return hang }),
-		healthkit.Provide(func() healthkit.Probe {
+		healthkit.ProvideProbe(func() healthkit.Probe { return hang }),
+		healthkit.ProvideProbe(func() healthkit.Probe {
 			return healthkit.New("pgkit", func(context.Context) error { return nil })
 		}),
 	)
@@ -198,7 +248,7 @@ func TestModule_ReadyProbeTimeout(t *testing.T) {
 func TestModule_ReadyProbePanicIsDownAndLogged(t *testing.T) {
 	log := logtest.Capture()
 	srv := startApp(t, fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
-		healthkit.Provide(func() healthkit.Probe {
+		healthkit.ProvideProbe(func() healthkit.Probe {
 			return healthkit.New("sync", func(context.Context) error { panic("sync state is not initialised") })
 		}))
 	resp := get(t, srv, "/ready")

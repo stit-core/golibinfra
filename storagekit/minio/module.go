@@ -17,7 +17,7 @@ const ProbeName = "storagekit"
 
 // Probe — проба существования бакета с собственным дедлайном
 // (STORAGE_S3_PROBE_TIMEOUT): деградация S3 не держит /ready дольше него.
-// Регистрируется потребителем через healthkit.Provide.
+// Регистрируется потребителем через healthkit.ProvideProbe.
 func Probe(client *miniogo.Client, cfg storagekit.Config) healthkit.Probe {
 	probe := healthkit.New(ProbeName, func(ctx context.Context) error {
 		return checkBucket(ctx, client, cfg.Bucket)

@@ -57,7 +57,7 @@ func kitConfigs() []kitConfig {
 		{"pgkit.NewPoolConfig", "", pgkit.ErrConfig, ctor(pgkit.NewPoolConfig)},
 		{"pgkit.NewReplicaConfig", "", pgkit.ErrConfig, ctor(pgkit.NewReplicaConfig)},
 		{"pgkit.NewMigrateRunnerConfig", "", pgkit.ErrConfig, ctor(pgkit.NewMigrateRunnerConfig)},
-		{"authnkit.NewArgon2idParams", "", authnkit.ErrConfig, ctor(authnkit.NewArgon2idParams)},
+		{"authnkit.NewArgon2idConfig", "", authnkit.ErrConfig, ctor(authnkit.NewArgon2idConfig)},
 		{"authnkit.NewJWTConfig", "", authnkit.ErrConfig, ctor(authnkit.NewJWTConfig)},
 		{"authnkit.NewTOTPConfig", "", authnkit.ErrConfig, ctor(authnkit.NewTOTPConfig)},
 		{"session.NewConfig", "", session.ErrConfig, ctor(session.NewConfig)},

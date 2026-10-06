@@ -11,7 +11,7 @@ import (
 )
 
 // Module — fx-вход кита: *Store как bruteforcekit.Guard и bruteforcekit.Cleaner,
-// миграции в группе pgkit.MigrateModule и cleanup-job в группе timerkit.Group.
+// миграции в группе pgkit.MigrateModule и cleanup-job в группе timerkit.JobsGroup.
 // Нужны *pgkit.DB (pgkit.Module), bruteforcekit.Config (fx.Provide(bruteforcekit.NewConfig))
 // и timerkit.Module — без него граф не собирается.
 var Module = fx.Module(
@@ -21,8 +21,13 @@ var Module = fx.Module(
 		func(s *Store) bruteforcekit.Guard { return s },
 		func(s *Store) bruteforcekit.Cleaner { return s },
 	),
-	timerkit.Provide(CleanupJob),
-	pgkit.ProvideMigrations(Migrations),
+	// Зависимость от pgkit.Migrated ставит хук job'ов в очередь после миграций; optional —
+	// сборка без pgkit.MigrateModule остаётся рабочей.
+	timerkit.ProvideJob(
+		func(s *Store, cfg bruteforcekit.Config, _ pgkit.Migrated) timerkit.Job { return CleanupJob(s, cfg) },
+		fx.ParamTags(``, ``, `optional:"true"`),
+	),
+	pgkit.SupplyMigrations(Migrations),
 )
 
 // CleanupJob — периодическая чистка протухших строк с интервалом

@@ -2,22 +2,24 @@
 
 ## API-поверхность (кратко)
 
-- **Сервер**: `NewServer(cfg, opts...) (*Server, error)` — та же сборка, что у `Module`
-  (цепочка кита, `HumaAuth` в `BindAPI`; невалидный `Config` — `ErrConfig`); опции
-  `WithLogger`, `WithSecuritySchemes`, `WithAuthExtractor`, `WithIdempotencyStore`,
+- **Сервер**: `NewServer(cfg, log, opts...) (*Server, error)` — та же сборка, что у `Module`
+  (цепочка кита, `HumaAuth` в `BindAPI`; невалидный `Config` — `ErrConfig`; log nil —
+  `logkit.Nop()`); опции `WithSecuritySchemes`, `WithAuthExtractor`, `WithIdempotencyStore`,
   `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes` (с nil — ничего). Методы:
   `Router()`, `API()`/`BindAPI()`, `CheckRoutes()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
-- **Middleware** (net/http): `RequestID`, `ClientIP(log, trustProxyHops)`,
+- **Middleware** (net/http): `RequestID`, `ClientIP(trustProxyHops, log)`,
   `OTel(quietPaths...)`, `Recovery(log)`,
   `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
   `AccessLog(log, quietPaths...)`, `Metrics()`,
-  `Idempotency(cfg, store, log, opts...)`. huma-уровень: `HumaAuth(log, extract)`.
+  `Idempotency(cfg, store, log, opts...)`. huma-уровень: `HumaAuth(extract, log)`.
+- **fx**: `Module`, `Middlewares`, `HumaConfigs`, `PublicRoutes` (значения графа),
+  `ProvideSecurityScheme(ctor, anns...)` → группа `SecuritySchemeGroup`.
 - **Ошибки**: `APIError`, `FieldError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
   Conflict/Internal/Unavailable`, `ErrorMap` (`NewErrorMap`, `ErrorRule`, `Map`,
   `Declare`, `Unmapped`), `ProblemContentType`.
 - **Auth и маршруты**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
   `ContextWithSubject`, `SubjectFrom`, `Public`, `PublicRoutes`, `ErrRoutes`.
-- **Health**: `RegisterHealth(api, log, probeTimeout, probes...)`, `Probe`
+- **Health**: `RegisterHealth(api, probeTimeout, log, probes...)`, `Probe`
   (= `healthkit.Probe`); проверка здоровья контейнера — `Healthcheck(ctx)` (код выхода),
   `CheckHealth(ctx, addr)`.
 - **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
@@ -264,14 +266,15 @@ fx.Provide(func(v *authnkit.Verifier) httpkit.AuthExtractor {
     }
 })
 
-fx.Provide(fx.Annotate(
-    func() httpkit.SecuritySchemeEntry {
-        return httpkit.SecuritySchemeEntry{Name: "Bearer",
-            Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"}}
-    },
-    fx.ResultTags(`group:"httpkit.security_scheme"`),
-))
+httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
+    return httpkit.SecuritySchemeEntry{Name: "Bearer",
+        Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"}}
+})
 ```
+
+`ProvideSecurityScheme` принимает конструктор `SecuritySchemeEntry` или
+`[]SecuritySchemeEntry` (несколько схем одним конструктором); другой тип результата —
+ошибка сборки графа.
 
 Имя схемы в графе одно: дубль имени и схема без `Scheme` — ошибка сборки графа
 (`httpkit.ErrConfig` с обоими значениями).
@@ -296,10 +299,10 @@ fx.Supply(httpkit.HumaConfigs{ // правки huma.Config — в порядке
 ## Readiness-probes
 
 ```go
-healthkit.Provide(pgkit.Probe)
-healthkit.Provide(natskit.Probe)
-healthkit.Provide(cachekit.Probe)
-healthkit.Provide(func(s *Sync) healthkit.Probe { return healthkit.New("sync", s.Ready) })
+healthkit.ProvideProbe(pgkit.Probe)
+natskit.ProvideProbe("")
+healthkit.ProvideProbe(cachekit.Probe)
+healthkit.ProvideProbe(func(s *Sync) healthkit.Probe { return healthkit.New("sync", s.Ready) })
 ```
 
 Пробы выполняются параллельно, каждая — не дольше `HTTP_READY_PROBE_TIMEOUT`.
@@ -386,10 +389,10 @@ func stream(w http.ResponseWriter, r *http.Request) {
 ## Прямой запуск без fx
 
 ```go
-s, err := httpkit.NewServer(cfg, httpkit.WithLogger(log), httpkit.WithAuthExtractor(extract)) // цепочка кита, как у Module
+s, err := httpkit.NewServer(cfg, log, httpkit.WithAuthExtractor(extract)) // цепочка кита, как у Module
 if err != nil { /* невалидный Config или схема — ErrConfig */ }
 api := s.BindAPI() // HumaAuth — первым huma-middleware: Security проверяется extractor'ом
-httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout)
+httpkit.RegisterHealth(api, cfg.ReadyProbeTimeout, log)
 huma.Register(api, httpkit.Public(huma.Operation{Method: http.MethodGet, Path: "/ping"}), pingHandler)
 if err := s.CheckRoutes(); err != nil { /* операции и маршруты — как на старте Module */ }
 if err := s.Listen(); err != nil { /* порт занят */ }

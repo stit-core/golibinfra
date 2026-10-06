@@ -278,7 +278,7 @@ func (s *Store) Backlog(ctx context.Context) ([]outboxkit.SubjectBacklog, error)
 }
 
 // MaintenanceJobs — партиции (раз в сутки и на старте) и retention, если он
-// включён (WithRetention). Instance кладёт их в fx-группу timerkit.Group.
+// включён (WithRetention). Instance кладёт их в fx-группу timerkit.JobsGroup.
 func (s *Store) MaintenanceJobs() []timerkit.Job {
 	jobs := []timerkit.Job{PartitionKeeperJob(s)}
 	if s.retentionMonths > 0 {

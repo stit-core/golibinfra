@@ -80,7 +80,7 @@ func TestProbe_LandsInHealthGroup(t *testing.T) {
 	var probes []healthkit.Probe
 	app := fx.New(
 		appOptions(cfg),
-		healthkit.Provide(skminio.Probe),
+		healthkit.ProvideProbe(skminio.Probe),
 		fx.Invoke(func(i in) { probes = i.Probes }),
 	)
 	if err := app.Err(); err != nil {

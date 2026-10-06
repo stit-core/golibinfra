@@ -69,7 +69,7 @@ type Storage struct {
 
 // NewStorage собирает адаптер; невалидный cfg — storagekit.ErrConfig, nil-логгер заменяется на
 // logkit.Nop.
-func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) (*Storage, error) {
+func NewStorage(cfg storagekit.Config, client *miniogo.Client, urls *storagekit.URLBuilder, log logkit.Logger) (*Storage, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
@@ -94,10 +94,7 @@ func (s *Storage) Put(ctx context.Context, r io.Reader, contentType string, size
 	defer func() { s.instr.observe(ctx, "put", start, err) }()
 
 	contentType = storagekit.NormalizeContentType(contentType)
-	key, err := storagekit.NewKey(contentType)
-	if err != nil {
-		return storagekit.Ref{}, err
-	}
+	key := storagekit.NewKey(contentType)
 	opts := miniogo.PutObjectOptions{ContentType: contentType, PartSize: s.partSize}
 
 	if size < 0 {

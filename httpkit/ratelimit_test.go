@@ -68,7 +68,7 @@ func TestRateLimiter_MaxClients(t *testing.T) {
 func rateLimited(t *testing.T, hops, rps int) http.Handler {
 	t.Helper()
 	ok := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
-	return ClientIP(logkit.Nop(), hops)(RateLimit(RateLimitConfig{RPS: rps, Burst: rps})(ok))
+	return ClientIP(hops, logkit.Nop())(RateLimit(RateLimitConfig{RPS: rps, Burst: rps})(ok))
 }
 
 // H11: IPv6-клиент ротирует адрес в своей /64 — ключ лимитера один.

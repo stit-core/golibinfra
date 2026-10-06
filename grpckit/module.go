@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"reflect"
 
 	"go.uber.org/fx"
 
@@ -12,10 +13,41 @@ import (
 )
 
 // ServicesGroup — имя fx value-group, из которой Module собирает регистраторы
-// доменных сервисов:
-//
-//	fx.Provide(fx.Annotate(newMyServiceRegistrar, fx.ResultTags(`group:"grpckit.services"`)))
+// доменных сервисов (регистрация — ProvideService).
 const ServicesGroup = "grpckit.services"
+
+// ProvideService регистрирует конструктор ServiceRegistrar (или []ServiceRegistrar — группа
+// собирается через flatten) в группу ServicesGroup. Конструктор неверного типа отвергается при
+// сборке графа: иначе сервис молча не навешивается на сервер. Дополнительные аннотации
+// применяются до групповой; свой fx.ResultTags передавать нельзя.
+func ProvideService(ctor any, anns ...fx.Annotation) fx.Option {
+	tag, err := serviceTag(ctor)
+	if err != nil {
+		return fx.Error(err)
+	}
+	return fx.Provide(fx.Annotate(ctor, append(anns, fx.ResultTags(tag))...))
+}
+
+var (
+	registrarType  = reflect.TypeFor[ServiceRegistrar]()
+	registrarsType = reflect.TypeFor[[]ServiceRegistrar]()
+)
+
+func serviceTag(ctor any) (string, error) {
+	t := reflect.TypeOf(ctor)
+	if t == nil || t.Kind() != reflect.Func {
+		return "", fmt.Errorf("grpckit: ProvideService expects a constructor function returning grpckit.ServiceRegistrar or []grpckit.ServiceRegistrar, got %T", ctor)
+	}
+	if t.NumOut() > 0 {
+		switch t.Out(0) {
+		case registrarType:
+			return `group:"` + ServicesGroup + `"`, nil
+		case registrarsType:
+			return `group:"` + ServicesGroup + `,flatten"`, nil
+		}
+	}
+	return "", fmt.Errorf("grpckit: ProvideService constructor must return grpckit.ServiceRegistrar or []grpckit.ServiceRegistrar as its first result, got %v", t)
+}
 
 // Module отдаёт *Server и держит его lifecycle. fx.Invoke обязателен: без него
 // конструктор сервера ленив, и приложение стартует с незанятым портом, если в

@@ -27,7 +27,7 @@ func newApp(t *testing.T, opts ...fx.Option) *fx.App {
 }
 
 func supplyJob(j Job) fx.Option {
-	return Provide(func() Job { return j })
+	return ProvideJob(func() Job { return j })
 }
 
 func TestModule_StartRunsJobAndStopWaits(t *testing.T) {
@@ -120,7 +120,7 @@ func TestModule_SchedulesOnClockFromGraph(t *testing.T) {
 
 // Регрессия: конструктор неверного типа кладёт значение в группу другим типом,
 // и job молча не запускается.
-func TestProvide_RejectsWrongConstructor(t *testing.T) {
+func TestProvideJob_RejectsWrongConstructor(t *testing.T) {
 	tests := []struct {
 		name string
 		ctor any
@@ -136,21 +136,21 @@ func TestProvide_RejectsWrongConstructor(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			app := fx.New(fx.NopLogger, Provide(tt.ctor))
+			app := fx.New(fx.NopLogger, ProvideJob(tt.ctor))
 			err := app.Err()
 			if err == nil {
 				t.Fatal("want error from fx.New, got nil")
 			}
-			if !strings.Contains(err.Error(), "timerkit: Provide") {
-				t.Fatalf("error must name timerkit.Provide: %v", err)
+			if !strings.Contains(err.Error(), "timerkit: ProvideJob") {
+				t.Fatalf("error must name timerkit.ProvideJob: %v", err)
 			}
 		})
 	}
 }
 
-// Provide кладёт в ту же группу, из которой читает Module: и одиночную Job, и
+// ProvideJob кладёт в ту же группу, из которой читает Module: и одиночную Job, и
 // срез (flatten), и конструктор с ошибкой.
-func TestProvide_LandsInGroupModuleReads(t *testing.T) {
+func TestProvideJob_LandsInGroupModuleReads(t *testing.T) {
 	ran := make(chan string, 3)
 	job := func(name string) Job {
 		return Job{Name: name, Interval: time.Hour, RunOnStart: true, Run: func(context.Context) error {
@@ -159,9 +159,9 @@ func TestProvide_LandsInGroupModuleReads(t *testing.T) {
 		}}
 	}
 	app := newApp(t,
-		Provide(func() Job { return job("single") }),
-		Provide(func() (Job, error) { return job("with-error"), nil }),
-		Provide(func() []Job { return []Job{job("flat-1"), job("flat-2")} }),
+		ProvideJob(func() Job { return job("single") }),
+		ProvideJob(func() (Job, error) { return job("with-error"), nil }),
+		ProvideJob(func() []Job { return []Job{job("flat-1"), job("flat-2")} }),
 	)
 	if err := app.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
@@ -180,11 +180,11 @@ func TestProvide_LandsInGroupModuleReads(t *testing.T) {
 }
 
 // Аннотации вызывающего (параметр из другой группы) сочетаются с групповой.
-func TestProvide_KeepsCallerAnnotations(t *testing.T) {
+func TestProvideJob_KeepsCallerAnnotations(t *testing.T) {
 	type source struct{ name string }
 	app := newApp(t,
 		fx.Provide(fx.Annotate(func() source { return source{name: "engine"} }, fx.ResultTags(`group:"sources"`))),
-		Provide(
+		ProvideJob(
 			func(sources []source) []Job {
 				jobs := make([]Job, 0, len(sources))
 				for _, s := range sources {
@@ -198,7 +198,7 @@ func TestProvide_KeepsCallerAnnotations(t *testing.T) {
 			if len(jobs) != 1 || jobs[0].Name != "engine" {
 				t.Errorf("jobs in group = %v, want one named engine", jobs)
 			}
-		}, fx.ParamTags(`group:"`+Group+`"`))),
+		}, fx.ParamTags(`group:"`+JobsGroup+`"`))),
 	)
 	if err := app.Err(); err != nil {
 		t.Fatalf("fx: %v", err)
@@ -207,8 +207,8 @@ func TestProvide_KeepsCallerAnnotations(t *testing.T) {
 
 // Регрессия FX-04: job без Module в графе никто не запускает — это должна быть
 // ошибка сборки графа, а не молча стоящий outbox или неочищаемая таблица.
-func TestProvide_RequiresModule(t *testing.T) {
-	job := Provide(func() Job {
+func TestProvideJob_RequiresModule(t *testing.T) {
+	job := ProvideJob(func() Job {
 		return Job{Name: "orphan", Interval: time.Hour, Run: func(context.Context) error { return nil }}
 	})
 	err := fx.ValidateApp(fx.NopLogger, fx.Provide(logkit.Nop), job)

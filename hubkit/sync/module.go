@@ -15,7 +15,7 @@ import (
 const EngineGroup = "hubkit.sync.engine"
 
 // Module провайдит HTTPFetcher (поверх hubkit/client), разворачивает движки
-// группы EngineGroup в job'ы timerkit.Group (graceful shutdown — за timerkit)
+// группы EngineGroup в job'ы timerkit.JobsGroup (graceful shutdown — за timerkit)
 // и снимает их метрики на остановке приложения.
 // Config не provide'ится: caller добавляет `fx.Provide(sync.NewConfig)`.
 var Module = fx.Module(
@@ -23,7 +23,7 @@ var Module = fx.Module(
 	fx.Provide(
 		fx.Annotate(NewHTTPFetcher, fx.As(new(Fetcher))),
 	),
-	timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"`+EngineGroup+`"`)),
+	timerkit.ProvideJob(jobsFromEngines, fx.ParamTags(`group:"`+EngineGroup+`"`)),
 	fx.Invoke(fx.Annotate(closeEnginesOnStop, fx.ParamTags(``, `group:"`+EngineGroup+`"`))),
 )
 

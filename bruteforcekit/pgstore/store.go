@@ -26,7 +26,7 @@ var (
 
 // NewStore собирает Store и валидирует cfg: нулевой конфиг выключил бы guard
 // молча (locked_until = NOW() + 0s), поэтому это ошибка старта.
-func NewStore(db *pgkit.DB, cfg bruteforcekit.Config) (*Store, error) {
+func NewStore(cfg bruteforcekit.Config, db *pgkit.DB) (*Store, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}

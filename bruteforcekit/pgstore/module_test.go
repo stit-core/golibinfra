@@ -70,7 +70,7 @@ func TestModule_RegistersJobAndMigrations(t *testing.T) {
 		scheduler(),
 		pgstore.Module,
 		fx.Populate(
-			fx.Annotate(&jobs, fx.ParamTags(`group:"`+timerkit.Group+`"`)),
+			fx.Annotate(&jobs, fx.ParamTags(`group:"`+timerkit.JobsGroup+`"`)),
 			fx.Annotate(&sources, fx.ParamTags(`group:"pgkit.migrations"`)),
 		),
 	)

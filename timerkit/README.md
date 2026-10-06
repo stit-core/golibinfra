@@ -1,7 +1,7 @@
 # timerkit
 
 Periodic jobs через fx-группу. Сервис регистрирует `Job` через
-`timerkit.Provide`, а `timerkit.Module` подхватывает группу в `fx.Lifecycle`: на
+`timerkit.ProvideJob`, а `timerkit.Module` подхватывает группу в `fx.Lifecycle`: на
 старте валидирует и запускает каждую job в своей горутине, на остановке отменяет
 контекст и **дожидается завершения** идущих запусков в пределах дедлайна
 остановки. Каждый запуск — свой root-спан; panic внутри job'а перехватывается и
@@ -29,12 +29,12 @@ func NewCleanupJob(svc *Service) timerkit.Job {
 
 var Module = fx.Module("cleanup",
 	fx.Provide(NewService),
-	timerkit.Provide(NewCleanupJob), // конструктор Job или []Job → группа timerkit.Group
+	timerkit.ProvideJob(NewCleanupJob), // конструктор Job или []Job → группа timerkit.JobsGroup
 )
 ```
 
 В приложении подключается `timerkit.Module` рядом с модулем, регистрирующим
-job: `timerkit.Provide` требует его в графе, и без него сборка падает с
+job: `timerkit.ProvideJob` требует его в графе, и без него сборка падает с
 `missing type: timerkit.scheduler` — job, которую никто не запускает, не бывает
 молчаливой. Логи идут через `logkit.Logger` из графа, расписание — по
 `clockkit.Clock`:
@@ -44,7 +44,7 @@ fx.New(
 	fx.Provide(logkit.NewConfig),
 	logkit.Module,      // → logkit.Logger
 	clockkit.Module,    // → clockkit.Clock (без него — Real{})
-	timerkit.Module,    // подхватывает всю группу timerkit.Group
+	timerkit.Module,    // подхватывает всю группу timerkit.JobsGroup
 	cleanup.Module,
 ).Run()
 ```
@@ -111,10 +111,10 @@ type Job struct {
 	RunOnStart bool          // первый запуск сразу на старте, а не через Interval
 }
 
-const Group = "timerkit.jobs"                              // имя fx-группы job'ов
-func Provide(ctor any, anns ...fx.Annotation) fx.Option     // конструктор Job или []Job → группа; требует Module
+const JobsGroup = "timerkit.jobs"                          // имя fx-группы job'ов
+func ProvideJob(ctor any, anns ...fx.Annotation) fx.Option  // конструктор Job или []Job → группа; требует Module
 var ErrJob error                                            // невалидная Job (обёрнута в ошибку OnStart)
-var Module fx.Option                                        // запускает группу, provide'ит маркер для Provide
+var Module fx.Option                                        // запускает группу, provide'ит маркер для ProvideJob
 ```
 
 | Поле | Роль |
@@ -126,7 +126,7 @@ var Module fx.Option                                        // запускае�
 | `Jitter` | `>= 0`. Размазывает запуски однотипных job'ов между инстансами. |
 | `RunOnStart` | Прогон на старте (в горутине job, старт приложения не блокирует). |
 
-`Provide` принимает конструктор, у которого **первый** результат — `Job` (тег
+`ProvideJob` принимает конструктор, у которого **первый** результат — `Job` (тег
 `group:"timerkit.jobs"`) или `[]Job` (тег `group:"timerkit.jobs,flatten"` — как в
 `hubkit/sync`, где движки разворачиваются в набор job'ов); вторым результатом
 может идти `error`. Конструктор с любой другой первой позицией (в том числе
@@ -135,16 +135,16 @@ var Module fx.Option                                        // запускае�
 передаются вторым аргументом:
 
 ```go
-timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"hubkit.sync.engine"`))
+timerkit.ProvideJob(jobsFromEngines, fx.ParamTags(`group:"hubkit.sync.engine"`))
 ```
 
-Каждый `Provide` добавляет в граф `fx.Invoke`, которому нужен неэкспортируемый
+Каждый `ProvideJob` добавляет в граф `fx.Invoke`, которому нужен неэкспортируемый
 маркер `timerkit.scheduler` — его даёт только `Module`, подложить его в обход
 нельзя. Поэтому модуль кита с job'ами (`outboxkit`,
 `bruteforcekit/pgstore`, `hubkit/sync`) без `timerkit.Module` не собирается ни в
 `fx.New`, ни в `fx.ValidateApp`, а повторное подключение `Module` — ошибка
 `already provided`, а не двойной запуск job'ов. Job регистрируется только через
-`Provide`: провайдер с сырым тегом группы `timerkit.Group` эту проверку обходит.
+`ProvideJob`: провайдер с сырым тегом группы `timerkit.JobsGroup` эту проверку обходит.
 
 Регистрация — только через fx-группу; вне `fx.App` публичного API запуска нет.
 
@@ -162,7 +162,7 @@ timerkit.Provide(jobsFromEngines, fx.ParamTags(`group:"hubkit.sync.engine"`))
 
 ## Инварианты и подводные камни
 
-- **Регистрация — через `timerkit.Provide`.** Он ставит тег группы сам и
+- **Регистрация — через `timerkit.ProvideJob`.** Он ставит тег группы сам и
   требует `timerkit.Module`; конструктор неверного типа и граф без модуля валят
   сборку, а не молча теряют job.
 - **Валидация — на старте.** `Name == ""`, `Run == nil`, `Interval <= 0`,

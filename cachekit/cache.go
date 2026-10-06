@@ -319,7 +319,7 @@ func milliseconds(ttl time.Duration) int64 {
 	return ms
 }
 
-// Probe — health-проба кэша для fx-группы `healthkit.probes` (healthkit.Provide).
+// Probe — health-проба кэша для fx-группы `healthkit.probes` (healthkit.ProvideProbe).
 func Probe(c Cache) healthkit.Probe {
 	return healthkit.New("cachekit", c.Ping)
 }

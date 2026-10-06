@@ -210,11 +210,13 @@ helper'ов, ENV-переопределений образов нет тоже. 
 
 Сабпакеты Docker не требуют — это чистый Go без внешних зависимостей рантайма.
 
-Часть фейков живёт в самих китах, а не в testkit, — там, где реализация полезна и
-в проде: `cachekit.NewMemoryCache()` закрывает `cachekit.Cache` без Redis,
-`storagekit.NewMemoryStorage()` — `storagekit.Storage`/`Presigner` без S3
-(`storagetest.RunContract` прогоняет по ним тот же контракт, что по боевому
-адаптеру), `clockkit.NewFixed`/`NewTickable` — часы теста.
+В самих китах живут только исключения правила «test-хелперы — в testkit»: in-memory
+реализации двойного назначения — `cachekit.NewMemoryCache()` (`cachekit.Cache` без Redis),
+`storagekit.NewMemoryStorage()` (`storagekit.Storage`/`Presigner` без S3;
+`storagetest.RunContract` прогоняет по нему тот же контракт, что по боевому адаптеру),
+`httpkit.NewMemoryStore()` (хранилище идемпотентности одного процесса); фейки часов
+`clockkit.NewFixed`/`NewTickable` — часть контракта `Clock`; маркер транзакции
+`pgkit.WithTestTx` — ключ ctx знает только pgkit.
 
 ## Сабпакеты
 

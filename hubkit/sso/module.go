@@ -118,8 +118,8 @@ var Verifiers = fx.Options(
 		newVerifier,
 		newCustomerVerifier,
 		NewDualExtractor,
-		fx.Annotate(SecuritySchemes, fx.ResultTags(`group:"httpkit.security_scheme,flatten"`)),
 	),
+	httpkit.ProvideSecurityScheme(SecuritySchemes),
 )
 
 // Module — drop-in верификатор hub-сессии обоих контуров: Verifiers +

@@ -50,7 +50,7 @@ func TestClientIP_TrustProxyHops(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := clientIPOf(t, httpkit.ClientIP(logkit.Nop(), c.hops), c.remote, c.xff...); got != c.want {
+			if got := clientIPOf(t, httpkit.ClientIP(c.hops, logkit.Nop()), c.remote, c.xff...); got != c.want {
 				t.Fatalf("ClientIPFrom = %q, want %q", got, c.want)
 			}
 		})
@@ -68,7 +68,7 @@ func TestClientIP_WarnsOnceAboutIgnoredForwardedFor(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	mw := httpkit.ClientIP(log, 0)
+	mw := httpkit.ClientIP(0, log)
 	clientIPOf(t, mw, "10.0.0.9:1")
 	if buf.Len() != 0 {
 		t.Fatalf("no X-Forwarded-For — no warning: %s", buf.String())

@@ -118,7 +118,7 @@ API не было.
 с таймаутом 3 с: `Models.Get(Config.DefaultModel)` проверяет ключ, endpoint и
 существование модели, ничего не тарифицируя. Проба **не** регистрируется
 автоматически: связывать readiness сервиса со сторонним платным API — решение
-деплоя. Нужна в `/ready` — добавьте `healthkit.Provide(anthropickit.Probe)` в
+деплоя. Нужна в `/ready` — добавьте `healthkit.ProvideProbe(anthropickit.Probe)` в
 граф.
 
 ## Resource attributes

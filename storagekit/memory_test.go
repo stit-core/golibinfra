@@ -28,7 +28,7 @@ func TestMemoryStorage_Contract(t *testing.T) {
 		return storagetest.Subject{
 			Storage:   m,
 			Presigner: m,
-			Keys:      func(*testing.T) []string { return m.Keys() },
+			Keys:      func(*testing.T) []string { return storagekit.MemoryKeys(m) },
 		}
 	})
 }
@@ -48,7 +48,7 @@ func TestMemoryStorage_PutReturnsStableRef(t *testing.T) {
 		t.Errorf("Key = %q, want .png suffix", ref.Key)
 	}
 
-	got, ok := m.Bytes(ref.Key)
+	got, ok := storagekit.MemoryBytes(m, ref.Key)
 	if !ok || !bytes.Equal(got, body) {
 		t.Fatalf("Bytes(%q) = %q,%v want %q,true", ref.Key, got, ok, body)
 	}
@@ -77,12 +77,12 @@ func TestMemoryStorage_GetReturnsCopy(t *testing.T) {
 	}
 	copy(got, "mutated!")
 
-	stored, _ := m.Bytes(ref.Key)
+	stored, _ := storagekit.MemoryBytes(m, ref.Key)
 	if !bytes.Equal(stored, body) {
 		t.Fatalf("Get returned internal slice: stored %q", stored)
 	}
 	copy(stored, "mutated!")
-	if again, _ := m.Bytes(ref.Key); !bytes.Equal(again, body) {
+	if again, _ := storagekit.MemoryBytes(m, ref.Key); !bytes.Equal(again, body) {
 		t.Fatalf("Bytes returned internal slice: stored %q", again)
 	}
 }
@@ -130,23 +130,23 @@ func TestMemoryStorage_KeysListsStoredObjects(t *testing.T) {
 	m := newMem()
 	ctx := context.Background()
 
-	if got := m.Keys(); len(got) != 0 {
+	if got := storagekit.MemoryKeys(m); len(got) != 0 {
 		t.Fatalf("Keys on empty storage = %v", got)
 	}
 	ref, err := m.Put(ctx, strings.NewReader("a"), "text/plain", 1)
 	if err != nil {
 		t.Fatalf("Put: %v", err)
 	}
-	if got := m.Keys(); len(got) != 1 || got[0] != ref.Key {
+	if got := storagekit.MemoryKeys(m); len(got) != 1 || got[0] != ref.Key {
 		t.Fatalf("Keys = %v, want [%s]", got, ref.Key)
 	}
-	if _, ok := m.Bytes("missing"); ok {
+	if _, ok := storagekit.MemoryBytes(m, "missing"); ok {
 		t.Error("Bytes(missing) reported a stored object")
 	}
 	if err := m.Delete(ctx, ref.Key); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if got := m.Keys(); len(got) != 0 {
+	if got := storagekit.MemoryKeys(m); len(got) != 0 {
 		t.Fatalf("Keys after Delete = %v", got)
 	}
 }
@@ -160,7 +160,7 @@ func TestMemoryStorage_PutPropagatesReadError(t *testing.T) {
 	if !errors.Is(err, storagekit.ErrUploadFailed) || !errors.Is(err, want) {
 		t.Fatalf("Put = %v, want ErrUploadFailed wrapping the source error", err)
 	}
-	if got := m.Keys(); len(got) != 0 {
+	if got := storagekit.MemoryKeys(m); len(got) != 0 {
 		t.Fatalf("failed Put left objects behind: %v", got)
 	}
 }
@@ -177,7 +177,7 @@ func TestMemoryStorage_PutHonoursCancelDuringRead(t *testing.T) {
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Put = %v, want context.Canceled", err)
 	}
-	if got := m.Keys(); len(got) != 0 {
+	if got := storagekit.MemoryKeys(m); len(got) != 0 {
 		t.Fatalf("cancelled Put left objects behind: %v", got)
 	}
 }
@@ -221,7 +221,7 @@ func TestMemoryStorage_PutRejectsSizeMismatch(t *testing.T) {
 			t.Fatalf("Put(size=%d): err = %v, want ErrSizeMismatch", declared, err)
 		}
 	}
-	if got := m.Keys(); len(got) != 0 {
+	if got := storagekit.MemoryKeys(m); len(got) != 0 {
 		t.Fatalf("nothing must be stored on mismatch, got %v", got)
 	}
 }

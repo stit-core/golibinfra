@@ -36,7 +36,7 @@ func startDB(t *testing.T) (*pgkit.DB, context.Context) {
 
 func newStore(t *testing.T, db *pgkit.DB, cfg bruteforcekit.Config) *pgstore.Store {
 	t.Helper()
-	s, err := pgstore.NewStore(db, cfg)
+	s, err := pgstore.NewStore(cfg, db)
 	if err != nil {
 		t.Fatalf("NewStore: %v", err)
 	}
@@ -46,12 +46,12 @@ func newStore(t *testing.T, db *pgkit.DB, cfg bruteforcekit.Config) *pgstore.Sto
 func TestNewStore_ValidatesConfig(t *testing.T) {
 	t.Parallel()
 	// Нулевой конфиг выключил бы guard молча: locked_until = NOW() + 0s.
-	if _, err := pgstore.NewStore(nil, bruteforcekit.Config{}); !errors.Is(err, bruteforcekit.ErrConfig) {
+	if _, err := pgstore.NewStore(bruteforcekit.Config{}, nil); !errors.Is(err, bruteforcekit.ErrConfig) {
 		t.Fatalf("NewStore(zero config) = %v, want ErrConfig", err)
 	}
 	cfg := config()
 	cfg.LockDuration = 0
-	if _, err := pgstore.NewStore(nil, cfg); !errors.Is(err, bruteforcekit.ErrConfig) {
+	if _, err := pgstore.NewStore(cfg, nil); !errors.Is(err, bruteforcekit.ErrConfig) {
 		t.Fatalf("NewStore(LockDuration=0) = %v, want ErrConfig", err)
 	}
 }

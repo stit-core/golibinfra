@@ -45,7 +45,7 @@ var userErrors = httpkit.NewErrorMap(
 app := fx.New(
     logkit.Module,                                  // logkit.Logger
     fx.Provide(logkit.NewConfig, logkit.NewRedactConfig, httpkit.NewConfig), // LOG_*/HTTP_* из ENV
-    healthkit.Provide(pgkit.Probe),                 // проба в /ready
+    healthkit.ProvideProbe(pgkit.Probe),                 // проба в /ready
     fx.Invoke(func(api huma.API) {                  // корневой Invoke — до httpkit.Module
         huma.Register(api, userErrors.Declare(huma.Operation{ // коды — в openapi.json
             OperationID: "getUser", Method: http.MethodGet, Path: "/users/{id}",
@@ -67,12 +67,12 @@ app.Run()
 проверку старта `Module` делает `s.CheckRoutes()`:
 
 ```go
-s, err := httpkit.NewServer(cfg, httpkit.WithLogger(log), httpkit.WithAuthExtractor(extract))
+s, err := httpkit.NewServer(cfg, log, httpkit.WithAuthExtractor(extract))
 if err != nil {
     return err
 }
 api := s.BindAPI()
-httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout, pgkit.Probe(db))
+httpkit.RegisterHealth(api, cfg.ReadyProbeTimeout, log, pgkit.Probe(db))
 huma.Get(api, "/ping", handler)
 if err := s.CheckRoutes(); err != nil {
     return err

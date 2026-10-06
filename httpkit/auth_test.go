@@ -37,7 +37,7 @@ func authAPIs(t *testing.T, log logkit.Logger, extract httpkit.AuthExtractor) ma
 
 	out := map[string]humatest.TestAPI{"humachi": chiAPI, "humatest": flowAPI}
 	for _, api := range out {
-		api.UseMiddleware(httpkit.HumaAuth(log, extract))
+		api.UseMiddleware(httpkit.HumaAuth(extract, log))
 		registerAuthRoutes(api)
 	}
 	return out

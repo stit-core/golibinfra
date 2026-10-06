@@ -108,7 +108,7 @@ type DeadReviver interface {
 
 // Maintainer — опциональный интерфейс Repository: периодические job'ы
 // обслуживания хранилища (партиции, retention). Instance кладёт их в
-// fx-группу timerkit.Group рядом с job'ом воркера.
+// fx-группу timerkit.JobsGroup рядом с job'ом воркера.
 type Maintainer interface {
 	MaintenanceJobs() []timerkit.Job
 }

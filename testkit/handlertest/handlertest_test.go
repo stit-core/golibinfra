@@ -184,7 +184,7 @@ func TestNewAPI_WithAuth(t *testing.T) {
 func TestNewAPI_SecuredOperationClosedByDefault(t *testing.T) {
 	api := handlertest.NewAPI(t, func(api huma.API) {
 		registerSecret(api)
-		api.UseMiddleware(httpkit.HumaAuth(logkit.Nop(), func(r *http.Request) (context.Context, error) { return r.Context(), nil }))
+		api.UseMiddleware(httpkit.HumaAuth(func(r *http.Request) (context.Context, error) { return r.Context(), nil }, logkit.Nop()))
 	})
 	handlertest.AssertAPIError(t, api.Get("/secret", "Authorization: Bearer alice"), http.StatusInternalServerError, "AUTH_NOT_CONFIGURED")
 }

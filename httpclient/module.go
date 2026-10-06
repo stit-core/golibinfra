@@ -9,23 +9,24 @@ import (
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
-// OptionGroup — fx-группа опций клиента: всё, что нельзя выразить через ENV
-// (hook лимитера, собственный транспорт), приезжает в Module через неё.
-const OptionGroup = "httpclient.options"
-
 // Module не provide'ит Config: caller регистрирует его сам
 // (`fx.Provide(httpclient.NewConfig)` или из App-структуры).
 var Module = fx.Module("httpclient",
 	fx.Provide(newClient),
 )
 
-// Params — вход Module: Config от caller'а и опции из группы OptionGroup.
+// Options — опции клиента в графе одним значением: всё, что нельзя выразить через ENV
+// (hook лимитера, подпись, собственный транспорт). Применяются в порядке слайса; одно
+// значение на граф — порядок задаёт приложение.
+type Options []Option
+
+// Params — вход Module: Config от caller'а и опциональные Options.
 type Params struct {
 	fx.In
 
 	Config    Config
 	Lifecycle fx.Lifecycle
-	Options   []Option `group:"httpclient.options"`
+	Options   Options `optional:"true"`
 }
 
 func newClient(p Params) (*Client, error) {
@@ -35,12 +36,6 @@ func newClient(p Params) (*Client, error) {
 	}
 	p.Lifecycle.Append(fx.Hook{OnStop: func(context.Context) error { return c.Close() }})
 	return c, nil
-}
-
-// ProvideOption регистрирует конструктор Option в группе OptionGroup:
-// `httpclient.ProvideOption(func(rl *limiter) httpclient.Option { … })`.
-func ProvideOption(ctor any) fx.Option {
-	return fx.Provide(fx.Annotate(ctor, fx.ResultTags(`group:"`+OptionGroup+`"`)))
 }
 
 // NewConfig читает конфиг из `HTTPCLIENT_*`.

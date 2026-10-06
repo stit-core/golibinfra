@@ -224,7 +224,7 @@ func (s *store) Load(ctx context.Context, resource string) (int64, error) {
 var Module = fx.Options(
 	fx.Provide(client.NewConfig, sync.NewConfig),
 	client.Module,
-	sync.Module,    // HTTPFetcher + разворот движков в timerkit.Group
+	sync.Module,    // HTTPFetcher + разворот движков в timerkit.JobsGroup
 	timerkit.Module, // крутит job'ы с graceful shutdown
 
 	fx.Provide(fx.Annotate(newCompaniesEngine, fx.ResultTags(`group:"hubkit.sync.engine"`))),
@@ -243,7 +243,7 @@ func newCompaniesEngine(f sync.Fetcher, st *store, cfg sync.Config, log logkit.L
 ## Схема проекций
 
 ```go
-pgkit.ProvideMigrations(projection.Migrations) // применить эталон как есть
+pgkit.SupplyMigrations(projection.Migrations) // применить эталон как есть
 ```
 
 либо скопировать `templates/*.sql` в каталог миграций продукта и `queries/*.sql`

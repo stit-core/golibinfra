@@ -13,11 +13,11 @@ import (
 	"go.uber.org/fx"
 )
 
-// Group — имя fx-группы, из которой httpkit читает пробы.
-const Group = "healthkit.probes"
+// ProbesGroup — имя fx-группы, из которой httpkit и grpckit читают пробы.
+const ProbesGroup = "healthkit.probes"
 
 // Probe — именованная проверка готовности зависимости. Name — идентификатор
-// в логе /ready («pgkit», «natskit/events»); структура, а не голая функция,
+// в логе /ready («pgkit», «natskit:events»); структура, а не голая функция,
 // потому что без имени упавшую зависимость в логе не отличить.
 type Probe struct {
 	Name  string
@@ -81,16 +81,16 @@ func WithTimeout(p Probe, d time.Duration) Probe {
 	}}
 }
 
-// Provide регистрирует конструктор, возвращающий Probe, в группу `healthkit.probes`.
+// ProvideProbe регистрирует конструктор, возвращающий Probe, в группу ProbesGroup.
 // Конструктор неверного типа отвергается при сборке графа: иначе значение
 // молча ложится в группу другим типом и /ready остаётся «ok» без проб.
 // Дополнительные аннотации (например fx.ParamTags для именованного инстанса)
 // применяются до групповой; свой fx.ResultTags передавать нельзя.
-func Provide(ctor any, anns ...fx.Annotation) fx.Option {
+func ProvideProbe(ctor any, anns ...fx.Annotation) fx.Option {
 	if err := validateCtor(ctor); err != nil {
 		return fx.Error(err)
 	}
-	return fx.Provide(fx.Annotate(ctor, append(anns, fx.ResultTags(`group:"`+Group+`"`))...))
+	return fx.Provide(fx.Annotate(ctor, append(anns, fx.ResultTags(`group:"`+ProbesGroup+`"`))...))
 }
 
 var probeType = reflect.TypeFor[Probe]()
@@ -98,10 +98,10 @@ var probeType = reflect.TypeFor[Probe]()
 func validateCtor(ctor any) error {
 	t := reflect.TypeOf(ctor)
 	if t == nil || t.Kind() != reflect.Func {
-		return fmt.Errorf("healthkit: Provide expects a constructor function returning healthkit.Probe, got %T", ctor)
+		return fmt.Errorf("healthkit: ProvideProbe expects a constructor function returning healthkit.Probe, got %T", ctor)
 	}
 	if t.NumOut() == 0 || t.Out(0) != probeType {
-		return fmt.Errorf("healthkit: Provide constructor must return healthkit.Probe as its first result, got %v", t)
+		return fmt.Errorf("healthkit: ProvideProbe constructor must return healthkit.Probe as its first result, got %v", t)
 	}
 	return nil
 }

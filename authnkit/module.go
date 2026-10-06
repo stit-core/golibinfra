@@ -8,8 +8,8 @@ import (
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
-// Module не provide'ит Argon2idParams, JWTConfig и TOTPConfig — caller
-// регистрирует их сам (через App-структуру или `fx.Provide(authnkit.NewArgon2idParams,
+// Module не provide'ит Argon2idConfig, JWTConfig и TOTPConfig — caller
+// регистрирует их сам (через App-структуру или `fx.Provide(authnkit.NewArgon2idConfig,
 // authnkit.NewJWTConfig, authnkit.NewTOTPConfig)`).
 var Module = fx.Module("authnkit",
 	fx.Provide(
@@ -22,17 +22,17 @@ var Module = fx.Module("authnkit",
 
 // Конструкторы кита вариадические (opts ...Option), поэтому в графе они живут
 // обёртками: fx.Annotate вариадические функции не аннотирует.
-func newHasher(p Argon2idParams) (*Argon2idHasher, error) { return NewArgon2idHasher(p) }
+func newHasher(p Argon2idConfig) (*Argon2idHasher, error) { return NewArgon2idHasher(p) }
 
 func newJWT(cfg JWTConfig) (*HS256JWT, error) { return NewHS256JWT(cfg) }
 
 func newTOTPGenerator(cfg TOTPConfig) (*TOTPGenerator, error) { return NewTOTP(cfg) }
 
-// NewArgon2idParams читает ARGON2_* из ENV и валидирует их.
-func NewArgon2idParams() (Argon2idParams, error) {
-	var p Argon2idParams
+// NewArgon2idConfig читает ARGON2_* из ENV и валидирует их.
+func NewArgon2idConfig() (Argon2idConfig, error) {
+	var p Argon2idConfig
 	if err := envconf.Load(&p); err != nil {
-		return Argon2idParams{}, fmt.Errorf("%w: %w", ErrConfig, err)
+		return Argon2idConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return p, p.Validate()
 }

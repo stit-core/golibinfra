@@ -16,6 +16,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/cachekit"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/hubkit/issuer"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 )
 
@@ -67,7 +68,7 @@ func TestRegisterJWKS_PassesServerRouteCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("httpkit config: %v", err)
 	}
-	srv, err := httpkit.NewServer(cfg, httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
+	srv, err := httpkit.NewServer(cfg, logkit.Nop(), httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
 		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
 	}))
 	if err != nil {

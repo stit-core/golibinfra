@@ -13,7 +13,7 @@ import (
 
 // Module — fx-вход кита: *Store как session.Store, проверка схемы в OnStart (после
 // pgkit.MigrateModule, если он в графе), миграции в группе pgkit.migrations и
-// cleanup-job в группе timerkit.Group. Нужны *pgkit.DB (pgkit.Module),
+// cleanup-job в группе timerkit.JobsGroup. Нужны *pgkit.DB (pgkit.Module),
 // session.Config (fx.Provide(session.NewConfig)) и timerkit.Module; clockkit.Clock
 // из графа — опционально.
 var Module = fx.Module(
@@ -23,8 +23,12 @@ var Module = fx.Module(
 		func(s *Store) session.Store { return s },
 	),
 	fx.Invoke(checkSchemaOnStart),
-	timerkit.Provide(CleanupJob),
-	pgkit.ProvideMigrations(Migrations),
+	// Зависимость от pgkit.Migrated ставит хук job'ов в очередь после миграций.
+	timerkit.ProvideJob(
+		func(s *Store, cfg session.Config, _ pgkit.Migrated) timerkit.Job { return CleanupJob(s, cfg) },
+		fx.ParamTags(``, ``, `optional:"true"`),
+	),
+	pgkit.SupplyMigrations(Migrations),
 )
 
 type storeParams struct {
@@ -37,7 +41,7 @@ type storeParams struct {
 
 // NewStore вариадический, fx.Provide его не аннотирует — в графе он живёт обёрткой.
 func newStore(p storeParams) (*Store, error) {
-	return NewStore(p.DB, p.Cfg, WithClock(p.Clock))
+	return NewStore(p.Cfg, p.DB, WithClock(p.Clock))
 }
 
 // schemaParams: зависимость от pgkit.Migrated ставит хук после миграций; optional —

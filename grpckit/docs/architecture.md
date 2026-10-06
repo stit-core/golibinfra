@@ -82,7 +82,7 @@ RPC (`rpc.server.*`), читая meter/tracer из глобальных OTel-п�
 
 Доменные сервисы декаплированы от кита через value-group `grpckit.services`
 (константа `grpckit.ServicesGroup`). Каждый сервис-репо провайдит
-`ServiceRegistrar` с этим тегом; `Module` собирает `[]ServiceRegistrar` и
+`ServiceRegistrar` через `grpckit.ProvideService`; `Module` собирает `[]ServiceRegistrar` и
 навешивает все стабы до `Serve`. Так `grpckit` не импортирует ни одного `*.pb.go`
 — это держит границу «инфра-lib ↔ домен» из корневого CLAUDE.md.
 
@@ -90,7 +90,7 @@ RPC (`rpc.server.*`), читая meter/tracer из глобальных OTel-п�
 приложение само решает, как грузить конфиг. Дешёвый путь —
 `fx.Provide(grpckit.NewConfig)`. `Authenticator` во fx помечен `optional:"true"` —
 нет реализации в графе, auth не навешивается. Пробы из группы `healthkit.probes`
-(`healthkit.Group`) подхватываются автоматически.
+(`healthkit.ProbesGroup`) подхватываются автоматически.
 
 ## Lifecycle (fx)
 

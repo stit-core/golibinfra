@@ -249,7 +249,8 @@ at-least-once. Повтор в пределах окна
 `outboxkit.Module`; имя инстанса `outboxkit.DefaultInstance` (`outbox`) — label
 `instance` в метриках. `Transport` — `NewStreamTransport` (без namespace): голый
 id строки идёт как `Nats-Msg-Id`. Корректно, потому что `BIGSERIAL` одной
-таблицы глобально уникален.
+таблицы глобально уникален. Drain-job инстанса, как и job'ы `Instance`, зависит от optional
+`pgkit.Migrated`: тик не читает таблицу до миграций при любом порядке модулей.
 
 **Multi-instance** — несколько независимых outbox'ов в одном приложении (по
 таблице на домен): `pgstore.FactoryModule` + `outboxkit.Instance(name, table)` на

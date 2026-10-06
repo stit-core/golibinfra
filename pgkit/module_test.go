@@ -29,8 +29,8 @@ func TestModule_WiresGraphAndClosesPoolOnStop(t *testing.T) {
 		fx.NopLogger,
 		fx.Supply(pg.PoolConfig()),
 		pgkit.Module,
-		healthkit.Provide(pgkit.Probe),
-		healthkit.Provide(pgkit.ReplicaProbe),
+		healthkit.ProvideProbe(pgkit.Probe),
+		healthkit.ProvideProbe(pgkit.ReplicaProbe),
 		fx.Invoke(fx.Annotate(
 			func(d *pgkit.DB, x pgkit.Transactor, r *pgkit.ReadWriteDB, p []healthkit.Probe) {
 				db, tr, rw, probes = d, x, r, p
@@ -173,7 +173,7 @@ func TestMigrateModule_MigratedOrdersConsumerHooks(t *testing.T) {
 			pgkit.PoolConfig{DSN: pg.DSN},
 			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
 		),
-		pgkit.ProvideMigrations(pgkit.Source{Name: "d", FS: kit, Dir: "migrations"}),
+		pgkit.SupplyMigrations(pgkit.Source{Name: "d", FS: kit, Dir: "migrations"}),
 		pgkit.MigrateModule,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -240,7 +240,7 @@ func TestMigrateModule_FailedMigrationFailsStart(t *testing.T) {
 			pgkit.PoolConfig{DSN: pg.DSN},
 			pgkit.MigrateRunnerConfig{Path: "", Timeout: time.Minute},
 		),
-		pgkit.ProvideMigrations(pgkit.Source{Name: "i", FS: broken, Dir: "migrations"}),
+		pgkit.SupplyMigrations(pgkit.Source{Name: "i", FS: broken, Dir: "migrations"}),
 		pgkit.MigrateModule,
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
@@ -263,8 +263,8 @@ func TestQuickStartGraphValidates(t *testing.T) {
 		fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig),
 		pgkit.Module,
 		pgkit.MigrateModule,
-		healthkit.Provide(pgkit.Probe),
-		healthkit.Provide(pgkit.ReplicaProbe),
+		healthkit.ProvideProbe(pgkit.Probe),
+		healthkit.ProvideProbe(pgkit.ReplicaProbe),
 		fx.Invoke(func(*pgkit.DB, pgkit.Transactor) {}),
 	)
 	if err != nil {

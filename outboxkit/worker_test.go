@@ -63,7 +63,7 @@ func newWorker(t *testing.T, repo outboxkit.Repository, tr outboxkit.Transport, 
 // mustWorker — NewWorker с обязательными полями Config (valid); ошибка — t.Fatalf.
 func mustWorker(t *testing.T, name string, repo outboxkit.Repository, tr outboxkit.Transport, tx pgkit.Transactor, cfg outboxkit.Config, log logkit.Logger) *outboxkit.Worker {
 	t.Helper()
-	w, err := outboxkit.NewWorker(name, repo, tr, tx, valid(cfg), log)
+	w, err := outboxkit.NewWorker(name, valid(cfg), repo, tr, tx, log)
 	if err != nil {
 		t.Fatalf("NewWorker: %v", err)
 	}
@@ -225,10 +225,10 @@ func TestNewWorker_InvalidConfigIsErrConfig(t *testing.T) {
 		"zero max attempts": {BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxAttempts: 0, TickTimeout: time.Second, MaxPayloadBytes: 1},
 		"unknown mode":      valid(outboxkit.Config{PublishMode: "Ordered"}),
 	} {
-		if _, err := outboxkit.NewWorker("test", &fakeRepo{}, &fakeTransport{}, &pgtest.Recorder{}, cfg, logkit.Nop()); !errors.Is(err, outboxkit.ErrConfig) {
+		if _, err := outboxkit.NewWorker("test", cfg, &fakeRepo{}, &fakeTransport{}, &pgtest.Recorder{}, logkit.Nop()); !errors.Is(err, outboxkit.ErrConfig) {
 			t.Errorf("%s: NewWorker err = %v, want ErrConfig", name, err)
 		}
-		if _, err := outboxkit.New("test", &fakeRepo{}, &fakeTransport{}, &pgtest.Recorder{}, cfg, logkit.Nop()); !errors.Is(err, outboxkit.ErrConfig) {
+		if _, err := outboxkit.New("test", cfg, &fakeRepo{}, &fakeTransport{}, &pgtest.Recorder{}, logkit.Nop()); !errors.Is(err, outboxkit.ErrConfig) {
 			t.Errorf("%s: New err = %v, want ErrConfig", name, err)
 		}
 	}

@@ -36,10 +36,9 @@ func startErr(t *testing.T, opts ...fx.Option) error {
 }
 
 func schemeEntry(name string, scheme *huma.SecurityScheme) fx.Option {
-	return fx.Provide(fx.Annotate(
+	return httpkit.ProvideSecurityScheme(
 		func() httpkit.SecuritySchemeEntry { return httpkit.SecuritySchemeEntry{Name: name, Scheme: scheme} },
-		fx.ResultTags(`group:"`+httpkit.SecuritySchemeGroup+`"`),
-	))
+	)
 }
 
 var (
@@ -235,7 +234,7 @@ func TestModule_SecuritySchemeValues(t *testing.T) {
 func TestModule_DuplicateProbeName(t *testing.T) {
 	probe := func() healthkit.Probe { return healthkit.New("cachekit", func(context.Context) error { return nil }) }
 	err := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")), fx.Provide(logkit.Nop), httpkit.Module,
-		healthkit.Provide(probe), healthkit.Provide(probe)).Err()
+		healthkit.ProvideProbe(probe), healthkit.ProvideProbe(probe)).Err()
 	if !errors.Is(err, httpkit.ErrConfig) || !strings.Contains(err.Error(), `readiness probe "cachekit" is provided twice`) {
 		t.Fatalf("duplicate probe name must fail the graph: %v", err)
 	}
@@ -263,7 +262,7 @@ func TestServer_CheckRoutesWithoutFx(t *testing.T) {
 		t.Fatalf("declared raw route and public operation: %v", err)
 	}
 
-	if _, err := httpkit.NewServer(testConfig(t, "127.0.0.1:0"), httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Broken"})); !errors.Is(err, httpkit.ErrConfig) {
+	if _, err := httpkit.NewServer(testConfig(t, "127.0.0.1:0"), logkit.Nop(), httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Broken"})); !errors.Is(err, httpkit.ErrConfig) {
 		t.Fatalf("nil scheme: %v", err)
 	}
 }

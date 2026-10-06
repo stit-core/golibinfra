@@ -31,9 +31,12 @@ description: Завести в golibinfra новый kit по конвенция
    - `module.go` — `var Module = fx.Module("<kit>", fx.Provide(...))` с конструкторами
      и lifecycle (`OnStart` — fail-fast подключение, `OnStop` — `Close`). Имя модуля
      сабпакета — `<kit>/<sub>`, параметризованного — `<kit>:<instance>`. Нужна
-     fx-группа — заведи экспортируемую константу со значением `<kit>.<thing>`
-     (образцы: `healthkit.Group`, `timerkit.Group`, `grpckit.ServicesGroup`) и
-     `Provide`-хелпер рядом с ней.
+     fx-группа — заведи константу `<Thing>Group` со значением `<kit>.<thing>`
+     (образцы: `healthkit.ProbesGroup`, `timerkit.JobsGroup`, `grpckit.ServicesGroup`) и
+     рядом хелпер `Provide<Thing>(ctor, anns…)` с проверкой типа результата (значение —
+     `Supply<Thing>(v)`); набор, где важен порядок, — одно значение графа, не группа.
+     Конструктор — `(cfg, зависимости…, log, opts…)`, логгер — параметром, функция над готовым
+     объектом берёт его первым (CLAUDE.md § Стиль «Одна форма API»).
    - `<kit>_test.go` — тесты (unit; testcontainers — через `testkit`, если нужен I/O;
      образы с конкретным тегом, никогда `:latest`).
    - `module_test.go` — fx-тест графа: `fx.ValidateApp(...)` с минимальным набором
@@ -73,8 +76,10 @@ description: Завести в golibinfra новый kit по конвенция
 6. **testkit-сабпакет (опц.).** Нужны helpers для тестов консьюмера — заведи
    `testkit/<name>test/`, где `<name>` — имя кита **без** суффикса `kit`
    (`cachekit` → `testkit/cachetest/`; см. `authntest`, `bruteforcetest`).
-   Исключений нет: внутри каталога кита test-хелперов не держим. Добавь строку в
-   `testkit/README.md` и в перечень сабпакетов в корневом `README.md`.
+   Внутри каталога кита test-хелперов не держим; исключения — in-memory реализация
+   двойного назначения, фейки часов `clockkit` и маркер `pgkit.WithTestTx` (CLAUDE.md
+   § Стиль). Добавь строку в `testkit/README.md` и в перечень сабпакетов в корневом
+   `README.md`.
 7. **Документация.** Заведи `<kit>/README.md` (назначение, импорт, быстрый старт,
    конфигурация, observability, API, инварианты) — единый источник правды по
    киту. Для сложного кита разнеси детали по `<kit>/docs/` (`architecture.md`,

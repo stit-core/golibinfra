@@ -101,7 +101,7 @@ func TestSomething(t *testing.T) {
 | `TestStreamBus_StuckHandlerCancelled` | зависший обработчик получает `DeadlineExceeded` по `HandlerTimeout`; сообщение приходит повторно. |
 | `TestStreamBus_EnsureStreamsCreatesMissing` / `…KeepsOperatorTuning` / `…UnmanagedStreams` | декларация стримов: создание, долив только `<name>.>`, режим `StreamManaged=false`. |
 | `TestStreamBus_WarnsOnStreamConfigDrift` | расхождение конфига существующего стрима с ENV сообщается `warn`-записью. |
-| `TestModule_*` | fx-граф: `Module` требует `Config` от caller'а, именованный инстанс, `HealthProbe`, невалидное имя инстанса, живой Start/Stop. |
+| `TestModule_*` | fx-граф: `Module` требует `Config` от caller'а, именованный инстанс, `ProvideProbe`, невалидное имя инстанса, живой Start/Stop. |
 | `TestNewConfig_*` / `TestConfig_Validate` | чтение ENV, дефолты, изоляция префиксов, табличная проверка `Validate` (URL, таймауты, файлы, JetStream-поля). |
 | `TestStreamBus_DLQPublishFailureKeepsMessage` | DLQ-стрим отвергает копию (`discard=new`) — оригинал не терминируется, а возвращается на ределивери. |
 | `TestKeepInProgress_*` | keepalive `+WPI`: транзиентная ошибка не выключает тикер (предупреждение — одно), подтверждённое сообщение и отмена `ctx` его останавливают. |
