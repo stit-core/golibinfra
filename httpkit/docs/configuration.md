@@ -14,7 +14,8 @@
 | `HTTP_READ_HEADER_TIMEOUT` | `ReadHeaderTimeout` | `time.Duration` | `10s` | `http.Server.ReadHeaderTimeout` (slowloris) |
 | `HTTP_WRITE_TIMEOUT` | `WriteTimeout` | `time.Duration` | `30s` | `http.Server.WriteTimeout`; для SSE ставьте `0` |
 | `HTTP_IDLE_TIMEOUT` | `IdleTimeout` | `time.Duration` | `60s` | `http.Server.IdleTimeout` |
-| `HTTP_SHUTDOWN_TIMEOUT` | `ShutdownTimeout` | `time.Duration` | `15s` | дедлайн graceful-shutdown на `OnStop`; `> 0` |
+| `HTTP_SHUTDOWN_DRAIN_DELAY` | `ShutdownDrainDelay` | `time.Duration` | `0s` | пауза остановки: `/ready` отвечает `503`, listener ещё принимает запросы — балансировщик выводит инстанс; за балансировщиком (k8s) — 5–10 с; `>= 0` (§ Остановка) |
+| `HTTP_SHUTDOWN_TIMEOUT` | `ShutdownTimeout` | `time.Duration` | `10s` | сколько после паузы дорабатывают запросы в полёте; на дедлайне их ctx отменяется, соединения закрываются; `> 0` (§ Остановка) |
 | `HTTP_API_TITLE` | `APITitle` | `string` | `API` | title в OpenAPI; не пуст |
 | `HTTP_API_VERSION` | `APIVersion` | `string` | `0.1.0` | version в OpenAPI; не пуст |
 | `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `false` | `true` отдаёт `/docs`, `/openapi.json`, `/openapi.yaml`, `/schemas` без аутентификации — карта всех операций; для dev и внутреннего контура |
@@ -113,10 +114,33 @@ Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP и�
 | `HTTP_IDEMPOTENCY_STORE_TIMEOUT` | `StoreTimeout` | `time.Duration` | `2s` | потолок одной операции store; запись результата не зависит от отмены ctx клиента; `> 0` |
 | `HTTP_IDEMPOTENCY_FAIL_CLOSED` | `FailClosed` | `bool` | `false` | `true` — недоступный store отвечает `503 IDEMPOTENCY_UNAVAILABLE`; `false` — запрос выполняется без дедупликации (fail-open) |
 
+## Остановка
+
+`OnStop` сервера (и `Server.Stop` без fx):
+
+1. `/ready` сразу отвечает `503 {"status":"draining"}`;
+2. пауза `HTTP_SHUTDOWN_DRAIN_DELAY` — listener открыт, запросы обслуживаются, а
+   балансировщик по `/ready` выводит инстанс;
+3. listener закрывается, запросы в полёте дорабатывают ещё
+   `HTTP_SHUTDOWN_TIMEOUT`;
+4. на дедлайне ctx оставшихся хендлеров отменяется (и у захваченных соединений,
+   WebSocket), соединения закрываются, WARN `http server stop deadline: requests
+   cancelled, connections closed` называет их число.
+
+Шаги 2–4 укладываются и в две трети остатка бюджета остановки (`fx.StopTimeout`):
+треть остаётся хукам после HTTP — drain подписок natskit, остановке job'ов,
+закрытию пула, финальному экспорту telemetry, — даже если долгий запрос или
+SSE-поток держит соединение. Чтобы HTTP не упирался в этот потолок, держите
+`HTTP_SHUTDOWN_DRAIN_DELAY + HTTP_SHUTDOWN_TIMEOUT` не больше двух третей
+`fx.StopTimeout`, а сумму с `NATS_DRAIN_TIMEOUT` и прочими бюджетами хуков —
+не больше `fx.StopTimeout`; оркестратор ждёт дольше `fx.StopTimeout`
+(`terminationGracePeriodSeconds`, `stop_grace_period`). Дефолты — `0s` и `10s` при
+`fx.StopTimeout` по умолчанию `15s`.
+
 ## Правила Validate
 
-- `Addr` не пуст; таймауты `>= 0`; `ShutdownTimeout > 0`; `ReadyProbeTimeout > 0`;
-  `TrustProxyHops >= 0`.
+- `Addr` не пуст; таймауты `>= 0`; `ShutdownTimeout > 0`; `ShutdownDrainDelay >= 0`;
+  `ReadyProbeTimeout > 0`; `TrustProxyHops >= 0`.
 - `APITitle` и `APIVersion` не пусты.
 - `RateLimit.RPS`, `RateLimit.Burst`, `MaxBody.MaxBytes`, `CORS.MaxAge` `>= 0`.
 - `Idempotency`: `Header` не пуст, `TTL`, `ReserveTTL`, `MaxBodyBytes`,

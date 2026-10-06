@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
@@ -32,9 +33,14 @@ type Config struct {
 	ReadHeaderTimeout time.Duration `envconfig:"HTTP_READ_HEADER_TIMEOUT" default:"10s"`
 	WriteTimeout      time.Duration `envconfig:"HTTP_WRITE_TIMEOUT" default:"30s"`
 	IdleTimeout       time.Duration `envconfig:"HTTP_IDLE_TIMEOUT" default:"60s"`
-	ShutdownTimeout   time.Duration `envconfig:"HTTP_SHUTDOWN_TIMEOUT" default:"15s"`
-	APITitle          string        `envconfig:"HTTP_API_TITLE" default:"API"`
-	APIVersion        string        `envconfig:"HTTP_API_VERSION" default:"0.1.0"`
+	// ShutdownDrainDelay — пауза остановки, пока /ready отвечает 503, а listener ещё
+	// принимает запросы: балансировщик успевает вывести инстанс.
+	ShutdownDrainDelay time.Duration `envconfig:"HTTP_SHUTDOWN_DRAIN_DELAY" default:"0s"`
+	// ShutdownTimeout — сколько после паузы дорабатывают запросы в полёте; на дедлайне их ctx
+	// отменяется, а соединения закрываются.
+	ShutdownTimeout time.Duration `envconfig:"HTTP_SHUTDOWN_TIMEOUT" default:"10s"`
+	APITitle        string        `envconfig:"HTTP_API_TITLE" default:"API"`
+	APIVersion      string        `envconfig:"HTTP_API_VERSION" default:"0.1.0"`
 	// DocsEnabled=true отдаёт /docs, /openapi.* и /schemas без аутентификации — карту API.
 	DocsEnabled bool `envconfig:"HTTP_DOCS_ENABLED" default:"false"`
 	// ReadyProbeTimeout — потолок одной пробы /ready.
@@ -64,6 +70,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: timeouts must be >= 0", ErrConfig)
 	case c.ShutdownTimeout <= 0:
 		return fmt.Errorf("%w: ShutdownTimeout must be > 0", ErrConfig)
+	case c.ShutdownDrainDelay < 0:
+		return fmt.Errorf("%w: ShutdownDrainDelay must be >= 0", ErrConfig)
 	case c.ReadyProbeTimeout <= 0:
 		return fmt.Errorf("%w: ReadyProbeTimeout must be > 0", ErrConfig)
 	case c.TrustProxyHops < 0:
@@ -149,8 +157,23 @@ type Server struct {
 	// huma.Register.
 	docsRoutes map[string]bool
 
+	// draining — Stop начался: /ready отвечает 503 (флаг едет в ctx запросов через baseCtx).
+	draining atomic.Bool
+	// baseCtx — родитель ctx всех запросов; Stop отменяет его на дедлайне остановки.
+	baseCtx    context.Context
+	cancelBase context.CancelFunc
+	inflight   atomic.Int64
+
 	mu sync.Mutex
 	ln net.Listener
+}
+
+type drainingKey struct{}
+
+// draining — запрос пришёл на сервер, который останавливается (Stop).
+func draining(ctx context.Context) bool {
+	flag, _ := ctx.Value(drainingKey{}).(*atomic.Bool)
+	return flag != nil && flag.Load()
 }
 
 // NewServer собирает сервер из конфига и опций; middleware из WithMiddleware
@@ -161,18 +184,25 @@ func NewServer(cfg Config, opts ...ServerOption) *Server {
 		opt(&o)
 	}
 	r := chi.NewRouter()
-	srv := &http.Server{
-		Addr:              cfg.Addr,
-		Handler:           r,
+	if o.log == nil {
+		o.log = logkit.Nop()
+	}
+	s := &Server{cfg: cfg, opts: o, router: r}
+	s.baseCtx, s.cancelBase = context.WithCancel(context.WithValue(context.Background(), drainingKey{}, &s.draining))
+	s.srv = &http.Server{
+		Addr: cfg.Addr,
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+			s.inflight.Add(1)
+			defer s.inflight.Add(-1)
+			r.ServeHTTP(w, req)
+		}),
+		BaseContext:       func(net.Listener) context.Context { return s.baseCtx },
 		ReadTimeout:       cfg.ReadTimeout,
 		ReadHeaderTimeout: cfg.ReadHeaderTimeout,
 		WriteTimeout:      cfg.WriteTimeout,
 		IdleTimeout:       cfg.IdleTimeout,
+		ErrorLog:          slog.NewLogLogger(logkitHandler{log: o.log}, slog.LevelWarn),
 	}
-	if o.log == nil {
-		o.log = logkit.Nop()
-	}
-	srv.ErrorLog = slog.NewLogLogger(logkitHandler{log: o.log}, slog.LevelWarn)
 	if len(o.middleware) > 0 {
 		r.Use(o.middleware...)
 	}
@@ -182,7 +212,7 @@ func NewServer(cfg Config, opts ...ServerOption) *Server {
 	r.MethodNotAllowed(methodNotAllowed(r))
 	// huma.API создаётся лениво в BindAPI(): humachi.New регистрирует
 	// /openapi.json и /docs, после чего chi запрещает router.Use(...).
-	return &Server{cfg: cfg, opts: o, router: r, srv: srv}
+	return s
 }
 
 // BindAPI инициализирует huma.API поверх chi; операции, зарегистрированные на нём (и на
@@ -278,9 +308,34 @@ func (s *Server) Serve() error {
 	return nil
 }
 
-// Stop останавливает приём соединений и ждёт завершения текущих до ctx.
+// Stop останавливает сервер: /ready отвечает 503, через HTTP_SHUTDOWN_DRAIN_DELAY listener
+// закрывается, а запросы в полёте дорабатывают ещё HTTP_SHUTDOWN_TIMEOUT, но не дольше
+// дедлайна ctx. На дедлайне ctx хендлеров отменяется, соединения закрываются, число
+// прерванных запросов — в WARN; ошибка — только у самого закрытия.
 func (s *Server) Stop(ctx context.Context) error {
-	return s.srv.Shutdown(ctx)
+	s.draining.Store(true)
+	ctx, cancel := context.WithTimeout(ctx, s.cfg.ShutdownDrainDelay+s.cfg.ShutdownTimeout)
+	defer cancel()
+	if s.cfg.ShutdownDrainDelay > 0 {
+		pause := time.NewTimer(s.cfg.ShutdownDrainDelay)
+		select {
+		case <-pause.C:
+		case <-ctx.Done():
+		}
+		pause.Stop()
+	}
+	err := s.srv.Shutdown(ctx)
+	inflight := s.inflight.Load()
+	s.cancelBase()
+	if err == nil {
+		return nil
+	}
+	if err := s.srv.Close(); err != nil {
+		return fmt.Errorf("httpkit: close: %w", err)
+	}
+	s.opts.log.Warn(ctx, "http server stop deadline: requests cancelled, connections closed",
+		"requests", inflight, "err", err)
+	return nil
 }
 
 // transformError дополняет ответ-ошибку huma перед записью статуса: request_id

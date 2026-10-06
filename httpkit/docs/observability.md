@@ -64,10 +64,14 @@ server-span и извлекает входящий `traceparent`, а все по
 - `idempotency store failed` (Warn) с `op` (`get`, `reserve`, `set`, `release`), `err` и
   `fail_closed` — `Idempotency`; тот же отказ считает `http_idempotency_total{result="error"}`.
 - `readiness probe failed` (Warn) с `probe` и `err` — `/ready`; текст ошибки
-  клиенту не отдаётся.
+  клиенту не отдаётся. `readiness probe panicked` (Error) с `probe`, `panic` и
+  `stack` — panic пробы; проба `down`, процесс жив.
 - `http server listening` (Info) с фактическим `addr` — старт;
   `http server stopped` (Error) — падение `Serve`, после которого приложение
   гасится.
+- `http server stop deadline: requests cancelled, connections closed` (Warn) с
+  `requests` — числом запросов в полёте — и `err` — дедлайн остановки: их ctx
+  отменён, соединения закрыты ([configuration.md § Остановка](configuration.md#остановка)).
 - `http server error` (Warn) — ошибки net/http из `http.Server.ErrorLog`.
 - `x-forwarded-for ignored: HTTP_TRUST_PROXY_HOPS=0, client ip is the peer address` (Warn,
   один раз) с `peer` — `ClientIP`: пришёл `X-Forwarded-For`, а доверенных прокси 0.

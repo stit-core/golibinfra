@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/kelseyhightower/envconfig"
@@ -170,9 +171,14 @@ func serve(in serveIn) {
 			}()
 			return nil
 		},
-		OnStop: func(stopCtx context.Context) error {
-			ctx, cancel := context.WithTimeout(stopCtx, s.cfg.ShutdownTimeout)
-			defer cancel()
+		OnStop: func(ctx context.Context) error {
+			// Треть остатка бюджета остановки — хукам после HTTP (подписки, пул, телеметрия): долгий
+			// запрос или поток её не съедает.
+			if deadline, ok := ctx.Deadline(); ok {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, time.Until(deadline)*2/3)
+				defer cancel()
+			}
 			return s.Stop(ctx)
 		},
 	})

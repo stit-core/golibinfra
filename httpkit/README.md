@@ -13,8 +13,12 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 `request_id`), 429 — с `Retry-After`. При схеме безопасности в графе открытость
 операции явная — `Security` или `httpkit.Public`; дубли маршрутов (и маршрут мимо huma на
 пути операции), забытая пометка и маршрут мимо huma — ошибка старта (`CheckRoutes`). `/health` и `/ready` (по пробам из
-fx-группы `healthkit.probes`) регистрируются автоматически. RED-метрики и
-server-span — by default.
+fx-группы `healthkit.probes`; panic пробы — проба `down`) регистрируются автоматически.
+Остановка: `/ready` отвечает 503 на паузе дренажа (`HTTP_SHUTDOWN_DRAIN_DELAY`), запросы
+дорабатывают `HTTP_SHUTDOWN_TIMEOUT`, на дедлайне их ctx отменяется, а соединения
+закрываются — хукам после HTTP остаётся треть бюджета `fx.StopTimeout`. Подкоманда
+проверки здоровья для образа без shell — `Healthcheck`. RED-метрики и server-span — by
+default.
 
 ## Импорт
 

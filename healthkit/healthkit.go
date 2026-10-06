@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"runtime/debug"
 	"time"
 
 	"go.uber.org/fx"
@@ -28,31 +29,49 @@ func New(name string, check func(ctx context.Context) error) Probe {
 	return Probe{Name: name, Check: check}
 }
 
+// PanicError — проверка паниковала: Run возвращает её вместо падения процесса.
+// Value — значение panic, Stack — стек горутины проверки.
+type PanicError struct {
+	Probe string
+	Value any
+	Stack []byte
+}
+
+// Error — «healthkit: probe "<имя>" panicked: <значение panic>».
+func (e *PanicError) Error() string {
+	return fmt.Sprintf("healthkit: probe %q panicked: %v", e.Probe, e.Value)
+}
+
 // Run выполняет проверку. Probe без Check — ошибка конфигурации графа, а не
-// паника в обработчике /ready. Ошибку проверки возвращает как есть: кит
-// префиксует её своим именем, идентичность пробы несёт Name.
-func (p Probe) Run(ctx context.Context) error {
+// паника в обработчике /ready; panic проверки — *PanicError: readiness зовёт
+// пробы в своих горутинах, и panic там уронил бы процесс. Ошибку проверки
+// возвращает как есть: кит префиксует её своим именем, идентичность пробы несёт Name.
+func (p Probe) Run(ctx context.Context) (err error) {
 	if p.Check == nil {
 		return fmt.Errorf("healthkit: probe %q: check is nil", p.Name)
 	}
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = &PanicError{Probe: p.Name, Value: rec, Stack: debug.Stack()}
+		}
+	}()
 	return p.Check(ctx)
 }
 
 // WithTimeout ограничивает время одной проверки: зависшая зависимость не должна
 // держать /ready дольше, чем оркестратор готов ждать. d <= 0 — проба без
-// изменений.
+// изменений. Panic проверки — *PanicError, как у Run.
 func WithTimeout(p Probe, d time.Duration) Probe {
 	if d <= 0 || p.Check == nil {
 		return p
 	}
-	check := p.Check
 	return Probe{Name: p.Name, Check: func(ctx context.Context) error {
 		ctx, cancel := context.WithTimeout(ctx, d)
 		defer cancel()
 
 		// Буфер: проба, игнорирующая ctx, завершится позже и не заблокируется.
 		done := make(chan error, 1)
-		go func() { done <- check(ctx) }()
+		go func() { done <- p.Run(ctx) }()
 		select {
 		case err := <-done:
 			return err

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -21,6 +22,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 )
 
 func testConfig(t *testing.T, addr string) httpkit.Config {
@@ -178,6 +180,24 @@ func TestModule_ReadyProbeTimeout(t *testing.T) {
 	}
 	if body := bodyString(t, resp); !strings.Contains(body, `"natskit"`) || !strings.Contains(body, `"pgkit"`) {
 		t.Fatalf("/ready must list every probe: %s", body)
+	}
+}
+
+// panic пробы — проба down и ERROR со стеком, а не падение процесса: пробы идут в своих
+// горутинах, Recovery их не видит.
+func TestModule_ReadyProbePanicIsDownAndLogged(t *testing.T) {
+	log := logtest.Capture()
+	srv := startApp(t, fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
+		healthkit.Provide(func() healthkit.Probe {
+			return healthkit.New("sync", func(context.Context) error { panic("sync state is not initialised") })
+		}))
+	resp := get(t, srv, "/ready")
+	if body := bodyString(t, resp); resp.StatusCode != http.StatusServiceUnavailable || !strings.Contains(body, `{"name":"sync","status":"down"}`) {
+		t.Fatalf("/ready with a panicking probe: %d %s, want 503 and the probe down", resp.StatusCode, body)
+	}
+	e, ok := log.Find(slog.LevelError, "readiness probe panicked")
+	if !ok || e.Str("probe") != "sync" || e.Str("panic") != "sync state is not initialised" || !strings.Contains(e.Str("stack"), "module_test.go") {
+		t.Fatalf("ERROR readiness probe panicked with the probe, the panic and its stack: %+v", e)
 	}
 }
 

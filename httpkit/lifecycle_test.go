@@ -2,6 +2,8 @@ package httpkit_test
 
 import (
 	"context"
+	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"slices"
@@ -17,6 +19,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 )
 
 // hookOrder — кто добавил каждый выполненный хук (CallerName), в порядке выполнения.
@@ -170,4 +173,167 @@ func waitListenerClosed(t *testing.T, addr string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("сервер %s не закрыл listener на остановке", addr)
+}
+
+// readyStatus — /ready новым соединением: listener ещё принимает их, пока идёт пауза дренажа.
+func readyStatus(addr string) (status int, body string, err error) {
+	c := &http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/ready", nil)
+	if err != nil {
+		return 0, "", err
+	}
+	resp, err := c.Do(req)
+	if err != nil {
+		return 0, "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return resp.StatusCode, string(b), err
+}
+
+// Пауза дренажа: с начала остановки /ready отвечает 503 draining, а listener ещё принимает
+// соединения — балансировщик выводит инстанс раньше, чем клиенты получат отказ соединения.
+func TestModule_StopDrainsReadyBeforeClosingListener(t *testing.T) {
+	t.Setenv("HTTP_SHUTDOWN_DRAIN_DELAY", "400ms")
+	var srv *httpkit.Server
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")), fx.Provide(logkit.Nop),
+		httpkit.Module, fx.Populate(&srv))
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	addr := srv.Addr().String()
+	if status, body, err := readyStatus(addr); err != nil || status != http.StatusOK {
+		t.Fatalf("/ready before stop: %d %s %v", status, body, err)
+	}
+
+	stopped := make(chan error, 1)
+	go func() { stopped <- app.Stop(ctx) }()
+	var status int
+	var body string
+	deadline := time.Now().Add(time.Second)
+	for status != http.StatusServiceUnavailable && time.Now().Before(deadline) {
+		var err error
+		if status, body, err = readyStatus(addr); err != nil {
+			t.Fatalf("/ready during the drain pause must answer, got %v", err)
+		}
+	}
+	if status != http.StatusServiceUnavailable || !strings.Contains(body, `"draining"`) {
+		t.Fatalf("/ready during the drain pause: %d %s, want 503 draining", status, body)
+	}
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if _, _, err := readyStatus(addr); err == nil {
+		t.Fatal("listener still accepts connections after Stop")
+	}
+}
+
+// Запрос дольше остановки не съедает бюджет fx: на дедлайне HTTP — две трети остатка — ctx
+// хендлеров отменяется (и у захваченного соединения, которое Close не закрывает: WebSocket),
+// соединения закрываются (и у хендлера, который ctx не слушает), а хук после HTTP получает
+// остаток; WARN называет прерванные запросы.
+func TestModule_StopDeadlineCancelsHandlersAndLeavesBudget(t *testing.T) {
+	log := logtest.Capture()
+	entered, stuck, hijacked, release := make(chan struct{}), make(chan struct{}), make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	var cancelled, hijackCancelled atomic.Bool
+	var left atomic.Int64
+	later := fx.Module("later", fx.Invoke(func(lc fx.Lifecycle) {
+		lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+			if deadline, ok := ctx.Deadline(); ok {
+				left.Store(int64(time.Until(deadline)))
+			}
+			return nil
+		}})
+	}))
+	routes := fx.Invoke(func(s *httpkit.Server, api huma.API) {
+		s.Router().Get("/ws", func(w http.ResponseWriter, r *http.Request) {
+			conn, _, err := http.NewResponseController(w).Hijack()
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+			close(hijacked)
+			<-r.Context().Done()
+			hijackCancelled.Store(true)
+		})
+		huma.Get(api, "/stream", func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+			close(entered)
+			<-ctx.Done()
+			cancelled.Store(true)
+			return nil, ctx.Err()
+		})
+		huma.Get(api, "/stuck", func(context.Context, *struct{}) (*struct{}, error) {
+			close(stuck)
+			<-release
+			return nil, nil //nolint:nilnil // тело не нужно
+		})
+	})
+	var srv *httpkit.Server
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")),
+		fx.Provide(func() logkit.Logger { return log }), later, routes, httpkit.Module, fx.Populate(&srv))
+	startCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.Start(startCtx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	call := func(path string, done chan<- error) {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+srv.Addr().String()+path, nil)
+		if err == nil {
+			var resp *http.Response
+			if resp, err = http.DefaultClient.Do(req); err == nil {
+				_ = resp.Body.Close()
+			}
+		}
+		done <- err
+	}
+	streamDone, stuckDone := make(chan error, 1), make(chan error, 1)
+	go call("/stream", streamDone)
+	go call("/stuck", stuckDone)
+	ws, err := (&net.Dialer{}).DialContext(context.Background(), "tcp", srv.Addr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = ws.Close() })
+	if _, err := ws.Write([]byte("GET /ws HTTP/1.1\r\nHost: test\r\n\r\n")); err != nil {
+		t.Fatal(err)
+	}
+	<-entered
+	<-stuck
+	<-hijacked
+
+	const budget = 1500 * time.Millisecond // HTTP_SHUTDOWN_TIMEOUT по умолчанию больше
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), budget)
+	defer stopCancel()
+	start := time.Now()
+	if err := app.Stop(stopCtx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if took := time.Since(start); took > budget {
+		t.Fatalf("stop took %s, longer than its budget", took)
+	}
+	if got := time.Duration(left.Load()); got < budget/5 {
+		t.Fatalf("the hook after HTTP got %s of the stop budget, want about a third", got)
+	}
+	for wait := time.Now().Add(time.Second); (!cancelled.Load() || !hijackCancelled.Load()) && time.Now().Before(wait); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !cancelled.Load() || !hijackCancelled.Load() {
+		t.Fatalf("handler ctx cancelled at the stop deadline: plain %v, hijacked %v", cancelled.Load(), hijackCancelled.Load())
+	}
+	select {
+	case err := <-stuckDone:
+		if err == nil {
+			t.Fatal("a request ignoring ctx got a response after the stop deadline, want its connection closed")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("connection of a request ignoring ctx stays open after Stop")
+	}
+	w, ok := log.Find(slog.LevelWarn, "http server stop deadline: requests cancelled, connections closed")
+	if !ok || w.Str("requests") != "3" {
+		t.Fatalf("stop deadline WARN with the number of cancelled requests: %+v %v", w, log.Entries())
+	}
+	<-streamDone
 }

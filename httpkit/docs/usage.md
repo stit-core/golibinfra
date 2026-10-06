@@ -16,7 +16,8 @@
 - **Auth и маршруты**: `AuthExtractor`, `ErrAuthUnavailable`, `ErrAuthNotConfigured`,
   `ContextWithSubject`, `SubjectFrom`, `Public`, `PublicRoutes`, `ErrRoutes`.
 - **Health**: `RegisterHealth(api, log, probeTimeout, probes...)`, `Probe`
-  (= `healthkit.Probe`).
+  (= `healthkit.Probe`); проверка здоровья контейнера — `Healthcheck(ctx)` (код выхода),
+  `CheckHealth(ctx, addr)`.
 - **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
   `HeaderIdempotentReplayed`, `ClientIPFrom`, `IsMaxBodyError`, `NewMemoryStore`,
   `NewConfig`, `Config.Validate`, `ErrConfig`.
@@ -302,7 +303,49 @@ healthkit.Provide(func(s *Sync) healthkit.Probe { return healthkit.New("sync", s
 Пробы выполняются параллельно, каждая — не дольше `HTTP_READY_PROBE_TIMEOUT`.
 Любая упавшая → `503` с телом
 `{"status":"unhealthy","probes":[{"name":"pgkit","status":"down"}]}`; текст
-ошибки — в логе.
+ошибки — в логе. panic пробы — тоже `down` и ERROR `readiness probe panicked` со
+стеком, процесс жив. С начала остановки `/ready` отвечает `503
+{"status":"draining"}`.
+
+## Остановка за балансировщиком
+
+Под балансировщиком (k8s Service, ingress) задайте паузу дренажа:
+`HTTP_SHUTDOWN_DRAIN_DELAY` не меньше времени, за которое балансировщик по
+`/ready` выводит инстанс (в k8s — `periodSeconds × failureThreshold`
+readiness-пробы), обычно 5–10 с. Пауза, `HTTP_SHUTDOWN_TIMEOUT` и бюджеты
+остальных хуков (`NATS_DRAIN_TIMEOUT`, …) укладываются в `fx.StopTimeout`, а он — в
+`terminationGracePeriodSeconds`; HTTP берёт не больше двух третей бюджета
+([configuration.md § Остановка](configuration.md#остановка)):
+
+```go
+fx.New(
+    fx.StopTimeout(30*time.Second), // HTTP_SHUTDOWN_DRAIN_DELAY=5s + HTTP_SHUTDOWN_TIMEOUT=10s ≤ 20s
+    // …
+)
+```
+
+## Проверка здоровья контейнера
+
+В distroless-образе нет shell и curl: проверку здоровья делает сам бинарь
+подкомандой. `Healthcheck` спрашивает `/health` адреса `HTTP_ADDR` и отдаёт код
+выхода — `0`, если сервис ответил `200`, иначе `1` и ERROR `healthcheck failed`:
+
+```go
+func main() {
+    if len(os.Args) > 1 && os.Args[1] == "healthcheck" {
+        os.Exit(httpkit.Healthcheck(context.Background()))
+    }
+    fx.New(service).Run()
+}
+```
+
+```yaml
+healthcheck:
+  test: ["CMD", "/app/api", "healthcheck"]
+```
+
+`CheckHealth(ctx, addr)` — та же проверка одного адреса, например в boot-тесте:
+`httpkit.CheckHealth(t.Context(), srv.Addr().String())`.
 
 ## SSE и WebSocket
 
@@ -313,15 +356,23 @@ Wrapper ответа реализует `http.Flusher`, `Unwrap()` и `http.Hija
 func stream(w http.ResponseWriter, r *http.Request) {
     w.Header().Set("Content-Type", "text/event-stream")
     rc := http.NewResponseController(w)
-    for ev := range events {
-        fmt.Fprintf(w, "data: %s\n\n", ev)
-        _ = rc.Flush()
+    for {
+        select {
+        case <-r.Context().Done(): // клиент ушёл или дедлайн остановки сервера
+            return
+        case ev := <-events:
+            fmt.Fprintf(w, "data: %s\n\n", ev)
+            _ = rc.Flush()
+        }
     }
 }
 ```
 
 Для долгих стримов задайте `HTTP_WRITE_TIMEOUT=0` (или продлевайте дедлайн через
-`ResponseController.SetWriteDeadline`).
+`ResponseController.SetWriteDeadline`). На остановке поток держит соединение до
+дедлайна `HTTP_SHUTDOWN_TIMEOUT`, затем ctx запроса отменяется — и у WebSocket на
+захваченном соединении: обработчик, который слушает `r.Context()`, завершается
+сам.
 
 ## Прямой запуск без fx
 
@@ -337,5 +388,5 @@ if err := s.CheckRoutes(); err != nil { /* операции и маршруты 
 if err := s.Listen(); err != nil { /* порт занят */ }
 go func() { _ = s.Serve() }()
 // ...
-_ = s.Stop(ctx)
+_ = s.Stop(ctx) // /ready 503, пауза дренажа, дедлайн: ctx хендлеров отменён, соединения закрыты
 ```

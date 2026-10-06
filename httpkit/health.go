@@ -2,6 +2,7 @@ package httpkit
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"sync"
 	"time"
@@ -41,7 +42,8 @@ type readyOutput struct {
 
 // RegisterHealth регистрирует публичные (Public) /health (liveness) и /ready (readiness по
 // пробам). Пробы выполняются параллельно, каждая — не дольше probeTimeout. Текст ошибок
-// проб уходит в лог, а не в ответ: там могут быть DSN и адреса.
+// проб уходит в лог, а не в ответ: там могут быть DSN и адреса. С начала Server.Stop
+// /ready отвечает 503 draining без проб: балансировщик выводит инстанс до закрытия listener'а.
 func RegisterHealth(api huma.API, log logkit.Logger, probeTimeout time.Duration, probes ...Probe) {
 	huma.Register(api, Public(huma.Operation{
 		OperationID: "get-health",
@@ -58,6 +60,9 @@ func RegisterHealth(api huma.API, log logkit.Logger, probeTimeout time.Duration,
 		Path:        "/ready",
 		Summary:     "Readiness check",
 	}), func(ctx context.Context, _ *struct{}) (*readyOutput, error) {
+		if draining(ctx) {
+			return &readyOutput{Status: http.StatusServiceUnavailable, Body: readyBody{Status: "draining"}}, nil
+		}
 		statuses := runProbes(ctx, log, probeTimeout, probes)
 		out := &readyOutput{Status: http.StatusOK, Body: readyBody{Status: "ok", Probes: statuses}}
 		for _, s := range statuses {
@@ -81,7 +86,13 @@ func runProbes(ctx context.Context, log logkit.Logger, timeout time.Duration, pr
 	for i, p := range probes {
 		wg.Go(func() {
 			statuses[i] = probeStatus{Name: p.Name, Status: "ok"}
-			if err := healthkit.WithTimeout(p, timeout).Run(ctx); err != nil {
+			err := healthkit.WithTimeout(p, timeout).Run(ctx)
+			var panicked *healthkit.PanicError
+			switch {
+			case errors.As(err, &panicked):
+				statuses[i].Status = "down"
+				log.Error(ctx, "readiness probe panicked", "probe", p.Name, "panic", panicked.Value, "stack", string(panicked.Stack))
+			case err != nil:
 				statuses[i].Status = "down"
 				log.Warn(ctx, "readiness probe failed", "probe", p.Name, "err", err)
 			}

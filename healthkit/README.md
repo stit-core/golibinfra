@@ -41,8 +41,8 @@ healthkit.Provide(natskit.Probe, fx.ParamTags(`name:"events"`))
 
 ## Конфигурация
 
-Конфига нет: `healthkit` — тип, константа группы и четыре функции без состояния
-и без fx-`Module`.
+Конфига нет: `healthkit` — типы пробы и её panic, константа группы и четыре функции
+без состояния и без fx-`Module`.
 Таймаут пробы на `/ready` задаёт `httpkit`, применяя [`WithTimeout`](#withtimeout).
 
 ## API
@@ -59,6 +59,12 @@ func New(name string, check func(ctx context.Context) error) Probe
 func (p Probe) Run(ctx context.Context) error
 func WithTimeout(p Probe, d time.Duration) Probe
 func Provide(ctor any, anns ...fx.Annotation) fx.Option
+
+type PanicError struct { // panic проверки
+    Probe string
+    Value any    // значение panic
+    Stack []byte // стек горутины проверки
+}
 ```
 
 ### Probe
@@ -70,14 +76,16 @@ func Provide(ctor any, anns ...fx.Annotation) fx.Option
 ### Run
 
 Выполняет `Check` и возвращает его ошибку как есть. `Probe` с `Check == nil`
-возвращает ошибку с именем пробы — обработчик `/ready` не паникует.
+возвращает ошибку с именем пробы — обработчик `/ready` не паникует. panic проверки
+`Run` возвращает как `*PanicError` (имя пробы, значение, стек): `/ready` и
+health-loop `grpckit` зовут пробы в своих горутинах, где panic уронил бы процесс.
 
 ### WithTimeout
 
 Ограничивает время одной проверки: `Check` получает `ctx` с дедлайном, а если
 проверка `ctx` игнорирует — `Run` всё равно возвращает управление с ошибкой,
 обёрнутой вокруг `context.DeadlineExceeded`. `d <= 0` возвращает пробу без
-изменений. Имя пробы сохраняется.
+изменений. Имя пробы сохраняется; panic проверки — `*PanicError`, как у `Run`.
 
 ### Provide
 
@@ -95,7 +103,8 @@ func Provide(ctor any, anns ...fx.Annotation) fx.Option
 
 Своих метрик и спанов у кита нет. Результат проб виден в `httpkit`: код ответа
 `/ready`, тело со статусом каждой пробы по имени и warn-лог
-`readiness probe failed` с полями `probe` (значение `Probe.Name`) и `err`.
+`readiness probe failed` с полями `probe` (значение `Probe.Name`) и `err`; panic
+пробы — error-лог `readiness probe panicked` с `probe`, `panic` и `stack`.
 
 ## Инварианты
 

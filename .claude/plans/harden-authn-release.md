@@ -22,8 +22,6 @@ blocked-by: —
   S11 (бизнес-метрики с проверкой записи); что он снимает и меняет на bump — «Handoff».
 - **Код китов:**
   - authnkit: `authnkit/module.go:26` — `NewHS256JWT` без iss/aud, хотя опции есть;
-  - остановка и пробы: `httpkit/module.go:153-157`, `httpkit/health.go:77-94`,
-    `healthkit/healthkit.go:55`;
   - logkit: `logkit/attrs.go:11`.
 - **Правила шага:** README и `docs/` кита — тем же коммитом (`make envdoc-check`); breaking — `!` и
   `BREAKING CHANGE:`. Новая зависимость в `go.mod` не нужна ни одному шагу.
@@ -49,19 +47,14 @@ blocked-by: —
   SHA-256 токена. logkit маскирует такой токен по умолчанию. Проверка:
   `go test -race -run Token ./authnkit/ ./logkit/` → PASS
   - Подтверждено: PASS; токен в base64url (мутант) — `TestRedact_OneTimeTokenOfAuthnkit` красный
-- [x] **AC4** — `authnkit/session` управляет сессиями refresh:
-  - вход выдаёт сессию;
-  - обновление ротирует токен атомарно: из N параллельных обновлений одним токеном успешно одно;
-  - повтор использованного токена отзывает всю цепочку;
-  - `RevokeAll(subject)` в транзакции из ctx откатывается вместе с ней;
-  - абсолютный срок не продлевается ротацией;
-  - без миграций — ошибка старта с подсказкой; схема проходит лесенку;
-  - pgstore и фейк проходят один контрактный набор;
-  - stateless refresh JWT в ките больше нет.
-
-  Проверка: `go test -race ./authnkit/... ./testkit/sessiontest/` с Docker → PASS;
-  `grep -rn "SignRefresh\|ParseRefresh\|JWT_REFRESH_TTL" --include=*.go --include=*.md --exclude-dir=plans .`
-  → пусто
+- [x] **AC4** — `authnkit/session` управляет сессиями refresh: вход выдаёт сессию; обновление
+  ротирует токен атомарно (из N параллельных обновлений одним токеном успешно одно); повтор
+  использованного токена отзывает всю цепочку; `RevokeAll(subject)` в транзакции из ctx откатывается
+  вместе с ней; абсолютный срок не продлевается ротацией; без миграций — ошибка старта с подсказкой,
+  схема проходит лесенку; pgstore и фейк проходят один контрактный набор; stateless refresh JWT в
+  ките больше нет. Проверка: `go test -race ./authnkit/... ./testkit/sessiontest/` с Docker → PASS;
+  `grep -rn "SignRefresh\|ParseRefresh\|JWT_REFRESH_TTL" --include=*.go --include=*.md
+  --exclude-dir=plans .` → пусто
   - Подтверждено: PASS, grep пуст; `sessiontest.RunContract` — по фейку и pgstore, его мутанты красные
 - [x] **AC5** — `config.Load` и `config.Source` работают без ctx; в доках нет
   `fx.Provide(context.Background)`. Проверка: `go test -race ./config/` → PASS;
@@ -78,14 +71,13 @@ blocked-by: —
   `promname` → 0 коллизий
   - Подтверждено: KO01 PASS; `promname` (KO01 и граф китов) — 0 коллизий, `compare.py` — метрик
     otelhttp нет; мутант без noop-провайдера — `TestMetrics_NoOtelhttpMetricsNoNameCollisions` красный
-- [ ] **AC8** — Остановка httpkit:
-  - `/ready` отвечает 503, пока listener ещё открыт;
-  - долгий запрос или SSE не съедают бюджет fx: после дедлайна HTTP ctx хендлеров отменён,
-    соединения закрыты, остальные OnStop выполняются;
-  - panic пробы — проба `down` и ERROR со стеком, процесс жив.
-
-  Проверка: `httpkit-b/run.sh <rev> exp` → HX02 a–c, HX03, HO07 PASS;
-  `M/kits-audit/httpkit-a/run.sh <rev> lifecycle` → H31, H32, H33 PASS
+- [x] **AC8** — Остановка httpkit: `/ready` отвечает 503, пока listener ещё открыт; долгий запрос или
+  SSE не съедают бюджет fx — после дедлайна HTTP ctx хендлеров отменён, соединения закрыты, остальные
+  OnStop выполняются; panic пробы — проба `down` и ERROR со стеком, процесс жив. Проверка:
+  `httpkit-b/run.sh <rev> exp` → HX02 a–c, HX03, HO07 PASS; `M/kits-audit/httpkit-a/run.sh <rev>
+  lifecycle` → H31, H32, H33 PASS
+  - Подтверждено: HX02 a–c, HX03, HO07, H31–H33 PASS (H33, HX03 — с паузой дренажа, HX02b — под
+    решение; оригиналы — `M/exs8/orig/`); прочие исходы `exp` и `lifecycle` — как на базе
 - [ ] **AC9** — Если `authnkit.Module` получил iss/aud из конфига, токен с чужими iss/aud
   отвергается. Токен, подписанный предыдущим секретом (`JWT_PREVIOUS_SECRET`), принимается; новые
   подписываются текущим. Проверка: `correctness-security/run.sh <rev> unit` → E06 PASS;
@@ -141,12 +133,14 @@ blocked-by: —
 - [x] **S9** — httpclient: метрики otelhttp выключены, README и тест без коллизий имён (KOBS-01)
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Зависит от: S2
   - Сделано: noop `MeterProvider` у транспорта otelhttp; тест: только `http_client_*`, коллизий нет
-- [ ] **S10** — httpkit, остановка: фаза дренажа с `/ready` 503 (C), дедлайн HTTP из остатка бюджета
+- [x] **S10** — httpkit, остановка: фаза дренажа с `/ready` 503 (C), дедлайн HTTP из остатка бюджета
   с отменой ctx и `Close` (KFX-08 вместе с KCOR-08), `recover` в пробах `/ready` и
   `healthkit.WithTimeout` (KOBS-14); проверка здоровья без shell для distroless-образа — функция
   httpkit для подкоманды бинаря потребителя (`GET /health` по `HTTP_ADDR`, код выхода), шаблон
   снимает свою `cmd/api/healthcheck.go`
   - Проверка: AC8 → выполнен · Закрывает: AC8 · Зависит от: —
+  - Сделано: `Server.Stop` — `draining`, пауза, дедлайн с отменой ctx и `Close`; ⅔ бюджета в `OnStop`;
+    `healthkit.PanicError`; `Healthcheck`/`CheckHealth`; 8 мутантов — красные
 - [ ] **S11** — authnkit: iss и aud из конфига `Module`, ротация секрета через предыдущий секрет (C)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S5
 - [ ] **S12** — logkit: `Attr` без slog в сигнатуре (C)
@@ -204,12 +198,14 @@ blocked-by: —
 - **httpclient.** Метрики otelhttp выключаются через noop `MeterProvider` у транспорта; спаны попытки
   остаются. Длительность попытки видна в спане, повторы считает `http_client_retry_attempts_total`.
   Переименовать метрику кита — breaking и хуже. otelhttp anthropickit (вне объёма) — бэклог.
-- **Остановка httpkit.**
-  - Порядок: флаг остановки → `/ready` 503 → пауза `HTTP_SHUTDOWN_DRAIN_DELAY` → `Shutdown` с
-    дедлайном `min(HTTP_SHUTDOWN_TIMEOUT, остаток stop-ctx − запас)` → на дедлайне отмена ctx
-    хендлеров, `Close` и WARN с числом соединений.
-  - `HTTP_SHUTDOWN_TIMEOUT` по умолчанию меньше дефолтного `fx.StopTimeout` (15 с). Пауза по
-    умолчанию 0 — совместимо; за балансировщиком 5–10 с, сумма — в доке.
+- **Остановка httpkit.** `Server.Stop`: флаг → `/ready` 503 → пауза `HTTP_SHUTDOWN_DRAIN_DELAY` →
+  `Shutdown` до `HTTP_SHUTDOWN_TIMEOUT` → на дедлайне отмена базового ctx запросов (и захваченных
+  соединений), `Close`, WARN с числом запросов; ошибка — только у `Close` (SIGTERM — exit 0). Хукам
+  после HTTP — треть остатка stop-ctx (`OnStop` даёт `Stop` ⅔). Флаг — в ctx запросов через
+  `BaseContext`: `RegisterHealth` без смены сигнатуры. `HTTP_SHUTDOWN_TIMEOUT` 10s < `fx.StopTimeout`
+  15s; пауза по умолчанию 0 — совместимо, за балансировщиком 5–10 с. panic пробы — `*PanicError` из
+  `Probe.Run` (одно место для `/ready` и `grpckit`). Эксперименты: H33, HX03 — с паузой; HX02b —
+  «ctx отменён, ответа на закрытом пуле клиент не получил» (хендлер без ctx не остановить).
 - **JWT.** `JWT_ISSUER` и `JWT_AUDIENCE` из конфига; пустые — не пишутся и не проверяются. Одному
   сервису на своём секрете они не нужны, общий секрет без `aud` небезопасен — это сказано в доке.
   Ротация: подпись текущим секретом, проверка — текущим, затем `JWT_PREVIOUS_SECRET`; `kid` не
@@ -222,16 +218,12 @@ blocked-by: —
 **Шаблон, `fix-reference-code` S9 — что снимается и меняется на bump v1.3.0:**
 - **Токены.** `pkg/tokens` → генерация и хеш из authnkit. Погашение — своим условным `UPDATE`.
 - **Сессии.** `refresh_sessions`, репозиторий сессий и адаптеры `SignRefresh`/`ParseRefresh` →
-  `authnkit/session`:
-  - в граф — `session/pgstore.Module` (и `timerkit.Module`), его миграции — источник `cmd/migrate`;
-  - `refresh_sessions` удаляется новой миграцией с `-- infra-handoff:`; при выкатке все входят
-    заново один раз;
-  - `RevokeAll` — в транзакции блокировки, удаления, смены роли, смены и сброса пароля, в
-    `seed-admin`;
-  - `Rotate` — вне транзакции; `CanLogin` — после него; `session.ErrReused` (`*ReusedError`:
-    subject, сессия) → аудит `refresh_reused`;
-  - окна прощения нет: параллельный refresh одним токеном отзывает сессию — клиент обновляет
-    сессию последовательно, это — в описании операции refresh в `openapi.json`.
+  `authnkit/session`: в граф — `session/pgstore.Module` (и `timerkit.Module`), его миграции —
+  источник `cmd/migrate`; `refresh_sessions` удаляется новой миграцией с `-- infra-handoff:` (при
+  выкатке все входят заново один раз); `RevokeAll` — в транзакции блокировки, удаления, смены роли,
+  смены и сброса пароля, в `seed-admin`; `Rotate` — вне транзакции, `CanLogin` — после него,
+  `session.ErrReused` (`*ReusedError`: subject, сессия) → аудит `refresh_reused`; окна прощения нет —
+  клиент обновляет сессию последовательно, это — в описании операции refresh в `openapi.json`.
 - **IP.** `authgate.ClientIP` и `identity.WithIP` → `httpkit.ClientIPFrom(ctx)`; за Traefik —
   `HTTP_TRUST_PROXY_HOPS=1`.
 - **Публичные операции.** `publicOperations` и `TestHTTPOperations` → `httpkit.Public(op)` в
@@ -240,6 +232,8 @@ blocked-by: —
 - **Аудит.** Ручные `IP` и `RequestID` в `auditkit.Entry` → убрать.
 - **Handler-тесты.** `handlertest.NewAPI` закрыт по умолчанию → `handlertest.WithAuth`; аноним → 401.
 - **Логи.** `userIDAttr` → `func(ctx) (any, bool)`, без `slog` и `//nolint:forbidigo`.
+- **Здоровье и остановка.** `cmd/api/healthcheck.go` и его тест → `httpkit.Healthcheck(ctx)` в `main`,
+  `httpkit.CheckHealth` в `TestBoot`; `fx.StopTimeout` — HTTP берёт ⅔, комментарий бюджета в `main`.
 - **Конфиг.** `App` (Cookie) можно читать через `config.Load(&cfg, config.Env())` без ctx.
 - **OpenAPI.** `openapi.json` перегенерировать: `$schema` снят; `HTTP_DOCS_ENABLED=true` — только в
   dev.
@@ -248,11 +242,10 @@ blocked-by: —
   `snap.Get(t, name, "result", r).Value == 1` и `snap.Value(name) == 1` (исход ровно один);
   `TestBoot` — в `fx.Decorate` запомнить провайдер telemetry (`telemetryMP`) и подменить его
   `p.MeterProvider`, `IsType` → `require.Same(t, telemetryMP, otel.GetMeterProvider())`.
-- **Тесты.** Лесенка `cmd/migrate/migrate_test.go` может перейти на хелпер testkit (иначе —
-  `repair-harness` S7: `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...), …)`).
-  `scripts/tools/test.sh:21-22` — testkit без Docker вне `-short` — FAIL, обход
-  `TestDockerRequired` (`cmd/migrate/migrate_test.go`) лишний. `events.OutboxFor` —
-  `outboxkit.WithSubjects(name+".>")` (бэклог шаблона `publisher-stream-check`).
+- **Тесты.** Лесенка `cmd/migrate` → `testkit.MigrationLadder(t,
+  testkit.WithMigrations(sources.Kits...), …)` (иначе — `repair-harness` S7); testkit без Docker вне
+  `-short` — FAIL, обход `TestDockerRequired` лишний; `events.OutboxFor` —
+  `outboxkit.WithSubjects(name+".>")` (бэклог `publisher-stream-check`).
 - **env для INFRA-HANDOFF:**
   - `HTTP_RATE_LIMIT_TRUST_PROXY` → `HTTP_TRUST_PROXY_HOPS`;
   - `JWT_REFRESH_TTL` → `SESSION_IDLE_TTL`, `SESSION_ABSOLUTE_TTL`, `SESSION_CLEANUP_INTERVAL`;
@@ -268,7 +261,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап S1–S7 принят (`M/validation-harden-authn-release-A.md`, перепроверка `cd654a7` — PASS),
-остатки R1–R5 закрыты (R5 — в S8). S8, S9 сделаны; дальше S10 (остановка httpkit), S11, S12, релиз S13.
+остатки R1–R5 закрыты (R5 — в S8). S8–S10 сделаны; дальше S11 (iss/aud JWT), S12, релиз S13.
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
@@ -296,3 +289,9 @@ blocked-by: —
 - Изменения — natskit: `JetStreamConfig.NakMaxBackoff` (`NATS_JS_NAK_MAX_BACKOFF`).
 - Поведение — httpclient: метрик otelhttp (`http.client.request.duration`, `.body.size`) нет — в
   Prometheus первая сливалась с `http_client_request_duration_seconds` кита → запросы — на неё.
+- Поведение — httpkit: с начала остановки `/ready` — 503 `draining`; пауза `HTTP_SHUTDOWN_DRAIN_DELAY`
+  (новый, 0); `HTTP_SHUTDOWN_TIMEOUT` по умолчанию 10s, а не 15s; на дедлайне ctx хендлеров отменён,
+  соединения закрыты (WARN); HTTP берёт не больше ⅔ остатка `fx.StopTimeout`; panic пробы — `down` и
+  ERROR → за балансировщиком пауза 5–10 с, сумма бюджетов — в `fx.StopTimeout`.
+- Изменения — httpkit: `Healthcheck(ctx)`, `CheckHealth(ctx, addr)` → подкоманда `api healthcheck`;
+  healthkit: `PanicError` — panic проверки в `Run` и `WithTimeout`.

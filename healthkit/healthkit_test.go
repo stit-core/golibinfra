@@ -3,6 +3,7 @@ package healthkit_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -200,5 +201,30 @@ func TestWithTimeout_PropagatesDeadlineToCheck(t *testing.T) {
 	}
 	if !deadlineSet {
 		t.Fatal("check must receive a context with a deadline")
+	}
+}
+
+// panic проверки — ошибка пробы со значением и стеком, а не падение процесса: /ready и
+// health-loop grpckit зовут пробы в своих горутинах, где recover вызывающего не поможет.
+func TestProbe_Run_PanicIsError(t *testing.T) {
+	boom := func(context.Context) error { panic("sync state is not initialised") }
+	for name, p := range map[string]healthkit.Probe{
+		"run":          healthkit.New("sync", boom),
+		"with timeout": healthkit.WithTimeout(healthkit.New("sync", boom), time.Second),
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := p.Run(context.Background())
+			var panicked *healthkit.PanicError
+			if !errors.As(err, &panicked) {
+				t.Fatalf("Run: got %v, want *PanicError", err)
+			}
+			if panicked.Probe != "sync" || fmt.Sprint(panicked.Value) != "sync state is not initialised" ||
+				!strings.Contains(string(panicked.Stack), "healthkit_test.go") {
+				t.Fatalf("PanicError must carry the probe, the panic value and its stack: %+v", panicked)
+			}
+			if !strings.Contains(err.Error(), `"sync"`) {
+				t.Fatalf("error must name the probe: %v", err)
+			}
+		})
 	}
 }
