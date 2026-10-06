@@ -3,6 +3,7 @@ package outboxkit
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 
@@ -41,8 +42,8 @@ func newBus(instr *outboxInstruments, repo Repository, maxPayload int) *Bus {
 
 // Publish сериализует payload в JSON и вставляет событие в outbox — вызывается
 // внутри доменной транзакции, иначе теряется атомарность факта и его публикации.
-// JSON больше предела — ErrPayloadTooLarge (брокер его не примет), subject вне
-// WithSubjects инстанса — ErrSubjectNotDeclared (его стрим старт не проверял).
+// Тело больше предела в представлении хранилища — ErrPayloadTooLarge (брокер его не примет),
+// subject вне WithSubjects инстанса — ErrSubjectNotDeclared (его стрим старт не проверял).
 func (b *Bus) Publish(ctx context.Context, subject string, payload any) error {
 	if len(b.subjects) > 0 && !slices.ContainsFunc(b.subjects, func(f string) bool { return natskit.SubjectMatches(f, subject) }) {
 		b.inserted(ctx, subject, "undeclared_subject")
@@ -53,13 +54,12 @@ func (b *Bus) Publish(ctx context.Context, subject string, payload any) error {
 		b.inserted(ctx, subject, "marshal_error")
 		return fmt.Errorf("outboxkit: marshal payload: %w", err)
 	}
-	if len(data) > b.maxPayload {
-		b.inserted(ctx, subject, "payload_too_large")
-		return fmt.Errorf("%w: %s: %d bytes, limit %d", ErrPayloadTooLarge, subject, len(data), b.maxPayload)
-	}
 	status := "ok"
-	if err = b.repo.Insert(ctx, subject, data); err != nil {
+	if err = b.repo.Insert(ctx, subject, data, b.maxPayload); err != nil {
 		status = "error"
+		if errors.Is(err, ErrPayloadTooLarge) {
+			status = "payload_too_large"
+		}
 	}
 	b.inserted(ctx, subject, status)
 	return err

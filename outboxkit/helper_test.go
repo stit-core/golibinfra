@@ -3,6 +3,7 @@ package outboxkit_test
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"sync"
 	"testing"
 	"testing/fstest"
@@ -103,11 +104,15 @@ type fakeRepo struct {
 	reviveErr    error
 }
 
-func (r *fakeRepo) Insert(_ context.Context, subject string, payload json.RawMessage) error {
+// Insert мерит тело как есть: представление фейка — сам JSON.
+func (r *fakeRepo) Insert(_ context.Context, subject string, payload json.RawMessage, maxBytes int) error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.insertErr != nil {
 		return r.insertErr
+	}
+	if len(payload) > maxBytes {
+		return fmt.Errorf("%w: %d bytes, limit %d", outboxkit.ErrPayloadTooLarge, len(payload), maxBytes)
 	}
 	r.inserted = append(r.inserted, insertedEvent{subject: subject, payload: payload})
 	return nil
@@ -195,8 +200,8 @@ func (r *fakeRepo) recordedFailures() []outboxkit.Failure {
 // bareRepo — Repository без опциональных интерфейсов кита.
 type bareRepo struct{ repo *fakeRepo }
 
-func (b bareRepo) Insert(ctx context.Context, subject string, payload json.RawMessage) error {
-	return b.repo.Insert(ctx, subject, payload)
+func (b bareRepo) Insert(ctx context.Context, subject string, payload json.RawMessage, maxBytes int) error {
+	return b.repo.Insert(ctx, subject, payload, maxBytes)
 }
 
 func (b bareRepo) ListUnpublished(ctx context.Context, limit int, mode outboxkit.PublishMode) ([]outboxkit.Message, error) {

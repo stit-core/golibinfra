@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/clockkit"
+	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
@@ -206,7 +207,7 @@ func TestStore_DropOldPartitions_KeepsWritesFlowing(t *testing.T) {
 	// очередь за ACCESS EXCLUSIVE и упал по lock_timeout.
 	writeCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	if err := s.Insert(writeCtx, "evt", payload(t, sample{N: 1})); err != nil {
+	if err := s.Insert(writeCtx, "evt", payload(t, sample{N: 1}), outboxkit.DefaultMaxPayloadBytes); err != nil {
 		t.Fatalf("insert blocked by retention: %v", err)
 	}
 
@@ -247,7 +248,7 @@ func TestStore_PartitionedDrain(t *testing.T) {
 	s := pgstore.NewStore(db)
 
 	for i := range 5 {
-		if err := s.Insert(ctx, "evt.test", payload(t, map[string]int{"i": i})); err != nil {
+		if err := s.Insert(ctx, "evt.test", payload(t, map[string]int{"i": i}), outboxkit.DefaultMaxPayloadBytes); err != nil {
 			t.Fatalf("Insert: %v", err)
 		}
 	}

@@ -51,8 +51,9 @@ drain- и maintenance-job'ы, backlog-gauge'и появляются на ста�
 после `Unregister` на стопе. Проверка старта: выключенный JetStream (заглушка
 `natskit.NewStreamBus` с `Config{}`) валит старт `Module` и `Instance`, фейк с
 `natskit.StreamChecker` получает фильтры `WithSubjects` и его `ErrNoStream` валит старт с
-именем инстанса; `Publish` вне объявленных subject'ов — `ErrSubjectNotDeclared`, JSON сверх
-предела — `ErrPayloadTooLarge` (статусы `undeclared_subject`, `payload_too_large`).
+именем инстанса; `Publish` вне объявленных subject'ов — `ErrSubjectNotDeclared`, тело сверх
+предела — `ErrPayloadTooLarge` (статусы `undeclared_subject`, `payload_too_large`). Фейк-хранилище
+мерит тело как есть (JSON), `pgstore` — JSONB-текст тем же `INSERT`.
 
 Минимальный фейк-транспорт реализует два метода порта:
 

@@ -20,9 +20,8 @@ const (
 	PublishOrdered PublishMode = "ordered"
 )
 
-// DefaultMaxPayloadBytes — предел JSON-тела события у NewBus (дефолт OUTBOX_MAX_PAYLOAD_BYTES):
-// половина max_payload NATS (1 MiB) — запас под заголовки и пробелы представления хранилища
-// (JSONB pgstore), но не под числа в экспоненте: их JSONB выписывает целиком.
+// DefaultMaxPayloadBytes — предел тела события у NewBus (дефолт OUTBOX_MAX_PAYLOAD_BYTES):
+// половина max_payload NATS (1 MiB) — запас под заголовки и сервер с max_payload ниже дефолта.
 const DefaultMaxPayloadBytes = 512 << 10
 
 // Config — конфиг orchestration-слоя (Bus + Worker); читается из ENV
@@ -45,8 +44,9 @@ type Config struct {
 	RetryBackoff time.Duration `envconfig:"OUTBOX_RETRY_BACKOFF" default:"1s"`
 	// RetryMaxBackoff — потолок паузы между попытками; 0 — без потолка.
 	RetryMaxBackoff time.Duration `envconfig:"OUTBOX_RETRY_MAX_BACKOFF" default:"5m"`
-	// MaxPayloadBytes — предел JSON-тела события: больше — ErrPayloadTooLarge из Publish в
-	// транзакции домена, а не строка, которую брокер не примет никогда. >= 1.
+	// MaxPayloadBytes — предел тела события в представлении хранилища (JSONB pgstore — его
+	// публикует воркер): больше — ErrPayloadTooLarge из Publish в транзакции домена, а не строка,
+	// которую брокер не примет никогда. >= 1.
 	MaxPayloadBytes int `envconfig:"OUTBOX_MAX_PAYLOAD_BYTES" default:"524288"`
 }
 

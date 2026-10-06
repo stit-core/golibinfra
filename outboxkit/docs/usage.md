@@ -55,7 +55,8 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 
 `payload` — любое значение, сериализуемое `json.Marshal`; сериализует его `Bus`.
 Вне транзакции (при `OUTBOX_REQUIRE_TX=true`, default) `Publish` возвращает
-`outboxkit.ErrNoTx`, JSON больше `OUTBOX_MAX_PAYLOAD_BYTES` — `outboxkit.ErrPayloadTooLarge`,
+`outboxkit.ErrNoTx`, тело больше `OUTBOX_MAX_PAYLOAD_BYTES` в JSONB-представлении хранилища —
+`outboxkit.ErrPayloadTooLarge`,
 subject вне `WithSubjects` инстанса — `outboxkit.ErrSubjectNotDeclared`.
 
 ## Multi-instance: outboxkit.Instance

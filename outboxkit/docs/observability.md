@@ -28,8 +28,8 @@ Resource attrs (`service`/`env`/…) и экспорт настраивает п
 - `ok` — событие вставлено в outbox-таблицу.
 - `error` — вставка не удалась (ошибка хранилища или tx-strict guard).
 - `marshal_error` — payload не сериализуется в JSON; до хранилища не дошёл.
-- `payload_too_large` — JSON больше `OUTBOX_MAX_PAYLOAD_BYTES`
-  (`outboxkit.ErrPayloadTooLarge`); до хранилища не дошёл.
+- `payload_too_large` — тело в представлении хранилища больше `OUTBOX_MAX_PAYLOAD_BYTES`
+  (`outboxkit.ErrPayloadTooLarge` из `Repository.Insert`); строка не записана.
 - `undeclared_subject` — subject вне `WithSubjects` инстанса
   (`outboxkit.ErrSubjectNotDeclared`); до хранилища не дошёл.
 

@@ -83,7 +83,7 @@ func (b *barrierTransport) published() []int64 {
 func insertN(t *testing.T, ctx context.Context, s *pgstore.Store, n int) {
 	t.Helper()
 	for i := range n {
-		if err := s.Insert(ctx, "evt", payload(t, sample{N: i})); err != nil {
+		if err := s.Insert(ctx, "evt", payload(t, sample{N: i}), outboxkit.DefaultMaxPayloadBytes); err != nil {
 			t.Fatalf("insert %d: %v", i, err)
 		}
 	}

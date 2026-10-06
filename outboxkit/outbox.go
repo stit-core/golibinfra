@@ -31,7 +31,8 @@ var ErrConfig = errors.New("outboxkit: invalid config")
 // ReviveDead у хранилища без dead-строк).
 var ErrNotSupported = errors.New("outboxkit: operation not supported by repository")
 
-// ErrPayloadTooLarge — JSON-тело события больше OUTBOX_MAX_PAYLOAD_BYTES: брокер его не примет.
+// ErrPayloadTooLarge — тело события в представлении хранилища (его публикует воркер) больше
+// OUTBOX_MAX_PAYLOAD_BYTES: брокер его не примет.
 var ErrPayloadTooLarge = errors.New("outboxkit: payload too large")
 
 // ErrSubjectNotDeclared — subject вне WithSubjects инстанса: его стрим старт не проверял.
@@ -91,9 +92,11 @@ type ReviveFilter struct {
 }
 
 // Repository — порт хранилища; ListUnpublished идёт внутри транзакции тика и
-// держит выбранные строки до её конца (ordered: занятая голова очереди → ErrBusy).
+// держит выбранные строки до её конца (ordered: занятая голова очереди → ErrBusy). Insert
+// мерит тело в своём представлении — его опубликует воркер: больше maxBytes — ErrPayloadTooLarge,
+// строка не пишется.
 type Repository interface {
-	Insert(ctx context.Context, subject string, payload json.RawMessage) error
+	Insert(ctx context.Context, subject string, payload json.RawMessage, maxBytes int) error
 	ListUnpublished(ctx context.Context, limit int, mode PublishMode) ([]Message, error)
 	MarkPublished(ctx context.Context, refs []MessageRef) error
 	RecordFailures(ctx context.Context, failures []Failure) error

@@ -65,8 +65,8 @@ err := transactor.WithTx(ctx, func(ctx context.Context) error {
 ```
 
 `OUTBOX_REQUIRE_TX=true` (default) отвергает `Publish` вне транзакции
-(`outboxkit.ErrNoTx`), `OUTBOX_MAX_PAYLOAD_BYTES` — JSON больше предела
-(`outboxkit.ErrPayloadTooLarge`). Строка, которую брокер `OUTBOX_MAX_ATTEMPTS` раз (default
+(`outboxkit.ErrNoTx`), `OUTBOX_MAX_PAYLOAD_BYTES` — тело больше предела в представлении
+хранилища, которое опубликует воркер (JSONB `pgstore`; `outboxkit.ErrPayloadTooLarge`). Строка, которую брокер `OUTBOX_MAX_ATTEMPTS` раз (default
 `25`, ≈ 1 ч 24 мин с backoff; `-1` — без предела) не принял, становится dead — ERROR
 `outboxkit: event dead` в логе; сбой брокера целиком попыток не тратит.
 

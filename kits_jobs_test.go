@@ -121,7 +121,7 @@ func (idleFactory) Migrations(table string) pgkit.Source {
 // idleRepo — Repository без строк: drain-job до тика к нему не обращается.
 type idleRepo struct{}
 
-func (idleRepo) Insert(context.Context, string, json.RawMessage) error { return nil }
+func (idleRepo) Insert(context.Context, string, json.RawMessage, int) error { return nil }
 
 func (idleRepo) ListUnpublished(context.Context, int, outboxkit.PublishMode) ([]outboxkit.Message, error) {
 	return nil, nil

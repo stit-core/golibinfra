@@ -97,11 +97,20 @@ func newStore(db *pgkit.DB, table string, src pgkit.Source, opts ...StoreOption)
 	const cols = `id, created_at, subject, payload, attempts,
     (next_attempt_at IS NULL OR next_attempt_at <= NOW()) AS due`
 	s := &Store{
-		db:        db,
-		table:     table,
-		src:       src,
-		clock:     clockkit.Real{},
-		insertSQL: fmt.Sprintf(`INSERT INTO %s (subject, payload, created_at) VALUES ($1, $2, NOW())`, table),
+		db:    db,
+		table: table,
+		src:   src,
+		clock: clockkit.Real{},
+		// created_at — момент вставки: ждавший блокировку агрегата встаёт в ordered за соседом;
+		// предел — по JSONB-тексту, который опубликует воркер.
+		insertSQL: fmt.Sprintf(`WITH p AS (
+    SELECT j AS payload, octet_length(j::text) AS size FROM (SELECT $2::jsonb AS j) AS raw
+), ins AS (
+    INSERT INTO %s (subject, payload, created_at)
+    SELECT $1, payload, clock_timestamp() FROM p WHERE size <= $3
+    RETURNING 1
+)
+SELECT size, EXISTS (SELECT 1 FROM ins) FROM p`, table),
 		// batch пропускает строки, ждущие backoff; ordered их не перескакивает
 		// (порядок важнее пропускной способности) и отсекает хвост в коде.
 		listSkipSQL: fmt.Sprintf(`SELECT %s FROM %s
@@ -148,16 +157,24 @@ GROUP BY subject`, table),
 // Table — имя outbox-таблицы этого Store.
 func (s *Store) Table() string { return s.table }
 
-// Insert пишет событие в outbox-таблицу; payload уже сериализован (outboxkit.Bus).
-func (s *Store) Insert(ctx context.Context, subject string, payload json.RawMessage) error {
+// Insert пишет событие в outbox-таблицу; payload уже сериализован (outboxkit.Bus). JSONB-текст
+// тела больше maxBytes — outboxkit.ErrPayloadTooLarge, строка не пишется.
+func (s *Store) Insert(ctx context.Context, subject string, payload json.RawMessage, maxBytes int) error {
 	if s.requireTx && !pgkit.InTx(ctx) {
 		return fmt.Errorf("%w: wrap the call in pgkit Transactor.WithTx", outboxkit.ErrNoTx)
 	}
 	if len(payload) == 0 {
 		return fmt.Errorf("outboxkit/pgstore: insert %q: empty payload", subject)
 	}
-	if _, err := s.db.Exec(ctx, s.insertSQL, subject, []byte(payload)); err != nil {
+	var (
+		size     int
+		inserted bool
+	)
+	if err := s.db.QueryRow(ctx, s.insertSQL, subject, []byte(payload), maxBytes).Scan(&size, &inserted); err != nil {
 		return fmt.Errorf("outboxkit/pgstore: insert: %w", err)
+	}
+	if !inserted {
+		return fmt.Errorf("%w: %s: %d bytes in JSONB, limit %d", outboxkit.ErrPayloadTooLarge, subject, size, maxBytes)
 	}
 	return nil
 }

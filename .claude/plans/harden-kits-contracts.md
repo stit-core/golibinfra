@@ -12,9 +12,8 @@ blocked-by: —
 идемпотентность, httpkit, секреты, bruteforcekit, дефолты. Вторая половина и релиз — второй план.
 
 ## Контекст
-- **Программа.** Метод, push и решения владельца — `go-backend-template/.claude/plans/audit-program.md`;
-  партии — `M/replan-golibinfra.md` §6; находки — `M/kits-audit/summary.md` («п3», «Как повторить
-  аудит») и отчёты углов в `M/kits-audit/` (`M` — `/home/mm/.cache/stit-audit-program/`).
+- **Программа** — `go-backend-template/.claude/plans/audit-program.md`; находки — `M/kits-audit/summary.md`
+  («Как повторить аудит») и отчёты углов (`M` — `/home/mm/.cache/stit-audit-program/`).
 - **Состав партии 3:** 27 medium и 36 minor аудита, кандидаты C (длина пароля, retention `audit_log`),
   N1–N5 `M/validation-release-v1.3.0.md`, заметка шаблона про subject длиннее 255 байт.
 - **Эксперименты** — `run.sh` углов в своём worktree на ревизии: FAIL — дефект есть; не собирается
@@ -120,11 +119,12 @@ blocked-by: —
 ### Данные и httpkit
 - [x] **S4** — pgkit: мигратор, пул, вложенные транзакции, схема китов на старте (KCOR-03, -07, KFX-02, -04)
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S1
-  - Сделано: AC4 → PASS; мутанты `M/exc2/mut_s4.py` — 25 из 25 красные (M17, M25 — после теста с
-    модулем раньше `MigrateModule`); эксперименты правлены под API (E03, E09, E14, KX21/30/37/44/63a/64/65)
-- [ ] **S5** — outbox: `ordered` по моменту вставки, предел payload по JSONB (KCOR-02, `outbox-payload-jsonb`)
+  - Сделано: `ae45272`; AC4 → PASS; мутанты `M/exc2/mut_s4.py` 25/25; эксперименты правлены под API
+- [x] **S5** — outbox: `ordered` по моменту вставки, предел payload по JSONB (KCOR-02, `outbox-payload-jsonb`)
   - Проверка: `correctness-security/run.sh <rev> pg` → E10 PASS; тест предела с числами в экспоненте
     → отказ `Publish` · Закрывает: AC5 · Зависит от: S4
+  - Сделано: E10 PASS (`[paid shipped]`), E17 PASS; `TestPublish_RejectsPayloadOverJSONBLimit`; мутанты
+    `M/exc2/mut_s5.py` 7/7; тест «порядок по началу транзакции» удалён — решение обратное
 - [ ] **S6** — Трасса и кардинальность outbox и natskit, миграция кита (KOBS-02, KOBS-03, KOBS-04)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: S5
 - [ ] **S7** — Атомарность cachekit, контракт идемпотентности, пределы (KCOR-04, -05, KTST-10, KSEC-06)
@@ -154,12 +154,12 @@ blocked-by: —
 
 ## Решения
 - **ENV.** Ридер — `internal/envconf` у 35 конструкторов и `config.Env`, без envconfig. `KEY=` — как
-  незаданная (U4: `PG_MIGRATIONS_PATH=` выключал миграции); пустое — `-`, список из одних разделителей
-  — ошибка. Имя — `<P>_<TAG>`, голый `<TAG>` — где кит обещает; вложенная структура — без тега, с тем
-  же префиксом (U5), тег на ней — ошибка (B1: секция молча пустела); вторая секция кита — свой `Load`
-  с `EnvPrefixed` (подсказка в ошибке). Тип вне ридера (`map`, `[]byte`, `Set`, `UnmarshalBinary` —
-  `url.URL`) — ошибка по типу: канон — строка с `Validate` или `UnmarshalText`. Поле без тега и
-  `ignored` — ошибка; целые — десятичные.
+  незаданная (U4: `PG_MIGRATIONS_PATH=` выключал миграции); пустое — `-`, список из одних разделителей —
+  ошибка. Имя — `<P>_<TAG>`, голый `<TAG>` — где кит обещает; вложенная структура — без тега, с тем же
+  префиксом (U5), тег на ней — ошибка (B1: секция молча пустела); вторая секция кита — свой `Load` с
+  `EnvPrefixed` (подсказка в ошибке). Тип вне ридера (`map`, `[]byte`, `Set`, `UnmarshalBinary` —
+  `url.URL`) — ошибка по типу: канон — строка с `Validate` или `UnmarshalText`. Поле без тега и `ignored`
+  — ошибка; целые — десятичные.
 - **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки
   или `ErrConfig`, не дефолт кита («без предела» у новых настроек — `-1`); формат — и у выключенного,
   обязательное — у включённого; nil-опции игнорируются; `withDefaults` outbox удалён. `NewServer(cfg,
@@ -167,30 +167,29 @@ blocked-by: —
   нём (H51). Тик outbox против таймаута простоя транзакции — в `Module` и `Instance` при
   `pgkit.PoolConfig` в графе. Ноль, уходящий в драйвер (pgxpool, go-redis), — его значение из доки;
   `RedactConfig{}` — безопасный дефолт; киты вне объёма `withDefaults` сохраняют.
-- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>(ctor, anns…)` с проверкой
-  типа (`healthkit.ProvideProbe`, `timerkit.ProvideJob`, `httpkit.ProvideSecurityScheme`,
+- **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>` и `Provide<Thing>(ctor, anns…)` с проверкой типа
+  (`healthkit.ProvideProbe`, `timerkit.ProvideJob`, `httpkit.ProvideSecurityScheme`,
   `grpckit.ProvideService`), значение — `Supply<Thing>` (`pgkit.SupplyMigrations`); проба инстанса —
   `natskit.ProvideProbe(name)`. Конструктор — `(cfg, зависимости…, log, opts…)`, функция над объектом
-  берёт его первым; логгер — параметр, у handlertest — опция, `WithErrorLogger` telemetry — handler
-  SDK. Опции httpclient — значение `Options`: hook'и складываются, второй транспорт — `ErrConfig`
-  (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после optional `pgkit.Migrated`
-  (KX61b). Test-хелперы в ките — `MemoryCache`, `MemoryStorage`, `httpkit.MemoryStore`, фейки
-  `clockkit`, `pgkit.WithTestTx`. hubkit — как есть (вне объёма).
+  берёт его первым; логгер — параметр, у handlertest — опция, `WithErrorLogger` telemetry — handler SDK.
+  Опции httpclient — значение `Options`: hook'и складываются, второй транспорт — `ErrConfig` (KX50);
+  `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после optional `pgkit.Migrated` (KX61b).
+  Test-хелперы в ките — `MemoryCache`, `MemoryStorage`, `httpkit.MemoryStore`, фейки `clockkit`,
+  `pgkit.WithTestTx`. hubkit — как есть (вне объёма).
 - **pgkit.** Мигратор — `lock_timeout` = `PG_MIGRATE_LOCK_TIMEOUT` (5 с, ноль — `ErrConfig`), параметр
-  `lockTimeout` у `MigrateUp/Down/UpAll` (команда миграций — та же семантика, что у модуля); у
-  advisory-lock — только дедлайн. Дедлайн — cancel request серверу, с повтором до конца прогона:
-  `StatementTimeout` драйвера не видит ctx, `GracefulStop` golang-migrate — гонка флага (`-race`,
-  остановка теряется: `M/exc2/logs/s4-gracefulstop-race.log`), обрыв сокета ALTER не снимает (E09).
-  Упавшая миграция — `dirty`, как у golang-migrate. `OnStop` пула ждёт 2/3 остатка, затем WARN с
-  `acquired_conns` и `nil` (KX65, правило httpkit); `pgkit.Module` берёт `logkit.Logger`. Вложенный
-  строже внешней — `ErrNestedTxStricter`; «строже» и у режима: `ReadOnly` в `ReadWrite` (RW в RO
-  держит Postgres). `CheckSchema` — в pgkit (`ErrSchema` сессий удалён), `CheckSchemaOnStart(src)` у
-  хранилищ после optional `Migrated`, outbox — `Store.CheckSchema` перед партициями, `Instance` —
-  `outboxkit.SchemaChecker` (KX62). Фейк `pgtest` опции игнорирует — паритет у S3 второго плана.
+  `lockTimeout` у `MigrateUp/Down/UpAll` (команда миграций — семантика модуля); у advisory-lock — только
+  дедлайн. Дедлайн — cancel request серверу с повтором до конца прогона: `StatementTimeout` драйвера не
+  видит ctx, `GracefulStop` golang-migrate — гонка флага (`M/exc2/logs/s4-gracefulstop-race.log`), обрыв
+  сокета ALTER не снимает (E09); упавшая миграция — `dirty`. `OnStop` пула ждёт 2/3 остатка, затем WARN и
+  `nil` (KX65, правило httpkit), логгер — из графа. Вложенный строже внешней — `ErrNestedTxStricter`, у
+  режима — `ReadOnly` в `ReadWrite`. `CheckSchema` — в pgkit, `CheckSchemaOnStart(src)` у хранилищ после
+  optional `Migrated`, outbox — перед партициями, `Instance` — `outboxkit.SchemaChecker` (KX62). Фейк
+  `pgtest` опции игнорирует — паритет у S3 второго плана.
 - **outbox: порядок и предел.** `created_at` — `clock_timestamp()` вставки: при писателях,
-  сериализованных блокировкой агрегата, вставка идёт после коммита соседа (E10); ключ партиций и
-  `ORDER BY` те же. Предел — по представлению хранилища тем же `INSERT`
-  (`octet_length(($n::jsonb)::text)`): числа в экспоненте раздувают JSONB ×4 (N1 валидатора B).
+  сериализованных блокировкой агрегата, вставка идёт после коммита соседа (E10); ключ партиций и `ORDER
+  BY` те же. Предел — по представлению хранилища тем же `INSERT` (`octet_length` JSONB-текста): числа в
+  экспоненте раздувают JSONB ×4 (N1 валидатора B). Мерит хранилище, не `Bus`: предел — параметр
+  `Repository.Insert(…, maxBytes)` (у инстанса свой предел, фабрика его не знает); дефолт тот же.
 - **outbox: трасса и кардинальность.** Строка хранит W3C-контекст запроса (колонка новой миграции
   обоих источников); producer-спан публикации — ребёнок этого контекста со ссылкой на тик, строки
   без контекста — как сейчас (KO13). Label `subject` метрик outbox и backlog-запроса — только через
@@ -241,10 +240,10 @@ blocked-by: —
 При закрытии — в Handoff `harden-tests-archkit-release`. Что меняет потребитель на bump v1.4.0:
 - **ENV, конструкторы и формы (S1–S3).** `KEY=` — дефолт, пустое — `-`; App на `config.Env` — имена
   тегов, без тега на вложенной структуре; правки шаблона по местам — уже в Handoff второго плана.
-- **pgkit.** `cmd/migrate`: `MigrateUpAll`/`MigrateDown(ctx, dsn, cfg.LockTimeout, …)`; хранилища
-  без миграций — ошибка старта (шаблон накатывает их `cmd/migrate` — проверка проходит);
-  `PG_MIGRATE_LOCK_TIMEOUT` (5 с); вложенная транзакция строже внешней — ошибка.
-- **outbox.** Новая миграция кита (мигратор берёт её сам); метрики без `subject` (`WithMetricSubject`).
+- **pgkit.** `cmd/migrate`: `MigrateUpAll`/`MigrateDown(ctx, dsn, cfg.LockTimeout, …)`; хранилища без
+  миграций — ошибка старта (`cmd/migrate` шаблона их накатывает); `PG_MIGRATE_LOCK_TIMEOUT` (5 с).
+- **outbox.** Новая миграция кита (мигратор берёт её сам); метрики без `subject` (`WithMetricSubject`);
+  предел тела — по JSONB (событие с числами в экспоненте у предела теперь `ErrPayloadTooLarge`).
 - **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate` шаблона); дедлайн
   запроса; 408/409/425/429 не воспроизводятся; trace-заголовки клиента — по настройке доверия.
 - **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — из
@@ -255,31 +254,31 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап 1 (S1–S3) принят валидатором A (`M/validation-harden-kits-contracts-A.md`), мелочи перепроверки —
-`fix(envconf)!`; этап 2: S4 закрыт (AC4), дальше S5.
+`fix(envconf)!`; этап 2: S4 (AC4), S5 закрыты, дальше S6.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`,
   `NewBus(cfg, conn, log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов
-  (`POSTGRES_PG_DSN` → `PG_DSN`), поле без тега — ошибка `Load` (тег или `ignored:"true"`), тег на
-  вложенной структуре — ошибка (был приставкой, `DB_PG_DSN`: снять тег, имена — `PG_*`; вторая секция
-  того же кита — `ignored:"true"` и свой `config.Load(&a.X, config.EnvPrefixed("x"))`, незаданная `X_*`
-  — из голой), поле `map`, `[]byte`, `url.URL` или типа только с `UnmarshalBinary`/`Set` — ошибка `Load`
-  (строка с разбором в `Validate` или тип с `UnmarshalText`), нет `*envconfig.ParseError`. httpkit:
-  `NewServer(cfg, log, opts…) (*Server, error)` ставит цепочку кита и `HumaAuth` (`WithAuthExtractor`,
-  `WithIdempotencyStore`), `WithLogger` удалён; `ClientIP(hops, log)`, `HumaAuth(extract, log)`,
-  `RegisterHealth(api, timeout, log, probes…)`, схема — `ProvideSecurityScheme(ctor)`; handlertest — с
-  цепочкой кита. healthkit, timerkit: `Group` → `ProbesGroup`/`JobsGroup`, `Provide` →
-  `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` → `SupplyMigrations`;
-  `MigrateUp/Down/UpAll(ctx, dsn, lockTimeout, …)` (> 0, команда миграций — `cfg.LockTimeout`); `Module`
-  берёт `logkit.Logger`; литерал `MigrateRunnerConfig` без `LockTimeout` — `ErrConfig`; вложенный
-  `WithTxOptions` строже внешней — `ErrNestedTxStricter`. authnkit/session/pgstore: `ErrSchema`,
-  `Store.CheckSchema` → `pgkit.ErrSchema`, `pgkit.CheckSchema`. outboxkit: `New(name, cfg, …)`,
-  `NewWorker(instance, cfg, …)` с ошибкой, `Default{BatchSize,TickTimeout,MaxAttempts}` удалены. minio:
-  `NewStorage(cfg, client, urls, log)` с ошибкой. authnkit: `DefaultAccessTTL`, `DefaultLeeway` удалены,
-  `Argon2idParams`/`NewArgon2idParams` → `Argon2idConfig`/`NewArgon2idConfig`; `pgstore.NewStore(cfg,
-  db…)` у bruteforcekit и сессий. httpclient: `Validate` — value-приёмник, группа опций → значение
-  `httpclient.Options`. storagekit: `NewKey` → `string`, `MemoryStorage.Bytes`/`Keys` удалены (`Get`).
-  telemetry: `Headers.Decode` — без `ErrConfig`.
+  (`POSTGRES_PG_DSN` → `PG_DSN`), поле без тега — ошибка `Load` (тег или `ignored:"true"`), тег на вложенной
+  структуре — ошибка (был приставкой, `DB_PG_DSN`: снять тег, имена — `PG_*`; вторая секция того же кита —
+  `ignored:"true"` и свой `config.Load(&a.X, config.EnvPrefixed("x"))`, незаданная `X_*` — из голой), поле
+  `map`, `[]byte`, `url.URL` или типа только с `UnmarshalBinary`/`Set` — ошибка `Load` (строка с разбором в
+  `Validate` или тип с `UnmarshalText`), нет `*envconfig.ParseError`. httpkit: `NewServer(cfg, log, opts…)
+  (*Server, error)` ставит цепочку кита и `HumaAuth` (`WithAuthExtractor`, `WithIdempotencyStore`),
+  `WithLogger` удалён; `ClientIP(hops, log)`, `HumaAuth(extract, log)`, `RegisterHealth(api, timeout, log,
+  probes…)`, схема — `ProvideSecurityScheme(ctor)`; handlertest — с цепочкой кита. healthkit, timerkit:
+  `Group` → `ProbesGroup`/`JobsGroup`, `Provide` → `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` →
+  `SupplyMigrations`; `MigrateUp/Down/UpAll(ctx, dsn, lockTimeout, …)` (> 0, команда миграций —
+  `cfg.LockTimeout`); `Module` берёт `logkit.Logger`; литерал `MigrateRunnerConfig` без `LockTimeout` —
+  `ErrConfig`; вложенный `WithTxOptions` строже внешней — `ErrNestedTxStricter`. authnkit/session/pgstore:
+  `ErrSchema`, `Store.CheckSchema` → `pgkit.ErrSchema`, `pgkit.CheckSchema`. outboxkit: `New(name, cfg, …)`,
+  `NewWorker(instance, cfg, …)` с ошибкой, `Default{BatchSize,TickTimeout,MaxAttempts}` удалены,
+  `Repository.Insert(ctx, subject, payload, maxBytes)` — тело мерит хранилище (своё — по своему
+  представлению), сверх — `ErrPayloadTooLarge`. minio: `NewStorage(cfg, client, urls, log)` с ошибкой.
+  authnkit: `DefaultAccessTTL`, `DefaultLeeway` удалены, `Argon2idParams`/`NewArgon2idParams` →
+  `Argon2idConfig`/`NewArgon2idConfig`; `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий. httpclient:
+  `Validate` — value-приёмник, группа опций → значение `httpclient.Options`. storagekit: `NewKey` →
+  `string`, `MemoryStorage.Bytes`/`Keys` удалены (`Get`). telemetry: `Headers.Decode` — без `ErrConfig`.
 - **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт; пустую строку или список задаёт `-`
   (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`, `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается,
   теневых имён нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые —
@@ -287,13 +286,14 @@ blocked-by: —
   `ErrConfig`: httpclient (таймаут, ретрай, SSE; `MaxRedirects 0` — без редиректов), natskit (таймауты,
   drain, потолки; JetStream — у включённого; `NakMaxBackoff 0` — постоянная задержка),
   `JWTConfig.AccessTTL`; `Leeway 0` — без допуска. Формат telemetry и JetStream — и у выключенного;
-  невалидный `Config` у `storagekit.Module` и тик outbox ≥ `PG_IDLE_IN_TX_SESSION_TIMEOUT` — ошибка
-  графа. nil-опции ничего не меняют; hook'и `WithBeforeAttempt` складываются, второй `WithTransport` —
-  `ErrConfig`; проба natskit — `natskit` или `natskit:<name>`; cleanup bruteforcekit и сессий, drain
-  outbox — после миграций; префиксы ошибок `<kit>/<sub>:`, воркер outbox — `outboxkit:`, `telemetry:
-  shutdown`, лог ошибок SDK — `telemetry: otel sdk error`. Хранилища китов (аудит, bruteforce, сессии,
-  outbox и его инстансы) без своих миграций — ошибка старта `pgkit.ErrSchema`; дедлайн миграций
-  прерывает идущий оператор, блокировку он ждёт ≤ `PG_MIGRATE_LOCK_TIMEOUT` (отказ — `dirty`); пул с
+  невалидный `Config` у `storagekit.Module` и тик outbox ≥ `PG_IDLE_IN_TX_SESSION_TIMEOUT` — ошибка графа.
+  nil-опции ничего не меняют; hook'и `WithBeforeAttempt` складываются, второй `WithTransport` — `ErrConfig`;
+  проба natskit — `natskit` или `natskit:<name>`; cleanup bruteforcekit и сессий, drain outbox — после
+  миграций; префиксы ошибок `<kit>/<sub>:`, воркер outbox — `outboxkit:`, `telemetry: shutdown`, лог ошибок
+  SDK — `telemetry: otel sdk error`. Хранилища китов (аудит, bruteforce, сессии, outbox и его инстансы) без
+  своих миграций — ошибка старта `pgkit.ErrSchema`; дедлайн миграций прерывает идущий оператор, блокировку
+  он ждёт ≤ `PG_MIGRATE_LOCK_TIMEOUT` (отказ — `dirty`); outbox `ordered` — по моменту вставки, а не началу
+  транзакции; предел тела — по JSONB-тексту (числа в экспоненте у предела — `ErrPayloadTooLarge`); пул с
   занятым соединением на остановке — WARN и `nil` через 2/3 бюджета.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`.
