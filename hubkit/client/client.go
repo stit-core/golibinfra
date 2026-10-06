@@ -86,6 +86,7 @@ func defaultDoer() (Doer, error) {
 		RetryMaxWait:     5 * time.Second,
 		MaxRedirects:     10,
 		SSEMaxEventBytes: 1 << 20,
+		MaxHosts:         1024,
 		Breaker:          httpclient.BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
 	})
 	if err != nil {

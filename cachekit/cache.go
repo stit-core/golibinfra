@@ -1,6 +1,6 @@
-// Package cachekit — доступ к Redis: байтовый Cache с TTL, атомарными
-// SetNX/GetDel/CompareAndDelete и тегированной инвалидацией, типизированные
-// GetJSON/SetJSON, IdempotencyStore для httpkit и health-проба для /ready.
+// Package cachekit — доступ к Redis: байтовый Cache с TTL, атомарными SetNX/GetDel/Compare* и
+// тегированной инвалидацией, типизированные GetJSON/SetJSON, IdempotencyStore для httpkit,
+// MemoryCache и health-проба для /ready; эмитит метрики и спаны команд.
 package cachekit
 
 import (
@@ -63,7 +63,9 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// Cache — байтовый KV. Промах везде — found == false, err == nil.
+// Cache — байтовый KV. Промах везде — found == false, err == nil. SetNX, GetDel, CompareAndDelete
+// и CompareAndSet на сбое связи не повторяются: повтор увидел бы эффект первой попытки, и ответ
+// «нет ключа» или «занято» был бы ложным — вызывающий получает ошибку.
 type Cache interface {
 	Get(ctx context.Context, key string) ([]byte, bool, error)
 	Set(ctx context.Context, key string, value []byte, ttl time.Duration) error
@@ -74,6 +76,9 @@ type Cache interface {
 	// CompareAndDelete удаляет ключ атомарно и только если его значение равно
 	// expected: снятие собственного резерва, не затирающее чужую запись.
 	CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
+	// CompareAndSet пишет value с ttl атомарно и только если значение ключа равно expected:
+	// запись поверх собственного резерва, не затирающая чужой.
+	CompareAndSet(ctx context.Context, key string, expected, value []byte, ttl time.Duration) (bool, error)
 	Delete(ctx context.Context, keys ...string) error
 	// SetWithTags пишет ключ и добавляет его в наборы tag:<tag> для InvalidateByTag;
 	// набор живёт не меньше самого долгоживущего своего члена.
@@ -133,8 +138,23 @@ end
 return 0
 `)
 
+var compareAndSetScript = redis.NewScript(`
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return 0
+end
+local ttl = tonumber(ARGV[3])
+if ttl > 0 then
+  redis.call('SET', KEYS[1], ARGV[2], 'PX', ttl)
+else
+  redis.call('SET', KEYS[1], ARGV[2])
+end
+return 1
+`)
+
 type redisCache struct {
 	client *redis.Client
+	// once — тот же сервер без повторов go-redis: для неидемпотентных команд.
+	once   *redis.Client
 	prefix string
 }
 
@@ -161,9 +181,14 @@ func newRedisCache(cfg Config) (*redisCache, error) {
 	// бюджет запроса: дедлайн ctx до соединения не доходит.
 	opts.ContextTimeoutEnabled = true
 
+	hook := newObserveHook()
 	client := redis.NewClient(opts)
-	client.AddHook(newObserveHook())
-	return &redisCache{client: client, prefix: cfg.KeyPrefix}, nil
+	client.AddHook(hook)
+	onceOpts := *opts
+	onceOpts.MaxRetries = -1
+	once := redis.NewClient(&onceOpts)
+	once.AddHook(hook)
+	return &redisCache{client: client, once: once, prefix: cfg.KeyPrefix}, nil
 }
 
 func (c *redisCache) key(key string) string { return c.prefix + key }
@@ -187,7 +212,7 @@ func (c *redisCache) Set(ctx context.Context, key string, value []byte, ttl time
 }
 
 func (c *redisCache) SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error) {
-	ok, err := c.client.SetNX(ctx, c.key(key), value, ttl).Result()
+	ok, err := c.once.SetNX(ctx, c.key(key), value, ttl).Result()
 	if err != nil {
 		return false, fmt.Errorf("cachekit: setnx: %w", err)
 	}
@@ -195,7 +220,7 @@ func (c *redisCache) SetNX(ctx context.Context, key string, value []byte, ttl ti
 }
 
 func (c *redisCache) GetDel(ctx context.Context, key string) ([]byte, bool, error) {
-	val, err := c.client.GetDel(ctx, c.key(key)).Bytes()
+	val, err := c.once.GetDel(ctx, c.key(key)).Bytes()
 	if errors.Is(err, redis.Nil) {
 		return nil, false, nil
 	}
@@ -206,11 +231,19 @@ func (c *redisCache) GetDel(ctx context.Context, key string) ([]byte, bool, erro
 }
 
 func (c *redisCache) CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error) {
-	deleted, err := compareAndDeleteScript.Run(ctx, c.client, []string{c.key(key)}, expected).Int64()
+	deleted, err := compareAndDeleteScript.Run(ctx, c.once, []string{c.key(key)}, expected).Int64()
 	if err != nil {
 		return false, fmt.Errorf("cachekit: compare and delete: %w", err)
 	}
 	return deleted > 0, nil
+}
+
+func (c *redisCache) CompareAndSet(ctx context.Context, key string, expected, value []byte, ttl time.Duration) (bool, error) {
+	set, err := compareAndSetScript.Run(ctx, c.once, []string{c.key(key)}, expected, value, milliseconds(ttl)).Int64()
+	if err != nil {
+		return false, fmt.Errorf("cachekit: compare and set: %w", err)
+	}
+	return set > 0, nil
 }
 
 func (c *redisCache) Delete(ctx context.Context, keys ...string) error {
@@ -303,7 +336,13 @@ func infoField(info, name string) string {
 }
 
 func (c *redisCache) Close() error {
-	if err := c.client.Close(); err != nil && !errors.Is(err, redis.ErrClosed) {
+	var errs []error
+	for _, client := range []*redis.Client{c.client, c.once} {
+		if err := client.Close(); err != nil && !errors.Is(err, redis.ErrClosed) {
+			errs = append(errs, err)
+		}
+	}
+	if err := errors.Join(errs...); err != nil {
 		return fmt.Errorf("cachekit: close: %w", err)
 	}
 	return nil

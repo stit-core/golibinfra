@@ -35,6 +35,9 @@ func newTestClient(t *testing.T, cfg Config, opts ...Option) *Client {
 	if cfg.SSEMaxEventBytes == 0 {
 		cfg.SSEMaxEventBytes = 1 << 20
 	}
+	if cfg.MaxHosts == 0 {
+		cfg.MaxHosts = 1024
+	}
 	if cfg.Breaker.FailureThreshold > 0 && cfg.Breaker.RecoveryTimeout == 0 {
 		cfg.Breaker.RecoveryTimeout = 30 * time.Second
 	}
@@ -657,7 +660,8 @@ func TestBackoff_RetryAfterCappedByMaxWait(t *testing.T) {
 func validConfig() Config {
 	return Config{
 		Timeout: 10 * time.Second, MaxRetries: 3, RetryWait: 200 * time.Millisecond, RetryMaxWait: 5 * time.Second,
-		MaxRedirects: 10, SSEMaxEventBytes: 1 << 20, Breaker: BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
+		MaxRedirects: 10, SSEMaxEventBytes: 1 << 20, MaxHosts: 1024,
+		Breaker: BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
 	}
 }
 
@@ -677,6 +681,8 @@ func TestConfig_ValidateRejects(t *testing.T) {
 		"negative recovery":    func(c *Config) { c.Breaker.RecoveryTimeout = -time.Second },
 		"zero recovery on":     func(c *Config) { c.Breaker.RecoveryTimeout = 0 },
 		"negative max backoff": func(c *Config) { c.RetryMaxWait = -time.Second },
+		"zero max hosts":       func(c *Config) { c.MaxHosts = 0 },
+		"max hosts below -1":   func(c *Config) { c.MaxHosts = -2 },
 	}
 	for name, mutate := range cases {
 		cfg := validConfig()

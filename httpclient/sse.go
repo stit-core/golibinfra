@@ -375,9 +375,10 @@ func (p *sseParser) dispatch() (Event, bool) {
 }
 
 func (c *Client) endStream(ctx context.Context, span trace.Span, req *http.Request, start time.Time, resp *http.Response, err error) {
+	host, _ := c.hosts.label(req.URL.Host)
 	c.instr.requestDuration.Record(ctx, time.Since(start).Seconds(),
 		metric.WithAttributes(
-			attribute.String("host", req.URL.Host),
+			attribute.String("host", host),
 			attribute.String("method", req.Method),
 			attribute.String("status", statusLabel(resp, err)),
 			attribute.String("mode", "sse"),

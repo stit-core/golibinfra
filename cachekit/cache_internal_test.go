@@ -114,3 +114,116 @@ func TestCheckServerVersion_PropagatesClientError(t *testing.T) {
 		t.Fatalf("checkServerVersion on a closed client = %v, want a wrapped redis.ErrClosed", err)
 	}
 }
+
+// busyScript крутит однопоточный Redis ARGV[1] итераций: команды других клиентов ждут в сокетах и
+// выполняются после — как за долгим скриптом соседа или fork под BGSAVE. TIME внутри скрипта
+// заморожен, поэтому длительность задаёт число итераций, а не часы.
+const busyScript = `for i = 1, tonumber(ARGV[1]) do end return 1`
+
+// busyIterations — число итераций busyScript на ~d у этого сервера: калибровка пробным прогоном.
+// d — с запасом до busy-reply-threshold (5 с), после которого очередь получает BUSY.
+func busyIterations(t *testing.T, raw *redis.Client, d time.Duration) int64 {
+	t.Helper()
+	const probe = 50_000_000
+	start := time.Now()
+	if err := raw.Eval(context.Background(), busyScript, nil, probe).Err(); err != nil {
+		t.Fatalf("calibrate busy script: %v", err)
+	}
+	return int64(float64(probe) * float64(d) / float64(max(time.Since(start), time.Millisecond)))
+}
+
+// warmPool кладёт в пул клиента n готовых соединений: повтор на занятом сервере идёт по ним, а не
+// упирается в рукопожатие нового соединения, которое ждёт тот же сервер.
+func warmPool(t *testing.T, client *redis.Client, n int) {
+	t.Helper()
+	conns := make([]*redis.Conn, n)
+	for i := range conns {
+		conns[i] = client.Conn()
+		if err := conns[i].Ping(context.Background()).Err(); err != nil {
+			t.Fatalf("warm pool: %v", err)
+		}
+	}
+	for _, cn := range conns {
+		_ = cn.Close()
+	}
+}
+
+// Регрессия KCOR-04 (E18): ответ занятого сервера не приходит за REDIS_READ_TIMEOUT, а команда уже
+// в очереди. SetNX, GetDel, CompareAndDelete и CompareAndSet не повторяются — повтор увидел бы
+// эффект первой попытки и ответил бы ложным «нет», а вызывающий получает ошибку; Get повторяется.
+func TestRedisCache_NonIdempotentCommandsAreNotRetried(t *testing.T) {
+	url := testkit.StartRedis(t).URL
+	opts, err := redis.ParseURL(url)
+	if err != nil {
+		t.Fatalf("parse url: %v", err)
+	}
+	raw := redis.NewClient(opts)
+	t.Cleanup(func() { _ = raw.Close() })
+	c, err := newRedisCache(Config{
+		URL: url, PoolSize: 16, MaxRetries: 10,
+		DialTimeout: 5 * time.Second, ReadTimeout: 200 * time.Millisecond, WriteTimeout: time.Second,
+	})
+	if err != nil {
+		t.Fatalf("newRedisCache: %v", err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	ctx := context.Background()
+	// Скрипты — в кэше сервера, как после первого вызова: иначе первая попытка — NOSCRIPT без эффекта.
+	for _, s := range []*redis.Script{compareAndDeleteScript, compareAndSetScript} {
+		if err := s.Load(ctx, raw).Err(); err != nil {
+			t.Fatalf("script load: %v", err)
+		}
+	}
+	iterations := busyIterations(t, raw, 500*time.Millisecond)
+	busy := func() (wait func()) {
+		warmPool(t, c.client, 12)
+		warmPool(t, c.once, 2)
+		done := make(chan error, 1)
+		go func() { done <- raw.Eval(context.Background(), busyScript, nil, iterations).Err() }()
+		time.Sleep(50 * time.Millisecond)
+		return func() {
+			if err := <-done; err != nil {
+				t.Errorf("busy script: %v", err)
+			}
+		}
+	}
+
+	_ = c.Set(ctx, "otp", []byte("token"), time.Minute)
+	wait := busy()
+	_, found, err := c.GetDel(ctx, "otp")
+	wait()
+	if err == nil && !found {
+		t.Error("GetDel on a busy server: found=false, err=nil — a retry saw the first attempt")
+	}
+
+	wait = busy()
+	ok, err := c.SetNX(ctx, "lock", []byte("me"), time.Minute)
+	wait()
+	if holder := raw.Get(ctx, "lock").Val(); err == nil && !ok && holder == "me" {
+		t.Error("SetNX of the only writer on a busy server: ok=false, err=nil — a retry saw its own value")
+	}
+
+	_ = c.Set(ctx, "cad", []byte("mine"), time.Minute)
+	wait = busy()
+	ok, err = c.CompareAndDelete(ctx, "cad", []byte("mine"))
+	wait()
+	if left := raw.Exists(ctx, "cad").Val(); err == nil && !ok && left == 0 {
+		t.Error("CompareAndDelete on a busy server: ok=false, err=nil — a retry saw the first attempt")
+	}
+
+	_ = c.Set(ctx, "cas", []byte("mine"), time.Minute)
+	wait = busy()
+	ok, err = c.CompareAndSet(ctx, "cas", []byte("mine"), []byte("new"), time.Minute)
+	wait()
+	if v := raw.Get(ctx, "cas").Val(); err == nil && !ok && v == "new" {
+		t.Error("CompareAndSet on a busy server: ok=false, err=nil — a retry saw the first attempt")
+	}
+
+	_ = c.Set(ctx, "plain", []byte("v"), time.Minute)
+	wait = busy()
+	v, found, err := c.Get(ctx, "plain")
+	wait()
+	if err != nil || !found || string(v) != "v" {
+		t.Errorf("Get on a busy server: %q, %v, %v; want the value after a retry", v, found, err)
+	}
+}

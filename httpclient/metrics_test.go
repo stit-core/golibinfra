@@ -82,6 +82,50 @@ func TestMetrics_RequestDurationLabels(t *testing.T) {
 	}
 }
 
+// Регрессия KSEC-06: label host — у первых MaxHosts хостов, остальные — "other" в длительности
+// Do и Stream и в повторах: адреса пользователей не растят число серий.
+func TestMetrics_HostOverMaxHostsIsOther(t *testing.T) {
+	before := metrictest.Collect(t)
+	first := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(first.Close)
+	down := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusServiceUnavailable)
+	}))
+	t.Cleanup(down.Close)
+	sse := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		_, _ = fmt.Fprint(w, "data: x\n\n")
+	}))
+	t.Cleanup(sse.Close)
+
+	c := newTestClient(t, Config{MaxHosts: 1, MaxRetries: 1})
+	for _, url := range []string{first.URL, down.URL} {
+		req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+		resp, err := c.Do(req)
+		if err != nil {
+			t.Fatalf("Do %s: %v", url, err)
+		}
+		resp.Body.Close()
+	}
+	collect(openStream(t, c, sse.URL))
+
+	d := metrictest.Collect(t).Sub(before)
+	firstHost := strings.TrimPrefix(first.URL, "http://")
+	d.Get(t, "http_client_request_duration_seconds", "host", firstHost, "method", "GET", "status", "200")
+	d.Get(t, "http_client_request_duration_seconds", "host", "other", "method", "GET", "status", "503")
+	d.Get(t, "http_client_request_duration_seconds", "host", "other", "method", "GET", "status", "200", "mode", "sse")
+	if n := d.Value("http_client_retry_attempts_total", "host", "other"); n != 1 {
+		t.Errorf("http_client_retry_attempts_total{host=other}: %v, want 1", n)
+	}
+	for _, s := range d.All() {
+		if h, ok := s.Labels["host"]; ok && h != firstHost && h != "other" {
+			t.Errorf("series with a host over MaxHosts: %s", s)
+		}
+	}
+}
+
 func TestMetrics_SSEDialErrorRecorded(t *testing.T) {
 	before := metrictest.Collect(t)
 

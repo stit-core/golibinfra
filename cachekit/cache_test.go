@@ -9,7 +9,9 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"git.stit.tech/stit-core/golibinfra/cachekit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/idempotencytest"
 )
 
 type redisFixture struct {
@@ -112,6 +114,31 @@ func TestRedisCache(t *testing.T) {
 		}
 		if ok, err := cache.CompareAndDelete(ctx, "cad", []byte("mine")); ok || err != nil {
 			t.Fatalf("missing key: ok=%v err=%v", ok, err)
+		}
+	})
+
+	t.Run("compare and set", func(t *testing.T) {
+		_ = cache.Set(ctx, "cas", []byte("mine"), time.Minute)
+		if ok, err := cache.CompareAndSet(ctx, "cas", []byte("theirs"), []byte("v"), time.Hour); ok || err != nil {
+			t.Fatalf("foreign value: ok=%v err=%v", ok, err)
+		}
+		if v, _, _ := cache.Get(ctx, "cas"); string(v) != "mine" {
+			t.Fatalf("foreign value overwritten: %q", v)
+		}
+		if ok, err := cache.CompareAndSet(ctx, "cas", []byte("mine"), []byte("v"), time.Hour); !ok || err != nil {
+			t.Fatalf("own value: ok=%v err=%v", ok, err)
+		}
+		if v, _, _ := cache.Get(ctx, "cas"); string(v) != "v" {
+			t.Fatalf("own value not replaced: %q", v)
+		}
+		if ttl := raw.TTL(ctx, "cas").Val(); ttl <= time.Minute {
+			t.Fatalf("TTL after CompareAndSet: %s, want the new ttl (1h)", ttl)
+		}
+		if ok, err := cache.CompareAndSet(ctx, "cas:missing", []byte("mine"), []byte("v"), time.Hour); ok || err != nil {
+			t.Fatalf("missing key: ok=%v err=%v", ok, err)
+		}
+		if n := raw.Exists(ctx, "cas:missing").Val(); n != 0 {
+			t.Fatal("CompareAndSet created a missing key")
 		}
 	})
 
@@ -338,61 +365,11 @@ func TestRedisCache_KeyPrefix(t *testing.T) {
 	}
 }
 
-func TestIdempotencyStore_Redis(t *testing.T) {
-	fix := startRedis(t, "")
-	store := cachekit.NewIdempotencyStore(fix.cache)
-	ctx := context.Background()
-
-	token, ok, err := store.Reserve(ctx, "k", time.Minute)
-	if err != nil || !ok || token == "" {
-		t.Fatalf("first reserve: token=%q ok=%v err=%v", token, ok, err)
-	}
-	if got, err := fix.raw.Get(ctx, "idempotency:k").Result(); err != nil || got != "\x00reserved:"+token {
-		t.Fatalf("reservation marker: %q %v", got, err)
-	}
-	if _, ok, _ := store.Reserve(ctx, "k", time.Minute); ok {
-		t.Fatal("second reserve must fail while in-flight")
-	}
-	if _, found, _ := store.Get(ctx, "k"); found {
-		t.Fatal("reserved key must not be visible as a record")
-	}
-
-	if err := store.Set(ctx, "k", []byte(`{"status":201}`), time.Hour); err != nil {
-		t.Fatal(err)
-	}
-	rec, found, err := store.Get(ctx, "k")
-	if err != nil || !found || string(rec) != `{"status":201}` {
-		t.Fatalf("get after set: %q %v %v", rec, found, err)
-	}
-
-	// Резерв истёк, запись положил другой запрос — опоздавший Release не должен
-	// стереть чужой ответ.
-	if err := store.Release(ctx, "k", token); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, _ := store.Get(ctx, "k"); !found {
-		t.Fatal("Release must not delete a completed record")
-	}
-
-	own, _, err := store.Reserve(ctx, "own", time.Minute)
-	if err != nil {
-		t.Fatal(err)
-	}
-	// Чужой токен резерв не снимает: Release запроса, чей резерв уже истёк и
-	// перехвачен следующим, не должен освобождать ключ.
-	if err := store.Release(ctx, "own", "someone-else"); err != nil {
-		t.Fatal(err)
-	}
-	if n, _ := fix.raw.Exists(ctx, "idempotency:own").Result(); n != 1 {
-		t.Fatal("Release with a foreign token must keep the reservation")
-	}
-	if err := store.Release(ctx, "own", own); err != nil {
-		t.Fatal(err)
-	}
-	if n, _ := fix.raw.Exists(ctx, "idempotency:own").Result(); n != 0 {
-		t.Fatal("Release must drop its own reservation")
-	}
-	if _, ok, _ := store.Reserve(ctx, "own", time.Minute); !ok {
-		t.Fatal("reserve after release must succeed")
-	}
+// Redis-реализация проходит тот же контракт, что память и httpkit.MemoryStore (KTST-10): у кейса
+// свой префикс ключей на общем сервере.
+func TestIdempotencyStore_ContractOnRedis(t *testing.T) {
+	url := testkit.StartRedis(t).URL
+	idempotencytest.RunContract(t, func(t *testing.T) httpkit.IdempotencyStore {
+		return cachekit.NewIdempotencyStore(newCache(t, url, t.Name()+":"))
+	})
 }

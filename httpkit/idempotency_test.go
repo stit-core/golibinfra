@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func idemCfg() IdempotencyConfig {
@@ -159,9 +160,11 @@ type stubStore struct {
 func (s stubStore) Reserve(context.Context, string, time.Duration) (string, bool, error) {
 	return "t", s.reserve, s.err
 }
-func (s stubStore) Get(context.Context, string) ([]byte, bool, error)        { return nil, false, s.err }
-func (s stubStore) Set(context.Context, string, []byte, time.Duration) error { return s.err }
-func (s stubStore) Release(context.Context, string, string) error            { return nil }
+func (s stubStore) Get(context.Context, string) ([]byte, bool, error) { return nil, false, s.err }
+func (s stubStore) Set(context.Context, string, string, []byte, time.Duration) (bool, error) {
+	return s.err == nil, s.err
+}
+func (s stubStore) Release(context.Context, string, string) error { return nil }
 
 func TestIdempotency_InProgress(t *testing.T) {
 	var calls atomic.Int32
@@ -224,16 +227,47 @@ func TestMemoryStore_Expiry(t *testing.T) {
 		t.Fatal("reserve while reserved")
 	}
 	now = now.Add(2 * time.Minute)
-	if _, ok, _ := s.Reserve(ctx, "k", time.Minute); !ok {
+	token, ok, _ := s.Reserve(ctx, "k", time.Minute)
+	if !ok {
 		t.Fatal("reserve after expiry")
 	}
-	_ = s.Set(ctx, "k", []byte("rec"), time.Minute)
+	if stored, _ := s.Set(ctx, "k", token, []byte("rec"), time.Minute); !stored {
+		t.Fatal("set by the owner")
+	}
 	if v, found, _ := s.Get(ctx, "k"); !found || string(v) != "rec" {
 		t.Fatalf("get: %q %v", v, found)
 	}
 	now = now.Add(2 * time.Minute)
 	if _, found, _ := s.Get(ctx, "k"); found {
 		t.Fatal("record must expire")
+	}
+}
+
+// Регрессия KSEC-06: новый ключ сверх предела — ошибка Reserve (fail-open или 503 по FailClosed),
+// живые ключи не вытесняются, истёкшие освобождают место после прохода.
+func TestMemoryStore_MaxKeys(t *testing.T) {
+	if got := NewMemoryStore().maxKeys; got != 100_000 {
+		t.Fatalf("default maxKeys = %d, want the documented 100 000", got)
+	}
+	now := time.Unix(1_700_000_000, 0)
+	s := NewMemoryStore()
+	s.now = func() time.Time { return now }
+	s.maxKeys = 2
+	ctx := context.Background()
+	for _, k := range []string{"a", "b"} {
+		if _, ok, err := s.Reserve(ctx, k, time.Minute); !ok || err != nil {
+			t.Fatalf("reserve %q: ok=%v err=%v", k, ok, err)
+		}
+	}
+	if _, ok, err := s.Reserve(ctx, "c", time.Minute); ok || !errors.Is(err, errMemoryStoreFull) {
+		t.Fatalf("reserve over the limit: ok=%v err=%v, want errMemoryStoreFull", ok, err)
+	}
+	if _, ok, err := s.Reserve(ctx, "a", time.Minute); ok || err != nil {
+		t.Fatalf("live key must stay reserved: ok=%v err=%v", ok, err)
+	}
+	now = now.Add(time.Minute + memorySweepEvery)
+	if _, ok, err := s.Reserve(ctx, "c", time.Minute); !ok || err != nil {
+		t.Fatalf("reserve after keys expired: ok=%v err=%v", ok, err)
 	}
 }
 
@@ -266,9 +300,9 @@ func (s *ctxProbeStore) Get(ctx context.Context, key string) ([]byte, bool, erro
 	return s.inner.Get(ctx, key)
 }
 
-func (s *ctxProbeStore) Set(ctx context.Context, key string, record []byte, ttl time.Duration) error {
+func (s *ctxProbeStore) Set(ctx context.Context, key, token string, record []byte, ttl time.Duration) (bool, error) {
 	s.note("set", ctx)
-	return s.inner.Set(ctx, key, record, ttl)
+	return s.inner.Set(ctx, key, token, record, ttl)
 }
 
 func (s *ctxProbeStore) Release(ctx context.Context, key, token string) error {
@@ -401,8 +435,8 @@ type setErrorStore struct {
 	released atomic.Int32
 }
 
-func (s *setErrorStore) Set(context.Context, string, []byte, time.Duration) error {
-	return errors.New("set failed")
+func (s *setErrorStore) Set(context.Context, string, string, []byte, time.Duration) (bool, error) {
+	return false, errors.New("set failed")
 }
 
 func (s *setErrorStore) Release(ctx context.Context, key, token string) error {
@@ -423,6 +457,50 @@ func TestIdempotency_SetErrorReleasesReservation(t *testing.T) {
 	h.ServeHTTP(second, postWithKey("k1", `{}`))
 	if second.Code != http.StatusCreated || calls.Load() != 2 {
 		t.Fatalf("retry must proceed: %d calls=%d", second.Code, calls.Load())
+	}
+}
+
+// Регрессия KCOR-05 (E07): ответ запроса, пережившего ReserveTTL, не затирает резерв повтора,
+// который уже занял ключ, — запись не ставится, в логе WARN, исход skipped.
+func TestIdempotency_ExpiredReservationIsNotOverwritten(t *testing.T) {
+	store := NewMemoryStore()
+	now := time.Unix(1_700_000_000, 0)
+	store.now = func() time.Time { return now }
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg := idemCfg()
+	var skey, retry string
+	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		now = now.Add(cfg.ReserveTTL + time.Second)
+		skey = scopedKey(r, "k1")
+		var ok bool
+		if retry, ok, _ = store.Reserve(r.Context(), skey, time.Minute); !ok {
+			t.Error("retry could not reserve the expired key")
+		}
+		w.WriteHeader(http.StatusCreated)
+	})
+	before := metrictest.Collect(t)
+	Idempotency(cfg, store, log)(slow).ServeHTTP(httptest.NewRecorder(), postWithKey("k1", `{}`))
+
+	if out := buf.String(); !strings.Contains(out, `"msg":"idempotency reservation expired before the response"`) ||
+		!strings.Contains(out, `"reserve_ttl":"1m0s"`) {
+		t.Errorf("expired reservation must be logged with reserve_ttl: %s", out)
+	}
+	d := metrictest.Collect(t).Sub(before)
+	if n := d.Value("http_idempotency_total", "result", "skipped"); n != 1 {
+		t.Errorf("http_idempotency_total{result=skipped}: %v, want 1", n)
+	}
+	if n := d.Value("http_idempotency_total", "result", "stored"); n != 0 {
+		t.Errorf("http_idempotency_total{result=stored}: %v, want 0", n)
+	}
+	if rec, found, _ := store.Get(context.Background(), skey); found {
+		t.Fatalf("late response overwrote the retry's reservation: %s", rec)
+	}
+	if stored, _ := store.Set(context.Background(), skey, retry, []byte("rec"), time.Minute); !stored {
+		t.Fatal("the retry lost its reservation")
 	}
 }
 
@@ -499,22 +577,6 @@ func TestIdempotency_WithAuthMarksContextAuthenticated(t *testing.T) {
 	}
 }
 
-func TestMemoryStore_ReleaseKeepsStoredRecord(t *testing.T) {
-	s := NewMemoryStore()
-	ctx := context.Background()
-	token, ok, _ := s.Reserve(ctx, "k", time.Minute)
-	if !ok {
-		t.Fatal("reserve")
-	}
-	_ = s.Set(ctx, "k", []byte("rec"), time.Minute)
-	if err := s.Release(ctx, "k", token); err != nil {
-		t.Fatal(err)
-	}
-	if _, found, _ := s.Get(ctx, "k"); !found {
-		t.Fatal("Release must drop only the reservation marker, not a stored record")
-	}
-}
-
 // Регрессия (NF4): резерв, переживший ReserveTTL, своим отложенным Release не
 // снимает резерв следующего запроса — иначе третий запрос идёт параллельно второму.
 func TestMemoryStore_ReleaseIsScopedToOwner(t *testing.T) {
@@ -555,7 +617,9 @@ func TestMemoryStore_SweepsExpiredEntries(t *testing.T) {
 	ctx := context.Background()
 
 	for i := range 100 {
-		_ = s.Set(ctx, "k"+strconv.Itoa(i), []byte("rec"), time.Minute)
+		if _, ok, _ := s.Reserve(ctx, "k"+strconv.Itoa(i), time.Minute); !ok {
+			t.Fatalf("reserve %d", i)
+		}
 	}
 	s.mu.Lock()
 	size := len(s.m)
@@ -565,7 +629,9 @@ func TestMemoryStore_SweepsExpiredEntries(t *testing.T) {
 	}
 
 	now = now.Add(2*time.Minute + memorySweepEvery)
-	_ = s.Set(ctx, "fresh", []byte("rec"), time.Minute)
+	if _, ok, _ := s.Reserve(ctx, "fresh", time.Minute); !ok {
+		t.Fatal("reserve fresh")
+	}
 	s.mu.Lock()
 	size = len(s.m)
 	s.mu.Unlock()

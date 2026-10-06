@@ -85,8 +85,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - **Тесты:** `testkit` (testcontainers, лесенка миграций `MigrationLadder`) + сабпакеты
   `testkit/<name>test`
   (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`,
-  `handlertest`, `hubtest`, `logtest`, `metrictest`, `natstest`, `oidctest`,
-  `outboxtest`, `pgtest`, `sessiontest`, `storagetest`); в самих китах — только исключения
+  `handlertest`, `hubtest`, `idempotencytest`, `logtest`, `metrictest`, `natstest`,
+  `oidctest`, `outboxtest`, `pgtest`, `sessiontest`, `storagetest`); в самих китах — только исключения
   § Стиль «Одна форма API».
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),

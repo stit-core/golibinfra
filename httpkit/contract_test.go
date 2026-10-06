@@ -57,9 +57,11 @@ var errStoreDown = errors.New("redis: connection refused")
 func (downStore) Reserve(context.Context, string, time.Duration) (string, bool, error) {
 	return "", false, errStoreDown
 }
-func (downStore) Get(context.Context, string) ([]byte, bool, error)        { return nil, false, errStoreDown }
-func (downStore) Set(context.Context, string, []byte, time.Duration) error { return errStoreDown }
-func (downStore) Release(context.Context, string, string) error            { return errStoreDown }
+func (downStore) Get(context.Context, string) ([]byte, bool, error) { return nil, false, errStoreDown }
+func (downStore) Set(context.Context, string, string, []byte, time.Duration) (bool, error) {
+	return false, errStoreDown
+}
+func (downStore) Release(context.Context, string, string) error { return errStoreDown }
 
 // retryError — доменная ошибка, которая знает, когда повторить запрос.
 type retryError time.Duration

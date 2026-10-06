@@ -164,23 +164,29 @@ fx.Provide(func(c cachekit.Cache) httpkit.IdempotencyStore { return cachekit.New
 ```
 
 Контракт store — байтовый, запись сериализует httpkit. `Reserve` возвращает
-токен владельца резерва, `Release` снимает резерв, **только** пока ключ держит
-этот токен, и не трогает сохранённый ответ:
+токен владельца резерва; `Set` кладёт запись, а `Release` снимает резерв,
+**только** пока ключ держит этот токен; `Release` не трогает сохранённый ответ:
 
 ```go
 type IdempotencyStore interface {
     Reserve(ctx context.Context, key string, ttl time.Duration) (token string, ok bool, err error)
     Get(ctx context.Context, key string) ([]byte, bool, error)
-    Set(ctx context.Context, key string, record []byte, ttl time.Duration) error
+    Set(ctx context.Context, key, token string, record []byte, ttl time.Duration) (stored bool, err error)
     Release(ctx context.Context, key, token string) error
 }
 ```
 
 Токен обязан быть уникальным на каждый успешный `Reserve`: запрос, переживший
-`ReserveTTL`, своим опоздавшим `Release` не должен снимать чужой резерв.
+`ReserveTTL`, не затирает ни резерв следующего запроса, ни его запись — `Set` с
+истёкшим токеном отвечает `stored=false` и ничего не пишет. Свой store проверяется
+набором `testkit/idempotencytest.RunContract` — его проходят `httpkit.MemoryStore`
+и `cachekit.IdempotencyStore` на памяти и на Redis.
 
-`httpkit.NewMemoryStore()` — in-memory store для тестов и одного процесса
-(истёкшие записи выметаются).
+`httpkit.NewMemoryStore()` — in-memory store для тестов и одного процесса:
+истёкшие записи выметаются, ключей — не больше 100 000 (новый ключ сверх предела —
+ошибка `Reserve`, как у недоступного store: fail-open или 503 по `FailClosed`).
+Свой предел — `cachekit.NewIdempotencyStore(cachekit.NewMemoryCache(cachekit.WithMaxKeys(n)))`
+или Redis.
 
 ## Security headers
 

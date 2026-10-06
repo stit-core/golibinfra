@@ -32,6 +32,35 @@ func (c BreakerConfig) validate() error {
 	return nil
 }
 
+// otherHost — label `host` хостов сверх Config.MaxHosts: у них нет своего breaker'а.
+const otherHost = "other"
+
+// hostSet — хосты клиента со своим breaker'ом и label `host`: первые max (-1 — все), чтобы
+// пользовательские URL не растили память и серии метрик без предела.
+type hostSet struct {
+	max int
+	mu  sync.Mutex
+	m   map[string]struct{}
+}
+
+func newHostSet(maxHosts int) *hostSet {
+	return &hostSet{max: maxHosts, m: map[string]struct{}{}}
+}
+
+// label — значение label `host` и признак своего breaker'а у хоста.
+func (s *hostSet) label(host string) (string, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.m[host]; ok {
+		return host, true
+	}
+	if s.max >= 0 && len(s.m) >= s.max {
+		return otherHost, false
+	}
+	s.m[host] = struct{}{}
+	return host, true
+}
+
 // breakerSet — breaker на каждый upstream-хост: отказ одного хоста не размыкает
 // цепь для остальных.
 type breakerSet struct {
@@ -46,8 +75,9 @@ func newBreakerSet(cfg BreakerConfig, instr *instruments) *breakerSet {
 	return &breakerSet{cfg: cfg, instr: instr, m: map[string]*gobreaker.CircuitBreaker[*http.Response]{}}
 }
 
-func (s *breakerSet) execute(host string, fn func() (*http.Response, error)) (*http.Response, error) {
-	if s.cfg.FailureThreshold == 0 {
+// execute: tracked=false — хост сверх MaxHosts, идёт без breaker'а.
+func (s *breakerSet) execute(host string, tracked bool, fn func() (*http.Response, error)) (*http.Response, error) {
+	if s.cfg.FailureThreshold == 0 || !tracked {
 		return fn()
 	}
 	return s.get(host).Execute(fn)

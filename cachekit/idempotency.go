@@ -47,9 +47,10 @@ func (s *IdempotencyStore) Get(ctx context.Context, key string) ([]byte, bool, e
 	return v, true, nil
 }
 
-// Set кладёт готовую запись на ttl поверх резерва.
-func (s *IdempotencyStore) Set(ctx context.Context, key string, record []byte, ttl time.Duration) error {
-	return s.c.Set(ctx, idempotencyPrefix+key, record, ttl)
+// Set кладёт готовую запись на ttl поверх резерва владельца token; ok=false — ключ уже не держит
+// этот резерв (истёк ReserveTTL, его занял другой запрос): запись не пишется.
+func (s *IdempotencyStore) Set(ctx context.Context, key, token string, record []byte, ttl time.Duration) (bool, error) {
+	return s.c.CompareAndSet(ctx, idempotencyPrefix+key, reservedValue(token), record, ttl)
 }
 
 // Release снимает резерв. Ключ удаляется, только если он всё ещё держит маркер

@@ -2,6 +2,7 @@ package cachekit
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"sync"
@@ -149,6 +150,78 @@ func TestMemoryCache_CompareAndDelete(t *testing.T) {
 	}
 	if ok, err := m.CompareAndDelete(ctx, "missing", []byte("mine")); ok || err != nil {
 		t.Fatalf("CompareAndDelete on missing key: ok=%v err=%v", ok, err)
+	}
+}
+
+func TestMemoryCache_CompareAndSet(t *testing.T) {
+	ctx := context.Background()
+	clk := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+	m := NewMemoryCache(WithClock(clk))
+	_ = m.Set(ctx, "k", []byte("mine"), time.Minute)
+
+	if ok, err := m.CompareAndSet(ctx, "k", []byte("other"), []byte("v"), time.Hour); ok || err != nil {
+		t.Fatalf("CompareAndSet on foreign value: ok=%v err=%v", ok, err)
+	}
+	if v, _, _ := m.Get(ctx, "k"); string(v) != "mine" {
+		t.Fatalf("foreign value overwritten: %q", v)
+	}
+	if ok, err := m.CompareAndSet(ctx, "k", []byte("mine"), []byte("v"), time.Hour); !ok || err != nil {
+		t.Fatalf("CompareAndSet on own value: ok=%v err=%v", ok, err)
+	}
+	clk.Advance(2 * time.Minute)
+	if v, found, _ := m.Get(ctx, "k"); !found || string(v) != "v" {
+		t.Fatalf("value after CompareAndSet must live by the new ttl: %q %v", v, found)
+	}
+	if ok, err := m.CompareAndSet(ctx, "missing", []byte("mine"), []byte("v"), time.Hour); ok || err != nil {
+		t.Fatalf("CompareAndSet on missing key: ok=%v err=%v", ok, err)
+	}
+	if _, found, _ := m.Get(ctx, "missing"); found {
+		t.Fatal("CompareAndSet created a missing key")
+	}
+}
+
+// Регрессия KSEC-06: новый ключ сверх WithMaxKeys — ErrMemoryFull, без вытеснения живых;
+// перезапись существующего проходит, истёкшие освобождают место.
+func TestMemoryCache_MaxKeys(t *testing.T) {
+	ctx := context.Background()
+	clk := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+	m := NewMemoryCache(WithClock(clk), WithMaxKeys(2))
+	_ = m.Set(ctx, "a", []byte("1"), time.Minute)
+	_ = m.Set(ctx, "b", []byte("2"), 0)
+
+	full := map[string]func() error{
+		"Set":         func() error { return m.Set(ctx, "c", []byte("3"), time.Minute) },
+		"SetNX":       func() error { _, err := m.SetNX(ctx, "c", []byte("3"), time.Minute); return err },
+		"SetWithTags": func() error { return m.SetWithTags(ctx, "c", []byte("3"), time.Minute, "t") },
+	}
+	for name, op := range full {
+		if err := op(); !errors.Is(err, ErrMemoryFull) {
+			t.Errorf("%s of a new key into a full cache: %v, want ErrMemoryFull", name, err)
+		}
+	}
+	if _, found, _ := m.Get(ctx, "c"); found {
+		t.Fatal("a rejected key was stored")
+	}
+	for _, k := range []string{"a", "b"} {
+		if _, found, _ := m.Get(ctx, k); !found {
+			t.Fatalf("live key %q evicted", k)
+		}
+	}
+	if err := m.Set(ctx, "a", []byte("1b"), time.Minute); err != nil {
+		t.Fatalf("overwrite in a full cache: %v", err)
+	}
+
+	clk.Advance(time.Minute + memoryFullSweepEvery)
+	if err := m.Set(ctx, "c", []byte("3"), time.Minute); err != nil {
+		t.Fatalf("Set after a key expired: %v", err)
+	}
+}
+
+func TestMemoryCache_MaxKeysDefault(t *testing.T) {
+	for name, m := range map[string]*MemoryCache{"no option": NewMemoryCache(), "zero": NewMemoryCache(WithMaxKeys(0))} {
+		if m.maxKeys != 100_000 {
+			t.Errorf("%s: maxKeys = %d, want the documented 100 000", name, m.maxKeys)
+		}
 	}
 }
 

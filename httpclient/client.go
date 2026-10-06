@@ -50,7 +50,10 @@ type Config struct {
 	MaxRedirects            int           `envconfig:"HTTPCLIENT_MAX_REDIRECTS" default:"10"`
 	AllowCrossHostRedirects bool          `envconfig:"HTTPCLIENT_ALLOW_CROSS_HOST_REDIRECTS" default:"false"`
 	SSEMaxEventBytes        int           `envconfig:"HTTPCLIENT_SSE_MAX_EVENT_BYTES" default:"1048576"`
-	Breaker                 BreakerConfig
+	// MaxHosts — сколько разных хостов получают свой breaker и label `host`; следующие идут без
+	// breaker'а с host="other". -1 — без предела: хосты клиента — конечное множество.
+	MaxHosts int `envconfig:"HTTPCLIENT_MAX_HOSTS" default:"1024"`
+	Breaker  BreakerConfig
 }
 
 var (
@@ -84,6 +87,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: HTTPCLIENT_MAX_REDIRECTS must be >= 0, got %d", ErrConfig, c.MaxRedirects)
 	case c.SSEMaxEventBytes <= 0:
 		return fmt.Errorf("%w: HTTPCLIENT_SSE_MAX_EVENT_BYTES must be > 0, got %d", ErrConfig, c.SSEMaxEventBytes)
+	case c.MaxHosts == 0 || c.MaxHosts < -1:
+		return fmt.Errorf("%w: HTTPCLIENT_MAX_HOSTS must be >= 1 or -1 (unlimited), got %d", ErrConfig, c.MaxHosts)
 	}
 	return c.Breaker.validate()
 }
@@ -117,13 +122,14 @@ func WithBeforeAttempt(fn BeforeAttemptFunc) Option {
 	}
 }
 
-// Client — HTTP-клиент на любое число upstream-хостов: breaker и метрики
-// разделены по req.URL.Host.
+// Client — HTTP-клиент upstream-хостов: breaker и метрики разделены по req.URL.Host у первых
+// Config.MaxHosts хостов.
 type Client struct {
 	cfg      Config
 	base     http.RoundTripper
 	c        *http.Client
 	streamC  *http.Client // SSE: Timeout ограничивает только фазу заголовков (см. Stream)
+	hosts    *hostSet
 	breakers *breakerSet
 	instr    *instruments
 	tracer   trace.Tracer
@@ -157,6 +163,7 @@ func New(cfg Config, opts ...Option) (*Client, error) {
 		otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()))
 	c.c = &http.Client{Timeout: cfg.Timeout, Transport: transport, CheckRedirect: c.checkRedirect}
 	c.streamC = &http.Client{Transport: transport, CheckRedirect: c.checkRedirect}
+	c.hosts = newHostSet(cfg.MaxHosts)
 	c.breakers = newBreakerSet(cfg.Breaker, c.instr)
 	return c, nil
 }
@@ -195,8 +202,9 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	req = req.WithContext(ctx)
 
 	start := time.Now()
-	resp, err := c.breakers.execute(req.URL.Host, func() (*http.Response, error) {
-		resp, err := c.doWithRetry(req)
+	host, tracked := c.hosts.label(req.URL.Host)
+	resp, err := c.breakers.execute(host, tracked, func() (*http.Response, error) {
+		resp, err := c.doWithRetry(req, host)
 		if err != nil {
 			return nil, err
 		}
@@ -214,7 +222,7 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 
 	c.instr.requestDuration.Record(ctx, time.Since(start).Seconds(),
 		metric.WithAttributes(
-			attribute.String("host", req.URL.Host),
+			attribute.String("host", host),
 			attribute.String("method", req.Method),
 			attribute.String("status", statusLabel(resp, err)),
 		),
@@ -223,7 +231,8 @@ func (c *Client) Do(req *http.Request) (*http.Response, error) {
 	return resp, err
 }
 
-func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
+// doWithRetry: host — label `host` запроса (hostSet).
+func (c *Client) doWithRetry(req *http.Request, host string) (*http.Response, error) {
 	ctx := req.Context()
 	attempts := 1
 	if c.retryable(req) {
@@ -243,7 +252,7 @@ func (c *Client) doWithRetry(req *http.Request) (*http.Response, error) {
 				return nil, clientSide(fmt.Errorf("httpclient: context done during retry: %w", ctx.Err()))
 			case <-timer.C:
 			}
-			c.instr.retryAttempts.Add(ctx, 1, metric.WithAttributes(attribute.String("host", req.URL.Host)))
+			c.instr.retryAttempts.Add(ctx, 1, metric.WithAttributes(attribute.String("host", host)))
 			var err error
 			if req, err = rewind(req); err != nil {
 				return nil, clientSide(err)

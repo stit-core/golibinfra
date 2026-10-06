@@ -148,6 +148,55 @@ func TestCircuitBreaker_Disabled(t *testing.T) {
 	}
 }
 
+// Регрессия KSEC-06: breaker — только у первых MaxHosts хостов. Хост сверх предела идёт без
+// него: серия его отказов цепь не открывает, map breaker'ов не растёт с адресами пользователей.
+func TestCircuitBreaker_OnlyFirstMaxHosts(t *testing.T) {
+	first, over := failingServer(t), failingServer(t)
+	c := newTestClient(t, Config{MaxHosts: 1, Breaker: BreakerConfig{FailureThreshold: 2, RecoveryTimeout: time.Minute}})
+	do := func(url string) error {
+		req, _ := http.NewRequest(http.MethodGet, url, nil)
+		resp, err := c.Do(req)
+		if err == nil {
+			resp.Body.Close()
+		}
+		return err
+	}
+
+	for range 2 {
+		_ = do(first.URL)
+	}
+	if err := do(first.URL); !errors.Is(err, ErrBreakerOpen) {
+		t.Fatalf("first host: want ErrBreakerOpen, got %v", err)
+	}
+	for i := range 5 {
+		if err := do(over.URL); err != nil {
+			t.Fatalf("host over MaxHosts, call %d: %v; want no breaker", i, err)
+		}
+	}
+	c.breakers.mu.Lock()
+	n := len(c.breakers.m)
+	c.breakers.mu.Unlock()
+	if n != 1 {
+		t.Errorf("breakers: %d, want 1", n)
+	}
+}
+
+// MaxHosts -1 — без предела: breaker есть у каждого хоста.
+func TestCircuitBreaker_UnlimitedHosts(t *testing.T) {
+	c := newTestClient(t, Config{MaxHosts: -1, Breaker: BreakerConfig{FailureThreshold: 1, RecoveryTimeout: time.Minute}})
+	for i := range 3 {
+		srv := failingServer(t)
+		req, _ := http.NewRequest(http.MethodGet, srv.URL, nil)
+		if resp, err := c.Do(req); err == nil {
+			resp.Body.Close()
+		}
+		req, _ = http.NewRequest(http.MethodGet, srv.URL, nil)
+		if _, err := c.Do(req); !errors.Is(err, ErrBreakerOpen) {
+			t.Fatalf("host %d: want ErrBreakerOpen, got %v", i, err)
+		}
+	}
+}
+
 func TestCircuitBreaker_ContextCancelIsNotAFailure(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/fast" {

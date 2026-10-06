@@ -63,6 +63,9 @@ server-span и извлекает входящий `traceparent`, а все по
   `HumaAuth`.
 - `idempotency store failed` (Warn) с `op` (`get`, `reserve`, `set`, `release`), `err` и
   `fail_closed` — `Idempotency`; тот же отказ считает `http_idempotency_total{result="error"}`.
+- `idempotency reservation expired before the response` (Warn) с `reserve_ttl` —
+  `Idempotency`: handler шёл дольше `HTTP_IDEMPOTENCY_RESERVE_TTL`, ответ не сохранён
+  (`http_idempotency_total{result="skipped"}`).
 - `readiness probe failed` (Warn) с `probe` и `err` — `/ready`; текст ошибки
   клиенту не отдаётся. `readiness probe panicked` (Error) с `probe`, `panic` и
   `stack` — panic пробы; проба `down`, процесс жив.

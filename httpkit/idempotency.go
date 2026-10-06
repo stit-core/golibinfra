@@ -7,6 +7,8 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -33,16 +35,17 @@ type IdempotencyConfig struct {
 	FailClosed bool `envconfig:"HTTP_IDEMPOTENCY_FAIL_CLOSED" default:"false"`
 }
 
-// IdempotencyStore — байтовый store; запись сериализует httpkit.
-// Реализация обязана: Reserve — атомарно занять свободный ключ и вернуть токен
-// владельца резерва (ok=false, если ключ занят резервом или записью); Get — не
-// отдавать резерв как запись; Release — снять резерв, **только** если ключ всё
-// ещё держит этот токен, и не трогать сохранённый ответ. Токен отсекает
-// опоздавший Release: резерв, переживший ReserveTTL, не снимает чужой.
+// IdempotencyStore — байтовый store; запись сериализует httpkit. Контракт — набор
+// testkit/idempotencytest. Реализация обязана: Reserve — атомарно занять свободный ключ и вернуть
+// токен владельца резерва (ok=false, если ключ занят резервом или записью); Get — не отдавать
+// резерв как запись; Set — атомарно положить запись, **только** если ключ всё ещё держит резерв
+// этого токена (иначе stored=false, запись не пишется); Release — снять резерв, только если ключ
+// держит этот токен, и не трогать сохранённый ответ. Токен отсекает опоздавшего: запрос,
+// переживший ReserveTTL, не затирает ни резерв, ни запись следующего.
 type IdempotencyStore interface {
 	Reserve(ctx context.Context, key string, ttl time.Duration) (token string, ok bool, err error)
 	Get(ctx context.Context, key string) ([]byte, bool, error)
-	Set(ctx context.Context, key string, record []byte, ttl time.Duration) error
+	Set(ctx context.Context, key, token string, record []byte, ttl time.Duration) (stored bool, err error)
 	Release(ctx context.Context, key, token string) error
 }
 
@@ -76,6 +79,12 @@ const HeaderIdempotentReplayed = "Idempotent-Replayed"
 
 const memorySweepEvery = time.Minute
 
+// memoryStoreMaxKeys — предел ключей MemoryStore: уникальные ключи клиентов не растят память
+// процесса без границы.
+const memoryStoreMaxKeys = 100_000
+
+var errMemoryStoreFull = errors.New("httpkit: idempotency memory store is full")
+
 type memoryEntry struct {
 	reserved  bool
 	token     string
@@ -83,18 +92,20 @@ type memoryEntry struct {
 	expiresAt time.Time
 }
 
-// MemoryStore — in-memory IdempotencyStore для тестов и одиночного процесса:
-// истёкшие записи выметаются, иначе уникальные ключи растут без границы.
+// MemoryStore — in-memory IdempotencyStore для тестов и одиночного процесса: истёкшие записи
+// выметаются, ключей — не больше 100 000; новый ключ сверх предела — ошибка Reserve, как у
+// недоступного store. Свой предел — cachekit.IdempotencyStore поверх MemoryCache или Redis.
 type MemoryStore struct {
 	mu        sync.Mutex
 	m         map[string]memoryEntry
+	maxKeys   int
 	now       func() time.Time
 	lastSweep time.Time
 }
 
 // NewMemoryStore создаёт пустой MemoryStore с системными часами.
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{m: map[string]memoryEntry{}, now: time.Now}
+	return &MemoryStore{m: map[string]memoryEntry{}, maxKeys: memoryStoreMaxKeys, now: time.Now}
 }
 
 func (s *MemoryStore) live(key string) (memoryEntry, bool) {
@@ -132,6 +143,9 @@ func (s *MemoryStore) Reserve(_ context.Context, key string, ttl time.Duration) 
 	if _, ok := s.live(key); ok {
 		return "", false, nil
 	}
+	if len(s.m) >= s.maxKeys {
+		return "", false, fmt.Errorf("%w: %d keys", errMemoryStoreFull, len(s.m))
+	}
 	token := rand.Text()
 	s.m[key] = memoryEntry{reserved: true, token: token, expiresAt: s.now().Add(ttl)}
 	return token, true, nil
@@ -148,13 +162,17 @@ func (s *MemoryStore) Get(_ context.Context, key string) ([]byte, bool, error) {
 	return e.record, true, nil
 }
 
-// Set сохраняет запись поверх резерва на ttl.
-func (s *MemoryStore) Set(_ context.Context, key string, record []byte, ttl time.Duration) error {
+// Set сохраняет запись на ttl поверх резерва владельца token; чужой или истёкший резерв —
+// stored=false.
+func (s *MemoryStore) Set(_ context.Context, key, token string, record []byte, ttl time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.sweep()
+	if e, ok := s.live(key); !ok || !e.reserved || e.token != token {
+		return false, nil
+	}
 	s.m[key] = memoryEntry{record: record, expiresAt: s.now().Add(ttl)}
-	return nil
+	return true, nil
 }
 
 // Release снимает резерв владельца токена; чужой резерв и сохранённый ответ
@@ -334,18 +352,24 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				}
 			}
 			raw, err := json.Marshal(record)
+			stored := false
 			if err == nil {
 				setCtx, cancelSet := storeCtx(ctx, cfg.StoreTimeout)
-				err = store.Set(setCtx, skey, raw, cfg.TTL)
+				stored, err = store.Set(setCtx, skey, token, raw, cfg.TTL)
 				cancelSet()
 			}
-			if err != nil {
+			switch {
+			case err != nil:
 				storeFailed(ctx, "set", err)
 				release()
 				outcome(ctx, "error")
-				return
+			case !stored:
+				// Резерв истёк раньше ответа: ключ уже ничей или держит повтор — его не затираем.
+				log.Warn(ctx, "idempotency reservation expired before the response", "reserve_ttl", cfg.ReserveTTL.String())
+				outcome(ctx, "skipped")
+			default:
+				outcome(ctx, "stored")
 			}
-			outcome(ctx, "stored")
 		})
 	}
 }

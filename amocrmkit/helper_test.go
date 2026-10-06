@@ -22,6 +22,7 @@ func testHTTPConfig() httpclient.Config {
 		RetryMaxWait:     time.Second,
 		MaxRedirects:     10,
 		SSEMaxEventBytes: 1 << 20,
+		MaxHosts:         1024,
 		Breaker: httpclient.BreakerConfig{
 			FailureThreshold: 100,
 			RecoveryTimeout:  time.Second,

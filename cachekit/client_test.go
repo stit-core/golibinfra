@@ -90,11 +90,15 @@ func TestRedisCache_ClosedClient(t *testing.T) {
 
 	ctx := context.Background()
 	ops := map[string]func() error{
-		"get":             func() error { _, _, err := cache.Get(ctx, "k"); return err },
-		"set":             func() error { return cache.Set(ctx, "k", []byte("v"), time.Minute) },
-		"setnx":           func() error { _, err := cache.SetNX(ctx, "k", []byte("v"), time.Minute); return err },
-		"getdel":          func() error { _, _, err := cache.GetDel(ctx, "k"); return err },
-		"comparedelete":   func() error { _, err := cache.CompareAndDelete(ctx, "k", []byte("v")); return err },
+		"get":           func() error { _, _, err := cache.Get(ctx, "k"); return err },
+		"set":           func() error { return cache.Set(ctx, "k", []byte("v"), time.Minute) },
+		"setnx":         func() error { _, err := cache.SetNX(ctx, "k", []byte("v"), time.Minute); return err },
+		"getdel":        func() error { _, _, err := cache.GetDel(ctx, "k"); return err },
+		"comparedelete": func() error { _, err := cache.CompareAndDelete(ctx, "k", []byte("v")); return err },
+		"compareset": func() error {
+			_, err := cache.CompareAndSet(ctx, "k", []byte("v"), []byte("w"), time.Minute)
+			return err
+		},
 		"delete":          func() error { return cache.Delete(ctx, "k") },
 		"setwithtags":     func() error { return cache.SetWithTags(ctx, "k", []byte("v"), time.Minute, "t") },
 		"setwithoutags":   func() error { return cache.SetWithTags(ctx, "k", []byte("v"), time.Minute) },

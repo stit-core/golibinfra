@@ -107,6 +107,21 @@ httpkit.AccessLog(log, "/ready")(handler).ServeHTTP(rec, req)
 заглушкой с нужной ошибкой — так проверяются fail-open, `FailClosed` и снятие
 резерва после ошибки `Set`.
 
+Своя реализация `IdempotencyStore` проверяется общим контрактом — тем же, что
+проходят `httpkit.MemoryStore` и `cachekit.IdempotencyStore` на памяти и на Redis:
+
+```go
+func TestStore_Contract(t *testing.T) {
+    idempotencytest.RunContract(t, func(t *testing.T) httpkit.IdempotencyStore {
+        return newStore(t) // изолированный store на каждый кейс
+    })
+}
+```
+
+Кейсы: эксклюзивный резерв, `Get` не отдаёт резерв, запись только по токену
+резерва (чужой и истёкший — `stored=false`), `Release` только владельцем и без
+удаления записи, истечение записи; кейсы истечения ждут по 400 мс.
+
 ## fx-проводка целиком
 
 Поднимите `Module` на свободном порту и ходите по HTTP — так проверяется, что

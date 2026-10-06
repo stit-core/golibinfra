@@ -4,7 +4,8 @@
 circuit breaker на каждый upstream-хост (`sony/gobreaker/v2`), политика
 редиректов, SSE-стримы и OTel-инструментация (спан на вызов + спаны попыток
 через `otelhttp`, метрики, `X-Request-ID` из контекста). Один
-`*httpclient.Client` обслуживает любое число хостов.
+`*httpclient.Client` обслуживает много хостов: свой breaker и label `host` — у
+первых `HTTPCLIENT_MAX_HOSTS`, остальные идут без breaker'а с `host="other"`.
 
 ## Импорт
 
@@ -80,6 +81,7 @@ upstream).
 | `HTTPCLIENT_MAX_REDIRECTS` | `Config.MaxRedirects` | `int` | `10` | `< 0` — ошибка; `0` — любой редирект `ErrTooManyRedirects`. Длиннее цепочка — `ErrTooManyRedirects` |
 | `HTTPCLIENT_ALLOW_CROSS_HOST_REDIRECTS` | `Config.AllowCrossHostRedirects` | `bool` | `false` | `false` — редирект на другой хост это `ErrCrossHostRedirect` (см. § Редиректы) |
 | `HTTPCLIENT_SSE_MAX_EVENT_BYTES` | `Config.SSEMaxEventBytes` | `int` | `1048576` | `> 0`, иначе ошибка. Потолок строки и события SSE (`ErrEventTooLarge`) |
+| `HTTPCLIENT_MAX_HOSTS` | `Config.MaxHosts` | `int` | `1024` | `>= 1` или `-1` (без предела), `0` и меньше `-1` — ошибка. Сколько разных `req.URL.Host` получают свой breaker и label `host`; следующие — без breaker'а, `host="other"` (см. § Circuit breaker) |
 | `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD` | `BreakerConfig.FailureThreshold` | `int` | `5` | `< 0` — ошибка; `0` выключает breaker (осознанный выбор) |
 | `HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT` | `BreakerConfig.RecoveryTimeout` | `time.Duration` | `30s` | `< 0` — ошибка; у включённого breaker'а `> 0`. Сколько breaker держится в Open до пробного запроса |
 
@@ -116,7 +118,10 @@ RFC 9110 на всех потребителей заголовка. После
 ## Circuit breaker
 
 Breaker заводится на каждый `req.URL.Host`: отказ одного upstream не размыкает
-цепь остальным. Провалом считается транспортная ошибка (включая таймаут
+цепь остальным. Хостов со своим breaker'ом — не больше `HTTPCLIENT_MAX_HOSTS`
+(первые встреченные): следующий хост идёт без breaker'а, его метрики — с
+`host="other"`, поэтому пользовательские адреса не растят память клиента и число
+серий. Провалом считается транспортная ошибка (включая таймаут
 попытки, отказ TLS и нарушение redirect-политики) или ответ `502`/`503`/`504`
 после ретраев — сигналы «хоста нет». `500`/`501` от живого upstream'а провалом
 не считаются, как и отмена ctx вызывающего и ошибка `WithBeforeAttempt`: всплеск
@@ -183,8 +188,8 @@ OTel-провайдеры (no-op без `MeterProvider`/`TracerProvider`).
 Значения `status`: код ответа (`200`, `503`), `breaker_open` при отказе открытой
 цепи, `error` для транспортных ошибок и отмены ctx. Для `Stream` `status` — код
 ответа при чистом завершении потока и `error`, если поток оборвался.
-`host` ограничен числом upstream'ов сервиса; `method`, `status`, `mode` —
-конечные множества. Гистограмма использует общие бакеты длительностей
+`host` — первые `HTTPCLIENT_MAX_HOSTS` хостов клиента, остальные — `other`;
+`method`, `status`, `mode` — конечные множества. Гистограмма использует общие бакеты длительностей
 golibinfra (`internal/otelkit`).
 
 ## API
@@ -240,10 +245,11 @@ var ErrConfig, ErrBreakerOpen, ErrTooManyRedirects, ErrCrossHostRedirect,
 - **Breaker на хост считает 502/503/504 провалом.** Upstream, стабильно
   отвечающий `503`, откроет цепь через `FailureThreshold` вызовов; полностью
   выключить — `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`.
-- **Не для user-supplied URL.** Breaker и label `host` заводятся на каждый
-  `req.URL.Host`: на webhook'ах по чужим адресам это рост map'ы breaker'ов и
-  кардинальности метрик. Нужен исходящий вызов по адресу пользователя — держите
-  для него отдельный `Client` с `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`,
+- **Хосты клиента — конечное множество.** Breaker и label `host` есть у первых
+  `HTTPCLIENT_MAX_HOSTS` хостов; на webhook'ах по чужим адресам предел быстро
+  занят, и основной upstream, встреченный позже, остался бы без breaker'а. Нужен
+  исходящий вызов по адресу пользователя — держите для него отдельный `Client`
+  (свой `NewConfigPrefixed`, `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`),
   валидируйте хост до вызова и не переиспользуйте клиент основных upstream'ов.
 - **Секреты не в query.** `url.full` уходит в спан вызова без query, но спан
   попытки от `otelhttp` пишет полный URL — передавайте токены заголовками.

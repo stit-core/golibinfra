@@ -20,7 +20,8 @@
   `outboxkit.Publisher`, `pgkit.Transactor`, `anthropickit.API`,
   `natskit.Bus`/`StreamBus`, `storagekit.Storage`/`Presigner`, `logkit.Logger`,
   `session.Store` сессий `authnkit`), контрактные наборы, которые фейк и боевое
-  хранилище проходят одними кейсами (`storagetest`, `sessiontest`),
+  хранилище проходят одними кейсами (`storagetest`, `sessiontest`,
+  `idempotencytest`),
   проверку записи метрик китов и бизнес-метрик (`metrictest`) и харнессы для
   тестов huma-хендлеров (`handlertest`) и gRPC-сервисов (`grpctest`).
 
@@ -222,7 +223,8 @@ helper'ов, ENV-переопределений образов нет тоже. 
 
 Соглашение об именах: `<kit без суффикса kit>test` (`auditkit` → `audittest`,
 `outboxkit` → `outboxtest`). Исключения обслуживают не один кит: `handlertest` —
-huma-хендлеры поверх `httpkit`, `metrictest` — метрики всех китов и бизнес-метрики сервиса.
+huma-хендлеры поверх `httpkit`, `idempotencytest` — хранилища идемпотентности `httpkit`
+и `cachekit`, `metrictest` — метрики всех китов и бизнес-метрики сервиса.
 
 | Сабпакет | Обслуживает | Что даёт |
 | --- | --- | --- |
@@ -232,6 +234,7 @@ huma-хендлеры поверх `httpkit`, `metrictest` — метрики в
 | [`bruteforcetest`](bruteforcetest/) | `bruteforcekit` | `bruteforcekit.Guard`-фейки, все держат контракт pgstore: ключ `(subject, ip)` (`bruteforcekit.ErrInvalidKey`) и `Attempt` вне транзакции (`bruteforcekit.ErrInTx`): `Permissive` (всегда пропускает), `Locked{Until}` (всегда заблокирован), `Recorder` (копит вызовы с парами ключей — `Attempts()`/`Successes()`), `NewCounting(cfg, clock)` (политика pgstore в памяти: «N попыток → lock», попытка под блокировкой ничего не меняет, истечение окна, `RecordSuccess` стирает историю; единственный, кто сворачивает ключ как pgstore — subject в нижнем регистре, IPv6 по `Config.IPv6Prefix`, — и реализует `bruteforcekit.Cleaner`). |
 | [`grpctest`](grpctest/) | `grpckit` | `StartServer` — bufconn-харнесс: `grpckit.Server` in-process и `*grpc.ClientConn` к нему. |
 | [`handlertest`](handlertest/) | `httpkit` (huma) | `NewAPI` поднимает `humatest.TestAPI` (алиас `API`) поверх API сервера `httpkit.NewServer` — цепочка middleware кита и контракт ошибок как в проде (`request_id`, `Retry-After`, 404/405, коды `ErrorMap.Declare` в OpenAPI), `HumaAuth` до маршрутов (без `WithAuth` защищённая операция — `500 AUTH_NOT_CONFIGURED`), проверка маршрутов старта `Module`, конфиг `httpkit.NewConfig()` (docs, как у сервера, по умолчанию выключены); опции `WithAuth`, `WithConfig`, `WithLogger`, `WithSecuritySchemes`; `DecodeAPIError` → `httpkit.APIError`, `AssertStatus`, `AssertAPIError` (статус, problem+json, `code`, `request_id` = `X-Request-ID`). |
+| [`idempotencytest`](idempotencytest/) | `httpkit`, `cachekit` | `RunContract(t, newStore)` — контрактный набор `httpkit.IdempotencyStore`: эксклюзивный `Reserve` с уникальным токеном, `Get` не отдаёт резерв, `Set` только по токену живого резерва (чужой и истёкший — `stored=false`), `Release` только владельцем и без удаления записи, истечение записи; его проходят `httpkit.MemoryStore` и `cachekit.IdempotencyStore` на памяти и на Redis. Кейсы истечения ждут реальное время (по 400 мс). |
 | [`hubtest`](hubtest/) | `hubkit` | `NewIssuer(t)`/`NewCustomerIssuer(t)` — ES256-ключи + JWKS на `httptest`: `EmployeeToken`, `CustomerToken`, `Sign`, `SignHS256`, `Rotate`/`RotateKeepingPrevious`, опции токена (`WithExpiry`, `WithoutClaim`, `WithKID`, …); `SSOConfig`, `Verifier`, `Extractor`, `WithEmployee`/`WithCustomer` для ctx; in-memory порты синка `Feed`/`Projection`/`Cursors`. |
 | [`logtest`](logtest/) | `logkit` | `Capture`/`CaptureAt` — `logkit.Logger`, копящий записи в памяти: `Entries`, `Find`, `FindFunc`, `Has`, `Reset`; `Entry.Str`/`Entry.Value` читают поля записи. |
 | [`metrictest`](metrictest/) | метрики китов и бизнес-метрики сервиса | `NewProvider` — провайдер теста для кода, которому передают `Meter` (поле `MeterProvider` — подмена провайдера `telemetry`), его `Collect` — снимок только его серий; `Collect` — снимок провайдера процесса, глобального `MeterProvider` китов (ставит первый вызов; SDK-провайдер, поставленный глобальным до него, и подмена после — падение `Collect`); `Snapshot.Sub` — дельта (gauge — текущее значение), `Get` — серия с ровно этими labels, `Find`/`Value` — labels как фильтр, `All`; `Series{Scope, Name, Kind, Unit, Labels, Value, Count, Bounds}`; `Collisions` и `PromName` — имена после трансляции в Prometheus (`UnderscoreEscapingWithSuffixes` с таблицами единиц otlptranslator; совпадение с рядами гистограммы `_count`, `_sum`, `_bucket` `Collisions` не ищет). |

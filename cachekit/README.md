@@ -1,11 +1,11 @@
 # cachekit
 
 Обёртка над Redis для сервисов stit. Интерфейс `Cache` — байтовый key-value с
-TTL, атомарные `SetNX` (резерв/lock), `GetDel` (одноразовые токены) и
-`CompareAndDelete` (снятие собственного резерва), тегированная инвалидация,
-`Ping`/`Close`. Поверх него типизированные `GetJSON[T]`/`SetJSON[T]`,
-`IdempotencyStore` для `httpkit.Idempotency`, `MemoryCache` и health-проба для
-`/ready`.
+TTL, атомарные `SetNX` (резерв/lock), `GetDel` (одноразовые токены),
+`CompareAndDelete` (снятие собственного резерва) и `CompareAndSet` (запись поверх
+собственного резерва), тегированная инвалидация, `Ping`/`Close`. Поверх него
+типизированные `GetJSON[T]`/`SetJSON[T]`, `IdempotencyStore` для
+`httpkit.Idempotency`, `MemoryCache` и health-проба для `/ready`.
 
 Kit — про доступ к Redis и сериализацию; политику ключей и TTL определяет
 потребитель.
@@ -63,8 +63,8 @@ fx.New(
 |---|---|---|---|---|
 | `REDIS_URL` | `URL` | `string` | `redis://localhost:6379/0` | Адрес Redis (`redis.ParseURL`); должен парситься |
 | `REDIS_KEY_PREFIX` | `KeyPrefix` | `string` | `""` | Префикс **всех** ключей кита, включая `tag:` и `idempotency:` |
-| `REDIS_POOL_SIZE` | `PoolSize` | `int` | `10` | Размер пула соединений; `>= 1` |
-| `REDIS_MAX_RETRIES` | `MaxRetries` | `int` | `3` | Повторы команды после сетевой ошибки; `-1` отключает, `>= -1` |
+| `REDIS_POOL_SIZE` | `PoolSize` | `int` | `10` | Размер пула соединений; `>= 1`. Пулов два — с повторами и без (§ Инварианты): соединений до `2×REDIS_POOL_SIZE` |
+| `REDIS_MAX_RETRIES` | `MaxRetries` | `int` | `3` | Повторы `Get`, `Set`, `Delete`, тегов и `Ping` после сетевой ошибки; `-1` отключает, `>= -1`. `SetNX`, `GetDel`, `CompareAndDelete`, `CompareAndSet` не повторяются |
 | `REDIS_DIAL_TIMEOUT` | `DialTimeout` | `time.Duration` | `5s` | Таймаут установления соединения; `>= 0`, `0` — дефолт go-redis (5s) |
 | `REDIS_READ_TIMEOUT` | `ReadTimeout` | `time.Duration` | `3s` | Верхняя граница ожидания ответа; `>= 0`, `0` — дефолт go-redis (5s) |
 | `REDIS_WRITE_TIMEOUT` | `WriteTimeout` | `time.Duration` | `3s` | Верхняя граница записи команды; `>= 0`, `0` — как `ReadTimeout` |
@@ -96,8 +96,8 @@ Instrumentation-scope `git.stit.tech/stit-core/golibinfra/cachekit`, глоба�
 
 `cmd` — имя команды go-redis: `get`, `set` (и `Set`, и `SetNX`), `getdel`,
 `unlink` (`Delete`), `evalsha`/`eval` (`SetWithTags`, `CompareAndDelete`,
-`InvalidateByTag` — `SPOP`+`UNLINK` внутри скрипта отдельными командами не
-видны), `ping`, `info` (проверка версии на старте),
+`CompareAndSet`, `InvalidateByTag` — `SPOP`+`UNLINK` внутри скрипта отдельными
+командами не видны), `ping`, `info` (проверка версии на старте),
 `hello`/`client`/`pipeline` при открытии соединения. Первый `evalsha` на новом сервере отвечает `NOSCRIPT`
 (`result=error`) — go-redis тут же загружает скрипт через `eval`; на алертах это
 единичный datapoint на инстанс Redis, а не ошибка кита.
@@ -125,6 +125,7 @@ type Cache interface {
     SetNX(ctx context.Context, key string, value []byte, ttl time.Duration) (bool, error)
     GetDel(ctx context.Context, key string) ([]byte, bool, error)
     CompareAndDelete(ctx context.Context, key string, expected []byte) (bool, error)
+    CompareAndSet(ctx context.Context, key string, expected, value []byte, ttl time.Duration) (bool, error)
     Delete(ctx context.Context, keys ...string) error
     SetWithTags(ctx context.Context, key string, value []byte, ttl time.Duration, tags ...string) error
     InvalidateByTag(ctx context.Context, tag string) error
@@ -138,6 +139,11 @@ type Cache interface {
 - `SetNX` — `true`, если ключ записан (его не было); `false`, если занят.
 - `CompareAndDelete` — удаляет ключ, только если его значение совпадает с
   `expected`; `false` без ошибки, если значение другое или ключа нет.
+- `CompareAndSet` — пишет `value` с `ttl`, только если значение ключа совпадает с
+  `expected`; `false` без ошибки, если значение другое или ключа нет (ключ не
+  создаётся).
+- `SetNX`, `GetDel`, `CompareAndDelete`, `CompareAndSet` на сбое связи возвращают
+  ошибку, а не повтор (§ Инварианты).
 - `SetWithTags` — `SET` + `SADD tag:<tag> key` одним атомарным скриптом; набор
   тега живёт не меньше самого долгоживущего своего члена.
 - `InvalidateByTag` — порциями по 256 членов, `SPOP` + `UNLINK` одним скриптом;
@@ -157,16 +163,18 @@ func NewIdempotencyStore(c Cache) *IdempotencyStore
 
 func (s *IdempotencyStore) Reserve(ctx, key string, ttl time.Duration) (token string, ok bool, err error)
 func (s *IdempotencyStore) Get(ctx, key string) ([]byte, bool, error)
-func (s *IdempotencyStore) Set(ctx, key string, record []byte, ttl time.Duration) error
+func (s *IdempotencyStore) Set(ctx, key, token string, record []byte, ttl time.Duration) (stored bool, err error)
 func (s *IdempotencyStore) Release(ctx, key, token string) error
 ```
 
 Байтовый store для `httpkit.Idempotency` (структурно совместим с
 `httpkit.IdempotencyStore`): `Reserve` — `SETNX` маркера с токеном владельца на
-время выполнения запроса, `Set` — готовая запись, `Get` не отдаёт маркер как
-запись. `Release` снимает резерв **только по своему токену** (`CompareAndDelete`):
-ни готовая запись, ни резерв следующего запроса (предыдущий истёк по
-`ReserveTTL`) опоздавшим `Release` не сносятся. Ключи живут в namespace
+время выполнения запроса, `Get` не отдаёт маркер как запись. `Set` и `Release`
+действуют **только по своему токену**: `Set` кладёт готовую запись поверх своего
+маркера (`CompareAndSet`, `stored=false` — резерв истёк по `ReserveTTL` или ключ
+занял следующий запрос, запись не пишется), `Release` снимает свой маркер
+(`CompareAndDelete`). Опоздавший запрос не затирает ни готовую запись, ни резерв
+следующего. Контракт — `testkit/idempotencytest`. Ключи живут в namespace
 `idempotency:`.
 
 ```go
@@ -178,14 +186,25 @@ fx.Provide(func(c cachekit.Cache) httpkit.IdempotencyStore { return cachekit.New
 ```go
 func NewMemoryCache(opts ...MemoryOption) *MemoryCache
 func WithClock(clk clockkit.Clock) MemoryOption
+func WithMaxKeys(n int) MemoryOption
+
+var ErrMemoryFull error
 ```
 
 Потокобезопасная in-memory реализация `Cache` с той же семантикой TTL, `SetNX`,
-`GetDel`, `CompareAndDelete` и тегов. Годится для unit-тестов потребителя и для
-single-replica развёртывания без Redis (`oidckit` state, `hubkit/issuer`
-refresh): истёкшие ключи и членство в тегах вычищаются амортизированным
-проходом на записи, поэтому ключ, который никто не читает, не живёт вечно.
-Данные лежат в процессе — при рестарте и при второй реплике их нет.
+`GetDel`, `CompareAndDelete`, `CompareAndSet` и тегов. Годится для unit-тестов
+потребителя и для single-replica развёртывания без Redis (`oidckit` state,
+`hubkit/issuer` refresh): истёкшие ключи и членство в тегах вычищаются
+амортизированным проходом на записи, поэтому ключ, который никто не читает, не
+живёт вечно. Данные лежат в процессе — при рестарте и при второй реплике их нет.
+
+Ключей — не больше `WithMaxKeys` (по умолчанию 100 000; `n < 1` ничего не
+меняет): новый ключ в полный кэш — `ErrMemoryFull` после прохода по истёкшим (у
+полного кэша — не чаще раза в секунду), перезапись существующего проходит. Ключи
+не вытесняются: резерв или lock не пропадает молча. Предел — ключи, не байты.
+Хранилище идемпотентности с `HTTP_IDEMPOTENCY_TTL=24h` заполняет дефолтный предел
+при ~1,2 новых ключа в секунду — дальше ошибка store; поднимите `WithMaxKeys` или
+возьмите Redis.
 
 `WithClock` подменяет часы: тест двигает TTL через `clockkit.NewTickable` вместо
 `time.Sleep`.
@@ -193,16 +212,20 @@ refresh): истёкшие ключи и членство в тегах вычи
 ## Тестирование
 
 Интеграционные тесты поднимают Redis через `testkit.StartRedis`: в `-short`
-пропускаются, без Docker падают; `MemoryCache`, `IdempotencyStore`, хук наблюдаемости,
+пропускаются, без Docker падают; `MemoryCache`, хук наблюдаемости,
 `Config.Validate`, `Module` и работа с закрытым клиентом покрыты unit-тестами.
+`IdempotencyStore` на памяти и на Redis проходит контракт
+`testkit/idempotencytest.RunContract` — тот же, что `httpkit.MemoryStore`.
 Отдельные интеграционные проверки: старт на `redis:6-alpine` валится
-`ErrServerVersion` (и проходит с `REDIS_SKIP_VERSION_CHECK=true`), а инвалидация
+`ErrServerVersion` (и проходит с `REDIS_SKIP_VERSION_CHECK=true`); инвалидация
 тега остаётся одной серверной операцией — хук, отвергающий команду `unlink`, на
-неё не влияет.
+неё не влияет; на сервере, занятом долгим скриптом, `SetNX`, `GetDel`,
+`CompareAndDelete` и `CompareAndSet` отвечают ошибкой, а не ложным «нет», а `Get`
+дожидается ответа повтором.
 
 В тестах потребителя фейком кэша служит `cachekit.NewMemoryCache()` — та же
-семантика TTL, тегов и `CompareAndDelete`, без Docker; часы подменяются
-`cachekit.WithClock`.
+семантика TTL, тегов, `CompareAndDelete` и `CompareAndSet`, без Docker; часы
+подменяются `cachekit.WithClock`.
 
 ```bash
 go test -short -race ./cachekit/...   # unit
@@ -214,14 +237,16 @@ go test -race ./cachekit/...          # + Redis в testcontainers
 - **Эффективный таймаут команды — `min(дедлайн ctx, REDIS_READ_TIMEOUT)`.**
   Дедлайн `ctx` доходит до сокета, поэтому HTTP-хендлер с бюджетом 500ms не ждёт
   зависший Redis три секунды. `ctx` без дедлайна ограничен только таймаутами.
-- **После сетевого таймаута команда может быть повторена.** При
-  `REDIS_MAX_RETRIES > 0` go-redis шлёт команду заново, поэтому `SetNX` может
-  вернуть `false`, а `GetDel` — промах, хотя первая попытка уже применилась на
-  сервере (atomic на сервере, at-least-once на клиенте). Где это неприемлемо
-  (резерв идемпотентности, одноразовый refresh-токен), ставьте
-  `REDIS_MAX_RETRIES=-1` и обрабатывайте ошибку ретраем на своём уровне.
-- **`GetDel` и `SetNX` атомарны на сервере** — используйте их для одноразовых
-  state/refresh-токенов и резервов вместо `Get`+`Delete` / `Get`+`Set`.
+- **`SetNX`, `GetDel`, `CompareAndDelete`, `CompareAndSet` не повторяются.** Они
+  идут вторым пулом того же сервера без повторов go-redis: ответ, не пришедший за
+  таймаут, при повторе увидел бы эффект первой попытки — `SetNX` единственного
+  писателя ответил бы «занято», `GetDel` — промахом, хотя значение уже снято.
+  Вместо ложного ответа — ошибка; применилась ли первая попытка, неизвестно, как
+  у любого таймаута. `Get`, `Set`, `Delete`, теги и `Ping` повторяются
+  `REDIS_MAX_RETRIES` раз: их повтор даёт то же состояние.
+- **`GetDel`, `SetNX` и `Compare*` атомарны на сервере** — используйте их для
+  одноразовых state/refresh-токенов и резервов вместо `Get`+`Delete` /
+  `Get`+`Set`.
 - **Набор тега живёт не меньше самого долгоживущего члена.** Запись с бо́льшим
   TTL продлевает набор, с меньшим — не укорачивает, запись без TTL делает набор
   персистентным. Члены могут истечь раньше набора — `InvalidateByTag` просто
