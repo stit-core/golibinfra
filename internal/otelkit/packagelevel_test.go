@@ -1,7 +1,6 @@
 package otelkit
 
 import (
-	"cmp"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -48,20 +47,43 @@ func TestInstrumentsAreNotPackageLevel(t *testing.T) {
 	}
 }
 
-// Страж видит и функцию своего пакета, которая создаёт инструмент сама или через
-// другую функцию пакета; замыкание, которое выполнится позже (конструктор fx), — нет.
+// Страж видит инструмент в коде инициализации пакета — инициализаторе var, init() и
+// sync.OnceValue/OnceValues/OnceFunc — напрямую и через функцию, метод и значение функции
+// пакета; замыкание, которое выполнит позже конструктор fx, — нет.
 func TestPackageLevelInstruments_SeesPackageHelpers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kit.go")
 	src := `package kit
 
-import "` + ModulePath + `/internal/otelkit"
+import (
+	"sync"
+
+	"` + ModulePath + `/internal/otelkit"
+)
 
 var direct = otelkit.Meter("kit")
 
 var viaHelper = newCounter()
 
 var deferred = provide(func() any { return newCounter() })
+
+var lazy = sync.OnceValue(func() any { return newCounter() })
+
+var lazyRef = sync.OnceValue(newCounter)
+
+var viaMethod = factory{}.counter()
+
+var mk = newCounter
+
+var viaValue = mk()
+
+var viaInit any
+
+func init() { viaInit = newCounter() }
+
+type factory struct{}
+
+func (factory) counter() any { return meter() }
 
 func provide(constructor func() any) any { return constructor }
 
@@ -72,38 +94,36 @@ func meter() any { return otelkit.Meter("kit") }
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"kit.go:5 otelkit.Meter", "kit.go:7 newCounter"}
+	want := []string{
+		"kit.go:9 otelkit.Meter", "kit.go:11 newCounter", "kit.go:15 newCounter", "kit.go:17 sync.OnceValue",
+		"kit.go:19 counter", "kit.go:23 mk", "kit.go:27 newCounter",
+	}
 	if got := packageLevelInstruments(t, dir, []string{path}); !slices.Equal(got, want) {
 		t.Fatalf("found %v, want %v", got, want)
 	}
 }
 
-// packageLevelInstruments — инициализаторы package-level var файлов пакета paths,
-// которые зовут Meter/Tracer/Get*Provider пакетов otelkit и otel напрямую (и в
-// замыкании: sync.OnceValue держит инструмент вечно) или через функцию своего пакета.
+// packageLevelInstruments — вызовы в коде инициализации пакета paths (инициализаторы var,
+// init()), которые создают инструмент: шов (Meter/Tracer/Get*Provider пакетов otelkit и otel)
+// или функция, метод, значение функции своего пакета, которые зовут шов.
 func packageLevelInstruments(t *testing.T, root string, paths []string) []string {
 	t.Helper()
 	fset := token.NewFileSet()
 	files := make([]*ast.File, len(paths))
-	seams := make([]map[string]bool, len(paths))
+	scopes := make([]fileScope, len(paths))
 	for i, path := range paths {
 		file, err := parser.ParseFile(fset, path, nil, parser.SkipObjectResolution)
 		if err != nil {
 			t.Fatalf("parse %s: %v", path, err)
 		}
-		files[i], seams[i] = file, seamNames(t, path, file)
+		files[i], scopes[i] = file, newFileScope(t, path, file)
 	}
-	// Функция создаёт инструмент, если зовёт шов или другую такую функцию пакета: до неподвижной точки.
-	makers := map[string]bool{}
-	for grown := true; grown; {
+	m := makers{funcs: map[string]bool{}, methods: map[string]bool{}}
+	for grown := true; grown; { // до неподвижной точки: функция пакета зовёт другую такую же
 		grown = false
 		for i, file := range files {
 			for _, decl := range file.Decls {
-				fn, ok := decl.(*ast.FuncDecl)
-				if ok && fn.Recv == nil && fn.Body != nil && !makers[fn.Name.Name] &&
-					len(seamCalls(fn.Body, seams[i]))+len(helperCalls(fn.Body, makers)) > 0 {
-					makers[fn.Name.Name], grown = true, true
-				}
+				grown = m.learn(decl, scopes[i]) || grown
 			}
 		}
 	}
@@ -114,12 +134,17 @@ func packageLevelInstruments(t *testing.T, root string, paths []string) []string
 			t.Fatal(err)
 		}
 		for _, decl := range file.Decls {
-			gen, ok := decl.(*ast.GenDecl)
-			if !ok || gen.Tok != token.VAR {
-				continue
+			var calls []*ast.CallExpr
+			switch d := decl.(type) {
+			case *ast.GenDecl:
+				if d.Tok == token.VAR {
+					calls = m.creating(d, scopes[i])
+				}
+			case *ast.FuncDecl:
+				if d.Recv == nil && d.Name.Name == "init" && d.Body != nil {
+					calls = m.creating(d.Body, scopes[i])
+				}
 			}
-			calls := append(seamCalls(gen, seams[i]), helperCalls(gen, makers)...)
-			slices.SortFunc(calls, func(a, b *ast.CallExpr) int { return cmp.Compare(a.Pos(), b.Pos()) })
 			for _, call := range calls {
 				out = append(out, rel+":"+strconv.Itoa(fset.Position(call.Pos()).Line)+" "+callee(call))
 			}
@@ -128,74 +153,148 @@ func packageLevelInstruments(t *testing.T, root string, paths []string) []string
 	return out
 }
 
-// seamNames — имена, под которыми файл импортирует otelkit и otel.
-func seamNames(t *testing.T, path string, file *ast.File) map[string]bool {
+// makers — функции, методы (по имени) и пакетные значения функций (var mk = newCounter) своего
+// пакета, которые создают инструмент.
+type makers struct{ funcs, methods map[string]bool }
+
+// learn добавляет в makers функцию, метод или значение функции из decl; true — добавил.
+func (m makers) learn(decl ast.Decl, fs fileScope) bool {
+	grown := false
+	add := func(set map[string]bool, name string) {
+		if !set[name] {
+			set[name], grown = true, true
+		}
+	}
+	switch d := decl.(type) {
+	case *ast.FuncDecl:
+		if d.Body == nil || len(m.creating(d.Body, fs)) == 0 {
+			break
+		}
+		if d.Recv == nil {
+			add(m.funcs, d.Name.Name)
+		} else {
+			add(m.methods, d.Name.Name)
+		}
+	case *ast.GenDecl:
+		if d.Tok != token.VAR {
+			break
+		}
+		for _, spec := range d.Specs {
+			vs, ok := spec.(*ast.ValueSpec)
+			if !ok {
+				continue
+			}
+			for j, v := range vs.Values {
+				if j < len(vs.Names) && m.isMaker(v, fs) {
+					add(m.funcs, vs.Names[j].Name)
+				}
+			}
+		}
+	}
+	return grown
+}
+
+// isMaker — e — функция, создающая инструмент: функция, метод или значение функции пакета из
+// makers либо литерал функции, который зовёт шов или их.
+func (m makers) isMaker(e ast.Expr, fs fileScope) bool {
+	switch e := e.(type) {
+	case *ast.Ident:
+		return m.funcs[e.Name]
+	case *ast.SelectorExpr:
+		return !fs.isImport(e.X) && m.methods[e.Sel.Name]
+	case *ast.FuncLit:
+		return len(m.creating(e.Body, fs)) > 0
+	}
+	return false
+}
+
+// creating — вызовы в n, которые создают инструмент: шов или функция из makers. Замыкание
+// выполнится позже (конструктор fx) и пропускается, кроме аргумента sync.OnceValue,
+// OnceValues и OnceFunc: его результат живёт в пакете.
+func (m makers) creating(n ast.Node, fs fileScope) []*ast.CallExpr {
+	var out []*ast.CallExpr
+	eager := map[*ast.FuncLit]bool{}
+	ast.Inspect(n, func(n ast.Node) bool {
+		switch n := n.(type) {
+		case *ast.FuncLit:
+			return eager[n]
+		case *ast.CallExpr:
+			made := fs.isSeam(n.Fun) || m.isMaker(n.Fun, fs)
+			if fs.isOnce(n.Fun) {
+				for _, arg := range n.Args {
+					if lit, ok := arg.(*ast.FuncLit); ok {
+						eager[lit] = true
+					} else if m.isMaker(arg, fs) {
+						made = true
+					}
+				}
+			}
+			if made {
+				out = append(out, n)
+			}
+		}
+		return true
+	})
+	return out
+}
+
+// fileScope — импорты файла: имя в файле → путь пакета.
+type fileScope map[string]string
+
+func newFileScope(t *testing.T, path string, file *ast.File) fileScope {
 	t.Helper()
-	seams := map[string]bool{}
+	fs := fileScope{}
 	for _, imp := range file.Imports {
 		p, err := strconv.Unquote(imp.Path.Value)
 		if err != nil {
 			t.Fatalf("%s: import %s: %v", path, imp.Path.Value, err)
 		}
-		if p != ModulePath+"/internal/otelkit" && p != "go.opentelemetry.io/otel" {
-			continue
-		}
 		name := p[strings.LastIndex(p, "/")+1:]
 		if imp.Name != nil {
 			name = imp.Name.Name
 		}
-		seams[name] = true
+		fs[name] = p
 	}
-	return seams
+	return fs
 }
 
-// seamCalls — вызовы Meter/Tracer/Get*Provider шва (otelkit, otel) в n, в том числе в
-// замыканиях.
-func seamCalls(n ast.Node, seams map[string]bool) []*ast.CallExpr {
-	var out []*ast.CallExpr
-	ast.Inspect(n, func(n ast.Node) bool {
-		if call, ok := n.(*ast.CallExpr); ok {
-			if sel, ok := call.Fun.(*ast.SelectorExpr); ok {
-				if pkg, ok := sel.X.(*ast.Ident); ok && seams[pkg.Name] {
-					switch sel.Sel.Name {
-					case "Meter", "Tracer", "GetMeterProvider", "GetTracerProvider":
-						out = append(out, call)
-					}
-				}
-			}
-		}
-		return true
-	})
-	return out
+func (fs fileScope) isImport(e ast.Expr) bool {
+	id, ok := e.(*ast.Ident)
+	return ok && fs[id.Name] != ""
 }
 
-// helperCalls — вызовы функций пакета из makers в n вне замыканий: тело замыкания
-// выполнится позже (конструктор fx), а не при инициализации пакета.
-func helperCalls(n ast.Node, makers map[string]bool) []*ast.CallExpr {
-	var out []*ast.CallExpr
-	ast.Inspect(n, func(n ast.Node) bool {
-		if _, ok := n.(*ast.FuncLit); ok {
-			return false
-		}
-		if call, ok := n.(*ast.CallExpr); ok {
-			if fn, ok := call.Fun.(*ast.Ident); ok && makers[fn.Name] {
-				out = append(out, call)
-			}
-		}
-		return true
-	})
-	return out
+// pkgFunc — путь пакета и имя функции вызова pkg.Name; пусто — не вызов функции пакета.
+func (fs fileScope) pkgFunc(fun ast.Expr) (path, name string) {
+	if sel, ok := fun.(*ast.SelectorExpr); ok && fs.isImport(sel.X) {
+		return fs[sel.X.(*ast.Ident).Name], sel.Sel.Name
+	}
+	return "", ""
 }
 
-// callee — вызванная функция для сообщения: «pkg.Name» или «name».
+// isSeam — Meter/Tracer/Get*Provider шва: otelkit и otel.
+func (fs fileScope) isSeam(fun ast.Expr) bool {
+	path, name := fs.pkgFunc(fun)
+	if path != ModulePath+"/internal/otelkit" && path != "go.opentelemetry.io/otel" {
+		return false
+	}
+	return name == "Meter" || name == "Tracer" || name == "GetMeterProvider" || name == "GetTracerProvider"
+}
+
+func (fs fileScope) isOnce(fun ast.Expr) bool {
+	path, name := fs.pkgFunc(fun)
+	return path == "sync" && (name == "OnceValue" || name == "OnceValues" || name == "OnceFunc")
+}
+
+// callee — вызванное для сообщения: «pkg.Name», «x.method», «name» или «method».
 func callee(call *ast.CallExpr) string {
 	switch fn := call.Fun.(type) {
 	case *ast.Ident:
 		return fn.Name
 	case *ast.SelectorExpr:
-		if pkg, ok := fn.X.(*ast.Ident); ok {
-			return pkg.Name + "." + fn.Sel.Name
+		if x, ok := fn.X.(*ast.Ident); ok {
+			return x.Name + "." + fn.Sel.Name
 		}
+		return fn.Sel.Name
 	}
 	return "?"
 }
