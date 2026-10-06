@@ -70,7 +70,7 @@ func New(cfg Config, hcCfg httpclient.Config, clock clockkit.Clock, log logkit.L
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
-	// Validate подставляет дефолты вместо нулей: клиента без таймаута кит не собирает.
+	// Нулевой таймаут Validate отвергает: клиента без таймаута кит не собирает.
 	if err := hcCfg.Validate(); err != nil {
 		return nil, fmt.Errorf("%w: httpclient: %w", ErrConfig, err)
 	}

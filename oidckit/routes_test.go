@@ -47,7 +47,10 @@ func TestRoutes_PassesServerRouteCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("httpkit config: %v", err)
 	}
-	srv := httpkit.NewServer(cfg, httpkit.WithSecuritySchemes(NewSecurityScheme(devCookies)))
+	srv, err := httpkit.NewServer(cfg, httpkit.WithSecuritySchemes(NewSecurityScheme(devCookies)))
+	if err != nil {
+		t.Fatalf("httpkit server: %v", err)
+	}
 	RegisterRoutes(srv.API(), b)
 	if err := srv.CheckRoutes(); err != nil {
 		t.Fatalf("BFF routes fail the httpkit start check: %v", err)

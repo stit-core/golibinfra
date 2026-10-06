@@ -8,7 +8,7 @@ import (
 )
 
 func FuzzJWTParse(f *testing.F) {
-	h, err := NewHS256JWT(JWTConfig{Secret: "fuzz-secret-key-of-at-least-32-bytes!!"})
+	h, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: "fuzz-secret-key-of-at-least-32-bytes!!"})
 	if err != nil {
 		f.Fatalf("NewHS256JWT: %v", err)
 	}

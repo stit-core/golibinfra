@@ -19,7 +19,7 @@ const testSecret = "test-secret-key-of-at-least-32-bytes!!"
 
 func newTestHS256(t *testing.T, opts ...JWTOption) *HS256JWT {
 	t.Helper()
-	h, err := NewHS256JWT(JWTConfig{Secret: testSecret}, opts...)
+	h, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret}, opts...)
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -32,6 +32,7 @@ func TestNewHS256JWT_Config(t *testing.T) {
 		"empty secret":    {},
 		"negative leeway": {Secret: testSecret, Leeway: -time.Second},
 		"negative access": {Secret: testSecret, AccessTTL: -time.Second},
+		"zero access":     {Secret: testSecret},
 		"short previous":  {Secret: testSecret, PreviousSecret: "short"},
 		"empty audience":  {Secret: testSecret, Audience: []string{"svc-a", ""}},
 	}
@@ -45,8 +46,8 @@ func TestNewHS256JWT_Config(t *testing.T) {
 			}
 		})
 	}
-	if err := (JWTConfig{Secret: testSecret}).Validate(); err != nil {
-		t.Fatalf("valid config: %v", err)
+	if err := (JWTConfig{Secret: testSecret, AccessTTL: time.Minute}).Validate(); err != nil {
+		t.Fatalf("valid config (zero leeway — без допуска): %v", err)
 	}
 }
 
@@ -119,17 +120,9 @@ func TestHS256JWT_SignAccess_UsesConfigTTL(t *testing.T) {
 		t.Fatalf("access exp=%d", got)
 	}
 
-	// Нулевые TTL в конфиге → дефолты кита, а не мгновенно протухшие токены.
-	def, err := NewHS256JWT(JWTConfig{Secret: testSecret}, WithClock(clock))
-	if err != nil {
-		t.Fatalf("NewHS256JWT: %v", err)
-	}
-	access, err = def.SignAccess(ctx, map[string]any{"sub": "u"})
-	if err != nil {
-		t.Fatalf("SignAccess: %v", err)
-	}
-	if got := expOf(access); got != clock.Now().Add(DefaultAccessTTL).Unix() {
-		t.Fatalf("default access exp=%d", got)
+	// Нулевой TTL — не дефолт кита, а ErrConfig: мгновенно протухшие токены не выпускаются.
+	if _, err := NewHS256JWT(JWTConfig{Secret: testSecret}, WithClock(clock)); !errors.Is(err, ErrConfig) {
+		t.Fatalf("zero AccessTTL: %v, want ErrConfig", err)
 	}
 }
 
@@ -205,14 +198,14 @@ func TestHS256JWT_Leeway(t *testing.T) {
 	}
 	clock.Advance(90 * time.Second) // 30s после exp
 
-	lenient, err := NewHS256JWT(JWTConfig{Secret: testSecret, Leeway: time.Minute}, WithClock(clock))
+	lenient, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret, Leeway: time.Minute}, WithClock(clock))
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
 	if _, err := lenient.Parse(ctx, tok); err != nil {
 		t.Fatalf("within leeway: %v", err)
 	}
-	strict, err := NewHS256JWT(JWTConfig{Secret: testSecret, Leeway: time.Second}, WithClock(clock))
+	strict, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret, Leeway: time.Second}, WithClock(clock))
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -229,7 +222,7 @@ func TestHS256JWT_WrongSignature(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 
-	other, err := NewHS256JWT(JWTConfig{Secret: "other-secret-key-of-at-least-32-bytes!"})
+	other, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: "other-secret-key-of-at-least-32-bytes!"})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -361,7 +354,7 @@ func TestHS256JWT_UnserializableClaims(t *testing.T) {
 // Общий секрет на несколько сервисов: чужой iss/aud из конфига не проходит.
 func TestHS256JWT_IssuerAndAudience(t *testing.T) {
 	ctx := t.Context()
-	issued, err := NewHS256JWT(JWTConfig{Secret: testSecret, Issuer: "issuer-a", Audience: []string{"svc-a"}})
+	issued, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret, Issuer: "issuer-a", Audience: []string{"svc-a"}})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -377,7 +370,7 @@ func TestHS256JWT_IssuerAndAudience(t *testing.T) {
 		t.Fatalf("iss=%v aud=%v", claims["iss"], claims["aud"])
 	}
 
-	otherAudience, err := NewHS256JWT(JWTConfig{Secret: testSecret, Audience: []string{"svc-b"}})
+	otherAudience, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret, Audience: []string{"svc-b"}})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -385,7 +378,7 @@ func TestHS256JWT_IssuerAndAudience(t *testing.T) {
 		t.Fatalf("foreign audience accepted: %v", err)
 	}
 
-	otherIssuer, err := NewHS256JWT(JWTConfig{Secret: testSecret, Issuer: "issuer-b"})
+	otherIssuer, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret, Issuer: "issuer-b"})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -399,7 +392,7 @@ func TestHS256JWT_IssuerAndAudience(t *testing.T) {
 	}
 
 	// Несколько audience — aud массивом, пересечение достаточно.
-	multi, err := NewHS256JWT(JWTConfig{Secret: testSecret, Audience: []string{"svc-a", "svc-b"}})
+	multi, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret, Audience: []string{"svc-a", "svc-b"}})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -426,7 +419,7 @@ func TestWithClock_NilKeepsRealClock(t *testing.T) {
 	if fresh, err := store.MarkUsed(t.Context(), "k", time.Minute); !fresh || err != nil {
 		t.Fatalf("MarkUsed: fresh=%v err=%v", fresh, err)
 	}
-	if _, err := NewHS256JWT(JWTConfig{Secret: testSecret}, WithClock(nil)); err != nil {
+	if _, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret}, WithClock(nil)); err != nil {
 		t.Fatalf("NewHS256JWT с WithClock(nil): %v", err)
 	}
 	if _, err := NewTOTP(TOTPConfig{Issuer: "acme"}, WithClock(nil)); err != nil {
@@ -448,7 +441,7 @@ var (
 func TestHS256JWT_PreviousSecret(t *testing.T) {
 	ctx := t.Context()
 	const oldSecret = "old-secret-key-of-at-least-32-bytes!!!"
-	before, err := NewHS256JWT(JWTConfig{Secret: oldSecret})
+	before, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: oldSecret})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -457,7 +450,7 @@ func TestHS256JWT_PreviousSecret(t *testing.T) {
 		t.Fatalf("SignAccess: %v", err)
 	}
 
-	rotated, err := NewHS256JWT(JWTConfig{Secret: testSecret, PreviousSecret: oldSecret})
+	rotated, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: testSecret, PreviousSecret: oldSecret})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -477,7 +470,7 @@ func TestHS256JWT_PreviousSecret(t *testing.T) {
 	if _, err := newHS256(t, testSecret).ParseAccess(ctx, oldTok); !errors.Is(err, ErrTokenSignature) {
 		t.Fatalf("token of the previous secret accepted after the rotation ended: %v", err)
 	}
-	stranger, err := NewHS256JWT(JWTConfig{Secret: "foreign-secret-key-of-at-least-32-bytes"})
+	stranger, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: "foreign-secret-key-of-at-least-32-bytes"})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}
@@ -492,7 +485,7 @@ func TestHS256JWT_PreviousSecret(t *testing.T) {
 
 func newHS256(t *testing.T, secret string) *HS256JWT {
 	t.Helper()
-	h, err := NewHS256JWT(JWTConfig{Secret: secret})
+	h, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: secret})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}

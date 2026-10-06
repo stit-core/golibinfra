@@ -102,23 +102,30 @@ type SecuritySchemeEntry struct {
 	Scheme *huma.SecurityScheme
 }
 
-// ServerOption — опция NewServer: логгер, схемы безопасности, chi-middleware,
-// правка huma.Config, публичные маршруты мимо huma.
+// ServerOption — опция NewServer: логгер, схемы безопасности, extractor, хранилище
+// идемпотентности, middleware потребителя, правка huma.Config, публичные маршруты мимо huma.
+// Опция с nil ничего не задаёт.
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
 	log          logkit.Logger
 	schemes      []SecuritySchemeEntry
+	extract      AuthExtractor
+	store        IdempotencyStore
 	middleware   []func(http.Handler) http.Handler
 	humaConfig   []func(*huma.Config)
 	publicRoutes PublicRoutes
 }
 
-// WithLogger отдаёт серверу логгер: ошибки net/http (`http.Server.ErrorLog`) и
-// причины 5xx хендлеров уходят в него. Без опции логгер — logkit.Nop(): 5xx
-// клиенту нейтральны всё равно, но причина теряется.
+// WithLogger отдаёт серверу логгер: access-log, panic, ошибки net/http
+// (`http.Server.ErrorLog`) и причины 5xx хендлеров уходят в него. Без опции логгер —
+// logkit.Nop(): 5xx клиенту нейтральны всё равно, но причина теряется.
 func WithLogger(log logkit.Logger) ServerOption {
-	return func(o *serverOptions) { o.log = log }
+	return func(o *serverOptions) {
+		if log != nil {
+			o.log = log
+		}
+	}
 }
 
 // WithSecuritySchemes добавляет схемы в `components.securitySchemes` OpenAPI.
@@ -126,17 +133,47 @@ func WithSecuritySchemes(schemes ...SecuritySchemeEntry) ServerOption {
 	return func(o *serverOptions) { o.schemes = append(o.schemes, schemes...) }
 }
 
-// WithMiddleware добавляет net/http-middleware в chi-цепочку в порядке
-// перечисления; вызывается до BindAPI, поэтому chi принимает их все.
+// WithAuthExtractor отдаёт серверу AuthExtractor: HumaAuth проверяет им операции с Security,
+// Idempotency делит ключи по субъекту. Без него операция с Security отвечает 500
+// AUTH_NOT_CONFIGURED, а старт Module падает с ErrAuthNotConfigured.
+func WithAuthExtractor(extract AuthExtractor) ServerOption {
+	return func(o *serverOptions) {
+		if extract != nil {
+			o.extract = extract
+		}
+	}
+}
+
+// WithIdempotencyStore включает в цепочку кита Idempotency поверх store.
+func WithIdempotencyStore(store IdempotencyStore) ServerOption {
+	return func(o *serverOptions) {
+		if store != nil {
+			o.store = store
+		}
+	}
+}
+
+// WithMiddleware добавляет net/http-middleware потребителя внутрь цепочки кита в порядке
+// перечисления (первый — внешний); nil пропускается.
 func WithMiddleware(mw ...func(http.Handler) http.Handler) ServerOption {
-	return func(o *serverOptions) { o.middleware = append(o.middleware, mw...) }
+	return func(o *serverOptions) {
+		for _, m := range mw {
+			if m != nil {
+				o.middleware = append(o.middleware, m)
+			}
+		}
+	}
 }
 
 // WithHumaConfig правит huma.Config перед созданием API: DocsRenderer,
 // Servers, Transformers, дополнительные OnAddOperation. Правки идут после кита,
 // но до хука описания ошибок, который видит их Security.
 func WithHumaConfig(fn func(*huma.Config)) ServerOption {
-	return func(o *serverOptions) { o.humaConfig = append(o.humaConfig, fn) }
+	return func(o *serverOptions) {
+		if fn != nil {
+			o.humaConfig = append(o.humaConfig, fn)
+		}
+	}
 }
 
 // WithPublicRoutes объявляет открытыми маршруты chi мимо huma.Register (PublicRoutes).
@@ -150,9 +187,10 @@ type Server struct {
 	cfg  Config
 	opts serverOptions
 
-	router *chi.Mux
-	api    *registry
-	srv    *http.Server
+	router  *chi.Mux
+	apiOnce sync.Once
+	api     *registry
+	srv     *http.Server
 	// docsRoutes — маршруты /docs, /openapi.*, /schemas, которые humachi.New ставит мимо
 	// huma.Register.
 	docsRoutes map[string]bool
@@ -176,17 +214,21 @@ func draining(ctx context.Context) bool {
 	return flag != nil && flag.Load()
 }
 
-// NewServer собирает сервер из конфига и опций; middleware из WithMiddleware
-// регистрируются сразу, huma.API — лениво в BindAPI.
-func NewServer(cfg Config, opts ...ServerOption) *Server {
-	var o serverOptions
+// NewServer собирает сервер кита — ту же сборку зовёт Module: цепочка middleware кита и
+// middleware потребителя внутри неё регистрируются сразу, huma.API с HumaAuth — лениво в
+// BindAPI. Невалидный cfg и схема безопасности без имени, без Scheme или дважды — ErrConfig.
+func NewServer(cfg Config, opts ...ServerOption) (*Server, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	o := serverOptions{log: logkit.Nop()}
 	for _, opt := range opts {
 		opt(&o)
 	}
-	r := chi.NewRouter()
-	if o.log == nil {
-		o.log = logkit.Nop()
+	if err := checkSchemes(o.schemes); err != nil {
+		return nil, err
 	}
+	r := chi.NewRouter()
 	s := &Server{cfg: cfg, opts: o, router: r}
 	s.baseCtx, s.cancelBase = context.WithCancel(context.WithValue(context.Background(), drainingKey{}, &s.draining))
 	s.srv = &http.Server{
@@ -203,25 +245,51 @@ func NewServer(cfg Config, opts ...ServerOption) *Server {
 		IdleTimeout:       cfg.IdleTimeout,
 		ErrorLog:          slog.NewLogLogger(logkitHandler{log: o.log}, slog.LevelWarn),
 	}
-	if len(o.middleware) > 0 {
-		r.Use(o.middleware...)
-	}
+	r.Use(chain(cfg, o)...)
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
 		writeAPIError(req.Context(), w, Error("NOT_FOUND", http.StatusNotFound, "route not found"))
 	})
 	r.MethodNotAllowed(methodNotAllowed(r))
 	// huma.API создаётся лениво в BindAPI(): humachi.New регистрирует
 	// /openapi.json и /docs, после чего chi запрещает router.Use(...).
-	return s
+	return s, nil
 }
 
-// BindAPI инициализирует huma.API поверх chi; операции, зарегистрированные на нём (и на
-// его группах), проверяет CheckRoutes. Идемпотентен; вызывать после того, как все
-// middleware зарегистрированы.
-func (s *Server) BindAPI() huma.API {
-	if s.api != nil {
-		return s.api
+// chain — цепочка кита: RequestID, ClientIP и OTel первыми (request_id, IP клиента и trace_id
+// в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight попадали в
+// RED-метрики и access-log; middleware потребителя — внутри всей цепочки кита.
+func chain(cfg Config, o serverOptions) []func(http.Handler) http.Handler {
+	mws := []func(http.Handler) http.Handler{
+		RequestID(),
+		ClientIP(o.log, cfg.TrustProxyHops),
+		OTel(cfg.QuietPaths...),
+		AccessLog(o.log, cfg.QuietPaths...),
+		Metrics(),
+		Recovery(o.log),
+		SecurityHeaders(cfg.Security),
+		CORS(cfg.CORS),
+		RateLimit(cfg.RateLimit),
+		MaxBody(cfg.MaxBody),
 	}
+	if o.store != nil {
+		var idem []IdempotencyOption
+		if o.extract != nil {
+			idem = append(idem, WithAuth(o.extract))
+		}
+		mws = append(mws, Idempotency(cfg.Idempotency, o.store, o.log, idem...))
+	}
+	return append(mws, o.middleware...)
+}
+
+// BindAPI инициализирует huma.API поверх chi с HumaAuth первым huma-middleware; операции,
+// зарегистрированные на нём (и на его группах), проверяет CheckRoutes. Идемпотентен и
+// безопасен из нескольких горутин; middleware chi после него не регистрируются.
+func (s *Server) BindAPI() huma.API {
+	s.apiOnce.Do(s.bindAPI)
+	return s.api
+}
+
+func (s *Server) bindAPI() {
 	humaConfig := huma.DefaultConfig(s.cfg.APITitle, s.cfg.APIVersion)
 	// Единственный хук DefaultConfig — $schema в теле и Link в ответе: ссылка с хостом из
 	// X-Forwarded-Host клиента, контракту ошибок не нужна, без docs ведёт в 404.
@@ -254,7 +322,7 @@ func (s *Server) BindAPI() huma.API {
 	}
 	s.api = &registry{API: api}
 	s.api.adapter = &opAdapter{Adapter: api.Adapter(), router: s.router, reg: s.api}
-	return s.api
+	s.api.UseMiddleware(HumaAuth(s.opts.log, s.opts.extract))
 }
 
 func (s *Server) registry() *registry {

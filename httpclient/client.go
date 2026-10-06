@@ -29,17 +29,6 @@ import (
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 )
 
-// Дефолты Config: те же значения, что и в envconfig-тегах, — Validate
-// подставляет их вместо нулей.
-const (
-	defaultTimeout          = 10 * time.Second
-	defaultRetryWait        = 200 * time.Millisecond
-	defaultRetryMaxWait     = 5 * time.Second
-	defaultMaxRedirects     = 10
-	defaultSSEMaxEventBytes = 1 << 20
-	defaultRecoveryTimeout  = 30 * time.Second
-)
-
 const (
 	// maxRetryAfter — потолок паузы из заголовка Retry-After сверх RetryMaxWait:
 	// защита от переполнения time.Duration на абсурдных значениях сервера.
@@ -49,8 +38,9 @@ const (
 	drainLimit   = 64 << 10
 )
 
-// Config — параметры клиента. Нули Validate заменяет дефолтами, поэтому
-// собранный вручную Config{} даёт тот же клиент, что и пустое окружение.
+// Config — параметры клиента; дефолты — в тегах (NewConfig). Ноль — значение, а не дефолт:
+// MaxRetries 0 — без повторов, MaxRedirects 0 — любой редирект — ErrTooManyRedirects; нулевые
+// таймаут, пауза ретрая и предел события SSE Validate отвергает.
 type Config struct {
 	Timeout                 time.Duration `envconfig:"HTTPCLIENT_TIMEOUT" default:"10s"`
 	MaxRetries              int           `envconfig:"HTTPCLIENT_MAX_RETRIES" default:"3"`
@@ -78,40 +68,22 @@ var (
 	errServerStatus = errors.New("httpclient: server status")
 )
 
-// Validate отвергает отрицательные и противоречивые значения (ErrConfig) и
-// подставляет дефолты вместо нулей: клиент без таймаута собрать нельзя.
-func (c *Config) Validate() error {
+// Validate проверяет конфиг: клиент без таймаута, паузы ретрая или предела события SSE и
+// отрицательные значения — ErrConfig.
+func (c Config) Validate() error {
 	switch {
-	case c.Timeout < 0:
-		return fmt.Errorf("%w: Timeout < 0", ErrConfig)
+	case c.Timeout <= 0:
+		return fmt.Errorf("%w: HTTPCLIENT_TIMEOUT must be > 0, got %s", ErrConfig, c.Timeout)
 	case c.MaxRetries < 0:
-		return fmt.Errorf("%w: MaxRetries < 0", ErrConfig)
-	case c.RetryWait < 0:
-		return fmt.Errorf("%w: RetryWait < 0", ErrConfig)
-	case c.RetryMaxWait < 0:
-		return fmt.Errorf("%w: RetryMaxWait < 0", ErrConfig)
+		return fmt.Errorf("%w: HTTPCLIENT_MAX_RETRIES must be >= 0, got %d", ErrConfig, c.MaxRetries)
+	case c.RetryWait <= 0:
+		return fmt.Errorf("%w: HTTPCLIENT_RETRY_WAIT must be > 0, got %s", ErrConfig, c.RetryWait)
+	case c.RetryMaxWait < c.RetryWait:
+		return fmt.Errorf("%w: HTTPCLIENT_RETRY_MAX_WAIT (%s) must be >= HTTPCLIENT_RETRY_WAIT (%s)", ErrConfig, c.RetryMaxWait, c.RetryWait)
 	case c.MaxRedirects < 0:
-		return fmt.Errorf("%w: MaxRedirects < 0", ErrConfig)
-	case c.SSEMaxEventBytes < 0:
-		return fmt.Errorf("%w: SSEMaxEventBytes < 0", ErrConfig)
-	}
-	if c.Timeout == 0 {
-		c.Timeout = defaultTimeout
-	}
-	if c.RetryWait == 0 {
-		c.RetryWait = defaultRetryWait
-	}
-	if c.RetryMaxWait == 0 {
-		c.RetryMaxWait = defaultRetryMaxWait
-	}
-	if c.MaxRedirects == 0 {
-		c.MaxRedirects = defaultMaxRedirects
-	}
-	if c.SSEMaxEventBytes == 0 {
-		c.SSEMaxEventBytes = defaultSSEMaxEventBytes
-	}
-	if c.RetryMaxWait < c.RetryWait {
-		return fmt.Errorf("%w: RetryMaxWait < RetryWait", ErrConfig)
+		return fmt.Errorf("%w: HTTPCLIENT_MAX_REDIRECTS must be >= 0, got %d", ErrConfig, c.MaxRedirects)
+	case c.SSEMaxEventBytes <= 0:
+		return fmt.Errorf("%w: HTTPCLIENT_SSE_MAX_EVENT_BYTES must be > 0, got %d", ErrConfig, c.SSEMaxEventBytes)
 	}
 	return c.Breaker.validate()
 }
@@ -148,8 +120,8 @@ type Client struct {
 	before   BeforeAttemptFunc
 }
 
-// New собирает клиент: валидирует конфиг (дефолты вместо нулей), применяет
-// опции и оборачивает транспорт в otelhttp — спаны попыток без его метрик.
+// New собирает клиент: невалидный конфиг — ErrConfig; применяет опции и оборачивает
+// транспорт в otelhttp — спаны попыток без его метрик.
 func New(cfg Config, opts ...Option) (*Client, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err

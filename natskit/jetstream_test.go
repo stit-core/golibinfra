@@ -258,7 +258,7 @@ func TestStreamBus_MaxDeliverDLQ(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewStreamBus: %v", err)
 	}
-	coreBus := natskit.NewBus(conn, logkit.Nop(), cfg)
+	coreBus := newBus(t, conn, logkit.Nop(), cfg)
 	subject := subj(t, "created")
 
 	// DLQ-консьюмер (core): принимает «мёртвое» сообщение и читает заголовки.
@@ -418,7 +418,7 @@ func TestStreamBus_TerminalErrorSkipsRetries(t *testing.T) {
 	subject := subj(t, "created")
 
 	dlq := make(chan natsgo.Header, 1)
-	if _, err := natskit.NewBus(conn, logkit.Nop(), cfg).Subscribe(context.Background(), cfg.JetStream.DLQSubject,
+	if _, err := newBus(t, conn, logkit.Nop(), cfg).Subscribe(context.Background(), cfg.JetStream.DLQSubject,
 		func(ctx context.Context, _ []byte) error {
 			dlq <- natskit.HeadersFromContext(ctx)
 			return nil
@@ -468,7 +468,7 @@ func TestStreamBus_DecodeErrorGoesToDLQ(t *testing.T) {
 	subject := subj(t, "created")
 
 	dlq := make(chan natsgo.Header, 1)
-	if _, err := natskit.NewBus(conn, logkit.Nop(), cfg).Subscribe(context.Background(), cfg.JetStream.DLQSubject,
+	if _, err := newBus(t, conn, logkit.Nop(), cfg).Subscribe(context.Background(), cfg.JetStream.DLQSubject,
 		func(ctx context.Context, _ []byte) error {
 			dlq <- natskit.HeadersFromContext(ctx)
 			return nil
@@ -534,6 +534,7 @@ func TestStreamBus_NakBackoffDelaysRedelivery(t *testing.T) {
 	cfg.JetStream.AckWait = 30 * time.Second
 	cfg.JetStream.MaxDeliver = 3
 	cfg.JetStream.NakBackoff = 500 * time.Millisecond
+	cfg.JetStream.NakMaxBackoff = time.Minute
 	sb := newStreamBus(t, cfg)
 	subject := subj(t, "created")
 
@@ -658,6 +659,7 @@ func TestStreamBus_DLQPublishFailureKeepsMessage(t *testing.T) {
 	cfg := jsConfig(stream)
 	cfg.JetStream.AckWait = 5 * time.Second
 	cfg.JetStream.NakBackoff = 300 * time.Millisecond
+	cfg.JetStream.NakMaxBackoff = time.Minute
 	cfg.JetStream.DLQSubject = dlqSubject
 	sb, err := natskit.NewStreamBus(connect(t, url), log, cfg)
 	if err != nil {

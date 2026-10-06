@@ -223,6 +223,8 @@ func validConfig() natskit.Config {
 			MaxDeliver:    10,
 			NakBackoff:    time.Second,
 			DLQSubject:    "DLQ.orders",
+
+			PublishAsyncTimeout: 5 * time.Second,
 		},
 	}
 }
@@ -239,18 +241,30 @@ func TestConfig_Validate(t *testing.T) {
 		wantErr bool
 	}{
 		{"valid", func(*natskit.Config) {}, false},
-		{"zero durations mean defaults", func(c *natskit.Config) {
-			c.ConnectTimeout, c.ReconnectWait, c.DrainTimeout, c.HandlerTimeout = 0, 0, 0, 0
-			c.JetStream.AckWait, c.JetStream.MaxAge, c.JetStream.Duplicates = 0, 0, 0
+		{"zero handler timeouts and nak cap are values", func(c *natskit.Config) {
+			c.HandlerTimeout, c.JetStream.HandlerTimeout, c.JetStream.NakMaxBackoff = 0, 0, 0
 		}, false},
-		{"jetstream off skips its fields", func(c *natskit.Config) {
-			c.JetStream = natskit.JetStreamConfig{AckWait: -time.Second, Retention: "nonsense"}
-		}, false},
+		{"jetstream off needs no values", func(c *natskit.Config) { c.JetStream = natskit.JetStreamConfig{} }, false},
 		{"url list", func(c *natskit.Config) { c.URL = "nats://a:4222,nats://b:4222" }, false},
 		{"url without scheme", func(c *natskit.Config) { c.URL = "localhost:4222" }, false},
 		{"creds file present", func(c *natskit.Config) { c.CredsFile = existingFile }, false},
 		{"instance name", func(c *natskit.Config) { c.Instance = "hub-2.eu" }, false},
 
+		{"zero connect timeout", func(c *natskit.Config) { c.ConnectTimeout = 0 }, true},
+		{"zero reconnect wait", func(c *natskit.Config) { c.ReconnectWait = 0 }, true},
+		{"zero drain timeout", func(c *natskit.Config) { c.DrainTimeout = 0 }, true},
+		{"zero max in flight", func(c *natskit.Config) { c.Backpressure.MaxInFlight = 0 }, true},
+		{"zero js ack wait", func(c *natskit.Config) { c.JetStream.AckWait = 0 }, true},
+		{"zero js max age", func(c *natskit.Config) { c.JetStream.MaxAge = 0 }, true},
+		{"zero js duplicates", func(c *natskit.Config) { c.JetStream.Duplicates = 0 }, true},
+		{"zero js publish timeout", func(c *natskit.Config) { c.JetStream.PublishAsyncTimeout = 0 }, true},
+		{"zero js max in flight", func(c *natskit.Config) { c.JetStream.MaxInFlight = 0 }, true},
+		{"jetstream off still checks the format", func(c *natskit.Config) {
+			c.JetStream = natskit.JetStreamConfig{AckWait: -time.Second}
+		}, true},
+		{"jetstream off still checks retention", func(c *natskit.Config) {
+			c.JetStream = natskit.JetStreamConfig{Retention: "nonsense"}
+		}, true},
 		{"empty url", func(c *natskit.Config) { c.URL = "" }, true},
 		{"url scheme", func(c *natskit.Config) { c.URL = "http://localhost:4222" }, true},
 		{"url without host", func(c *natskit.Config) { c.URL = "nats://" }, true},

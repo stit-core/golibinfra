@@ -70,27 +70,36 @@ type Config struct {
 	OTLPBearerToken string `envconfig:"OTEL_TOKEN"`
 }
 
-// Validate проверяет конфиг на старте: невалидные значения должны валить
-// процесс, а не первый экспорт.
+// Validate проверяет конфиг на старте: невалидные значения должны валить процесс, а не первый
+// экспорт. Формат значений проверяется и при Disabled, обязательные значения — только у
+// включённого SDK.
 func (c Config) Validate() error {
-	if c.Disabled {
-		return nil
-	}
 	switch {
-	case c.ServiceName == "":
-		return fmt.Errorf("%w: OTEL_SERVICE_NAME is required (or set OTEL_SDK_DISABLED=true)", ErrConfig)
 	case c.SampleRatio < 0 || c.SampleRatio > 1:
 		return fmt.Errorf("%w: OTEL_TRACES_SAMPLER_ARG %v is out of [0, 1]", ErrConfig, c.SampleRatio)
-	case c.ExportTimeout <= 0 || c.TraceBatchDelay <= 0 || c.MetricInterval <= 0 || c.LogBatchDelay <= 0:
-		return fmt.Errorf("%w: OTEL_EXPORT_TIMEOUT, OTEL_TRACES_BATCH_DELAY, OTEL_METRICS_INTERVAL and OTEL_LOGS_BATCH_DELAY must be > 0", ErrConfig)
+	case c.ExportTimeout < 0 || c.TraceBatchDelay < 0 || c.MetricInterval < 0 || c.LogBatchDelay < 0:
+		return fmt.Errorf("%w: OTEL_EXPORT_TIMEOUT, OTEL_TRACES_BATCH_DELAY, OTEL_METRICS_INTERVAL and OTEL_LOGS_BATCH_DELAY must be >= 0", ErrConfig)
 	}
 	for k := range c.OTLPHeaders {
 		if !validHeaderKey(k) {
 			return fmt.Errorf("%w: OTEL_EXPORTER_OTLP_HEADERS: %q is not a valid header name", ErrConfig, k)
 		}
 	}
-	_, err := signalURL(c.OTLPEndpoint, "v1/traces")
-	return err
+	if c.Disabled && c.OTLPEndpoint == "" {
+		return nil
+	}
+	if _, err := signalURL(c.OTLPEndpoint, "v1/traces"); err != nil {
+		return err
+	}
+	switch {
+	case c.Disabled:
+		return nil
+	case c.ServiceName == "":
+		return fmt.Errorf("%w: OTEL_SERVICE_NAME is required (or set OTEL_SDK_DISABLED=true)", ErrConfig)
+	case c.ExportTimeout == 0 || c.TraceBatchDelay == 0 || c.MetricInterval == 0 || c.LogBatchDelay == 0:
+		return fmt.Errorf("%w: OTEL_EXPORT_TIMEOUT, OTEL_TRACES_BATCH_DELAY, OTEL_METRICS_INTERVAL and OTEL_LOGS_BATCH_DELAY must be > 0", ErrConfig)
+	}
+	return nil
 }
 
 // signalURL — <endpoint>/<signalPath> по OTel-спецификации: путь базового URL

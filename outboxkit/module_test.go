@@ -54,7 +54,7 @@ func TestModule_WiresPublisherWorkerAndJob(t *testing.T) {
 		unpublished: []outboxkit.Message{msg(1, "a")},
 		backlog:     []outboxkit.SubjectBacklog{{Subject: "a", Oldest: 2 * time.Second, Pending: 3}},
 	}
-	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	cfg := valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 
 	var pub outboxkit.Publisher
 	var jobs []timerkit.Job
@@ -92,7 +92,7 @@ func TestModule_WiresPublisherWorkerAndJob(t *testing.T) {
 
 // Репозиторий без BacklogReporter — модуль поднимается, gauge'ей просто нет.
 func TestModule_WithoutBacklogReporter(t *testing.T) {
-	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	cfg := valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 	app := fxtest.New(t,
 		deps(bareRepo{repo: &fakeRepo{}}, &capturingBus{}, cfg),
 		scheduler(),
@@ -104,7 +104,7 @@ func TestModule_WithoutBacklogReporter(t *testing.T) {
 }
 
 func TestModule_ValidateApp(t *testing.T) {
-	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	cfg := valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 	err := fx.ValidateApp(
 		fx.NopLogger,
 		deps(&fakeRepo{}, &capturingBus{}, cfg),
@@ -120,7 +120,7 @@ func TestModule_ValidateApp(t *testing.T) {
 // Регрессия FX-04: без timerkit.Module drain-job никто не запускает — граф
 // обязан не собраться, а не держать outbox молча стоящим.
 func TestModule_RequiresTimerkit(t *testing.T) {
-	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	cfg := valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 	err := fx.ValidateApp(fx.NopLogger, deps(&fakeRepo{}, &capturingBus{}, cfg), outboxkit.Module)
 	if err == nil || !strings.Contains(err.Error(), "timerkit.scheduler") {
 		t.Fatalf("outboxkit.Module without timerkit.Module: err = %v, want missing timerkit.scheduler", err)
@@ -146,7 +146,7 @@ func TestInstance_WiresNamedOutbox(t *testing.T) {
 		backlog:     []outboxkit.SubjectBacklog{{Subject: "order.created", Oldest: time.Second, Pending: 1}},
 	}
 	factory := &fakeFactory{repo: repo}
-	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	cfg := valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 
 	var pub outboxkit.Publisher
 	var jobs []timerkit.Job
@@ -187,7 +187,7 @@ func TestInstance_WiresNamedOutbox(t *testing.T) {
 // Регрессия FX-12: схема таблицы инстанса приезжает в группу pgkit.migrations
 // сама — pgkit.MigrateModule накатывает её без ручного списка источников.
 func TestInstance_ProvidesMigrations(t *testing.T) {
-	cfg := outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+	cfg := valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 	var names []string
 	fxtest.New(t,
 		fx.Provide(
@@ -225,7 +225,7 @@ func TestInstance_FactoryErrorFailsStart(t *testing.T) {
 			func() natskit.StreamBus { return &capturingBus{} },
 			func() pgkit.Transactor { return &pgtest.Recorder{} },
 			func() outboxkit.Config {
-				return outboxkit.Config{BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+				return valid(outboxkit.Config{BatchSize: 1, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 			},
 		),
 		scheduler(),
@@ -249,7 +249,7 @@ func instanceDeps(repo outboxkit.Repository, bus natskit.StreamBus) fx.Option {
 		func() natskit.StreamBus { return bus },
 		func() pgkit.Transactor { return &pgtest.Recorder{} },
 		func() outboxkit.Config {
-			return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+			return valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 		},
 	)
 }
@@ -307,7 +307,7 @@ func TestOutbox_StreamsCheckedOnStart(t *testing.T) {
 		name  string
 	}{
 		"module, JetStream disabled": {
-			fx.Options(deps(&fakeRepo{}, disabled, outboxkit.Config{BatchSize: 10, Interval: time.Second}), outboxkit.Module),
+			fx.Options(deps(&fakeRepo{}, disabled, valid(outboxkit.Config{BatchSize: 10, Interval: time.Second})), outboxkit.Module),
 			natskit.ErrJetStreamDisabled, outboxkit.DefaultInstance,
 		},
 		"instance, JetStream disabled": {
@@ -348,7 +348,7 @@ func TestOutbox_ServerWithoutJetStream(t *testing.T) {
 	defer client.Close()
 	ctx := context.Background()
 
-	app := fx.New(fx.NopLogger, deps(&fakeRepo{}, client.Stream(), outboxkit.Config{BatchSize: 10, Interval: time.Second}),
+	app := fx.New(fx.NopLogger, deps(&fakeRepo{}, client.Stream(), valid(outboxkit.Config{BatchSize: 10, Interval: time.Second})),
 		scheduler(), outboxkit.Module)
 	if err := app.Start(ctx); !errors.Is(err, natskit.ErrJetStreamDisabled) {
 		t.Fatalf("start err = %v, want ErrJetStreamDisabled", err)
@@ -357,7 +357,7 @@ func TestOutbox_ServerWithoutJetStream(t *testing.T) {
 
 	for _, mode := range []outboxkit.PublishMode{outboxkit.PublishBatch, outboxkit.PublishOrdered} {
 		repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "orders.created")}}
-		w, _ := newWorker(repo, outboxkit.NewStreamTransport(client.Stream()),
+		w, _ := newWorker(t, repo, outboxkit.NewStreamTransport(client.Stream()),
 			outboxkit.Config{BatchSize: 10, PublishMode: mode, MaxAttempts: 1})
 		if err := w.Run(ctx); !errors.Is(err, outboxkit.ErrUnavailable) {
 			t.Fatalf("%s: tick err = %v, want ErrUnavailable", mode, err)
@@ -375,10 +375,40 @@ func TestInstance_EmptySubjectRejected(t *testing.T) {
 	}
 }
 
+// Тик не короче таймаута простоя транзакции пула — ошибка сборки графа: Postgres оборвал бы
+// сессию, пока воркер ждёт PubAck. Без PoolConfig в графе или с нулём таймаута проверки нет.
+func TestModule_TickTimeoutBelowIdleInTx(t *testing.T) {
+	cfg := valid(outboxkit.Config{TickTimeout: time.Minute})
+	graphs := map[string]fx.Option{
+		"Module": fx.Options(deps(&fakeRepo{}, &capturingBus{}, cfg), scheduler(), outboxkit.Module),
+		"Instance": fx.Options(
+			fx.Provide(
+				func() outboxkit.RepositoryFactory { return &fakeFactory{repo: &fakeRepo{}} },
+				func() natskit.StreamBus { return &capturingBus{} },
+				func() pgkit.Transactor { return &pgtest.Recorder{} },
+				func() outboxkit.Config { return cfg },
+			),
+			scheduler(),
+			outboxkit.Instance("orders", "outbox_orders"),
+		),
+	}
+	for name, graph := range graphs {
+		if err := fx.New(fx.NopLogger, graph).Err(); err != nil {
+			t.Errorf("%s without PoolConfig: %v", name, err)
+		}
+		for idle, wantErr := range map[time.Duration]bool{time.Minute: true, 2 * time.Minute: false, 0: false} {
+			err := fx.New(fx.NopLogger, graph, fx.Supply(pgkit.PoolConfig{IdleInTxSessionTimeout: idle})).Err()
+			if errors.Is(err, outboxkit.ErrConfig) != wantErr {
+				t.Errorf("%s, idle %s: err = %v, want ErrConfig %v", name, idle, err, wantErr)
+			}
+		}
+	}
+}
+
 func TestInstance_ConfigOverride(t *testing.T) {
 	repo := &fakeRepo{}
 	factory := &fakeFactory{repo: repo}
-	override := outboxkit.Config{BatchSize: 7, Interval: 5 * time.Second, PublishMode: outboxkit.PublishOrdered}
+	override := valid(outboxkit.Config{BatchSize: 7, Interval: 5 * time.Second, PublishMode: outboxkit.PublishOrdered})
 
 	var ob *outboxkit.Outbox
 	app := fxtest.New(t,
@@ -387,7 +417,7 @@ func TestInstance_ConfigOverride(t *testing.T) {
 			func() natskit.StreamBus { return &capturingBus{} },
 			func() pgkit.Transactor { return &pgtest.Recorder{} },
 			func() outboxkit.Config {
-				return outboxkit.Config{BatchSize: 100, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+				return valid(outboxkit.Config{BatchSize: 100, Interval: time.Second, PublishMode: outboxkit.PublishBatch})
 			},
 		),
 		scheduler(),
@@ -411,8 +441,8 @@ func TestInstance_ConfigOverride(t *testing.T) {
 func TestOutbox_ReviveDead(t *testing.T) {
 	collect := metricsSince(t)
 	repo := &fakeRepo{revived: 3}
-	o := outboxkit.New("orders", repo, &fakeTransport{}, &pgtest.Recorder{},
-		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
+	o := mustNew(t, "orders", repo, &fakeTransport{}, &pgtest.Recorder{},
+		valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}), logkit.Nop())
 
 	filter := outboxkit.ReviveFilter{IDs: []int64{1, 2, 3}, Subject: "order.created"}
 	n, err := o.ReviveDead(context.Background(), filter)
@@ -431,8 +461,8 @@ func TestOutbox_ReviveDead(t *testing.T) {
 }
 
 func TestOutbox_ReviveDeadUnsupported(t *testing.T) {
-	o := outboxkit.New("orders", bareRepo{repo: &fakeRepo{}}, &fakeTransport{}, &pgtest.Recorder{},
-		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
+	o := mustNew(t, "orders", bareRepo{repo: &fakeRepo{}}, &fakeTransport{}, &pgtest.Recorder{},
+		valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}), logkit.Nop())
 
 	if _, err := o.ReviveDead(context.Background(), outboxkit.ReviveFilter{}); !errors.Is(err, outboxkit.ErrNotSupported) {
 		t.Fatalf("err = %v, want ErrNotSupported", err)
@@ -459,8 +489,8 @@ func TestOutbox_ReviveDeadUnsupported(t *testing.T) {
 
 func TestOutbox_ReviveDeadError(t *testing.T) {
 	repo := &fakeRepo{reviveErr: errors.New("db down")}
-	o := outboxkit.New("orders", repo, &fakeTransport{}, &pgtest.Recorder{},
-		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}, logkit.Nop())
+	o := mustNew(t, "orders", repo, &fakeTransport{}, &pgtest.Recorder{},
+		valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}), logkit.Nop())
 
 	if _, err := o.ReviveDead(context.Background(), outboxkit.ReviveFilter{}); err == nil {
 		t.Fatal("expected error from repository")

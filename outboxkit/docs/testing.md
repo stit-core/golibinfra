@@ -30,8 +30,9 @@ in-memory фейках (`testkit/pgtest.Identity` / `Recorder` как транз
   публикации не мешает пометить уже подтверждённые строки (фаза mark/commit идёт
   на `context.WithoutCancel`);
 - ошибки хранилища (list / mark / record failures) доходят наружу обёрнутыми;
-- poison: строка, достигшая `MaxAttempts`, помечается `Failure.Dead`, `MaxAttempts = 0`
-  литерала — `DefaultMaxAttempts`, `-1` — dead не наступает никогда; переход — ERROR `outboxkit: event dead` с координатами
+- poison: строка, достигшая `MaxAttempts`, помечается `Failure.Dead`, `-1` — dead не
+  наступает никогда; литерал `Config` без обязательных полей (`MaxAttempts = 0`) — `ErrConfig`
+  из `New`/`NewWorker`; переход — ERROR `outboxkit: event dead` с координатами
   строки (`testkit/logtest`), и только после коммита тика; пауза `Failure.RetryAfter` растёт
   экспоненциально и упирается в потолок;
 - сбой брокера целиком — батч без результатов, `ErrUnavailable` у строки батча и в

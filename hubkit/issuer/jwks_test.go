@@ -67,9 +67,12 @@ func TestRegisterJWKS_PassesServerRouteCheck(t *testing.T) {
 	if err != nil {
 		t.Fatalf("httpkit config: %v", err)
 	}
-	srv := httpkit.NewServer(cfg, httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
+	srv, err := httpkit.NewServer(cfg, httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
 		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
 	}))
+	if err != nil {
+		t.Fatalf("httpkit server: %v", err)
+	}
 	issuer.RegisterJWKS(srv.API(), newSigner(t, keyConfig(genPEM(t))))
 	if err := srv.CheckRoutes(); err != nil {
 		t.Fatalf("JWKS route fails the httpkit start check: %v", err)

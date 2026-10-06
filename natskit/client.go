@@ -35,7 +35,12 @@ func New(name string, cfg Config, log logkit.Logger) (*Client, error) {
 		conn.Close()
 		return nil, err
 	}
-	return &Client{name: name, conn: conn, bus: NewBus(conn, log, cfg), stream: stream}, nil
+	bus, err := NewBus(conn, log, cfg)
+	if err != nil {
+		conn.Close()
+		return nil, err
+	}
+	return &Client{name: name, conn: conn, bus: bus, stream: stream}, nil
 }
 
 // Name — имя инстанса (атрибут `instance` в сигналах).

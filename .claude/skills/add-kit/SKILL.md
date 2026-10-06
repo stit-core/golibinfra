@@ -48,7 +48,9 @@ description: Завести в golibinfra новый kit по конвенция
    `internal/envconf/kits_test.go`) и вызывает `Config.Validate()`
    (sentinel `<kit>.ErrConfig`); `Validate` зовут и конструкторы `New*`, чтобы
    собранный литералом конфиг тоже проверялся. Zero-value `Config` либо безопасен
-   и полезен, либо отвергается `Validate`. `Module` конфиг **не** provide'ит — его
+   и полезен, либо отвергается `Validate`. `Validate` — только проверка на value-приёмнике;
+   ноль в литерале — значение из доки или `ErrConfig`, не дефолт кита; формат проверяется и
+   у выключенного; опция с nil ничего не меняет. `Module` конфиг **не** provide'ит — его
    даёт caller. Каждый тег — строка таблицы в README кита (`| Env | Поле | Тип |
    Default | … |`; дефолт — как в `default`-теге, без него — `—` или нулевое
    значение), endpoint-переменная (`*_URL`, `*_DSN`, `*_ENDPOINT`, `*_ADDR`,

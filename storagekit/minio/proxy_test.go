@@ -85,7 +85,7 @@ func TestStorage_CleanupFailureIsLogged(t *testing.T) {
 
 	rec := logtest.Capture()
 	urls := storagekit.NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle)
-	st := skminio.NewStorage(client, cfg, urls, rec)
+	st := mustStorage(t, client, cfg, urls, rec)
 
 	_, err = st.Put(t.Context(), stream(bytes.NewReader([]byte("0123456789"))), "application/pdf", 4)
 	if !errors.Is(err, storagekit.ErrSizeMismatch) {
@@ -121,7 +121,7 @@ func TestStorage_PutFailureIsWrapped(t *testing.T) {
 		t.Fatalf("NewClient through proxy: %v", err)
 	}
 	urls := storagekit.NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle)
-	st := skminio.NewStorage(blocked, cfg, urls, nil)
+	st := mustStorage(t, blocked, cfg, urls, nil)
 
 	sizes := map[string]int64{"unknown size": -1, "known size": 4}
 	for name, size := range sizes {
@@ -193,7 +193,7 @@ func TestStorage_ServesOverTLS(t *testing.T) {
 	}
 
 	urls := storagekit.NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle)
-	st := skminio.NewStorage(client, cfg, urls, logkit.Nop())
+	st := mustStorage(t, client, cfg, urls, logkit.Nop())
 	body := []byte("tls round trip")
 
 	ref, err := st.Put(t.Context(), bytes.NewReader(body), "text/plain", int64(len(body)))

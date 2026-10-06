@@ -19,18 +19,8 @@ const DefaultInstance = "default"
 // NewInstanceConfig и New, чтобы сервис падал на старте.
 var ErrConfig = errors.New("natskit: invalid config")
 
-const (
-	defaultMaxInFlight         = 100
-	defaultDrainTimeout        = 10 * time.Second
-	defaultAckWait             = 30 * time.Second
-	defaultMaxAge              = 7 * 24 * time.Hour
-	defaultDuplicates          = 2 * time.Minute
-	defaultPublishAsyncTimeout = 5 * time.Second
-	defaultNakMaxBackoff       = time.Minute
-
-	// minAckWait — ниже этого порога +WPI не успевает продлить ожидание сервера.
-	minAckWait = time.Second
-)
+// minAckWait — ниже этого порога +WPI не успевает продлить ожидание сервера.
+const minAckWait = time.Second
 
 // BackpressureConfig — потолок одновременно обрабатываемых Core-сообщений.
 type BackpressureConfig struct {
@@ -102,9 +92,10 @@ func NewInstanceConfig(name string) (Config, error) {
 	return c, nil
 }
 
-// Validate проверяет конфиг целиком: невалидное значение валит старт сервиса, а
-// не первую публикацию. Нулевая длительность значит «дефолт кита», отрицательная —
-// ошибка. JetStream-поля проверяются только при Enabled.
+// Validate проверяет конфиг целиком: невалидное значение валит старт сервиса, а не первую
+// публикацию. Ноль — значение, а не дефолт кита: таймаут подключения, пауза reconnect'а,
+// бюджет drain и потолок обработчиков обязаны быть > 0. Формат JetStream-полей проверяется
+// всегда, обязательные значения — при Enabled.
 func (c Config) Validate() error {
 	if err := validateURL(c.URL); err != nil {
 		return err
@@ -119,17 +110,16 @@ func (c Config) Validate() error {
 		{"NATS_CONNECT_TIMEOUT", c.ConnectTimeout},
 		{"NATS_RECONNECT_WAIT", c.ReconnectWait},
 		{"NATS_DRAIN_TIMEOUT", c.DrainTimeout},
-		{"NATS_HANDLER_TIMEOUT", c.HandlerTimeout},
 	} {
-		if d.v < 0 {
-			return fmt.Errorf("%w: %s must be >= 0, got %s", ErrConfig, d.name, d.v)
+		if d.v <= 0 {
+			return fmt.Errorf("%w: %s must be > 0, got %s", ErrConfig, d.name, d.v)
 		}
 	}
 	if c.MaxReconnects < -1 {
 		return fmt.Errorf("%w: NATS_MAX_RECONNECTS must be >= -1, got %d", ErrConfig, c.MaxReconnects)
 	}
-	if c.Backpressure.MaxInFlight < 0 {
-		return fmt.Errorf("%w: NATS_MAX_IN_FLIGHT must be >= 0, got %d", ErrConfig, c.Backpressure.MaxInFlight)
+	if err := c.validateBus(); err != nil {
+		return err
 	}
 	for _, f := range []struct {
 		name string
@@ -149,16 +139,25 @@ func (c Config) Validate() error {
 	return c.JetStream.validate()
 }
 
-func (j JetStreamConfig) validate() error {
-	if !j.Enabled {
-		return nil
+// validateBus — поля Core-шины: их проверяет и NewBus поверх готового соединения.
+func (c Config) validateBus() error {
+	if c.HandlerTimeout < 0 {
+		return fmt.Errorf("%w: NATS_HANDLER_TIMEOUT must be >= 0, got %s", ErrConfig, c.HandlerTimeout)
 	}
+	if c.Backpressure.MaxInFlight < 1 {
+		return fmt.Errorf("%w: NATS_MAX_IN_FLIGHT must be >= 1, got %d", ErrConfig, c.Backpressure.MaxInFlight)
+	}
+	return nil
+}
+
+func (j JetStreamConfig) validate() error {
 	for _, d := range []struct {
 		name string
 		v    time.Duration
 	}{
 		{"NATS_JS_MAX_AGE", j.MaxAge},
 		{"NATS_JS_DUPLICATES", j.Duplicates},
+		{"NATS_JS_ACK_WAIT", j.AckWait},
 		{"NATS_JS_HANDLER_TIMEOUT", j.HandlerTimeout},
 		{"NATS_JS_PUBLISH_ASYNC_TIMEOUT", j.PublishAsyncTimeout},
 		{"NATS_JS_NAK_BACKOFF", j.NakBackoff},
@@ -168,18 +167,16 @@ func (j JetStreamConfig) validate() error {
 			return fmt.Errorf("%w: %s must be >= 0, got %s", ErrConfig, d.name, d.v)
 		}
 	}
-	if j.AckWait < 0 || (j.AckWait > 0 && j.AckWait < minAckWait) {
-		return fmt.Errorf("%w: NATS_JS_ACK_WAIT must be 0 (default %s) or >= %s, got %s",
-			ErrConfig, defaultAckWait, minAckWait, j.AckWait)
-	}
 	if j.MaxInFlight < 0 {
 		return fmt.Errorf("%w: NATS_JS_MAX_IN_FLIGHT must be >= 0, got %d", ErrConfig, j.MaxInFlight)
 	}
 	if j.MaxDeliver < 0 {
 		return fmt.Errorf("%w: NATS_JS_MAX_DELIVER must be >= 0, got %d", ErrConfig, j.MaxDeliver)
 	}
-	if _, err := parseRetention(j.Retention); err != nil {
-		return err
+	if j.Retention != "" {
+		if _, err := parseRetention(j.Retention); err != nil {
+			return err
+		}
 	}
 	for _, name := range j.StreamNames {
 		if !validStreamName(name) {
@@ -189,7 +186,19 @@ func (j JetStreamConfig) validate() error {
 	if j.DLQSubject != "" && !validPublishSubject(j.DLQSubject) {
 		return fmt.Errorf("%w: NATS_JS_DLQ_SUBJECT: %q is not a valid publish subject", ErrConfig, j.DLQSubject)
 	}
-	return nil
+	if !j.Enabled {
+		return nil
+	}
+	switch {
+	case j.MaxAge == 0, j.Duplicates == 0, j.PublishAsyncTimeout == 0:
+		return fmt.Errorf("%w: NATS_JS_MAX_AGE, NATS_JS_DUPLICATES and NATS_JS_PUBLISH_ASYNC_TIMEOUT must be > 0", ErrConfig)
+	case j.AckWait < minAckWait:
+		return fmt.Errorf("%w: NATS_JS_ACK_WAIT must be >= %s, got %s", ErrConfig, minAckWait, j.AckWait)
+	case j.MaxInFlight < 1:
+		return fmt.Errorf("%w: NATS_JS_MAX_IN_FLIGHT must be >= 1, got %d", ErrConfig, j.MaxInFlight)
+	}
+	_, err := parseRetention(j.Retention)
+	return err
 }
 
 var allowedSchemes = map[string]bool{"nats": true, "tls": true, "ws": true, "wss": true}
@@ -252,18 +261,4 @@ func validPublishSubject(subject string) bool {
 // envPrefix — префикс переменных окружения инстанса: `hub` → `HUB_NATS_URL`.
 func envPrefix(instance string) string {
 	return strings.ToUpper(strings.NewReplacer("-", "_", ".", "_", " ", "_").Replace(instance))
-}
-
-func durationOr(d, def time.Duration) time.Duration {
-	if d <= 0 {
-		return def
-	}
-	return d
-}
-
-func intOr(n, def int) int {
-	if n <= 0 {
-		return def
-	}
-	return n
 }

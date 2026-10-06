@@ -16,9 +16,12 @@ import (
 // тесты проверяли только логику кита.
 func testHTTPConfig() httpclient.Config {
 	return httpclient.Config{
-		Timeout:    5 * time.Second,
-		MaxRetries: 0,
-		RetryWait:  time.Millisecond,
+		Timeout:          5 * time.Second,
+		MaxRetries:       0,
+		RetryWait:        time.Millisecond,
+		RetryMaxWait:     time.Second,
+		MaxRedirects:     10,
+		SSEMaxEventBytes: 1 << 20,
 		Breaker: httpclient.BreakerConfig{
 			FailureThreshold: 100,
 			RecoveryTimeout:  time.Second,

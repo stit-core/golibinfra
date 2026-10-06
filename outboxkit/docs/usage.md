@@ -121,7 +121,7 @@ JetStream включён и каждый фильтр целиком накры�
 // сигнатуры
 func pgstore.NewStoreFor(db *pgkit.DB, table string, opts ...pgstore.StoreOption) (*pgstore.Store, error)
 func outboxkit.NewStreamTransportFor(sb natskit.StreamBus, namespace string) outboxkit.Transport
-func outboxkit.New(name string, repo outboxkit.Repository, tr outboxkit.Transport, tx pgkit.Transactor, cfg outboxkit.Config, log logkit.Logger) *outboxkit.Outbox
+func outboxkit.New(name string, repo outboxkit.Repository, tr outboxkit.Transport, tx pgkit.Transactor, cfg outboxkit.Config, log logkit.Logger) (*outboxkit.Outbox, error)
 ```
 
 ```go
@@ -130,7 +130,10 @@ store, err := pgstore.NewStoreFor(db, "outbox_orders",
 if err != nil {
     return err
 }
-orders := outboxkit.New("orders", store, outboxkit.NewStreamTransportFor(sb, "orders"), transactor, cfg, log)
+orders, err := outboxkit.New("orders", store, outboxkit.NewStreamTransportFor(sb, "orders"), transactor, cfg, log)
+if err != nil {
+    return err // невалидный cfg — ErrConfig
+}
 
 publisher := orders.Publisher() // туда, где нужна доменная публикация
 jobs := orders.Jobs()           // drain + партиции + retention → timerkit.Group

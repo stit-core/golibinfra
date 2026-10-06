@@ -15,7 +15,7 @@ import (
 
 func TestBus_SubscriptionUnsubscribe(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	ctx := context.Background()
 	subject := subj(t, "one-off")
 
@@ -43,7 +43,7 @@ func TestBus_SubscriptionUnsubscribe(t *testing.T) {
 
 func TestBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	ctx := context.Background()
 	subject := subj(t, "drain")
 
@@ -80,7 +80,7 @@ func TestBus_SubscriptionDrainWaitsForHandler(t *testing.T) {
 
 func TestBus_SubscriptionDrainHonoursContext(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	ctx := context.Background()
 	subject := subj(t, "stuck")
 
@@ -215,7 +215,7 @@ func TestSubscription_UnsubscribeSkipsMessageWaitingForSlot(t *testing.T) {
 	}
 
 	t.Run("core", func(t *testing.T) {
-		bus := natskit.NewBus(connect(t, natsURL(t)), logkit.Nop(), natskit.Config{Backpressure: natskit.BackpressureConfig{MaxInFlight: 1}})
+		bus := newBus(t, connect(t, natsURL(t)), logkit.Nop(), natskit.Config{Backpressure: natskit.BackpressureConfig{MaxInFlight: 1}})
 		var published atomic.Bool
 		run(t,
 			func(subject, _ string, h natskit.Handler) (natskit.Subscription, error) {

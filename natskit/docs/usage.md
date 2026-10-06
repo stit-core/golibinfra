@@ -16,7 +16,7 @@ type Bus interface {
 	SubscribeQueue(ctx context.Context, subject, queue string, handler Handler) (Subscription, error)
 }
 
-func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus // низкоуровнево; обычный путь — Client.Bus()
+func NewBus(conn *Conn, log logkit.Logger, cfg Config) (Bus, error) // низкоуровнево; обычный путь — Client.Bus()
 
 // Дженерики: marshal/unmarshal JSON за вызывающего.
 func PublishJSON[T any](b Bus, ctx context.Context, subject string, msg T, opts ...PublishOption) error

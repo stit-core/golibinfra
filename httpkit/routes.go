@@ -132,12 +132,8 @@ func (r *registry) Config() huma.Config {
 // components.securitySchemes есть схема, у каждой операции, в том числе скрытой, — Security
 // из components или Public, а маршрут chi мимо huma.Register (кроме /docs, /openapi.*,
 // /schemas) — в PublicRoutes. Module зовёт её на OnStart, после всех Invoke; маршрут,
-// добавленный позже, она не видит. Ошибка — ErrRoutes с именами операций и маршрутов, у
-// невалидной схемы — ErrConfig.
+// добавленный позже, она не видит. Ошибка — ErrRoutes с именами операций и маршрутов.
 func (s *Server) CheckRoutes() error {
-	if err := checkSchemes(s.opts.schemes); err != nil {
-		return err
-	}
 	reg := s.registry()
 	schemes := reg.OpenAPI().Components.SecuritySchemes
 	guarded := len(schemes) > 0

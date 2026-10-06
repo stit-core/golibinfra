@@ -40,14 +40,15 @@ type Worker struct {
 }
 
 // NewWorker строит Worker; instance — значение label `instance`, в log уходит ERROR на каждый
-// переход строки в dead (nil — logkit.Nop()). Невалидные поля cfg заменяются дефолтами
-// (Config.Validate ловит их на старте).
-func NewWorker(instance string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) *Worker {
-	return newWorker(instance, newOutboxInstruments(instance), repo, tr, tx, cfg, log)
+// переход строки в dead (nil — logkit.Nop()). Невалидный cfg — ErrConfig.
+func NewWorker(instance string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) (*Worker, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	return newWorker(instance, newOutboxInstruments(instance), repo, tr, tx, cfg, log), nil
 }
 
 func newWorker(name string, instr *outboxInstruments, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) *Worker {
-	cfg = cfg.withDefaults()
 	if log == nil {
 		log = logkit.Nop()
 	}

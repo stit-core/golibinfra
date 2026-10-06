@@ -62,14 +62,15 @@ app := fx.New(
 app.Run()
 ```
 
-Без fx (caller сам ставит middleware и вызывает `BindAPI` после `Use`; операции с
-`Security` проверяет только `api.UseMiddleware(httpkit.HumaAuth(log, extract))`,
-поставленный до их регистрации, а проверку старта `Module` — `s.CheckRoutes()`):
+Без fx — `NewServer`, ту же сборку зовёт `Module`: цепочка middleware кита из `Config`,
+`HumaAuth` в `BindAPI` (extractor — `WithAuthExtractor`), невалидный `Config` — `ErrConfig`;
+проверку старта `Module` делает `s.CheckRoutes()`:
 
 ```go
-s := httpkit.NewServer(cfg, httpkit.WithLogger(log))
-s.Router().Use(httpkit.RequestID(), httpkit.ClientIP(log, cfg.TrustProxyHops), httpkit.OTel(),
-    httpkit.AccessLog(log), httpkit.Metrics(), httpkit.Recovery(log))
+s, err := httpkit.NewServer(cfg, httpkit.WithLogger(log), httpkit.WithAuthExtractor(extract))
+if err != nil {
+    return err
+}
 api := s.BindAPI()
 httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout, pgkit.Probe(db))
 huma.Get(api, "/ping", handler)

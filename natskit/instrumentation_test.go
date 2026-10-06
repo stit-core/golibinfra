@@ -59,7 +59,7 @@ func TestBus_EmitsMetricsAndSpans(t *testing.T) {
 	before := metrictest.Collect(t)
 
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	// Серия nats_inflight_messages прошлого прогона после +1 −1 не меняется и выпала бы из
 	// дельты: subject свой на прогон (nameFor).
 	subject := subj(t, "instr")
@@ -119,7 +119,7 @@ func TestBus_ConsumerSpanIsChildOfProducer(t *testing.T) {
 	spans := installTracing(t)
 
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	subject := subj(t, "trace")
 
 	handled := make(chan trace.SpanContext, 1)
@@ -171,7 +171,7 @@ func TestBus_PublishMetricSubjectIsOptIn(t *testing.T) {
 	before := metrictest.Collect(t)
 
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	if err := bus.Publish(context.Background(), subj(t, "42"), []byte("{}")); err != nil {
 		t.Fatalf("publish: %v", err)

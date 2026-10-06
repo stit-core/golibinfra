@@ -53,17 +53,16 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `JWT_SECRET` | `Secret` | `string` | — (`required`) | Общий HMAC-секрет для подписи и проверки HS256. Короче 32 байт → `ErrConfig`. |
-| `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | TTL для `SignAccess`. `0` в литерале конфига → дефолт кита; отрицательный → `ErrConfig`. |
-| `JWT_LEEWAY` | `Leeway` | `time.Duration` | `60s` | Допуск рассинхрона часов при проверке `exp`/`nbf`/`iat` в `Parse`. `0` → дефолт кита; отрицательный → `ErrConfig`. |
+| `JWT_ACCESS_TTL` | `AccessTTL` | `time.Duration` | `15m` | TTL для `SignAccess`; `> 0`, иначе `ErrConfig` (и в литерале конфига). |
+| `JWT_LEEWAY` | `Leeway` | `time.Duration` | `60s` | Допуск рассинхрона часов при проверке `exp`/`nbf`/`iat` в `Parse`. `0` — без допуска; отрицательный → `ErrConfig`. |
 | `JWT_PREVIOUS_SECRET` | `PreviousSecret` | `string` | `""` | Секрет до ротации: подписанные им токены ещё принимаются, новые подписывает `JWT_SECRET`. Пусто — ротации нет; короче 32 байт → `ErrConfig` (§ Ротация секрета). |
 | `JWT_ISSUER` | `Issuer` | `string` | `""` | `iss`: `Sign*` проставляет, `Parse*` требует совпадения (`ErrTokenAudience`). Пусто — не пишется и не проверяется. |
 | `JWT_AUDIENCE` | `Audience` | `[]string` | — (пусто) | `aud` через запятую: `Sign*` проставляет, `Parse*` требует пересечения (`ErrTokenAudience`). Пусто — не пишется и не проверяется. Пустой элемент списка из ENV отбрасывается, в `Config` — `ErrConfig`. |
 
 `Sign(ctx, claims, ttl)` принимает TTL явно — для токенов с нестандартным сроком
 (одноразовые ссылки, приглашения); `ttl <= 0` → `ErrConfig`.
-`SignAccess` берёт TTL из конфига. Пороги и дефолты доступны константами:
-`MinSecretLen` (32), `DefaultAccessTTL`, `DefaultLeeway`. Срок refresh — у сессий
-(`session.Config` ниже), не у JWT.
+`SignAccess` берёт TTL из конфига; дефолты — в тегах (`NewJWTConfig`), порог секрета —
+константа `MinSecretLen` (32). Срок refresh — у сессий (`session.Config` ниже), не у JWT.
 
 `iss`/`aud` симметричны: что задано, то проставляется при подписи и требуется при
 разборе. Одному сервису на своём секрете они не нужны. Сервисы на **общем**

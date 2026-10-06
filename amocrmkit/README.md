@@ -42,10 +42,13 @@ app := fx.New(
 )
 ```
 
-Прямой `New` без fx (нули обеих конфигураций заменяются дефолтами):
+Прямой `New` без fx (нулевой `MaxWait` заменяется дефолтом, конфиг httpclient — из ENV с
+дефолтами тегов):
 
 ```go
-c, err := amocrmkit.New(amocrmkit.Config{RateRPS: 7}, httpclient.Config{}, clockkit.Real{}, logkit.Nop())
+hcCfg, err := httpclient.NewConfigPrefixed("AMOCRM")
+if err != nil { /* ... */ }
+c, err := amocrmkit.New(amocrmkit.Config{RateRPS: 7}, hcCfg, clockkit.Real{}, logkit.Nop())
 if err != nil { /* ... */ }
 acc := amocrmkit.Account{Subdomain: "mycompany", TLD: "ru", Token: accessToken}
 leads, err := c.CreateLeads(ctx, acc, []amocrmkit.LeadInput{{Name: "Сделка"}})

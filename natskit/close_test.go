@@ -19,7 +19,7 @@ func TestConn_CloseWaitsForInflightHandler(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConn: %v", err)
 	}
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	subject := subj(t, "slow")
 
 	started := make(chan struct{}, 1)
@@ -62,7 +62,7 @@ func TestConn_CloseGivesUpAfterDrainTimeout(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConn: %v", err)
 	}
-	bus := natskit.NewBus(conn, log, natskit.Config{})
+	bus := newBus(t, conn, log, natskit.Config{})
 	subject := subj(t, "stuck")
 
 	started := make(chan struct{}, 1)
@@ -103,7 +103,7 @@ func TestConn_CloseCancelsHandlerContext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConn: %v", err)
 	}
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	subject := subj(t, "cancelme")
 
 	started := make(chan struct{}, 1)
@@ -137,7 +137,7 @@ func TestConn_CloseContextHonoursDeadline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConn: %v", err)
 	}
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	subject := subj(t, "hang")
 
 	started := make(chan struct{}, 1)

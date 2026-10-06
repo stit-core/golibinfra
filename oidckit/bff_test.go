@@ -25,7 +25,7 @@ func memStore() StateStore { return NewCacheStateStore(cachekit.NewMemoryCache()
 
 func sessionSigner(t *testing.T) *authnkit.HS256JWT {
 	t.Helper()
-	s, err := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: sessionSecret})
+	s, err := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: sessionSecret, AccessTTL: 15 * time.Minute})
 	if err != nil {
 		t.Fatalf("NewHS256JWT: %v", err)
 	}

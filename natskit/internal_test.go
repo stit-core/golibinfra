@@ -198,7 +198,7 @@ func TestInflightGroup_WaitHonoursContext(t *testing.T) {
 }
 
 func TestNakDelay_GrowsToCap(t *testing.T) {
-	defaults := JetStreamConfig{NakBackoff: time.Second}
+	defaults := JetStreamConfig{NakBackoff: time.Second, NakMaxBackoff: time.Minute}
 	tests := []struct {
 		name string
 		cfg  JetStreamConfig
@@ -208,11 +208,12 @@ func TestNakDelay_GrowsToCap(t *testing.T) {
 		{"first delivery", defaults, 1, time.Second},
 		{"doubles per delivery", defaults, 3, 4 * time.Second},
 		{"last below the cap", defaults, 6, 32 * time.Second},
-		{"capped", defaults, 7, defaultNakMaxBackoff},
-		{"far past the cap", defaults, 1 << 40, defaultNakMaxBackoff},
+		{"capped", defaults, 7, time.Minute},
+		{"far past the cap", defaults, 1 << 40, time.Minute},
 		{"own cap", JetStreamConfig{NakBackoff: 100 * time.Millisecond, NakMaxBackoff: 300 * time.Millisecond}, 4, 300 * time.Millisecond},
 		{"zero backoff is an immediate nak", JetStreamConfig{}, 5, 0},
-		{"cap below backoff keeps it constant", JetStreamConfig{NakBackoff: 2 * time.Minute}, 3, 2 * time.Minute},
+		{"cap below backoff keeps it constant", JetStreamConfig{NakBackoff: 2 * time.Minute, NakMaxBackoff: time.Minute}, 3, 2 * time.Minute},
+		{"zero cap keeps the backoff constant", JetStreamConfig{NakBackoff: time.Second}, 4, time.Second},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

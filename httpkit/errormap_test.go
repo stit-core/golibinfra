@@ -267,8 +267,7 @@ func TestErrorMap_DeclareSecured401FromConsumerHook(t *testing.T) {
 			}
 		})
 	})
-	cfg := httpkit.Config{APITitle: "test", APIVersion: "0.0.1", MaxBody: httpkit.MaxBodyConfig{MaxBytes: 1 << 20}}
-	api := httpkit.NewServer(cfg, secureAdmin).BindAPI()
+	api := mustServer(t, testConfig(t, "127.0.0.1:0"), secureAdmin).BindAPI()
 	huma.Get(api, "/admin/users", func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
 
 	resp := api.OpenAPI().Paths["/admin/users"].Get.Responses["401"]

@@ -22,7 +22,8 @@ import "git.stit.tech/stit-core/golibinfra/storagekit/minio" // боевой а�
 
 ### fx-проводка
 
-`storagekit.Module` даёт `*URLBuilder` из `Config`. Боевые `Storage` и
+`storagekit.Module` даёт `*URLBuilder` из `Config` (невалидный — `ErrConfig` при сборке
+графа, в том числе из App-структуры мимо `NewConfig`). Боевые `Storage` и
 `Presigner` регистрирует подпакет `storagekit/minio` своим `Module`; ему нужен
 `logkit.Logger` из графа. `Config` потребитель регистрирует сам (та же
 асимметрия, что у `cachekit`/`pgkit`/`natskit`).
@@ -262,7 +263,7 @@ func (m *MemoryStorage) Keys() []string                  // тест-хелпе�
 
 ```go
 func NewClient(cfg storagekit.Config) (*miniogo.Client, error)
-func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) *Storage
+func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) (*Storage, error) // невалидный cfg — ErrConfig
 func Probe(client *miniogo.Client, cfg storagekit.Config) healthkit.Probe
 const ProbeName = "storagekit"
 var Module fx.Option // → *miniogo.Client, *Storage, storagekit.Storage, storagekit.Presigner

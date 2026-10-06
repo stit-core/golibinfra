@@ -65,22 +65,22 @@ upstream).
 `httpclient.Config` и `httpclient.BreakerConfig` — public API (см. корневой
 `README.md` § Стабильность API). `NewConfig`/`NewConfigPrefixed` читают ENV и
 валидируют (`ErrConfig`); `New` валидирует ещё раз для конфигов, собранных
-вручную. `Validate` отвергает отрицательные значения и подставляет дефолты
-вместо нулей — `httpclient.Config{}` даёт тот же клиент, что и пустое окружение,
-клиент без таймаута собрать нельзя.
+вручную. Дефолты — в тегах: ноль в литерале — значение, а не дефолт, поэтому клиент без
+таймаута, паузы ретрая или предела события SSE (в том числе `httpclient.Config{}`) собрать
+нельзя.
 
 | Env | Поле | Тип | Default | Правило `Validate` |
 |---|---|---|---|---|
-| `HTTPCLIENT_TIMEOUT` | `Config.Timeout` | `time.Duration` | `10s` | `< 0` — ошибка; `0` → `10s`. Таймаут одной попытки (`http.Client.Timeout`), не всего цикла retry; для `Stream` — только фаза заголовков |
+| `HTTPCLIENT_TIMEOUT` | `Config.Timeout` | `time.Duration` | `10s` | `> 0`, иначе ошибка. Таймаут одной попытки (`http.Client.Timeout`), не всего цикла retry; для `Stream` — только фаза заголовков |
 | `HTTPCLIENT_MAX_RETRIES` | `Config.MaxRetries` | `int` | `3` | `< 0` — ошибка; `0` — без retry (осознанный выбор, дефолт не подставляется) |
-| `HTTPCLIENT_RETRY_WAIT` | `Config.RetryWait` | `time.Duration` | `200ms` | `< 0` — ошибка; `0` → `200ms`. База backoff: `RetryWait·2^(attempt-1)` + jitter `[0, RetryWait)` |
-| `HTTPCLIENT_RETRY_MAX_WAIT` | `Config.RetryMaxWait` | `time.Duration` | `5s` | `< 0` или `< RetryWait` — ошибка; `0` → `5s`. Потолок паузы, в том числе для `Retry-After` |
+| `HTTPCLIENT_RETRY_WAIT` | `Config.RetryWait` | `time.Duration` | `200ms` | `> 0`, иначе ошибка. База backoff: `RetryWait·2^(attempt-1)` + jitter `[0, RetryWait)` |
+| `HTTPCLIENT_RETRY_MAX_WAIT` | `Config.RetryMaxWait` | `time.Duration` | `5s` | `< RetryWait` — ошибка. Потолок паузы, в том числе для `Retry-After` |
 | `HTTPCLIENT_RETRY_NON_IDEMPOTENT` | `Config.RetryNonIdempotent` | `bool` | `false` | Ретраить POST/PATCH без явного разрешения (см. § Retry) |
-| `HTTPCLIENT_MAX_REDIRECTS` | `Config.MaxRedirects` | `int` | `10` | `< 0` — ошибка; `0` → `10`. Длиннее цепочка — `ErrTooManyRedirects` |
+| `HTTPCLIENT_MAX_REDIRECTS` | `Config.MaxRedirects` | `int` | `10` | `< 0` — ошибка; `0` — любой редирект `ErrTooManyRedirects`. Длиннее цепочка — `ErrTooManyRedirects` |
 | `HTTPCLIENT_ALLOW_CROSS_HOST_REDIRECTS` | `Config.AllowCrossHostRedirects` | `bool` | `false` | `false` — редирект на другой хост это `ErrCrossHostRedirect` (см. § Редиректы) |
-| `HTTPCLIENT_SSE_MAX_EVENT_BYTES` | `Config.SSEMaxEventBytes` | `int` | `1048576` | `< 0` — ошибка; `0` → 1 MiB. Потолок строки и события SSE (`ErrEventTooLarge`) |
+| `HTTPCLIENT_SSE_MAX_EVENT_BYTES` | `Config.SSEMaxEventBytes` | `int` | `1048576` | `> 0`, иначе ошибка. Потолок строки и события SSE (`ErrEventTooLarge`) |
 | `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD` | `BreakerConfig.FailureThreshold` | `int` | `5` | `< 0` — ошибка; `0` выключает breaker (осознанный выбор) |
-| `HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT` | `BreakerConfig.RecoveryTimeout` | `time.Duration` | `30s` | `< 0` — ошибка; `0` → `30s`. Сколько breaker держится в Open до пробного запроса |
+| `HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT` | `BreakerConfig.RecoveryTimeout` | `time.Duration` | `30s` | `< 0` — ошибка; у включённого breaker'а `> 0`. Сколько breaker держится в Open до пробного запроса |
 
 ## Retry
 
@@ -192,7 +192,7 @@ golibinfra (`internal/otelkit`).
 func New(cfg Config, opts ...Option) (*Client, error)
 func NewConfig() (Config, error)
 func NewConfigPrefixed(prefix string) (Config, error)
-func (c *Config) Validate() error
+func (c Config) Validate() error
 
 var Module fx.Option                      // *Client + OnStop → Close
 func ProvideOption(ctor any) fx.Option    // конструктор Option в группу "httpclient.options"

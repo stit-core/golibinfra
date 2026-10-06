@@ -2,8 +2,10 @@
 
 ## API-поверхность (кратко)
 
-- **Сервер**: `NewServer(cfg, opts...) *Server`; опции `WithLogger`,
-  `WithSecuritySchemes`, `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes`. Методы:
+- **Сервер**: `NewServer(cfg, opts...) (*Server, error)` — та же сборка, что у `Module`
+  (цепочка кита, `HumaAuth` в `BindAPI`; невалидный `Config` — `ErrConfig`); опции
+  `WithLogger`, `WithSecuritySchemes`, `WithAuthExtractor`, `WithIdempotencyStore`,
+  `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes` (с nil — ничего). Методы:
   `Router()`, `API()`/`BindAPI()`, `CheckRoutes()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
 - **Middleware** (net/http): `RequestID`, `ClientIP(log, trustProxyHops)`,
   `OTel(quietPaths...)`, `Recovery(log)`,
@@ -384,11 +386,9 @@ func stream(w http.ResponseWriter, r *http.Request) {
 ## Прямой запуск без fx
 
 ```go
-s := httpkit.NewServer(cfg, httpkit.WithLogger(log))
-s.Router().Use(httpkit.RequestID(), httpkit.ClientIP(log, cfg.TrustProxyHops), httpkit.OTel(cfg.QuietPaths...),
-    httpkit.AccessLog(log, cfg.QuietPaths...), httpkit.Metrics(), httpkit.Recovery(log))
-api := s.BindAPI() // после Use
-api.UseMiddleware(httpkit.HumaAuth(log, extract)) // до регистрации: без него Security не проверяется
+s, err := httpkit.NewServer(cfg, httpkit.WithLogger(log), httpkit.WithAuthExtractor(extract)) // цепочка кита, как у Module
+if err != nil { /* невалидный Config или схема — ErrConfig */ }
+api := s.BindAPI() // HumaAuth — первым huma-middleware: Security проверяется extractor'ом
 httpkit.RegisterHealth(api, log, cfg.ReadyProbeTimeout)
 huma.Register(api, httpkit.Public(huma.Operation{Method: http.MethodGet, Path: "/ping"}), pingHandler)
 if err := s.CheckRoutes(); err != nil { /* операции и маршруты — как на старте Module */ }

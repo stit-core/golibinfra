@@ -47,9 +47,9 @@ const (
 	DefaultPartSize uint64 = 16 << 20
 )
 
-// Config — конфигурация боевого S3-адаптера (`storagekit/minio`). Part of public
-// API: имена полей и envconfig-теги меняются только мажором. MemoryStorage
-// конфига не требует.
+// Config — конфигурация боевого S3-адаптера (`storagekit/minio`) и URLBuilder'а Module.
+// Part of public API: смена имён полей и envconfig-тегов — breaking (minor со строкой
+// миграции). MemoryStorage конфига не требует.
 type Config struct {
 	Endpoint     string `envconfig:"STORAGE_S3_ENDPOINT"`
 	AccessKey    string `envconfig:"STORAGE_S3_ACCESS_KEY"`

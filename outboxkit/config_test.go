@@ -17,7 +17,7 @@ func TestNewConfig_Defaults(t *testing.T) {
 		BatchSize:       100,
 		Interval:        time.Second,
 		PublishMode:     outboxkit.PublishBatch,
-		MaxAttempts:     outboxkit.DefaultMaxAttempts,
+		MaxAttempts:     25,
 		TickTimeout:     30 * time.Second,
 		RetryBackoff:    time.Second,
 		RetryMaxBackoff: 5 * time.Minute,

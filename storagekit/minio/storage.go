@@ -67,24 +67,23 @@ type Storage struct {
 	instr    *instruments
 }
 
-// NewStorage собирает адаптер; nil-логгер заменяется на logkit.Nop.
-func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) *Storage {
+// NewStorage собирает адаптер; невалидный cfg — storagekit.ErrConfig, nil-логгер заменяется на
+// logkit.Nop.
+func NewStorage(client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) (*Storage, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	if log == nil {
 		log = logkit.Nop()
-	}
-	partSize := cfg.PartSize
-	if partSize == 0 {
-		// Без явной части minio-go считает её от 5 TiB и берёт ~528 MiB буфер.
-		partSize = storagekit.DefaultPartSize
 	}
 	return &Storage{
 		client:   client,
 		bucket:   cfg.Bucket,
-		partSize: partSize,
+		partSize: cfg.PartSize,
 		urls:     urls,
 		log:      log,
 		instr:    newInstruments(),
-	}
+	}, nil
 }
 
 // Put стримит тело: память на вызов ограничена PartSize (буфер одной части),

@@ -35,6 +35,16 @@ func testConfig(t *testing.T, addr string) httpkit.Config {
 	return cfg
 }
 
+// mustServer — httpkit.NewServer для теста: ошибка конструктора — t.Fatalf.
+func mustServer(t *testing.T, cfg httpkit.Config, opts ...httpkit.ServerOption) *httpkit.Server {
+	t.Helper()
+	s, err := httpkit.NewServer(cfg, opts...)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return s
+}
+
 func startApp(t *testing.T, opts ...fx.Option) *httpkit.Server {
 	t.Helper()
 	var srv *httpkit.Server

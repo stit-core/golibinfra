@@ -197,7 +197,7 @@ func TestFactoryModule_InstanceOnCustomTable(t *testing.T) {
 			func() natskit.StreamBus { return &noopStreamBus{} },
 			func() pgkit.Transactor { return tr },
 			func() outboxkit.Config {
-				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxAttempts: 25, TickTimeout: 30 * time.Second, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
 			},
 		),
 		scheduler(),
@@ -255,7 +255,7 @@ func TestModule_CombinesWithFactoryModule(t *testing.T) {
 			func() natskit.StreamBus { return &noopStreamBus{} },
 			func() pgkit.Transactor { return tr },
 			func() outboxkit.Config {
-				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch}
+				return outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxAttempts: 25, TickTimeout: 30 * time.Second, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
 			},
 		),
 		scheduler(),

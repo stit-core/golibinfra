@@ -28,17 +28,20 @@ type Outbox struct {
 }
 
 // New собирает именованный outbox поверх готовых repo/transport/transactor; в log Worker
-// пишет ERROR на каждый переход строки в dead (nil — logkit.Nop()).
-func New(name string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) *Outbox {
+// пишет ERROR на каждый переход строки в dead (nil — logkit.Nop()). Невалидный cfg — ErrConfig.
+func New(name string, repo Repository, tr Transport, tx pgkit.Transactor, cfg Config, log logkit.Logger) (*Outbox, error) {
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 	instr := newOutboxInstruments(name)
 	return &Outbox{
 		name:   name,
 		repo:   repo,
-		bus:    newBus(instr, repo, cfg.withDefaults().MaxPayloadBytes),
+		bus:    newBus(instr, repo, cfg.MaxPayloadBytes),
 		worker: newWorker(name, instr, repo, tr, tx, cfg, log),
 		instr:  instr,
 		cfg:    cfg,
-	}
+	}, nil
 }
 
 // Name — имя инстанса; значение label `instance` в метриках.
@@ -139,15 +142,22 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 		"outboxkit:"+name,
 		fx.Provide(
 			fx.Annotate(
-				func(f RepositoryFactory, sb natskit.StreamBus, tx pgkit.Transactor, cfg Config, log logkit.Logger) (*Outbox, error) {
-					repo, err := f.Repository(table)
-					if err != nil {
-						return nil, err
-					}
+				func(in instanceIn) (*Outbox, error) {
+					cfg := in.Cfg
 					if o.cfg != nil {
 						cfg = *o.cfg
 					}
-					ob := New(name, repo, NewStreamTransportFor(sb, name), tx, cfg, log)
+					if err := checkIdleInTx(cfg, in.Pool); err != nil {
+						return nil, fmt.Errorf("outboxkit: instance %s: %w", name, err)
+					}
+					repo, err := in.Factory.Repository(table)
+					if err != nil {
+						return nil, err
+					}
+					ob, err := New(name, repo, NewStreamTransportFor(in.Stream, name), in.Tx, cfg, in.Log)
+					if err != nil {
+						return nil, fmt.Errorf("outboxkit: instance %s: %w", name, err)
+					}
 					ob.bus.subjects = o.subjects
 					return ob, nil
 				},
@@ -171,6 +181,18 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 		fx.Invoke(fx.Annotate(registerInstanceGauges, fx.ParamTags(``, tag))),
 		fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) { checkStreams(lc, sb, name, o.subjects) }),
 	)
+}
+
+// instanceIn: конфиг пула опционален — с ним тик сверяется с таймаутом простоя транзакции.
+type instanceIn struct {
+	fx.In
+
+	Factory RepositoryFactory
+	Stream  natskit.StreamBus
+	Tx      pgkit.Transactor
+	Cfg     Config
+	Log     logkit.Logger
+	Pool    pgkit.PoolConfig `optional:"true"`
 }
 
 // checkStreams вешает проверку старта: JetStream включён, subject'ы WithSubjects накрыты

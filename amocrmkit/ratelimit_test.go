@@ -282,7 +282,7 @@ func TestInjectedHTTPClientIsUsedAsIs(t *testing.T) {
 	if err != nil {
 		t.Fatalf("httpclient.New: %v", err)
 	}
-	c, err := New(Config{RateRPS: 10, HostOverride: srv.URL}, httpclient.Config{}, nil, nil, WithHTTPClient(hc))
+	c, err := New(Config{RateRPS: 10, HostOverride: srv.URL}, testHTTPConfig(), nil, nil, WithHTTPClient(hc))
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
@@ -294,16 +294,15 @@ func TestInjectedHTTPClientIsUsedAsIs(t *testing.T) {
 	}
 }
 
-// httpclient.Config{} допустим (Validate подставляет дефолты), отрицательный — нет.
+// Конфиг httpclient без таймаута (в том числе httpclient.Config{}) — ErrConfig: клиента без
+// таймаута кит не собирает.
 func TestNewValidatesHTTPClientConfig(t *testing.T) {
-	if _, err := New(Config{RateRPS: 7}, httpclient.Config{Timeout: -time.Second}, nil, logkit.Nop()); !errors.Is(err, ErrConfig) {
-		t.Fatalf("err = %v, want ErrConfig", err)
+	for _, hc := range []httpclient.Config{{Timeout: -time.Second}, {}} {
+		if _, err := New(Config{RateRPS: 7}, hc, nil, logkit.Nop()); !errors.Is(err, ErrConfig) {
+			t.Fatalf("httpclient %+v: err = %v, want ErrConfig", hc, err)
+		}
 	}
-	c, err := New(Config{RateRPS: 7}, httpclient.Config{}, nil, logkit.Nop())
-	if err != nil {
+	if _, err := New(Config{RateRPS: 7}, testHTTPConfig(), nil, logkit.Nop()); err != nil {
 		t.Fatalf("New: %v", err)
-	}
-	if c.hcCfg.Timeout <= 0 {
-		t.Fatalf("client built without a timeout: %s", c.hcCfg.Timeout)
 	}
 }

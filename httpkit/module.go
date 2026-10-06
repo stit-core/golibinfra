@@ -86,52 +86,25 @@ func registerHealth(api huma.API, cfg Config, log logkit.Logger, probes []Probe)
 	return nil
 }
 
-// Порядок цепочки: RequestID, ClientIP и OTel первыми (request_id, IP клиента и
-// trace_id в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и
-// preflight попадали в RED-метрики и access-log; middleware потребителя — внутри
-// всей цепочки кита.
+// newServer — NewServer из графа: схемы и конфиг проверяются уже в fx.New, а не на OnStart.
 func newServer(in serverIn) (*Server, error) {
-	cfg := in.Config
-	if err := cfg.Validate(); err != nil {
-		return nil, err
-	}
-	// Схемы проверяются уже в fx.New, а не на OnStart: их дубль — ошибка сборки графа.
-	if err := checkSchemes(in.Schemes); err != nil {
-		return nil, err
-	}
-
-	mws := []func(http.Handler) http.Handler{
-		RequestID(),
-		ClientIP(in.Log, cfg.TrustProxyHops),
-		OTel(cfg.QuietPaths...),
-		AccessLog(in.Log, cfg.QuietPaths...),
-		Metrics(),
-		Recovery(in.Log),
-		SecurityHeaders(cfg.Security),
-		CORS(cfg.CORS),
-		RateLimit(cfg.RateLimit),
-		MaxBody(cfg.MaxBody),
-	}
-	if in.Store != nil {
-		var opts []IdempotencyOption
-		if in.Extract != nil {
-			opts = append(opts, WithAuth(in.Extract))
-		}
-		mws = append(mws, Idempotency(cfg.Idempotency, in.Store, in.Log, opts...))
-	}
-	mws = append(mws, in.Middlewares...)
-
-	opts := []ServerOption{
+	opts := make([]ServerOption, 0, 6+len(in.HumaConfigs))
+	opts = append(opts,
 		WithLogger(in.Log),
 		WithSecuritySchemes(in.Schemes...),
-		WithMiddleware(mws...),
+		WithAuthExtractor(in.Extract),
+		WithIdempotencyStore(in.Store),
+		WithMiddleware(in.Middlewares...),
 		WithPublicRoutes(in.PublicRoutes...),
-	}
+	)
 	for _, fn := range in.HumaConfigs {
 		opts = append(opts, WithHumaConfig(fn))
 	}
-	s := NewServer(cfg, opts...)
-	s.BindAPI().UseMiddleware(HumaAuth(in.Log, in.Extract))
+	s, err := NewServer(in.Config, opts...)
+	if err != nil {
+		return nil, err
+	}
+	s.BindAPI()
 	return s, nil
 }
 

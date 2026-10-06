@@ -2,11 +2,11 @@
 
 ## Handler'ы через testkit/handlertest
 
-`testkit/handlertest` поднимает huma-API сервера `httpkit` (`NewServer` +
-`BindAPI`, из цепочки — только `RequestID`) под `humatest` без реального
-`*http.Server`, с контрактом сервера: ответы-ошибки те же, что в проде — `request_id`,
-`Retry-After`, 404/405 маршрутизатора, коды `ErrorMap.Declare` в OpenAPI; `HumaAuth`
-стоит до маршрутов; маршруты `register` проходят проверку старта `Module`
+`testkit/handlertest` поднимает huma-API сервера `httpkit` (`NewServer` + `BindAPI` — та же
+сборка, что у `Module`, с цепочкой кита целиком: лимитер и лимит тела — по конфигу) под
+`humatest` без реального `*http.Server`, с контрактом сервера: ответы-ошибки те же, что в
+проде — `request_id`, `Retry-After`, 404/405 маршрутизатора, коды `ErrorMap.Declare` в
+OpenAPI; `HumaAuth` стоит до маршрутов; маршруты `register` проходят проверку старта `Module`
 (`Server.CheckRoutes`, иначе `t.Fatalf`); конфиг — `httpkit.NewConfig()`:
 
 ```go

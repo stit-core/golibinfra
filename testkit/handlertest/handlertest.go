@@ -1,6 +1,6 @@
-// Package handlertest — хелперы для тестов huma-хендлеров: in-memory API сервера httpkit с тем
-// же контрактом ошибок, auth-гейтом и проверкой маршрутов, что у сервера, и разбор тела ошибки
-// httpkit.APIError.
+// Package handlertest — хелперы для тестов huma-хендлеров: in-memory API сервера httpkit с той
+// же цепочкой middleware, контрактом ошибок, auth-гейтом и проверкой маршрутов, что у сервера, и
+// разбор тела ошибки httpkit.APIError.
 package handlertest
 
 import (
@@ -33,8 +33,8 @@ func WithConfig(cfg httpkit.Config) Option {
 	return func(o *options) { o.cfg = &cfg }
 }
 
-// WithLogger — логгер сервера: строка handler error с причиной 5xx и request_id запроса,
-// отказы HumaAuth. Без опции — logkit.Nop().
+// WithLogger — логгер сервера: access-log, строка handler error с причиной 5xx и request_id
+// запроса, отказы HumaAuth. Без опции — logkit.Nop().
 func WithLogger(log logkit.Logger) Option {
 	return func(o *options) { o.log = log }
 }
@@ -51,11 +51,11 @@ func WithSecuritySchemes(schemes ...httpkit.SecuritySchemeEntry) Option {
 	return func(o *options) { o.schemes = append(o.schemes, schemes...) }
 }
 
-// NewAPI поднимает in-memory huma.API сервера httpkit и регистрирует на нём хендлеры register:
-// HumaAuth стоит до маршрутов, ответы-ошибки — как у сервера (request_id, Retry-After, 404/405
-// маршрутизатора, коды ErrorMap.Declare в OpenAPI), маршруты проходят проверку старта Module
-// (httpkit.Server.CheckRoutes, иначе t.Fatalf). Конфиг по умолчанию — httpkit.NewConfig()
-// (ENV HTTP_* процесса теста). Middleware цепочки, кроме RequestID, в нём нет; операции,
+// NewAPI поднимает in-memory huma.API сервера httpkit.NewServer — та же сборка, что у Module:
+// цепочка middleware кита (лимитер и лимит тела — по конфигу), HumaAuth до маршрутов, ответы-
+// ошибки (request_id, Retry-After, 404/405 маршрутизатора, коды ErrorMap.Declare в OpenAPI);
+// хендлеры register проходят проверку старта Module (httpkit.Server.CheckRoutes, иначе
+// t.Fatalf). Конфиг по умолчанию — httpkit.NewConfig() (ENV HTTP_* процесса теста); операции,
 // добавленные на API после NewAPI, проверку маршрутов не проходят.
 func NewAPI(t testing.TB, register func(api huma.API), opts ...Option) API {
 	t.Helper()
@@ -63,29 +63,31 @@ func NewAPI(t testing.TB, register func(api huma.API), opts ...Option) API {
 	for _, opt := range opts {
 		opt(&o)
 	}
-	cfg, err := config(o.cfg)
-	if err != nil {
-		t.Fatalf("handlertest: %v", err)
+	var cfg httpkit.Config
+	if o.cfg != nil {
+		cfg = *o.cfg
+	} else {
+		var err error
+		if cfg, err = httpkit.NewConfig(); err != nil {
+			t.Fatalf("handlertest: %v", err)
+			return nil
+		}
 	}
-	s := httpkit.NewServer(cfg,
+	s, err := httpkit.NewServer(cfg,
 		httpkit.WithLogger(o.log),
 		httpkit.WithSecuritySchemes(o.schemes...),
-		httpkit.WithMiddleware(httpkit.RequestID()),
+		httpkit.WithAuthExtractor(o.extract),
 	)
+	if err != nil {
+		t.Fatalf("handlertest: %v", err)
+		return nil
+	}
 	api := s.BindAPI()
-	api.UseMiddleware(httpkit.HumaAuth(o.log, o.extract))
 	register(api)
 	if err := s.CheckRoutes(); err != nil {
 		t.Fatalf("handlertest: %v", err)
 	}
 	return humatest.Wrap(t, api)
-}
-
-func config(cfg *httpkit.Config) (httpkit.Config, error) {
-	if cfg == nil {
-		return httpkit.NewConfig()
-	}
-	return *cfg, cfg.Validate()
 }
 
 // DecodeAPIError разбирает тело ответа как httpkit.APIError; невалидный JSON — t.Fatalf.

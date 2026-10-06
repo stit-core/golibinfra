@@ -188,3 +188,14 @@ func TestMemoryCache_Concurrent(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Регрессия KAPI-05: nil-опция игнорируется, как у остальных китов, а не роняет кэш на первом Set.
+func TestMemoryCache_NilClockIgnored(t *testing.T) {
+	m := NewMemoryCache(WithClock(nil))
+	if err := m.Set(context.Background(), "k", []byte("v"), time.Second); err != nil {
+		t.Fatalf("Set: %v", err)
+	}
+	if v, ok, err := m.Get(context.Background(), "k"); err != nil || !ok || string(v) != "v" {
+		t.Fatalf("Get = %q, %v, %v", v, ok, err)
+	}
+}

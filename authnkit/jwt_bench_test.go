@@ -18,7 +18,7 @@ func benchClaims() map[string]any {
 
 func benchJWT(b *testing.B) *HS256JWT {
 	b.Helper()
-	h, err := NewHS256JWT(JWTConfig{Secret: "bench-secret-key-of-at-least-32-bytes!"})
+	h, err := NewHS256JWT(JWTConfig{AccessTTL: 15 * time.Minute, Secret: "bench-secret-key-of-at-least-32-bytes!"})
 	if err != nil {
 		b.Fatal(err)
 	}

@@ -148,14 +148,16 @@ func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error) 
 	if instance == "" {
 		instance = DefaultInstance
 	}
-	js, err := jetstream.New(conn.raw(), jetstream.WithPublishAsyncTimeout(
-		durationOr(cfg.JetStream.PublishAsyncTimeout, defaultPublishAsyncTimeout),
-	))
+	js, err := jetstream.New(conn.raw(), jetstream.WithPublishAsyncTimeout(cfg.JetStream.PublishAsyncTimeout))
 	if err != nil {
 		return nil, fmt.Errorf("natskit: jetstream init: %w", err)
 	}
-	maxInFlight := intOr(cfg.JetStream.MaxInFlight, defaultMaxInFlight)
-	ackWait := durationOr(cfg.JetStream.AckWait, defaultAckWait)
+	maxInFlight := cfg.JetStream.MaxInFlight
+	ackWait := cfg.JetStream.AckWait
+	handlerTimeout := cfg.JetStream.HandlerTimeout
+	if handlerTimeout == 0 {
+		handlerTimeout = ackWait
+	}
 	b := &jsBus{
 		js:             js,
 		c:              conn,
@@ -165,7 +167,7 @@ func NewStreamBus(conn *Conn, log logkit.Logger, cfg Config) (StreamBus, error) 
 		instance:       instance,
 		enabled:        true,
 		ackWait:        ackWait,
-		handlerTimeout: durationOr(cfg.JetStream.HandlerTimeout, ackWait),
+		handlerTimeout: handlerTimeout,
 		maxInFlight:    maxInFlight,
 		maxDeliver:     cfg.JetStream.MaxDeliver,
 		nakBackoff:     cfg.JetStream.NakBackoff,
@@ -221,10 +223,9 @@ func (b *jsBus) ensureStreams(ctx context.Context, cfg Config) error {
 	if err != nil {
 		return err
 	}
-	maxAge := durationOr(cfg.JetStream.MaxAge, defaultMaxAge)
-	dup := min(durationOr(cfg.JetStream.Duplicates, defaultDuplicates),
-		// JetStream требует Duplicates ≤ MaxAge
-		maxAge)
+	maxAge := cfg.JetStream.MaxAge
+	// JetStream требует Duplicates ≤ MaxAge.
+	dup := min(cfg.JetStream.Duplicates, maxAge)
 	for _, name := range names {
 		want := jetstream.StreamConfig{
 			Name:       name,
@@ -647,10 +648,10 @@ func (b *jsBus) nak(ctx context.Context, msg jetstream.Msg, subject string, deli
 	}
 }
 
-// nakMaxBackoff — потолок задержки NAK: потолок ниже NakBackoff даёт постоянную
-// задержку, а не сжимает её до потолка.
+// nakMaxBackoff — потолок задержки NAK: потолок ниже NakBackoff (в том числе ноль) даёт
+// постоянную задержку, а не сжимает её до потолка.
 func nakMaxBackoff(j JetStreamConfig) time.Duration {
-	return max(durationOr(j.NakMaxBackoff, defaultNakMaxBackoff), j.NakBackoff)
+	return max(j.NakMaxBackoff, j.NakBackoff)
 }
 
 // nakDelay — задержка ределивери после n-й доставки: NakBackoff, удвоенная на каждую

@@ -148,8 +148,8 @@ SSE-поток держит соединение. Чтобы HTTP не упир�
   `StoreTimeout` `> 0`.
 - `CORS.AllowCredentials` несовместим с origin `*`.
 
-Zero-value `Config` отвергается (`Addr` пуст) — сервер стартует только на
-осознанно заданных значениях.
+Zero-value `Config` отвергается (`Addr` пуст) и в `Module`, и в `NewServer` (`ErrConfig`) —
+сервер стартует только на осознанно заданных значениях.
 
 ## Public API
 

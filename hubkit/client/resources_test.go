@@ -233,6 +233,7 @@ func TestIdempotentWritesAllowRetry(t *testing.T) {
 
 	doer, err := httpclient.New(httpclient.Config{
 		Timeout: 2 * time.Second, MaxRetries: 2, RetryWait: time.Millisecond, RetryMaxWait: 10 * time.Millisecond,
+		MaxRedirects: 10, SSEMaxEventBytes: 1 << 20,
 	})
 	if err != nil {
 		t.Fatalf("httpclient.New: %v", err)

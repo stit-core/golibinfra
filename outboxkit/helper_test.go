@@ -8,12 +8,47 @@ import (
 	"testing/fstest"
 	"time"
 
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
+
+// valid дополняет литерал теста обязательными полями: New и NewWorker отвергают неполный
+// Config (ErrConfig), а тесту важны только поля, которые он задал.
+func valid(c outboxkit.Config) outboxkit.Config {
+	if c.BatchSize == 0 {
+		c.BatchSize = 10
+	}
+	if c.Interval == 0 {
+		c.Interval = time.Second
+	}
+	if c.PublishMode == "" {
+		c.PublishMode = outboxkit.PublishBatch
+	}
+	if c.MaxAttempts == 0 {
+		c.MaxAttempts = 25
+	}
+	if c.TickTimeout == 0 {
+		c.TickTimeout = 30 * time.Second
+	}
+	if c.MaxPayloadBytes == 0 {
+		c.MaxPayloadBytes = outboxkit.DefaultMaxPayloadBytes
+	}
+	return c
+}
+
+// mustNew — outboxkit.New для теста: ошибка конструктора — t.Fatalf.
+func mustNew(t *testing.T, name string, repo outboxkit.Repository, tr outboxkit.Transport, tx pgkit.Transactor, cfg outboxkit.Config, log logkit.Logger) *outboxkit.Outbox {
+	t.Helper()
+	o, err := outboxkit.New(name, repo, tr, tx, cfg, log)
+	if err != nil {
+		t.Fatalf("outboxkit.New: %v", err)
+	}
+	return o
+}
 
 // fakeFactory — RepositoryFactory поверх готового репозитория; запоминает
 // запрошенную таблицу.

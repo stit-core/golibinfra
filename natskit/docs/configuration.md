@@ -28,10 +28,10 @@ reconnect'а, ретрай без backoff'а). Поле без `default`-тег�
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `NATS_URL` | `URL` | `string` | `nats://localhost:4222` | Адрес NATS-сервера. «Шов» под split-топологию — разное значение = разный хост. |
-| `NATS_CONNECT_TIMEOUT` | `ConnectTimeout` | `time.Duration` | `5s` | Таймаут первичного подключения. |
-| `NATS_RECONNECT_WAIT` | `ReconnectWait` | `time.Duration` | `2s` | Пауза между попытками переподключения. |
+| `NATS_CONNECT_TIMEOUT` | `ConnectTimeout` | `time.Duration` | `5s` | Таймаут первичного подключения; `> 0`, иначе `ErrConfig`. |
+| `NATS_RECONNECT_WAIT` | `ReconnectWait` | `time.Duration` | `2s` | Пауза между попытками переподключения; `> 0`, иначе `ErrConfig`. |
 | `NATS_MAX_RECONNECTS` | `MaxReconnects` | `int` | `-1` | Максимум попыток переподключения после разрыва. `-1` — бесконечно (дефолт): NATS-maintenance любой длины переживается без потери шины. `≥ 0` — потолок попыток, после которого соединение закрывается навсегда (см. [Исчерпание reconnect'ов](#исчерпание-reconnectов)). Меньше `-1` — `ErrConfig`. |
-| `NATS_DRAIN_TIMEOUT` | `DrainTimeout` | `time.Duration` | `10s` | Общий бюджет `Close`: drain подписок + ожидание работающих обработчиков + flush публикаций. По истечении ctx обработчиков отменяется и соединение закрывается принудительно. `0` → `10s`, отрицательное — `ErrConfig`. |
+| `NATS_DRAIN_TIMEOUT` | `DrainTimeout` | `time.Duration` | `10s` | Общий бюджет `Close`: drain подписок + ожидание работающих обработчиков + flush публикаций. По истечении ctx обработчиков отменяется и соединение закрывается принудительно. `> 0`, иначе `ErrConfig`. |
 | `NATS_HANDLER_TIMEOUT` | `HandlerTimeout` | `time.Duration` | `30s` | Бюджет одного Core-обработчика: deadline `ctx`, переданного в handler. `0` — без ограничения (зависший обработчик держит слот `MaxInFlight` до конца процесса), отрицательное — `ErrConfig`. Для JetStream действует `NATS_JS_HANDLER_TIMEOUT`. |
 
 ## Аутентификация
@@ -50,25 +50,25 @@ reconnect'а, ретрай без backoff'а). Поле без `default`-тег�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `NATS_MAX_IN_FLIGHT` | `Backpressure.MaxInFlight` | `int` | `100` | Потолок одновременно обрабатываемых Core-сообщений (вес семафора `natsBus`). `0` → `100`, отрицательное — `ErrConfig`. |
+| `NATS_MAX_IN_FLIGHT` | `Backpressure.MaxInFlight` | `int` | `100` | Потолок одновременно обрабатываемых Core-сообщений (вес семафора `natsBus`). `>= 1`, иначе `ErrConfig`. |
 
 ## JetStream (`Config.JetStream`)
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `NATS_JETSTREAM_ENABLED` | `JetStream.Enabled` | `bool` | `false` | Включает `StreamBus`. При `false` — `disabledStreamBus` (все методы → `ErrJetStreamDisabled`). |
+| `NATS_JETSTREAM_ENABLED` | `JetStream.Enabled` | `bool` | `false` | Включает `StreamBus`. При `false` — `disabledStreamBus` (все методы → `ErrJetStreamDisabled`); формат JetStream-полей `Validate` проверяет и тогда, обязательные значения — только у включённого. |
 | `NATS_JS_STREAM_NAMES` | `JetStream.StreamNames` | `[]string` | — (пусто) | Стримы кита (через запятую). Subjects стрима — `<name>.>`. Пусто — кит стримы не декларирует и не проверяет. Имя с точкой, пробелом или wildcard — `ErrConfig`. |
 | `NATS_JS_STREAM_MANAGED` | `JetStream.StreamManaged` | `bool` | `true` | `true` — кит создаёт отсутствующие стримы и доливает свой subject в существующие (см. [Декларация стримов](#декларация-стримов)). `false` — кит стримы не трогает, только проверяет наличие каждого из `StreamNames` (отсутствие — ошибка старта). В структурном литерале `Config{}` поле надо выставлять явно. |
 | `NATS_JS_RETENTION` | `JetStream.Retention` | `string` | `limits` | Политика удержания создаваемого стрима: `limits` / `interest` / `workqueue` (он же `work_queue`). Иное значение — `ErrConfig`. |
-| `NATS_JS_MAX_AGE` | `JetStream.MaxAge` | `time.Duration` | `168h` | Максимальный возраст сообщения в создаваемом стриме. `0` → `168h` (7 дней), отрицательное — `ErrConfig`. |
-| `NATS_JS_DUPLICATES` | `JetStream.Duplicates` | `time.Duration` | `2m` | Окно дедупа по `Nats-Msg-Id` создаваемого стрима. `0` → `2m`, отрицательное — `ErrConfig`. Поджимается до `MaxAge`, если задано больше (требование JetStream: окно дедупа ≤ срок хранения). |
-| `NATS_JS_MAX_IN_FLIGHT` | `JetStream.MaxInFlight` | `int` | `100` | Потолок одновременно обрабатываемых stream-сообщений (вес семафора `jsBus`) и `MaxAckPending` консьюмера. `0` → `100`, отрицательное — `ErrConfig`. |
-| `NATS_JS_ACK_WAIT` | `JetStream.AckWait` | `time.Duration` | `30s` | Сколько сервер ждёт `Ack`, прежде чем переотправить сообщение. Пока обработчик работает, кит каждые `AckWait/2` шлёт `InProgress`, продлевая ожидание — таймер срабатывает только если процесс умер. `0` → `30s`; значение меньше `1s` — `ErrConfig` (за такое окно `InProgress` не успевает). |
+| `NATS_JS_MAX_AGE` | `JetStream.MaxAge` | `time.Duration` | `168h` | Максимальный возраст сообщения в создаваемом стриме. У включённого JetStream `> 0`; отрицательное — `ErrConfig` всегда. |
+| `NATS_JS_DUPLICATES` | `JetStream.Duplicates` | `time.Duration` | `2m` | Окно дедупа по `Nats-Msg-Id` создаваемого стрима. У включённого JetStream `> 0`; отрицательное — `ErrConfig` всегда. Поджимается до `MaxAge`, если задано больше (требование JetStream: окно дедупа ≤ срок хранения). |
+| `NATS_JS_MAX_IN_FLIGHT` | `JetStream.MaxInFlight` | `int` | `100` | Потолок одновременно обрабатываемых stream-сообщений (вес семафора `jsBus`) и `MaxAckPending` консьюмера. У включённого JetStream `>= 1`; отрицательное — `ErrConfig` всегда. |
+| `NATS_JS_ACK_WAIT` | `JetStream.AckWait` | `time.Duration` | `30s` | Сколько сервер ждёт `Ack`, прежде чем переотправить сообщение. Пока обработчик работает, кит каждые `AckWait/2` шлёт `InProgress`, продлевая ожидание — таймер срабатывает только если процесс умер. У включённого JetStream `>= 1s` (за меньшее окно `InProgress` не успевает), иначе `ErrConfig`. |
 | `NATS_JS_HANDLER_TIMEOUT` | `JetStream.HandlerTimeout` | `time.Duration` | `0` | Бюджет одной попытки обработчика: deadline `ctx`, переданного в handler. `0` — равен `AckWait`, отрицательное — `ErrConfig`. По истечении обработчик, уважающий `ctx`, возвращает ошибку → `Nak` → ретрай. |
-| `NATS_JS_PUBLISH_ASYNC_TIMEOUT` | `JetStream.PublishAsyncTimeout` | `time.Duration` | `5s` | Сколько `PublishStreamBatch` ждёт `PubAck` одного сообщения. Потерянный ack завершается `jetstream.ErrAsyncPublishTimeout` в `results[i]`, а не висит вечно. `0` → `5s`, отрицательное — `ErrConfig`. |
+| `NATS_JS_PUBLISH_ASYNC_TIMEOUT` | `JetStream.PublishAsyncTimeout` | `time.Duration` | `5s` | Сколько `PublishStreamBatch` ждёт `PubAck` одного сообщения. Потерянный ack завершается `jetstream.ErrAsyncPublishTimeout` в `results[i]`, а не висит вечно. У включённого JetStream `> 0`; отрицательное — `ErrConfig` всегда. |
 | `NATS_JS_MAX_DELIVER` | `JetStream.MaxDeliver` | `int` | `21` | Потолок числа доставок одного сообщения. `0` — без лимита (бесконечный ределивери), отрицательное — `ErrConfig`. `> 0` — на исчерпании DLQ/Term. С дефолтными задержками 21 доставка — 15 минут ретраев (см. [Бюджет ретраев](#бюджет-ретраев)). |
 | `NATS_JS_NAK_BACKOFF` | `JetStream.NakBackoff` | `time.Duration` | `1s` | Задержка ределивери после первой доставки; после каждой следующей она удваивается до `NATS_JS_NAK_MAX_BACKOFF` (`NakWithDelay`). `0` — мгновенный `Nak` без роста (горячая петля на устойчиво падающем сообщении), отрицательное — `ErrConfig`. |
-| `NATS_JS_NAK_MAX_BACKOFF` | `JetStream.NakMaxBackoff` | `time.Duration` | `1m` | Потолок растущей задержки NAK. `0` → `1m`, отрицательное — `ErrConfig`; потолок меньше `NATS_JS_NAK_BACKOFF` — задержка постоянная, равная `NATS_JS_NAK_BACKOFF`. |
+| `NATS_JS_NAK_MAX_BACKOFF` | `JetStream.NakMaxBackoff` | `time.Duration` | `1m` | Потолок растущей задержки NAK; отрицательное — `ErrConfig`. Потолок меньше `NATS_JS_NAK_BACKOFF` (в том числе `0`) — задержка постоянная, равная `NATS_JS_NAK_BACKOFF`. |
 | `NATS_JS_DLQ_SUBJECT` | `JetStream.DLQSubject` | `string` | `""` | Subject для dead-letter. Пусто — на терминальном отказе только `Term` (сообщение при этом логируется). Задан — перед `Term` сообщение republish'ится в DLQ. Значение с пробелом, пустым токеном или wildcard — `ErrConfig`. |
 
 ## Декларация стримов

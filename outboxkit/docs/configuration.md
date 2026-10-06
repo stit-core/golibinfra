@@ -1,12 +1,13 @@
 # outboxkit — конфигурация
 
-Конфиг читается из ENV через `envconfig`. **Имена полей и envconfig-теги — part of
+Конфиг читается из ENV ридером китов. **Имена полей и envconfig-теги — part of
 public API**: их изменение — breaking change; выпускается minor-релизом,
 помечается `!` в Conventional Commit и строкой миграции в аннотации тега
 (см. [корневой README § Версионирование](../../README.md)). Ни
 `outboxkit.Module`, ни `pgstore.Module` конфиги не provide'ят — caller
 регистрирует фабрики: `fx.Provide(outboxkit.NewConfig, pgstore.NewConfig)`.
-Невалидное значение валит старт с `outboxkit.ErrConfig`.
+Невалидное значение валит старт с `outboxkit.ErrConfig`: его отвергают и `NewConfig`, и
+`New`/`NewWorker` с литералом `Config` — молча подставленных дефолтов нет.
 
 ## Справочник ENV
 
@@ -61,7 +62,9 @@ mark/commit сверху отводится ещё 5 секунд на неот�
 которую не обрывает ни остановка сервиса, ни таймер — только серверные
 `statement_timeout`/`idle_in_transaction_session_timeout`. Значение обязано быть **меньше**
 `PG_IDLE_IN_TX_SESSION_TIMEOUT` (`pgkit`, default `60s`): во время ожидания
-брокера транзакция простаивает, и Postgres оборвёт сессию по этому лимиту.
+брокера транзакция простаивает, и Postgres оборвёт сессию по этому лимиту. `Module` и
+`Instance` сверяют их при сборке графа, если в нём есть `pgkit.PoolConfig`: нарушение —
+`ErrConfig`.
 Таймаут ожидания `PubAck` внутри async-батча задаётся на стороне `natskit`
 (`NATS_JS_PUBLISH_ASYNC_TIMEOUT`; потерянный ack — сбой брокера, попытку строки он не
 тратит) — `outboxkit` только передаёт `ctx` с дедлайном тика.

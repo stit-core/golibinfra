@@ -107,7 +107,7 @@ func newConn(nc *nats.Conn, log logkit.Logger, cfg Config) *Conn {
 		log:            log.With("instance", instance),
 		instance:       instance,
 		url:            redactURL(cfg.URL),
-		drainTimeout:   durationOr(cfg.DrainTimeout, defaultDrainTimeout),
+		drainTimeout:   cfg.DrainTimeout,
 		closed:         make(chan struct{}),
 		handlerCtx:     ctx,
 		cancelHandlers: cancel,

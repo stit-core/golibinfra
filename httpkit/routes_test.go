@@ -245,7 +245,7 @@ func TestModule_DuplicateProbeName(t *testing.T) {
 func TestServer_CheckRoutesWithoutFx(t *testing.T) {
 	newServer := func(opts ...httpkit.ServerOption) *httpkit.Server {
 		cfg := testConfig(t, "127.0.0.1:0")
-		return httpkit.NewServer(cfg, append([]httpkit.ServerOption{
+		return mustServer(t, cfg, append([]httpkit.ServerOption{
 			httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme}),
 		}, opts...)...)
 	}
@@ -263,8 +263,7 @@ func TestServer_CheckRoutesWithoutFx(t *testing.T) {
 		t.Fatalf("declared raw route and public operation: %v", err)
 	}
 
-	broken := httpkit.NewServer(testConfig(t, "127.0.0.1:0"), httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Broken"}))
-	if err := broken.CheckRoutes(); !errors.Is(err, httpkit.ErrConfig) {
+	if _, err := httpkit.NewServer(testConfig(t, "127.0.0.1:0"), httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{Name: "Broken"})); !errors.Is(err, httpkit.ErrConfig) {
 		t.Fatalf("nil scheme: %v", err)
 	}
 }

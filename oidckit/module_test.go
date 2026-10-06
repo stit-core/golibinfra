@@ -2,7 +2,6 @@ package oidckit
 
 import (
 	"testing"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/fx"
@@ -21,7 +20,11 @@ import (
 func moduleDeps(t *testing.T, cfg Config, api huma.API) fx.Option {
 	t.Helper()
 	signer := sessionSigner(t)
-	client, err := httpclient.New(httpclient.Config{Timeout: 5 * time.Second})
+	hcCfg, err := httpclient.NewConfig()
+	if err != nil {
+		t.Fatalf("httpclient config: %v", err)
+	}
+	client, err := httpclient.New(hcCfg)
 	if err != nil {
 		t.Fatalf("httpclient: %v", err)
 	}

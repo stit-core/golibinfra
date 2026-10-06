@@ -59,13 +59,14 @@ fx выполняет `OnStart` в порядке добавления хуко�
 сразу регистрирует `/openapi.json` и `/docs`, после чего chi запрещает
 `router.Use(...)`. Контракт:
 
-1. `NewServer(cfg, opts...)` — router + `*http.Server`; middleware из
-   `WithMiddleware` регистрируются здесь.
-2. `router.Use(middleware...)` — остальная net/http-цепочка (при ручной сборке).
-3. `BindAPI()` — создаёт `huma.API`.
+1. `NewServer(cfg, opts...)` — проверка `Config` и схем, router + `*http.Server`, цепочка кита
+   (таблица ниже) и middleware из `WithMiddleware` внутри неё. Эту же функцию зовёт `Module`.
+2. `router.Use(middleware...)` — до `BindAPI` можно добавить ещё middleware внутрь цепочки.
+3. `BindAPI()` — создаёт `huma.API` и ставит `HumaAuth` первым huma-middleware.
 4. `huma.Register` / `huma.Get`; `api.UseMiddleware(...)` для huma-уровня.
 
-`BindAPI` идемпотентен, `API()` — алиас. `Module` соблюдает порядок сам.
+`BindAPI` идемпотентен и безопасен из нескольких горутин, `API()` — алиас. `Module` соблюдает
+порядок сам.
 
 ### Точки расширения
 
@@ -104,8 +105,8 @@ chi применяет middleware в порядке регистрации: пе
 | 8 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
 | 9 | `RateLimit` | если `RateLimit.RPS > 0` | bucket на клиента (IPv6 — по `/64`); дешёвый отказ до тяжёлой работы |
 | 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом |
-| 11 | `Idempotency` | если в DI есть `IdempotencyStore` | дедуп write-запросов по `Idempotency-Key` |
-| 12 | middleware потребителя | значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
+| 11 | `Idempotency` | если есть `IdempotencyStore` (`WithIdempotencyStore`, в графе — значение) | дедуп write-запросов по `Idempotency-Key` |
+| 12 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 
 `HumaAuth` — отдельный слой на `huma.API`.
 

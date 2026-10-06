@@ -6,7 +6,6 @@ import (
 	"math"
 	"strings"
 	"testing"
-	"time"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
@@ -88,8 +87,8 @@ func TestBusPublishRejectsOversizedPayload(t *testing.T) {
 // Предел инстанса — OUTBOX_MAX_PAYLOAD_BYTES: JSON на пределе проходит, на байт больше — нет.
 func TestOutbox_PayloadLimitFromConfig(t *testing.T) {
 	repo := &fakeRepo{}
-	o := outboxkit.New("orders", repo, &fakeTransport{}, &pgtest.Recorder{},
-		outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch, MaxPayloadBytes: 8},
+	o := mustNew(t, "orders", repo, &fakeTransport{}, &pgtest.Recorder{},
+		valid(outboxkit.Config{MaxPayloadBytes: 8}),
 		logkit.Nop())
 	ctx := context.Background()
 

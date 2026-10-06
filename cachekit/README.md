@@ -65,9 +65,9 @@ fx.New(
 | `REDIS_KEY_PREFIX` | `KeyPrefix` | `string` | `""` | Префикс **всех** ключей кита, включая `tag:` и `idempotency:` |
 | `REDIS_POOL_SIZE` | `PoolSize` | `int` | `10` | Размер пула соединений; `>= 1` |
 | `REDIS_MAX_RETRIES` | `MaxRetries` | `int` | `3` | Повторы команды после сетевой ошибки; `-1` отключает, `>= -1` |
-| `REDIS_DIAL_TIMEOUT` | `DialTimeout` | `time.Duration` | `5s` | Таймаут установления соединения; `>= 0` |
-| `REDIS_READ_TIMEOUT` | `ReadTimeout` | `time.Duration` | `3s` | Верхняя граница ожидания ответа; `>= 0` |
-| `REDIS_WRITE_TIMEOUT` | `WriteTimeout` | `time.Duration` | `3s` | Верхняя граница записи команды; `>= 0` |
+| `REDIS_DIAL_TIMEOUT` | `DialTimeout` | `time.Duration` | `5s` | Таймаут установления соединения; `>= 0`, `0` — дефолт go-redis (5s) |
+| `REDIS_READ_TIMEOUT` | `ReadTimeout` | `time.Duration` | `3s` | Верхняя граница ожидания ответа; `>= 0`, `0` — дефолт go-redis (5s) |
+| `REDIS_WRITE_TIMEOUT` | `WriteTimeout` | `time.Duration` | `3s` | Верхняя граница записи команды; `>= 0`, `0` — как `ReadTimeout` |
 | `REDIS_PING_ON_START` | `PingOnStart` | `bool` | `true` | `Module` делает `PING` и проверку версии в `OnStart`: недоступный Redis валит старт, а не первый запрос |
 | `REDIS_SKIP_VERSION_CHECK` | `SkipVersionCheck` | `bool` | `false` | Снимает проверку `redis_version >= 7`; для redis-совместимых серверов, не отдающих это поле в `INFO` |
 

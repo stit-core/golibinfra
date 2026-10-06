@@ -16,6 +16,8 @@ import (
 	"time"
 )
 
+// newTestClient — клиент на литерале теста: поля, которые тест не задал, получают тестовые
+// значения (быстрые ретраи), остальное — как задано.
 func newTestClient(t *testing.T, cfg Config, opts ...Option) *Client {
 	t.Helper()
 	if cfg.Timeout == 0 {
@@ -23,6 +25,18 @@ func newTestClient(t *testing.T, cfg Config, opts ...Option) *Client {
 	}
 	if cfg.RetryWait == 0 {
 		cfg.RetryWait = 5 * time.Millisecond
+	}
+	if cfg.RetryMaxWait == 0 {
+		cfg.RetryMaxWait = max(5*time.Second, cfg.RetryWait)
+	}
+	if cfg.MaxRedirects == 0 {
+		cfg.MaxRedirects = 10
+	}
+	if cfg.SSEMaxEventBytes == 0 {
+		cfg.SSEMaxEventBytes = 1 << 20
+	}
+	if cfg.Breaker.FailureThreshold > 0 && cfg.Breaker.RecoveryTimeout == 0 {
+		cfg.Breaker.RecoveryTimeout = 30 * time.Second
 	}
 	c, err := New(cfg, opts...)
 	if err != nil {
@@ -582,48 +596,49 @@ func TestBackoff_RetryAfterCappedByMaxWait(t *testing.T) {
 	}
 }
 
-func TestConfig_ValidateRejects(t *testing.T) {
-	cases := map[string]Config{
-		"negative timeout":     {Timeout: -time.Second},
-		"negative retries":     {MaxRetries: -1},
-		"negative retry wait":  {RetryWait: -time.Second},
-		"max wait below base":  {RetryWait: 10 * time.Second, RetryMaxWait: time.Millisecond},
-		"negative redirects":   {MaxRedirects: -1},
-		"negative sse limit":   {SSEMaxEventBytes: -1},
-		"negative threshold":   {Breaker: BreakerConfig{FailureThreshold: -1}},
-		"negative recovery":    {Breaker: BreakerConfig{RecoveryTimeout: -time.Second}},
-		"negative max backoff": {RetryMaxWait: -time.Second},
+func validConfig() Config {
+	return Config{
+		Timeout: 10 * time.Second, MaxRetries: 3, RetryWait: 200 * time.Millisecond, RetryMaxWait: 5 * time.Second,
+		MaxRedirects: 10, SSEMaxEventBytes: 1 << 20, Breaker: BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
 	}
-	for name, cfg := range cases {
+}
+
+func TestConfig_ValidateRejects(t *testing.T) {
+	if err := validConfig().Validate(); err != nil {
+		t.Fatalf("valid config rejected: %v", err)
+	}
+	cases := map[string]func(*Config){
+		"zero timeout":         func(c *Config) { c.Timeout = 0 },
+		"negative timeout":     func(c *Config) { c.Timeout = -time.Second },
+		"negative retries":     func(c *Config) { c.MaxRetries = -1 },
+		"zero retry wait":      func(c *Config) { c.RetryWait = 0 },
+		"max wait below base":  func(c *Config) { c.RetryWait, c.RetryMaxWait = 10*time.Second, time.Millisecond },
+		"negative redirects":   func(c *Config) { c.MaxRedirects = -1 },
+		"zero sse limit":       func(c *Config) { c.SSEMaxEventBytes = 0 },
+		"negative threshold":   func(c *Config) { c.Breaker.FailureThreshold = -1 },
+		"negative recovery":    func(c *Config) { c.Breaker.RecoveryTimeout = -time.Second },
+		"zero recovery on":     func(c *Config) { c.Breaker.RecoveryTimeout = 0 },
+		"negative max backoff": func(c *Config) { c.RetryMaxWait = -time.Second },
+	}
+	for name, mutate := range cases {
+		cfg := validConfig()
+		mutate(&cfg)
 		if _, err := New(cfg); !errors.Is(err, ErrConfig) {
 			t.Errorf("%s: want ErrConfig, got %v", name, err)
 		}
 	}
 }
 
-func TestConfig_ZeroValueGetsDefaults(t *testing.T) {
-	var cfg Config
+// Ноль — значение, а не дефолт: литерал Config{} — ErrConfig (клиент без таймаута); MaxRetries
+// и MaxRedirects 0 и выключенный breaker без RecoveryTimeout — допустимы.
+func TestConfig_ZeroIsNotDefault(t *testing.T) {
+	if _, err := New(Config{}); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "HTTPCLIENT_TIMEOUT") {
+		t.Fatalf("New(Config{}) = %v, want ErrConfig naming HTTPCLIENT_TIMEOUT", err)
+	}
+	cfg := validConfig()
+	cfg.MaxRetries, cfg.MaxRedirects, cfg.Breaker = 0, 0, BreakerConfig{}
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("zero config must be valid: %v", err)
-	}
-	want := Config{
-		Timeout:          defaultTimeout,
-		RetryWait:        defaultRetryWait,
-		RetryMaxWait:     defaultRetryMaxWait,
-		MaxRedirects:     defaultMaxRedirects,
-		SSEMaxEventBytes: defaultSSEMaxEventBytes,
-		Breaker:          BreakerConfig{RecoveryTimeout: defaultRecoveryTimeout},
-	}
-	if cfg != want {
-		t.Fatalf("defaults: got %+v, want %+v", cfg, want)
-	}
-
-	c, err := New(Config{})
-	if err != nil {
-		t.Fatalf("New(Config{}): %v", err)
-	}
-	if c.c.Timeout != defaultTimeout {
-		t.Fatalf("client without timeout must be impossible, got %v", c.c.Timeout)
+		t.Fatalf("zero retries, redirects and breaker off: %v", err)
 	}
 }
 
@@ -680,6 +695,27 @@ func TestClient_SameHostRedirectFollowed(t *testing.T) {
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK || hits.Load() != 2 {
 		t.Fatalf("status %d after %d hits", resp.StatusCode, hits.Load())
+	}
+}
+
+// MaxRedirects 0 — значение, а не дефолт: первый же редирект — ErrTooManyRedirects.
+func TestClient_ZeroMaxRedirectsFollowsNone(t *testing.T) {
+	var hits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		hits.Add(1)
+		http.Redirect(w, r, "/final", http.StatusFound)
+	}))
+	t.Cleanup(srv.Close)
+
+	cfg := validConfig()
+	cfg.MaxRetries, cfg.MaxRedirects = 0, 0
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, srv.URL, nil)
+	if _, err := c.Do(req); !errors.Is(err, ErrTooManyRedirects) || hits.Load() != 1 {
+		t.Fatalf("err = %v after %d hits, want ErrTooManyRedirects after 1", err, hits.Load())
 	}
 }
 

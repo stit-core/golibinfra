@@ -23,14 +23,14 @@ func TestSomething(t *testing.T) {
 	stream := nameFor(t)                                 // имя стрима = имя теста
 	sb := newStreamBus(t, jsConfig(stream))              // StreamBus на общем сервере
 	conn := connect(t, natsURL(t))                       // nats.Connect + ExportConn, Close в t.Cleanup
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{}) // NewBus с потолком обработчиков 100
 	// публикация в subj(t, "created")
 }
 ```
 
 `natskit.ExportConn(*nats.Conn) *Conn` (в `export_test.go`) оборачивает уже
-открытое соединение в `*natskit.Conn` — путь для тестов кита, когда соединением
-управляет сам тест; `ExportConnWith` добавляет логгер и `Config` (например,
+открытое соединение в `*natskit.Conn` (`DrainTimeout` — 10s) — путь для тестов кита, когда
+соединением управляет сам тест; `ExportConnWith` добавляет логгер и `Config` (например,
 `DrainTimeout`). Приложению соединение открывает `natskit.New(name, cfg, log)`
 или `Module(name)`. `logkit.Nop()` гасит логи в тесте; `memLogger`
 (`helpers_test.go`) собирает записи вместе с атрибутами — на нём держатся

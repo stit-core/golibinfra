@@ -80,11 +80,13 @@ func New(cfg Config, doer Doer) (*Client, error) {
 
 func defaultDoer() (Doer, error) {
 	c, err := httpclient.New(httpclient.Config{
-		Timeout:      defaultTimeout,
-		MaxRetries:   3,
-		RetryWait:    200 * time.Millisecond,
-		RetryMaxWait: 5 * time.Second,
-		Breaker:      httpclient.BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
+		Timeout:          defaultTimeout,
+		MaxRetries:       3,
+		RetryWait:        200 * time.Millisecond,
+		RetryMaxWait:     5 * time.Second,
+		MaxRedirects:     10,
+		SSEMaxEventBytes: 1 << 20,
+		Breaker:          httpclient.BreakerConfig{FailureThreshold: 5, RecoveryTimeout: 30 * time.Second},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("hubkit/client: default http client: %w", err)

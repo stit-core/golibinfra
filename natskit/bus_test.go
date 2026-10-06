@@ -14,7 +14,7 @@ import (
 
 func TestBus_QueueGroupLoadBalances(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 	ctx := context.Background()
 	subject := subj(t, "work")
 
@@ -49,7 +49,7 @@ func TestBus_QueueGroupLoadBalances(t *testing.T) {
 
 func TestBus_PublishSubscribe(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := subj(t, "roundtrip")
@@ -74,7 +74,7 @@ func TestBus_PublishSubscribe(t *testing.T) {
 
 func TestBus_PublishSubscribeJSON(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := subj(t, "json")
@@ -102,7 +102,7 @@ func TestBus_PublishSubscribeJSON(t *testing.T) {
 
 func TestBus_SubscribeQueueJSON(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := subj(t, "queue-json")
@@ -130,7 +130,7 @@ func TestBus_SubscribeQueueJSON(t *testing.T) {
 // на них строится роутинг по event-type и версии схемы.
 func TestBus_PublishHeadersReachHandler(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := subj(t, "headers")
@@ -168,7 +168,7 @@ func TestBus_PublishHeadersReachHandler(t *testing.T) {
 func TestBus_HandlerErrorLogged(t *testing.T) {
 	log := &memLogger{}
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, log, natskit.Config{})
+	bus := newBus(t, conn, log, natskit.Config{})
 
 	ctx := context.Background()
 	subject := subj(t, "failing")
@@ -197,7 +197,7 @@ func TestBus_HandlerErrorLogged(t *testing.T) {
 // терминальна — см. TestStreamBus_DecodeErrorGoesToDLQ).
 func TestSubscribeJSON_SkipsUndecodablePayload(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := subj(t, "broken")
@@ -220,11 +220,19 @@ func TestSubscribeJSON_SkipsUndecodablePayload(t *testing.T) {
 
 func TestBus_SubscribeRejectsCancelledContext(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := bus.Subscribe(ctx, subj(t, "x"), func(context.Context, []byte) error { return nil }); err == nil {
 		t.Fatal("want error for cancelled ctx")
+	}
+}
+
+// Ноль потолка обработчиков — не дефолт кита, а ErrConfig: семафор без веса не пропустил бы
+// ни одного сообщения.
+func TestNewBus_RejectsZeroMaxInFlight(t *testing.T) {
+	if _, err := natskit.NewBus(nil, logkit.Nop(), natskit.Config{}); !errors.Is(err, natskit.ErrConfig) {
+		t.Fatalf("NewBus(zero MaxInFlight) err = %v, want ErrConfig", err)
 	}
 }

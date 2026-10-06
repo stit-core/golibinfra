@@ -45,8 +45,13 @@ type natsBus struct {
 	instr          *natsInstruments
 }
 
-// NewBus собирает Core-шину поверх соединения; обычный путь — Client.Bus().
-func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus {
+// NewBus собирает Core-шину поверх соединения; обычный путь — Client.Bus(). Соединение уже
+// открыто, поэтому проверяются только поля шины: NATS_MAX_IN_FLIGHT >= 1, NATS_HANDLER_TIMEOUT
+// >= 0, иначе ErrConfig.
+func NewBus(conn *Conn, log logkit.Logger, cfg Config) (Bus, error) {
+	if err := cfg.validateBus(); err != nil {
+		return nil, err
+	}
 	if log == nil {
 		log = logkit.Nop()
 	}
@@ -58,10 +63,10 @@ func NewBus(conn *Conn, log logkit.Logger, cfg Config) Bus {
 		c:              conn,
 		conn:           conn.raw(),
 		log:            log.With("instance", instance),
-		sem:            semaphore.NewWeighted(int64(intOr(cfg.Backpressure.MaxInFlight, defaultMaxInFlight))),
+		sem:            semaphore.NewWeighted(int64(cfg.Backpressure.MaxInFlight)),
 		handlerTimeout: cfg.HandlerTimeout,
 		instr:          newNatsInstruments(instance, ""),
-	}
+	}, nil
 }
 
 func (b *natsBus) Publish(ctx context.Context, subject string, payload []byte, opts ...PublishOption) error {

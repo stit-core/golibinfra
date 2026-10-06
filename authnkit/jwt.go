@@ -17,11 +17,6 @@ import (
 const (
 	// MinSecretLen — не короче выхода SHA-256: более короткий секрет ослабляет HMAC.
 	MinSecretLen = 32
-
-	// DefaultAccessTTL — TTL access-токена при нулевом JWTConfig.AccessTTL.
-	DefaultAccessTTL = 15 * time.Minute
-	// DefaultLeeway — допуск рассинхрона часов при нулевом JWTConfig.Leeway.
-	DefaultLeeway = time.Minute
 )
 
 const (
@@ -48,16 +43,16 @@ type JWTConfig struct {
 	Audience []string `envconfig:"JWT_AUDIENCE" default:""`
 }
 
-// Validate требует секреты не короче MinSecretLen, неотрицательные TTL/leeway и
-// непустые значения aud; нарушение → ErrConfig. Нулевые TTL/Leeway означают дефолты кита.
+// Validate требует секреты не короче MinSecretLen, AccessTTL > 0, неотрицательный leeway (0 —
+// без допуска) и непустые значения aud; нарушение → ErrConfig.
 func (c JWTConfig) Validate() error {
 	switch {
 	case len(c.Secret) < MinSecretLen:
 		return fmt.Errorf("%w: JWT secret must be at least %d bytes", ErrConfig, MinSecretLen)
 	case c.PreviousSecret != "" && len(c.PreviousSecret) < MinSecretLen:
 		return fmt.Errorf("%w: JWT previous secret must be at least %d bytes", ErrConfig, MinSecretLen)
-	case c.AccessTTL < 0:
-		return fmt.Errorf("%w: JWT TTL must not be negative", ErrConfig)
+	case c.AccessTTL <= 0:
+		return fmt.Errorf("%w: JWT_ACCESS_TTL must be > 0, got %s", ErrConfig, c.AccessTTL)
 	case c.Leeway < 0:
 		return fmt.Errorf("%w: JWT leeway must not be negative", ErrConfig)
 	case slices.Contains(c.Audience, ""):
@@ -187,20 +182,13 @@ func NewHS256JWT(cfg JWTConfig, opts ...JWTOption) (*HS256JWT, error) {
 	return &HS256JWT{
 		keys:      keys,
 		signer:    signer,
-		accessTTL: durationOr(cfg.AccessTTL, DefaultAccessTTL),
-		leeway:    durationOr(cfg.Leeway, DefaultLeeway),
+		accessTTL: cfg.AccessTTL,
+		leeway:    cfg.Leeway,
 		issuer:    cfg.Issuer,
 		audience:  slices.Clone(cfg.Audience),
 		clock:     jwtOptions(opts).clock,
 		instr:     newJWTInstruments(),
 	}, nil
-}
-
-func durationOr(d, fallback time.Duration) time.Duration {
-	if d == 0 {
-		return fallback
-	}
-	return d
 }
 
 // Sign копирует claims, проставляет exp = now+ttl, iat = now и (если заданы

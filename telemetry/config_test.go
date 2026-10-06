@@ -61,6 +61,17 @@ func TestValidate(t *testing.T) {
 	if err := (Config{Disabled: true}).Validate(); err != nil {
 		t.Fatalf("disabled needs nothing: %v", err)
 	}
+	// Формат значений не зависит от Disabled: опечатка всплывёт и при выключенном SDK.
+	for name, c := range map[string]Config{
+		"ratio > 1":       {Disabled: true, SampleRatio: 7},
+		"negative timer":  {Disabled: true, ExportTimeout: -time.Second},
+		"bad endpoint":    {Disabled: true, OTLPEndpoint: "localhost:4318"},
+		"bad header name": {Disabled: true, OTLPHeaders: Headers{"bad key": "v"}},
+	} {
+		if err := c.Validate(); !errors.Is(err, ErrConfig) {
+			t.Errorf("disabled, %s: err = %v, want ErrConfig", name, err)
+		}
+	}
 	bad := map[string]func(*Config){
 		"no service name":    func(c *Config) { c.ServiceName = "" },
 		"ratio > 1":          func(c *Config) { c.SampleRatio = 2 },

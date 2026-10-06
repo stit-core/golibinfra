@@ -33,9 +33,14 @@ type memEntry struct {
 // MemoryOption — опция NewMemoryCache.
 type MemoryOption func(*MemoryCache)
 
-// WithClock подменяет часы кэша: тест потребителя двигает TTL без sleep.
+// WithClock подменяет часы кэша: тест потребителя двигает TTL без sleep; nil — часы не
+// меняются.
 func WithClock(clk clockkit.Clock) MemoryOption {
-	return func(m *MemoryCache) { m.clock = clk }
+	return func(m *MemoryCache) {
+		if clk != nil {
+			m.clock = clk
+		}
+	}
 }
 
 // NewMemoryCache собирает потокобезопасный in-memory Cache.

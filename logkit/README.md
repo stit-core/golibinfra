@@ -165,7 +165,7 @@ log.With("owner", "owner@example.com").Info(ctx, "login john@example.com", "phon
 
 ## Конфигурация
 
-Конфиг-структуры читаются через `envconfig`. Имена полей и envconfig-теги —
+Конфиг-структуры читаются ридером ENV китов. Имена полей и envconfig-теги —
 **part of public API** (корневой README § Стабильность API).
 
 ### `Config`

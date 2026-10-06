@@ -22,7 +22,7 @@ func newPresigner(t *testing.T) *skminio.Storage {
 		t.Fatalf("NewClient: %v", err)
 	}
 	urls := storagekit.NewURLBuilder("https://cdn.example.com", cfg.Bucket, cfg.URLStyle)
-	return skminio.NewStorage(client, cfg, urls, logkit.Nop())
+	return mustStorage(t, client, cfg, urls, logkit.Nop())
 }
 
 func TestStorage_PresignGet(t *testing.T) {

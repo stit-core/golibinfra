@@ -116,9 +116,9 @@ func TestWorkers_ConcurrentBatch_NoDuplicates(t *testing.T) {
 	insertN(t, ctx, s, 10)
 
 	transport := newBarrierTransport(false)
-	cfg := outboxkit.Config{BatchSize: 5, PublishMode: outboxkit.PublishBatch, TickTimeout: 30 * time.Second}
-	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg, logkit.Nop())
-	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg, logkit.Nop())
+	cfg := outboxkit.Config{BatchSize: 5, Interval: time.Second, PublishMode: outboxkit.PublishBatch, TickTimeout: 30 * time.Second, MaxAttempts: 25, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
+	w1 := mustWorker(t, "w1", s, transport, tr, cfg)
+	w2 := mustWorker(t, "w2", s, transport, tr, cfg)
 
 	if err1, err2 := runTwoWorkers(t, ctx, w1, w2); err1 != nil || err2 != nil {
 		t.Fatalf("Run: w1=%v w2=%v", err1, err2)
@@ -147,9 +147,9 @@ func TestWorkers_ConcurrentBatch_AttemptsCountedOnce(t *testing.T) {
 	insertN(t, ctx, s, 10)
 
 	transport := newBarrierTransport(true)
-	cfg := outboxkit.Config{BatchSize: 5, PublishMode: outboxkit.PublishBatch, TickTimeout: 30 * time.Second}
-	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg, logkit.Nop())
-	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg, logkit.Nop())
+	cfg := outboxkit.Config{BatchSize: 5, Interval: time.Second, PublishMode: outboxkit.PublishBatch, TickTimeout: 30 * time.Second, MaxAttempts: 25, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
+	w1 := mustWorker(t, "w1", s, transport, tr, cfg)
+	w2 := mustWorker(t, "w2", s, transport, tr, cfg)
 
 	if err1, err2 := runTwoWorkers(t, ctx, w1, w2); err1 == nil || err2 == nil {
 		t.Fatalf("expected publish errors, got w1=%v w2=%v", err1, err2)
@@ -171,9 +171,9 @@ func TestWorkers_Ordered_SingleDrainer(t *testing.T) {
 	insertN(t, ctx, s, 6)
 
 	transport := &gateTransport{gate: make(chan struct{}), inside: make(chan struct{}, 1)}
-	cfg := outboxkit.Config{BatchSize: 3, PublishMode: outboxkit.PublishOrdered, TickTimeout: 30 * time.Second}
-	w1 := outboxkit.NewWorker("w1", s, transport, tr, cfg, logkit.Nop())
-	w2 := outboxkit.NewWorker("w2", s, transport, tr, cfg, logkit.Nop())
+	cfg := outboxkit.Config{BatchSize: 3, Interval: time.Second, PublishMode: outboxkit.PublishOrdered, TickTimeout: 30 * time.Second, MaxAttempts: 25, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
+	w1 := mustWorker(t, "w1", s, transport, tr, cfg)
+	w2 := mustWorker(t, "w2", s, transport, tr, cfg)
 
 	done := make(chan error, 1)
 	go func() { done <- w1.Run(ctx) }()
@@ -240,4 +240,13 @@ func (g *gateTransport) published() []int64 {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	return append([]int64(nil), g.ids...)
+}
+
+func mustWorker(t *testing.T, name string, repo outboxkit.Repository, transport outboxkit.Transport, tr pgkit.Transactor, cfg outboxkit.Config) *outboxkit.Worker {
+	t.Helper()
+	w, err := outboxkit.NewWorker(name, repo, transport, tr, cfg, logkit.Nop())
+	if err != nil {
+		t.Fatalf("NewWorker: %v", err)
+	}
+	return w
 }

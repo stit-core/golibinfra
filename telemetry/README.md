@@ -88,9 +88,9 @@ func (s *Service) Do(ctx context.Context) (err error) {
 | `OTEL_EXPORTER_OTLP_HEADERS` | `OTLPHeaders` | `Headers` | — (без заголовков) | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения в percent-encoding) |
 | `OTEL_TOKEN` | `OTLPBearerToken` | `string` | `""` | `Authorization: Bearer <token>` к каждому OTLP-запросу; переопределяет `Authorization` из `OTEL_EXPORTER_OTLP_HEADERS` |
 
-`Validate` отвергает: пустой `ServiceName` при включённой телеметрии,
-`SampleRatio` вне `[0, 1]`, неположительные таймеры, endpoint без схемы или
-хоста, невалидное имя заголовка.
+`Validate` отвергает всегда, и при `OTEL_SDK_DISABLED=true`: `SampleRatio` вне `[0, 1]`,
+отрицательные таймеры, endpoint без схемы или хоста, невалидное имя заголовка; у
+включённой телеметрии — ещё пустой `ServiceName`, нулевые таймеры и пустой endpoint.
 
 ### Spec-переменные OTel: что действует
 

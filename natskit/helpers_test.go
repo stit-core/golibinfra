@@ -131,13 +131,15 @@ func connect(t *testing.T, url string) *natskit.Conn {
 func jsConfig(streams ...string) natskit.Config {
 	return natskit.Config{
 		JetStream: natskit.JetStreamConfig{
-			Enabled:       true,
-			StreamNames:   streams,
-			StreamManaged: true,
-			Retention:     "limits",
-			MaxAge:        time.Hour,
-			MaxInFlight:   32,
-			AckWait:       5 * time.Second,
+			Enabled:             true,
+			StreamNames:         streams,
+			StreamManaged:       true,
+			Retention:           "limits",
+			MaxAge:              time.Hour,
+			Duplicates:          2 * time.Minute,
+			MaxInFlight:         32,
+			AckWait:             5 * time.Second,
+			PublishAsyncTimeout: 5 * time.Second,
 		},
 	}
 }
@@ -149,7 +151,21 @@ func clientConfig(url string) natskit.Config {
 		ReconnectWait:  100 * time.Millisecond,
 		MaxReconnects:  5,
 		DrainTimeout:   5 * time.Second,
+		Backpressure:   natskit.BackpressureConfig{MaxInFlight: 100},
 	}
+}
+
+// newBus — Core-шина теста; потолок обработчиков, если тест его не задал, — 100.
+func newBus(t *testing.T, conn *natskit.Conn, log logkit.Logger, cfg natskit.Config) natskit.Bus {
+	t.Helper()
+	if cfg.Backpressure.MaxInFlight == 0 {
+		cfg.Backpressure.MaxInFlight = 100
+	}
+	bus, err := natskit.NewBus(conn, log, cfg)
+	if err != nil {
+		t.Fatalf("NewBus: %v", err)
+	}
+	return bus
 }
 
 func newStreamBus(t *testing.T, cfg natskit.Config) natskit.StreamBus {

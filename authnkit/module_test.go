@@ -3,6 +3,7 @@ package authnkit_test
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"go.uber.org/fx"
 
@@ -23,7 +24,7 @@ func TestModule_Graph(t *testing.T) {
 		fx.NopLogger,
 		fx.Supply(
 			authnkit.Argon2idParams{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
-			authnkit.JWTConfig{Secret: "test-secret-key-of-at-least-32-bytes!!"},
+			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 			authnkit.TOTPConfig{Issuer: "svc", Skew: 1},
 		),
 		authnkit.Module,
@@ -52,11 +53,11 @@ func TestModule_InvalidConfigFailsGraph(t *testing.T) {
 		),
 		"zero argon params": fx.Supply(
 			authnkit.Argon2idParams{},
-			authnkit.JWTConfig{Secret: "test-secret-key-of-at-least-32-bytes!!"},
+			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 		),
 		"argon time above window": fx.Supply(
 			authnkit.Argon2idParams{Time: authnkit.MaxTime + 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
-			authnkit.JWTConfig{Secret: "test-secret-key-of-at-least-32-bytes!!"},
+			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 		),
 	}
 	for name, supply := range cases {
@@ -79,7 +80,7 @@ func TestModule_InvalidConfigFailsGraph(t *testing.T) {
 		fx.NopLogger,
 		fx.Supply(
 			authnkit.Argon2idParams{Time: 1, Memory: 8 * 1024, Threads: 1, KeyLen: 16, SaltLen: 8},
-			authnkit.JWTConfig{Secret: "test-secret-key-of-at-least-32-bytes!!"},
+			authnkit.JWTConfig{AccessTTL: 15 * time.Minute, Secret: "test-secret-key-of-at-least-32-bytes!!"},
 			authnkit.TOTPConfig{},
 		),
 		authnkit.Module,
@@ -119,7 +120,7 @@ func TestNewConfigsFromEnv(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewJWTConfig: %v", err)
 		}
-		if c.AccessTTL.Minutes() != 5 || c.Leeway != authnkit.DefaultLeeway || c.Issuer != "" || len(c.Audience) != 0 || c.PreviousSecret != "" {
+		if c.AccessTTL.Minutes() != 5 || c.Leeway != time.Minute || c.Issuer != "" || len(c.Audience) != 0 || c.PreviousSecret != "" {
 			t.Fatalf("config = %+v", c)
 		}
 		t.Setenv("JWT_ISSUER", "auth")

@@ -13,7 +13,7 @@ import (
 
 func TestBus_PanicRecovery(t *testing.T) {
 	conn := connect(t, natsURL(t))
-	bus := natskit.NewBus(conn, logkit.Nop(), natskit.Config{})
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
 
 	ctx := context.Background()
 	subject := subj(t, "panic")
@@ -47,7 +47,7 @@ func TestBus_Backpressure(t *testing.T) {
 	cfg := natskit.Config{
 		Backpressure: natskit.BackpressureConfig{MaxInFlight: maxInFlight},
 	}
-	bus := natskit.NewBus(conn, logkit.Nop(), cfg)
+	bus := newBus(t, conn, logkit.Nop(), cfg)
 
 	ctx := context.Background()
 	subject := subj(t, "backpressure")
@@ -102,7 +102,7 @@ func TestBus_Backpressure(t *testing.T) {
 func TestBus_HandlerTimeout(t *testing.T) {
 	conn := connect(t, natsURL(t))
 	cfg := natskit.Config{HandlerTimeout: 200 * time.Millisecond}
-	bus := natskit.NewBus(conn, logkit.Nop(), cfg)
+	bus := newBus(t, conn, logkit.Nop(), cfg)
 
 	ctx := context.Background()
 	subject := subj(t, "slow")

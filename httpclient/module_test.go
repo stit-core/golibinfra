@@ -83,7 +83,7 @@ func TestModule_ProvidesClientAndClosesOnStop(t *testing.T) {
 		closed atomic.Bool
 	)
 	app := fxtest.New(t,
-		fx.Supply(Config{Timeout: time.Second}),
+		fx.Supply(validConfig()),
 		Module,
 		ProvideOption(func() Option { return WithTransport(closableTransport{closed: &closed}) }),
 		fx.Populate(&client),

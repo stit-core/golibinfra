@@ -61,7 +61,16 @@ func newStorage(t *testing.T, mutate ...func(*storagekit.Config)) (*skminio.Stor
 		t.Fatalf("make bucket: %v", err)
 	}
 	urls := storagekit.NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle)
-	return skminio.NewStorage(client, cfg, urls, logkit.Nop()), client, cfg
+	return mustStorage(t, client, cfg, urls, logkit.Nop()), client, cfg
+}
+
+func mustStorage(t *testing.T, client *miniogo.Client, cfg storagekit.Config, urls *storagekit.URLBuilder, log logkit.Logger) *skminio.Storage {
+	t.Helper()
+	st, err := skminio.NewStorage(client, cfg, urls, log)
+	if err != nil {
+		t.Fatalf("NewStorage: %v", err)
+	}
+	return st
 }
 
 func listKeys(t *testing.T, client *miniogo.Client, bucket string) []string {
@@ -88,17 +97,18 @@ func TestStorage_Contract(t *testing.T) {
 }
 
 // Регрессия F1: при size < 0 minio-go без PartSize считает часть от 5 TiB и
-// аллоцирует ~528 MiB на каждый вызов.
+// аллоцирует ~528 MiB на каждый вызов; Config без PartSize NewStorage отвергает.
 func TestStorage_PutUnknownSizeAllocatesOnePart(t *testing.T) {
 	st, client, cfg := newStorage(t)
 	unset := cfg
 	unset.PartSize = 0
 	urls := storagekit.NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle)
+	if _, err := skminio.NewStorage(client, unset, urls, logkit.Nop()); !errors.Is(err, storagekit.ErrConfig) {
+		t.Fatalf("NewStorage without PartSize: %v, want ErrConfig", err)
+	}
 
 	subjects := map[string]*skminio.Storage{
 		"configured part size": st,
-		// Config, собранный в коде мимо Validate, тоже не должен брать буфер от 5 TiB.
-		"unset part size": skminio.NewStorage(client, unset, urls, logkit.Nop()),
 	}
 	for name, subject := range subjects {
 		t.Run(name, func(t *testing.T) {

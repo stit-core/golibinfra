@@ -15,19 +15,19 @@ import (
 // BreakerConfig — политика circuit breaker'а на upstream-хост.
 type BreakerConfig struct {
 	// FailureThreshold = 0 выключает breaker.
-	FailureThreshold int           `envconfig:"HTTPCLIENT_BREAKER_FAILURE_THRESHOLD" default:"5"`
-	RecoveryTimeout  time.Duration `envconfig:"HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT" default:"30s"`
+	FailureThreshold int `envconfig:"HTTPCLIENT_BREAKER_FAILURE_THRESHOLD" default:"5"`
+	// RecoveryTimeout — сколько breaker держится в Open; у включённого breaker'а > 0.
+	RecoveryTimeout time.Duration `envconfig:"HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT" default:"30s"`
 }
 
-func (c *BreakerConfig) validate() error {
-	if c.FailureThreshold < 0 {
-		return fmt.Errorf("%w: Breaker.FailureThreshold < 0", ErrConfig)
-	}
-	if c.RecoveryTimeout < 0 {
-		return fmt.Errorf("%w: Breaker.RecoveryTimeout < 0", ErrConfig)
-	}
-	if c.RecoveryTimeout == 0 {
-		c.RecoveryTimeout = defaultRecoveryTimeout
+func (c BreakerConfig) validate() error {
+	switch {
+	case c.FailureThreshold < 0:
+		return fmt.Errorf("%w: HTTPCLIENT_BREAKER_FAILURE_THRESHOLD must be >= 0, got %d", ErrConfig, c.FailureThreshold)
+	case c.RecoveryTimeout < 0:
+		return fmt.Errorf("%w: HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT must be >= 0, got %s", ErrConfig, c.RecoveryTimeout)
+	case c.FailureThreshold > 0 && c.RecoveryTimeout == 0:
+		return fmt.Errorf("%w: HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT must be > 0 with the breaker on", ErrConfig)
 	}
 	return nil
 }

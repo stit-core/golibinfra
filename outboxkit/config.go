@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
 // PublishMode задаёт компромисс «порядок vs пропускная способность» на хопе
@@ -19,21 +20,9 @@ const (
 	PublishOrdered PublishMode = "ordered"
 )
 
-// DefaultBatchSize — размер батча, который NewWorker подставляет вместо
-// невалидного (`BatchSize < 1`) в конфиге, собранном не через NewConfig.
-const DefaultBatchSize = 100
-
-// DefaultTickTimeout — дедлайн тика, который NewWorker подставляет вместо
-// невалидного (`TickTimeout <= 0`) в конфиге, собранном не через NewConfig.
-const DefaultTickTimeout = 30 * time.Second
-
-// DefaultMaxAttempts — бюджет попыток строки, который NewWorker подставляет вместо
-// невалидного (`MaxAttempts` 0 или меньше -1) в конфиге, собранном не через NewConfig.
-const DefaultMaxAttempts = 25
-
-// DefaultMaxPayloadBytes — предел JSON-тела события у NewBus и у New вместо невалидного
-// (`MaxPayloadBytes < 1`): половина max_payload NATS (1 MiB) — запас под заголовки и пробелы
-// представления хранилища (JSONB pgstore), но не под числа в экспоненте: их JSONB выписывает целиком.
+// DefaultMaxPayloadBytes — предел JSON-тела события у NewBus (дефолт OUTBOX_MAX_PAYLOAD_BYTES):
+// половина max_payload NATS (1 MiB) — запас под заголовки и пробелы представления хранилища
+// (JSONB pgstore), но не под числа в экспоненте: их JSONB выписывает целиком.
 const DefaultMaxPayloadBytes = 512 << 10
 
 // Config — конфиг orchestration-слоя (Bus + Worker); читается из ENV
@@ -99,29 +88,13 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// withDefaults подставляет безопасные значения вместо невалидных: Config,
-// собранный литералом мимо NewConfig, не должен молча давать LIMIT 0.
-func (c Config) withDefaults() Config {
-	if c.BatchSize < 1 {
-		c.BatchSize = DefaultBatchSize
+// checkIdleInTx — тик дольше idle_in_transaction_session_timeout пула: пока воркер ждёт PubAck,
+// транзакция простаивает, и Postgres оборвал бы сессию раньше конца тика. Ноль таймаута пула —
+// без лимита.
+func checkIdleInTx(cfg Config, pool pgkit.PoolConfig) error {
+	if pool.IdleInTxSessionTimeout > 0 && cfg.TickTimeout >= pool.IdleInTxSessionTimeout {
+		return fmt.Errorf("%w: OUTBOX_TICK_TIMEOUT (%s) must be < PG_IDLE_IN_TX_SESSION_TIMEOUT (%s)",
+			ErrConfig, cfg.TickTimeout, pool.IdleInTxSessionTimeout)
 	}
-	if c.PublishMode != PublishOrdered {
-		c.PublishMode = PublishBatch
-	}
-	if c.TickTimeout <= 0 {
-		c.TickTimeout = DefaultTickTimeout
-	}
-	if c.MaxAttempts == 0 || c.MaxAttempts < -1 {
-		c.MaxAttempts = DefaultMaxAttempts
-	}
-	if c.MaxPayloadBytes < 1 {
-		c.MaxPayloadBytes = DefaultMaxPayloadBytes
-	}
-	if c.RetryBackoff < 0 {
-		c.RetryBackoff = 0
-	}
-	if c.RetryMaxBackoff < 0 {
-		c.RetryMaxBackoff = 0
-	}
-	return c
+	return nil
 }

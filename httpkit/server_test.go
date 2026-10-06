@@ -28,6 +28,16 @@ func validConfig() Config {
 	}
 }
 
+// mustNewServer — NewServer для теста: ошибка конструктора — t.Fatalf.
+func mustNewServer(t *testing.T, cfg Config, opts ...ServerOption) *Server {
+	t.Helper()
+	s, err := NewServer(cfg, opts...)
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	return s
+}
+
 func TestConfig_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -84,7 +94,7 @@ func TestConfig_Validate(t *testing.T) {
 }
 
 func TestBindAPI_NoSchemes(t *testing.T) {
-	s := NewServer(validConfig())
+	s := mustNewServer(t, validConfig())
 	api := s.BindAPI()
 	if api.OpenAPI().Components.SecuritySchemes != nil {
 		t.Fatalf("expected nil SecuritySchemes when no entries provided, got %v", api.OpenAPI().Components.SecuritySchemes)
@@ -101,7 +111,7 @@ func TestBindAPI_WithSchemes(t *testing.T) {
 		Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"},
 	}
 
-	s := NewServer(validConfig(), WithSecuritySchemes(cookie, bearer))
+	s := mustNewServer(t, validConfig(), WithSecuritySchemes(cookie, bearer))
 	api := s.BindAPI()
 
 	got := api.OpenAPI().Components.SecuritySchemes
@@ -114,7 +124,7 @@ func TestBindAPI_WithSchemes(t *testing.T) {
 }
 
 func TestBindAPI_Idempotent(t *testing.T) {
-	s := NewServer(validConfig())
+	s := mustNewServer(t, validConfig())
 	if s.BindAPI() != s.BindAPI() {
 		t.Fatal("BindAPI must return same api on repeat call")
 	}
@@ -123,7 +133,7 @@ func TestBindAPI_Idempotent(t *testing.T) {
 func TestBindAPI_DocsDisabled(t *testing.T) {
 	cfg := validConfig()
 	cfg.DocsEnabled = false
-	s := NewServer(cfg)
+	s := mustNewServer(t, cfg)
 	s.BindAPI()
 
 	for _, path := range []string{"/docs", "/openapi.json", "/openapi.yaml"} {
@@ -134,7 +144,7 @@ func TestBindAPI_DocsDisabled(t *testing.T) {
 		}
 	}
 
-	s = NewServer(validConfig())
+	s = mustNewServer(t, validConfig())
 	s.BindAPI()
 	rec := httptest.NewRecorder()
 	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/openapi.json", nil))
@@ -148,7 +158,7 @@ func TestBindAPI_DocsDisabled(t *testing.T) {
 func TestBindAPI_MaxBodyBytesReachesOperations(t *testing.T) {
 	cfg := validConfig()
 	cfg.MaxBody.MaxBytes = 16
-	s := NewServer(cfg)
+	s := mustNewServer(t, cfg)
 	api := s.BindAPI()
 
 	huma.Register(api, huma.Operation{
@@ -167,7 +177,7 @@ func TestBindAPI_MaxBodyBytesReachesOperations(t *testing.T) {
 }
 
 func TestWithHumaConfig(t *testing.T) {
-	s := NewServer(validConfig(), WithHumaConfig(func(c *huma.Config) {
+	s := mustNewServer(t, validConfig(), WithHumaConfig(func(c *huma.Config) {
 		c.Info.Description = "patched"
 	}))
 	if got := s.BindAPI().OpenAPI().Info.Description; got != "patched" {
@@ -185,7 +195,7 @@ func TestWithMiddleware(t *testing.T) {
 			})
 		}
 	}
-	s := NewServer(validConfig(), WithMiddleware(mw("outer"), mw("inner")))
+	s := mustNewServer(t, validConfig(), WithMiddleware(mw("outer"), mw("inner")))
 	api := s.BindAPI()
 	huma.Get(api, "/ping", func(context.Context, *struct{}) (*struct{}, error) {
 		return nil, nil //nolint:nilnil // тело ответа не нужно
@@ -200,7 +210,7 @@ func TestWithMiddleware(t *testing.T) {
 func TestServer_ListenAddrAndStop(t *testing.T) {
 	cfg := validConfig()
 	cfg.Addr = "127.0.0.1:0"
-	s := NewServer(cfg)
+	s := mustNewServer(t, cfg)
 	if s.Addr() != nil {
 		t.Fatal("Addr before Listen must be nil")
 	}
