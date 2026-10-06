@@ -356,7 +356,8 @@ DLQ и `Term`.
 
 Ошибку, которую ретраить бессмысленно (неизвестная схема, чужой тип события),
 обработчик помечает `natskit.ErrTerminal` — сообщение уходит в DLQ и получает
-`Term` без ретраев:
+`Term` без ретраев; без пометки оно весь бюджет ретраев держит слот консьюмера
+([configuration.md § Бюджет ретраев](configuration.md#бюджет-ретраев)):
 
 ```go
 sub, err := natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "ORDERS.created", "orders-worker",
