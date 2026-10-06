@@ -5,8 +5,9 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5/pgxpool"
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Module — граф пула primary: *pgxpool.Pool, *DB, Transactor и *ReadWriteDB.
@@ -25,8 +26,8 @@ var Module = fx.Module("pgkit",
 // NewPoolConfig читает PoolConfig из ENV и валидирует его.
 func NewPoolConfig() (PoolConfig, error) {
 	var c PoolConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("pgkit: pool config: %w", err)
+	if err := envconf.Load(&c); err != nil {
+		return PoolConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }
@@ -34,8 +35,8 @@ func NewPoolConfig() (PoolConfig, error) {
 // NewReplicaConfig читает ReplicaConfig из ENV и валидирует его.
 func NewReplicaConfig() (ReplicaConfig, error) {
 	var c ReplicaConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("pgkit: replica config: %w", err)
+	if err := envconf.Load(&c); err != nil {
+		return ReplicaConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

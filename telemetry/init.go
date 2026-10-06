@@ -55,7 +55,7 @@ func (p *Providers) Shutdown(ctx context.Context) error {
 		err := s.stop(stepCtx)
 		cancel()
 		if err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", s.name, err))
+			errs = append(errs, fmt.Errorf("telemetry: shutdown %s: %w", s.name, err))
 		}
 	}
 	return errors.Join(errs...)

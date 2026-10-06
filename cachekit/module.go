@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Module не provide'ит Config (caller регистрирует его сам) и не кладёт Probe в
@@ -18,8 +19,8 @@ var Module = fx.Module(
 // NewConfig читает REDIS_* из окружения и валидирует их.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("cachekit: read config: %w", err)
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

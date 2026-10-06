@@ -128,7 +128,7 @@ FEATURE_FLAGS=foo=true,bar=baz,booltrue=1
 | `Store.Names()` | Имена заданных флагов, отсортированные | Лог активной конфигурации на старте |
 | `EnvStore` | Реализация `Store` поверх разобранного `Config` | Конструируется через `NewEnvStore`; в fx скрыт за `Store` |
 | `NewEnvStore(cfg)` | Конструктор `*EnvStore` | Прямое использование вне fx (передать `Config` руками) |
-| `Config` | Конфиг с единственным полем `Definitions` | Заполняется из ENV через envconfig |
+| `Config` | Конфиг с единственным полем `Definitions` | Заполняется из ENV (`NewConfig`) |
 | `Config.Validate()` | Проверка формата без построения стора | Валидация App-конфига, собранного не через `NewConfig` |
 | `NewConfig()` | Фабрика `Config` из ENV + `Validate` | Регистрация конфига в fx-графе (`Module` его не provide'ит) |
 | `ErrConfig` | Sentinel невалидного `FEATURE_FLAGS` | `errors.Is(err, flagkit.ErrConfig)` в тестах и обработке ошибок старта |

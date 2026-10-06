@@ -317,8 +317,14 @@ func TestNewZone(t *testing.T) {
 	if err != nil || z.Name() != "Europe/Moscow" {
 		t.Fatalf("NewZone = %v, %v", z, err)
 	}
-	if _, err := tzkit.NewZone(tzkit.Config{}); !errors.Is(err, tzkit.ErrEmptyZone) {
-		t.Fatalf("NewZone(empty) err = %v, want ErrEmptyZone", err)
+	for _, tc := range []struct {
+		tz   string
+		want error
+	}{{"", tzkit.ErrEmptyZone}, {"Local", tzkit.ErrLocalZone}, {"Mars/Olympus", tzkit.ErrConfig}} {
+		_, err := tzkit.NewZone(tzkit.Config{TZ: tc.tz})
+		if !errors.Is(err, tzkit.ErrConfig) || !errors.Is(err, tc.want) {
+			t.Fatalf("NewZone(%q) err = %v, want ErrConfig and %v", tc.tz, err, tc.want)
+		}
 	}
 }
 

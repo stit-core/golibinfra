@@ -131,7 +131,7 @@ func (w *Worker) tick(opCtx, txCtx context.Context) (res tickResult, publishErr,
 		if errors.Is(err, ErrBusy) {
 			return res, nil, err
 		}
-		return res, nil, fmt.Errorf("outboxkit worker: list: %w", err)
+		return res, nil, fmt.Errorf("outboxkit: list: %w", err)
 	}
 	w.instr.batchSize.Record(opCtx, int64(len(msgs)), metric.WithAttributes(w.instr.instance))
 	if len(msgs) == 0 {
@@ -173,12 +173,12 @@ func (w *Worker) publishBatch(ctx context.Context, msgs []Message, out []OutMsg)
 	// PubAck'и там уже есть, отбрасывать их — повторная публикация.
 	if len(results) != len(msgs) {
 		if err == nil {
-			err = fmt.Errorf("outboxkit worker: transport returned %d results for %d messages", len(results), len(msgs))
+			err = fmt.Errorf("outboxkit: transport returned %d results for %d messages", len(results), len(msgs))
 		}
 		for _, m := range msgs {
 			w.processed(ctx, m.Subject, "publish_error")
 		}
-		return nil, nil, fmt.Errorf("outboxkit worker: publish batch: %w", err)
+		return nil, nil, fmt.Errorf("outboxkit: publish batch: %w", err)
 	}
 
 	var acked []Message
@@ -195,7 +195,7 @@ func (w *Worker) publishBatch(ctx context.Context, msgs []Message, out []OutMsg)
 			failed = append(failed, failedMsg{m, perr})
 		}
 		if firstErr == nil {
-			firstErr = fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, perr)
+			firstErr = fmt.Errorf("outboxkit: publish %s (id=%d): %w", m.Subject, m.ID, perr)
 		}
 	}
 	return acked, failed, firstErr
@@ -217,7 +217,7 @@ func (w *Worker) publishOrdered(ctx context.Context, msgs []Message, out []OutMs
 			if !errors.Is(err, ErrUnavailable) {
 				failed = []failedMsg{{m, err}}
 			}
-			return acked, failed, fmt.Errorf("outboxkit worker: publish %s (id=%d): %w", m.Subject, m.ID, err)
+			return acked, failed, fmt.Errorf("outboxkit: publish %s (id=%d): %w", m.Subject, m.ID, err)
 		}
 		acked = append(acked, m)
 	}
@@ -236,7 +236,7 @@ func (w *Worker) markAll(ctx context.Context, acked []Message) error {
 		for _, m := range acked {
 			w.processed(ctx, m.Subject, "mark_error")
 		}
-		return fmt.Errorf("outboxkit worker: mark published: %w", err)
+		return fmt.Errorf("outboxkit: mark published: %w", err)
 	}
 	return nil
 }
@@ -260,7 +260,7 @@ func (w *Worker) recordFailures(ctx context.Context, failed []failedMsg) ([]fail
 		}
 	}
 	if err := w.repo.RecordFailures(ctx, fs); err != nil {
-		return nil, fmt.Errorf("outboxkit worker: record failures: %w", err)
+		return nil, fmt.Errorf("outboxkit: record failures: %w", err)
 	}
 	return dead, nil
 }

@@ -62,7 +62,7 @@ func ProvideConfig(name string) fx.Option {
 		return fx.Error(fmt.Errorf("%w: instance %q: allowed characters are letters, digits, '_', '-', '.'", ErrConfig, name))
 	}
 	return fx.Provide(fx.Annotate(
-		func() (Config, error) { return NewConfigPrefixed(name) },
+		func() (Config, error) { return NewInstanceConfig(name) },
 		fx.ResultTags(nameTag(name)),
 	))
 }

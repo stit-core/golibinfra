@@ -170,8 +170,8 @@ if err := auth.Login(ctx, email, ip, password); err != nil {
 envconfig-теги менять = breaking change; выпускается minor-релизом, помечается
 `!` в Conventional Commit и строкой миграции в аннотации тега (см. [корневой
 README § Версионирование](../README.md)). `NewConfig()`
-читает теги через `envconfig.Process` и валидирует значения (`Config.Validate`);
-любое нарушение — ошибка, обёрнутая `bruteforcekit.ErrConfig`. Нулевой `Config`
+читает ENV ридером китов (корневой README § Стабильность API) и валидирует значения
+(`Config.Validate`); любое нарушение — ошибка, обёрнутая `bruteforcekit.ErrConfig`. Нулевой `Config`
 отвергается.
 
 | Env | Поле | Тип | Default | Назначение |

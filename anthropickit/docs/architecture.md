@@ -36,7 +36,7 @@
 | `health.go` | Opt-in `Probe` — `healthkit.Probe` поверх `Models.Get(DefaultModel)`. |
 | `errors.go` | Sentinel-ошибки `Err*`, `classify` (HTTP-статус → sentinel). |
 | `options.go` | Функциональные опции `WithHTTPClient`/`WithPriceTable`/`WithBaseURL`. |
-| `module.go` | fx `Module`, `NewConfig` (envconfig + `Validate`), `newClient`. |
+| `module.go` | fx `Module`, `NewConfig` (ENV + `Validate`), `newClient`. |
 | [`testkit/anthropictest/`](../../testkit/anthropictest/) | Тест-двойники: `Stub`, `ScriptStream`, `ScriptStreamErr`, `ErrStream`. |
 
 ## Поток данных

@@ -1,12 +1,14 @@
 package sso
 
 import (
+	"fmt"
+
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/httpclient"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // NewSecurityScheme — запись `components.securitySchemes` для cookie сотрудника
@@ -61,8 +63,8 @@ func schemeNameOr(name, fallback string) string {
 // 401/503 на первом запросе).
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return Config{}, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

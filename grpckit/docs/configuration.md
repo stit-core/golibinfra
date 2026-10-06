@@ -4,7 +4,7 @@
 
 `grpckit.Config` — публичный env-контракт сервера. Загружается через
 config-композицию (ENV) либо напрямую `grpckit.NewConfig()`
-(`envconfig.Process("", &c)` + `Validate`).
+(ENV ридером китов + `Validate`).
 
 > **Public API.** Имена полей и их `envconfig`/`default`-теги — часть стабильного
 > контракта (`grpckit.Config` числится в [корневом README § Стабильность

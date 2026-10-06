@@ -46,12 +46,16 @@ blocked-by: —
 
 ## Критерии приёмки
 `<rev>` — проверяемый коммит, `<wt>` — worktree на нём; скрипты — от `M/kits-audit/`.
-- [ ] **AC1** — ENV читается одним способом: `KEY=` — как незаданная переменная в каждом ките и в
+- [x] **AC1** — ENV читается одним способом: `KEY=` — как незаданная переменная в каждом ките и в
   `config.Env`; ошибка разбора несёт `ErrConfig`, ключ и префикс кита; `<P>_HTTPCLIENT_BREAKER_*`
   читается, теневых имён нет; выключение — явным значением, не пустой строкой. Проверка:
   `api-docs/scripts/run-go-experiments.sh <rev> envempty hcprefix` → U4 одна семантика, U5 читается;
   `api-docs/claims-A-exp/run.sh <wt>` (`parseerr`), `api-docs/scripts/claimsB/run.sh <wt>` → U6 21
   из 21 с `ErrConfig`; `httpkit-a/run.sh <rev> api` → U01 PASS, U02 — пустое = дефолт
+  - Подтверждено: дерево S1, логи — `M/exc1/logs/` (базовые логи аудита не тронуты): U4 — 87 из 87
+    полей берут дефолт; U5 — `AMOCRM_HTTPCLIENT_BREAKER_*` читается, теневые имена — нет; U6 —
+    `parseerr` 13/13 и claimsB 11/11 с `ErrConfig`, остальные — `TestKitConfigs_*` (34 конструктора,
+    171 переменная); U01 PASS, U02 — 31 тег берёт дефолт
 - [ ] **AC2** — Невалидный конфиг не проходит ни один конструктор (`outboxkit.New`, `NewWorker`,
   `storagekit.Module`, `httpkit.NewServer` — с ошибкой), молча подставленных дефолтов нет; у
   `Validate`, нулей и nil-опций одна семантика; `BindAPI` без гонки; тик outbox дольше таймаута
@@ -113,8 +117,12 @@ blocked-by: —
 
 ## Шаги
 ### Конфиг и формы API
-- [ ] **S1** — Один ридер ENV в `internal/` — для всех `New*Config` и `config.Env` (KAPI-02, -04, KDOC-03)
+- [x] **S1** — Один ридер ENV в `internal/` — для всех `New*Config` и `config.Env` (KAPI-02, -04, KDOC-03)
   - Проверка: AC1 → выполнен · Закрывает: AC1 · Зависит от: —
+  - Сделано: `internal/envconf` у 34 конструкторов (с китами вне объёма) и `config.Env`, envconfig
+    снят из `go.mod`; `natskit.NewInstanceConfig`; префиксы сабпакетов `<kit>/<sub>:`; AC1 → PASS;
+    мутанты `M/exc1/mut_s1.py` — 14 из 15 красные, M15 эквивалентен (у `ServiceConfig` нет
+    неразбираемых полей)
 - [ ] **S2** — Конструкторы зовут `Validate`, одна семантика нулей и опций (KAPI-01, -05, -08, KCOR-12)
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: S1
 - [ ] **S3** — Одна форма API, опции httpclient значением (KAPI-06, KAPI-07, KTST-07, KFX-01, KFX-10;
@@ -161,6 +169,13 @@ blocked-by: —
   выключал миграции, пустые `HTTP_*` снимали заголовки); выключение — явным значением. Префикс:
   `<P>_<TAG>`, голый `<TAG>` — только где кит это обещает; вложенные структуры — с тем же
   префиксом (U5). `natskit.NewConfigPrefixed(name)` берёт имя инстанса — другое имя функции.
+  По ходу S1: явная пустота — `-` у строк, списков и типов с `Decode` — одно правило ридера вместо
+  своего «off» у каждого поля; числа — `0`/`-1`. Поле без тега и без `ignored` — ошибка ридера:
+  `config.Env` молча терял бы поля App. Приставки имени поля у вложенных структур App
+  (`POSTGRES_PG_DSN`) — того же класса теневые имена, что у breaker httpclient: сняты. Списки —
+  обрезка и без пустых (как natskit), целые — base 10 с разрядностью. Все 34 конструктора, с
+  китами вне объёма, — на ридере: envconfig из `go.mod` уходит (`tidy-check`). Префиксы ошибок
+  сабпакетов — к правилу add-kit `<kit>/<sub>:`: правка 38 строк, а не правила и hubkit/session.
 - **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах и `NewConfig`; ноль не
   значит «дефолт кита» — он значение из доки или `ErrConfig` («без предела» у новых настроек — `-1`,
   как `OUTBOX_MAX_ATTEMPTS`); форматные проверки не зависят от `Disabled`; nil-опции игнорируются.
@@ -237,7 +252,9 @@ blocked-by: —
 ## Handoff
 При закрытии — в Handoff `harden-tests-archkit-release`. Что меняет потребитель на bump v1.4.0:
 - **ENV.** `KEY=` — дефолт во всех китах и в `config.Env` (App): пустое значение ничего не
-  выключает, выключение — явным значением; ошибки конфига — `ErrConfig`.
+  выключает, пустую строку или список задаёт `-` (`PG_MIGRATIONS_PATH=-`); ошибки — `ErrConfig`.
+  App на `config.Env` — без приставки имени поля (`PG_DSN`), поле без тега — `ignored:"true"`;
+  `natskit.NewInstanceConfig`.
 - **Конструкторы и формы.** `httpkit.NewServer`, `outboxkit.New`/`NewWorker` — с ошибкой; литерал с
   нулями — `ErrConfig`; переименования групп, хелперов и проб (список — S3); `httpclient.Options`.
 - **pgkit.** Вложенная транзакция строже внешней — ошибка; хранилища китов без миграций — ошибка
@@ -255,8 +272,21 @@ blocked-by: —
   OTLP вне loopback.
 
 ## Где мы сейчас
-План заведён по сводке базового аудита и бэклогу «партия 3»; v1.3.0 выпущен — шаги не начаты.
-Хвосты валидатора B `harden-authn-release` закрыты до релиза v1.3.0; строка бэклога
-`release-v130-tails` (валидатор партии v1.3.0) распределена: N5 — S3, N4 — S9 (IP в ctx) и S13
-(`Revoke`), N1 и N2 — S5 `harden-tests-archkit-release`. Следующий шаг — S1. Заготовка аннотации
-v1.4.0 — здесь, по шагам.
+S1 закрыт: один ридер ENV, `make check` зелёный, AC1 подтверждён. Хвост `release-v130-tails`
+распределён: N5 — S3, N4 — S9 и S13, N1, N2 — S5 `harden-tests-archkit-release`. Следующий шаг — S2.
+
+Заготовка аннотации v1.4.0 (по шагам):
+- **Breaking.** natskit: `NewConfigPrefixed(name)` → `NewInstanceConfig(name)`. config: вложенная
+  структура App читается именами тегов — `POSTGRES_PG_DSN`, `HTTP_HTTP_ADDR` → `PG_DSN`,
+  `HTTP_ADDR`; поле без тега `envconfig` — ошибка `Load` (тег или `ignored:"true"`); в ошибке нет
+  `*envconfig.ParseError`. telemetry: `Headers.Decode` — ошибка без `ErrConfig` (его даёт `NewConfig`).
+- **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт (было: ошибка у чисел, пусто у
+  строк); пустую строку или список задаёт `-`: `PG_MIGRATIONS_PATH=-` — без миграций приложения,
+  `HTTP_HSTS=-` и другие заголовки, `HTTP_QUIET_PATHS=-`. `<P>_HTTPCLIENT_BREAKER_*` читается,
+  `<P>_BREAKER_HTTPCLIENT_BREAKER_*` и `BREAKER_HTTPCLIENT_BREAKER_*` — нет. Списки из ENV —
+  обрезка, пустые элементы отбрасываются; целые — десятичные, переполнение — ошибка. Ошибка ENV —
+  `<kit>.ErrConfig` с именем переменной; `tzkit.NewZone` — `ErrConfig`. Префиксы ошибок:
+  `auditkit/pgstore:`, `bruteforcekit/pgstore:`, `outboxkit/pgstore:`, `storagekit/minio:`,
+  `authnkit/session/pgstore:`, воркер outbox — `outboxkit:`, `telemetry: shutdown <шаг>:`; запись
+  лога `telemetry: otel sdk error`.
+- **Изменения.** `github.com/kelseyhightower/envconfig` — не зависимость golibinfra.

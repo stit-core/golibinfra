@@ -18,7 +18,7 @@ authnkit/
 │   └── pgstore/     Store на Postgres, миграции, проверка схемы, Module, cleanup-job, метрики
 ├── permissions.go   RBAC: Permission / Registry (экземплярный реестр)
 ├── metrics.go       OTel-инструменты (создаются в конструкторах через internal/otelkit)
-└── module.go        fx.Module + envconfig-конструкторы
+└── module.go        fx.Module + конструкторы конфигов из ENV
 ```
 
 ## Примитивы
@@ -194,8 +194,8 @@ WHY статично: это базовый guard для ролей, извес�
 интерфейсы (`JWTSigner`, `JWTParser`), `*TOTPGenerator` и `*Registry`. `Module`
 **не** провайдит сами конфиги — их регистрирует приложение (типично через
 App-структуру), однородно с `httpkit`/`pgkit`. Для приложений без App-pattern
-есть envconfig-конструкторы `NewArgon2idParams` / `NewJWTConfig` / `NewTOTPConfig`
-(читают ENV через `kelseyhightower/envconfig` и валидируют результат).
+есть конструкторы конфигов из ENV `NewArgon2idParams` / `NewJWTConfig` / `NewTOTPConfig`
+(читают ENV ридером китов и валидируют результат; ошибка — `ErrConfig`).
 `fx.Provide` ленив: `TOTPConfig` требуется только приложению, которое просит
 `*TOTPGenerator`.
 

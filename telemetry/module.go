@@ -4,10 +4,10 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.opentelemetry.io/otel/log"
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -30,8 +30,8 @@ var Module = fx.Module(
 // NewConfig читает Config из ENV и валидирует его.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

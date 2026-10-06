@@ -89,6 +89,7 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   `outboxtest`, `pgtest`, `sessiontest`, `storagetest`) — внутри китов test-хелперов нет.
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
+  `internal/envconf` (ридер ENV — `New*Config` китов и `config.Env`),
   `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента,
   свёртка IPv6 — у лимитера httpkit и bruteforcekit),
   `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`),
@@ -143,7 +144,10 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   либо безопасен и полезен, либо отвергается `Validate` — «молча ломается» нельзя.
 - **envconfig-теги — часть public API.** Имена полей/тегов конфигов (`README.md §
   Стабильность API`) менять = breaking: `!` в коммите + строка миграции в
-  аннотации тега. Порядок тегов — `envconfig` первым, затем `default`.
+  аннотации тега. Порядок тегов — `envconfig` первым, затем `default`. ENV читает
+  только `internal/envconf` (`KEY=` — дефолт, пустое значение — `-`), ошибку чтения
+  `New*Config` оборачивает в `ErrConfig`; каждый конструктор — строка
+  `internal/envconf/kits_test.go`.
 - **Doc-comment на каждом экспорте** (Go-конвенция: одна строка, начинается с
   имени). `revive.exported` ловит типы, функции, var и const; **методы на
   экспортируемом приёмнике он пропускает** — там правило держит ревью. Package-doc

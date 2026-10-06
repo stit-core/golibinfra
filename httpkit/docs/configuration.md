@@ -1,9 +1,10 @@
 # httpkit — конфигурация
 
 `Config` агрегирует настройки сервера и вложенные конфиги middleware.
-`NewConfig() (Config, error)` читает окружение через envconfig и вызывает
-`Config.Validate()`; `Module` валидирует ещё раз для конфигов, собранных вручную.
-Ошибки валидации — `httpkit.ErrConfig`, они валят старт приложения.
+`NewConfig() (Config, error)` читает окружение ридером ENV китов ([корневой README § Стабильность API](../../README.md#стабильность-api)) и
+вызывает `Config.Validate()`; `Module` валидирует ещё раз для конфигов, собранных
+вручную. Ошибки чтения и валидации — `httpkit.ErrConfig`, они валят старт
+приложения.
 
 ## Config
 
@@ -20,7 +21,7 @@
 | `HTTP_API_VERSION` | `APIVersion` | `string` | `0.1.0` | version в OpenAPI; не пуст |
 | `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `false` | `true` отдаёт `/docs`, `/openapi.json`, `/openapi.yaml`, `/schemas` без аутентификации — карта всех операций; для dev и внутреннего контура |
 | `HTTP_READY_PROBE_TIMEOUT` | `ReadyProbeTimeout` | `time.Duration` | `5s` | потолок одной пробы `/ready`; `> 0` |
-| `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана |
+| `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана; `-` — таких путей нет |
 | `HTTP_TRUST_PROXY_HOPS` | `TrustProxyHops` | `int` | `0` | сколько доверенных прокси перед сервисом дописывают `X-Forwarded-For` (§ IP клиента); `>= 0` |
 | — | `CORS` | `CORSConfig` | — | вложенный |
 | — | `RateLimit` | `RateLimitConfig` | — | вложенный |
@@ -91,7 +92,7 @@ Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP и�
 
 ## SecurityHeadersConfig
 
-Заголовки на каждый ответ; пустое значение — заголовок не ставится.
+Заголовки на каждый ответ; пустое значение поля (в ENV — `-`) — заголовок не ставится.
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|

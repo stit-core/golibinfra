@@ -129,12 +129,13 @@ go mod tidy
 | [`ptrkit`](ptrkit/) | Generic-хелперы указателей: `Of` (адрес значения), `OmitZero` (nil-on-zero), `Deref` (nil-safe) |
 | [`mapkit`](mapkit/) | Декодеры `map[string]any`: `String/Int/Int64/Float/Strings/Map/IntPtr/BoolPtr`; nil-safe, знают `json.Number`, значение вне диапазона типа — несовпадение |
 | [`idkit`](idkit/) | Внутренние id: `NewV7()` — UUID v7 строкой (time-sortable), `Validate`/`IsV7` — проверка канонической формы |
-| [`config`](config/) | Композиция ENV-источников (`Source`, `Load`, `Env`/`EnvPrefixed`) для App-конфига приложения; ошибки всех источников объединяются |
+| [`config`](config/) | Композиция ENV-источников (`Source`, `Load`, `Env`/`EnvPrefixed` — тем же ридером ENV, что у китов) для App-конфига приложения; ошибки всех источников объединяются |
 | [`testkit`](testkit/) | testcontainers: `StartPostgres(t, WithMigrations(...))`, `StartNATS(t, WithJetStream())`, `StartRedis`, `StartMinIO`, `RequireDocker`, лесенка миграций `MigrationLadder`; сабпакеты `testkit/<name>test` — `anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`, `handlertest`, `hubtest`, `logtest`, `metrictest`, `natstest`, `oidctest`, `outboxtest`, `pgtest`, `sessiontest`, `storagetest` |
 
 Служебные пакеты `internal/otelkit` (scope, версия инструментации, `Must` и две
 общие шкалы bucket-границ для гистограмм длительности — `DurationBuckets` и
-`LongDurationBuckets`), `internal/requestid`
+`LongDurationBuckets`), `internal/envconf` (ридер ENV — `New*Config` китов и
+`config.Env`), `internal/requestid`
 (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента и свёртка IPv6 в ключ —
 общая у лимитера `httpkit` и `bruteforcekit`), `internal/jwks` (JWKS-кэш с троттлингом и grace-периодом
 ключа), `internal/httpdoer` (общий интерфейс `Doer`), `internal/grpcstatus`
@@ -275,8 +276,15 @@ README § Observability — у сложных китов в `docs/observability.
 (envconfig-тег или `os.Getenv` в любом каталоге, включая `internal/`) строку
 таблицы в README или `docs/` её кита с тем же дефолтом, не пускает в доки
 переменные, которых нет в коде, сверяет корневую env-таблицу и отвергает поле
-конфига без тега, которое envconfig прочитал бы по имени поля (явный отказ —
-`ignored:"true"`).
+конфига без тега — ридер ENV его не читает (явный отказ — `ignored:"true"`).
+
+ENV читает один ридер — у `New*Config` всех китов и у `config.Env`:
+- имя переменной — тег `envconfig`; у инстанса — `<PREFIX>_<тег>`, запасное голое имя — только
+  у `httpclient.NewConfigPrefixed` и `config.EnvPrefixed`; вложенная структура конфига — с тем же
+  префиксом;
+- пустое значение (`KEY=`, Helm `value: ""`, compose без подстановки) — как незаданная
+  переменная: берётся `default`; пустую строку или пустой список задаёт значение `-`;
+- неразбираемое значение — ошибка старта с `<kit>.ErrConfig` и именем переменной.
 
 Совместимость **между minor-версиями `v1` не гарантируется**: пока библиотека
 идёт вместе со своими потребителями внутри stit, breaking-изменения выпускаются

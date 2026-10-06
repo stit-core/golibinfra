@@ -2,15 +2,16 @@ package oidckit
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/httpclient"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -36,8 +37,8 @@ func NewSecurityScheme(cookie CookieConfig) httpkit.SecuritySchemeEntry {
 // NewConfig читает OIDC_* из окружения и валидирует их (ErrConfig).
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }
@@ -45,8 +46,8 @@ func NewConfig() (Config, error) {
 // NewCookieConfig читает COOKIE_* из окружения и валидирует их (ErrConfig).
 func NewCookieConfig() (CookieConfig, error) {
 	var c CookieConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return c, err
+	if err := envconf.Load(&c); err != nil {
+		return CookieConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

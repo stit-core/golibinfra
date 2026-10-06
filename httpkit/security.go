@@ -2,8 +2,8 @@ package httpkit
 
 import "net/http"
 
-// SecurityHeadersConfig — значения security-заголовков; пустое поле — заголовок
-// не ставится.
+// SecurityHeadersConfig — значения security-заголовков; пустое поле (в ENV — «-») —
+// заголовок не ставится.
 type SecurityHeadersConfig struct {
 	HSTS               string `envconfig:"HTTP_HSTS" default:"max-age=31536000; includeSubDomains"`
 	ContentTypeOptions string `envconfig:"HTTP_CONTENT_TYPE_OPTIONS" default:"nosniff"`

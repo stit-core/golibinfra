@@ -69,13 +69,13 @@ func registerStartupCheck(lc fx.Lifecycle, client *miniogo.Client, cfg storageki
 func ensureBucket(ctx context.Context, client *miniogo.Client, cfg storagekit.Config) error {
 	exists, err := client.BucketExists(ctx, cfg.Bucket)
 	if err != nil {
-		return fmt.Errorf("storagekit: bucket exists check %q: %w", cfg.Bucket, err)
+		return fmt.Errorf("storagekit/minio: bucket exists check %q: %w", cfg.Bucket, err)
 	}
 	if exists {
 		return nil
 	}
 	if err := client.MakeBucket(ctx, cfg.Bucket, miniogo.MakeBucketOptions{Region: cfg.Region}); err != nil {
-		return fmt.Errorf("storagekit: create bucket %q: %w", cfg.Bucket, err)
+		return fmt.Errorf("storagekit/minio: create bucket %q: %w", cfg.Bucket, err)
 	}
 	return nil
 }
@@ -83,10 +83,10 @@ func ensureBucket(ctx context.Context, client *miniogo.Client, cfg storagekit.Co
 func checkBucket(ctx context.Context, client *miniogo.Client, bucket string) error {
 	ok, err := client.BucketExists(ctx, bucket)
 	if err != nil {
-		return fmt.Errorf("storagekit: bucket exists check %q: %w", bucket, err)
+		return fmt.Errorf("storagekit/minio: bucket exists check %q: %w", bucket, err)
 	}
 	if !ok {
-		return fmt.Errorf("storagekit: bucket %q not found", bucket)
+		return fmt.Errorf("storagekit/minio: bucket %q not found", bucket)
 	}
 	return nil
 }

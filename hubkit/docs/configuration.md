@@ -14,7 +14,7 @@
 |---|---|---|---|
 | `HUB_SSO_JWKS_URL` | string | — | обязателен, абсолютный http(s) URL |
 | `HUB_SSO_AUDIENCE` | string | — | обязателен; равен `HUB_SESSION_AUDIENCE` issuer'а сотрудника |
-| `HUB_SSO_ISSUER` | string | `https://id.stit.tech` | обязателен (явно пустое значение — отказ старта) |
+| `HUB_SSO_ISSUER` | string | `https://id.stit.tech` | обязателен: пустая переменная — дефолт, `-` — отказ старта |
 | `HUB_SSO_COOKIE` | string | `stit_session` | непустое; отличается от `HUB_SSO_CUSTOMER_COOKIE` |
 | `HUB_SSO_LOGIN_URL` | string | `https://id.stit.tech/auth/login` | абсолютный http(s) URL |
 | `HUB_SSO_LEEWAY` | duration | `60s` | `>= 0`; допуск часов для `exp`/`nbf`/`iat` |

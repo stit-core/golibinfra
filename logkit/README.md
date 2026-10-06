@@ -313,9 +313,9 @@ func NewOTelHandler(lp log.LoggerProvider, level slog.Leveler) slog.Handler     
 type Attr func(ctx context.Context) (any, bool) // значение любого типа, как у пар Logger
 func RegisterAttr(key string, fn Attr)          // дедупликация по ключу
 
-func NewConfig() (Config, error)                // envconfig + Validate
-func NewRedactConfig() (RedactConfig, error)    // envconfig + Validate
-func NewServiceConfig() (ServiceConfig, error)
+func NewConfig() (Config, error)                // ENV + Validate
+func NewRedactConfig() (RedactConfig, error)    // ENV + Validate
+func NewServiceConfig() (ServiceConfig, error)  // ENV
 func (c Config) Validate() error
 func (c RedactConfig) Validate() error
 

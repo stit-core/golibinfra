@@ -99,16 +99,16 @@ func TestNewConfig_StreamManagedOff(t *testing.T) {
 
 // Инстанс с префиксом не наследует переменные дефолтного: иначе вторая шина
 // молча ушла бы на чужой URL и попыталась создать там чужие стримы.
-func TestNewConfigPrefixed_IgnoresUnprefixed(t *testing.T) {
+func TestNewInstanceConfig_IgnoresUnprefixed(t *testing.T) {
 	t.Setenv("NATS_URL", "nats://local:4222")
 	t.Setenv("NATS_JETSTREAM_ENABLED", "true")
 	t.Setenv("NATS_JS_STREAM_NAMES", "meeting,recording")
 	t.Setenv("HUB_NATS_URL", "tls://hub.example:4222")
 	t.Setenv("HUB_NATS_JETSTREAM_ENABLED", "true")
 
-	cfg, err := natskit.NewConfigPrefixed("hub")
+	cfg, err := natskit.NewInstanceConfig("hub")
 	if err != nil {
-		t.Fatalf("NewConfigPrefixed: %v", err)
+		t.Fatalf("NewInstanceConfig: %v", err)
 	}
 
 	if cfg.URL != "tls://hub.example:4222" {
@@ -122,12 +122,12 @@ func TestNewConfigPrefixed_IgnoresUnprefixed(t *testing.T) {
 	}
 }
 
-func TestNewConfigPrefixed_FallsBackToDefaults(t *testing.T) {
+func TestNewInstanceConfig_FallsBackToDefaults(t *testing.T) {
 	t.Setenv("NATS_URL", "nats://local:4222")
 
-	cfg, err := natskit.NewConfigPrefixed("HUB")
+	cfg, err := natskit.NewInstanceConfig("HUB")
 	if err != nil {
-		t.Fatalf("NewConfigPrefixed: %v", err)
+		t.Fatalf("NewInstanceConfig: %v", err)
 	}
 
 	if cfg.URL != "nats://localhost:4222" {
@@ -137,9 +137,9 @@ func TestNewConfigPrefixed_FallsBackToDefaults(t *testing.T) {
 
 // Имя инстанса, из которого нельзя собрать префикс ENV, — ошибка конфига, а не
 // молчаливый инстанс на дефолтах.
-func TestNewConfigPrefixed_RejectsInvalidName(t *testing.T) {
-	if _, err := natskit.NewConfigPrefixed("hub/v2"); !errors.Is(err, natskit.ErrConfig) {
-		t.Fatalf("NewConfigPrefixed(\"hub/v2\") err = %v, want ErrConfig", err)
+func TestNewInstanceConfig_RejectsInvalidName(t *testing.T) {
+	if _, err := natskit.NewInstanceConfig("hub/v2"); !errors.Is(err, natskit.ErrConfig) {
+		t.Fatalf("NewInstanceConfig(\"hub/v2\") err = %v, want ErrConfig", err)
 	}
 }
 

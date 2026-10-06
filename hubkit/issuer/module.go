@@ -1,9 +1,12 @@
 package issuer
 
 import (
+	"fmt"
+
 	"github.com/danielgtaylor/huma/v2"
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Module — контур выпуска hub-сессии: Signer (ES256 + ротация), RefreshManager
@@ -41,8 +44,8 @@ func registerJWKS(p jwksParams) {
 // NewKeyConfig читает HUB_SESSION_* ключей из ENV и валидирует их.
 func NewKeyConfig() (KeyConfig, error) {
 	var c KeyConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return KeyConfig{}, err
+	if err := envconf.Load(&c); err != nil {
+		return KeyConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }
@@ -50,8 +53,8 @@ func NewKeyConfig() (KeyConfig, error) {
 // NewCookieConfig читает cookie-слой из ENV и валидирует его.
 func NewCookieConfig() (CookieConfig, error) {
 	var c CookieConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return CookieConfig{}, err
+	if err := envconf.Load(&c); err != nil {
+		return CookieConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }
@@ -59,8 +62,8 @@ func NewCookieConfig() (CookieConfig, error) {
 // NewRefreshConfig читает HUB_REFRESH_* из ENV и валидирует их.
 func NewRefreshConfig() (RefreshConfig, error) {
 	var c RefreshConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return RefreshConfig{}, err
+	if err := envconf.Load(&c); err != nil {
+		return RefreshConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

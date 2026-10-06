@@ -49,7 +49,7 @@ func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 		metaJSON, err = json.Marshal(e.Metadata)
 		if err != nil {
 			s.instr.invalid(ctx)
-			return fmt.Errorf("auditkit: marshal metadata: %w", err)
+			return fmt.Errorf("auditkit/pgstore: marshal metadata: %w", err)
 		}
 	}
 
@@ -67,7 +67,7 @@ func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 	)
 	s.instr.observeWrite(ctx, start, err)
 	if err != nil {
-		return fmt.Errorf("auditkit: insert: %w", err)
+		return fmt.Errorf("auditkit/pgstore: insert: %w", err)
 	}
 	return nil
 }

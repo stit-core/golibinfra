@@ -6,8 +6,8 @@
 Per-account-секреты (client_id/client_secret, токены, channel-secret) сюда **не
 входят** — они приходят аргументами вызовов и живут в token-store потребителя.
 
-`NewConfig() (Config, error)` читает значения из окружения через
-`envconfig.Process("", &c)` и вызывает `Validate`. `Module` сам `Config` не
+`NewConfig() (Config, error)` читает значения из окружения ридером ENV китов
+(корневой README § Стабильность API) и вызывает `Validate`. `Module` сам `Config` не
 provide'ит — caller регистрирует `fx.Provide(amocrmkit.NewConfig)` (та же
 asymmetry, что в `pgkit`).
 
@@ -39,8 +39,8 @@ asymmetry, что в `pgkit`).
 - Во fx конфигурация берётся из графа (`fx.Provide(httpclient.NewConfig)`), то
   есть ENV общий с остальными исходящими вызовами приложения. Отдельная политика
   для amoCRM — `fx.Provide(func() (httpclient.Config, error) { return
-  httpclient.NewConfigPrefixed("AMOCRM") })`: переменные `AMOCRM_HTTPCLIENT_*` с
-  fallback на голые `HTTPCLIENT_*`.
+  httpclient.NewConfigPrefixed("AMOCRM") })`: переменные `AMOCRM_HTTPCLIENT_*` (и
+  `AMOCRM_HTTPCLIENT_BREAKER_*`) с fallback на голые `HTTPCLIENT_*`.
 
 ## Public API
 

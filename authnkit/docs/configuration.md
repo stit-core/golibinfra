@@ -7,7 +7,7 @@ change; выпускается minor-релизом, помечается `!` в
 миграции в аннотации тега (см. [корневой README § Версионирование](../../README.md)).
 
 У каждого есть `Validate() error`: нарушение окна → `ErrConfig`. `Validate`
-вызывают и envconfig-конструкторы (`NewArgon2idParams` / `NewJWTConfig` /
+вызывают и конструкторы конфигов из ENV (`NewArgon2idParams` / `NewJWTConfig` /
 `NewTOTPConfig`), и конструкторы примитивов (`NewArgon2idHasher` /
 `NewHS256JWT` / `NewTOTP`), поэтому невалидный конфиг валит старт приложения,
 а не первый запрос.
@@ -57,7 +57,7 @@ RBAC конфига не имеет: `Registry` наполняется кодо�
 | `JWT_LEEWAY` | `Leeway` | `time.Duration` | `60s` | Допуск рассинхрона часов при проверке `exp`/`nbf`/`iat` в `Parse`. `0` → дефолт кита; отрицательный → `ErrConfig`. |
 | `JWT_PREVIOUS_SECRET` | `PreviousSecret` | `string` | `""` | Секрет до ротации: подписанные им токены ещё принимаются, новые подписывает `JWT_SECRET`. Пусто — ротации нет; короче 32 байт → `ErrConfig` (§ Ротация секрета). |
 | `JWT_ISSUER` | `Issuer` | `string` | `""` | `iss`: `Sign*` проставляет, `Parse*` требует совпадения (`ErrTokenAudience`). Пусто — не пишется и не проверяется. |
-| `JWT_AUDIENCE` | `Audience` | `[]string` | — (пусто) | `aud` через запятую: `Sign*` проставляет, `Parse*` требует пересечения (`ErrTokenAudience`). Пусто — не пишется и не проверяется; пустое значение в списке → `ErrConfig`. |
+| `JWT_AUDIENCE` | `Audience` | `[]string` | — (пусто) | `aud` через запятую: `Sign*` проставляет, `Parse*` требует пересечения (`ErrTokenAudience`). Пусто — не пишется и не проверяется. Пустой элемент списка из ENV отбрасывается, в `Config` — `ErrConfig`. |
 
 `Sign(ctx, claims, ttl)` принимает TTL явно — для токенов с нестандартным сроком
 (одноразовые ссылки, приглашения); `ttl <= 0` → `ErrConfig`.

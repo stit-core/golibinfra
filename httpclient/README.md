@@ -55,9 +55,10 @@ defer hc.Close()
 ```
 
 Несколько клиентов с разной политикой в одном процессе — `NewConfigPrefixed`:
-`NewConfigPrefixed("AMOCRM")` читает `<PREFIX>_HTTPCLIENT_*` и падает обратно на
-голые `HTTPCLIENT_*` для незаданных переменных (базовая политика сервиса +
-точечные переопределения на upstream).
+`NewConfigPrefixed("AMOCRM")` читает `<PREFIX>_HTTPCLIENT_*`, в том числе breaker —
+`<PREFIX>_HTTPCLIENT_BREAKER_*`, и падает обратно на голые `HTTPCLIENT_*` для
+незаданных переменных (базовая политика сервиса + точечные переопределения на
+upstream).
 
 ## Конфигурация
 

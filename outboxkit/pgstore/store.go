@@ -89,7 +89,7 @@ func NewStoreFor(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error
 
 func newStore(db *pgkit.DB, table string, opts ...StoreOption) (*Store, error) {
 	if !tableNameRe.MatchString(table) {
-		return nil, fmt.Errorf("outboxkit: invalid table name %q", table)
+		return nil, fmt.Errorf("outboxkit/pgstore: invalid table name %q", table)
 	}
 	const cols = `id, created_at, subject, payload, attempts,
     (next_attempt_at IS NULL OR next_attempt_at <= NOW()) AS due`
@@ -150,10 +150,10 @@ func (s *Store) Insert(ctx context.Context, subject string, payload json.RawMess
 		return fmt.Errorf("%w: wrap the call in pgkit Transactor.WithTx", outboxkit.ErrNoTx)
 	}
 	if len(payload) == 0 {
-		return fmt.Errorf("outboxkit: insert %q: empty payload", subject)
+		return fmt.Errorf("outboxkit/pgstore: insert %q: empty payload", subject)
 	}
 	if _, err := s.db.Exec(ctx, s.insertSQL, subject, []byte(payload)); err != nil {
-		return fmt.Errorf("outboxkit: insert: %w", err)
+		return fmt.Errorf("outboxkit/pgstore: insert: %w", err)
 	}
 	return nil
 }
@@ -177,7 +177,7 @@ func (s *Store) ListUnpublished(ctx context.Context, limit int, mode outboxkit.P
 		var m outboxkit.Message
 		var due bool
 		if err := rows.Scan(&m.ID, &m.CreatedAt, &m.Subject, &m.Payload, &m.Attempts, &due); err != nil {
-			return nil, fmt.Errorf("outboxkit: scan: %w", err)
+			return nil, fmt.Errorf("outboxkit/pgstore: scan: %w", err)
 		}
 		if !due {
 			break
@@ -194,7 +194,7 @@ func listErr(err error) error {
 	if pgkit.IsLockNotAvailable(err) {
 		return outboxkit.ErrBusy
 	}
-	return fmt.Errorf("outboxkit: list: %w", err)
+	return fmt.Errorf("outboxkit/pgstore: list: %w", err)
 }
 
 // MarkPublished проставляет published_at строкам батча; refs несут ключ
@@ -205,7 +205,7 @@ func (s *Store) MarkPublished(ctx context.Context, refs []outboxkit.MessageRef) 
 	}
 	ids, from, to := refBounds(refs)
 	if _, err := s.db.Exec(ctx, s.markSQL, ids, from, to); err != nil {
-		return fmt.Errorf("outboxkit: mark published: %w", err)
+		return fmt.Errorf("outboxkit/pgstore: mark published: %w", err)
 	}
 	return nil
 }
@@ -229,7 +229,7 @@ func (s *Store) RecordFailures(ctx context.Context, failures []outboxkit.Failure
 	}
 	ids, from, to := refBounds(refs)
 	if _, err := s.db.Exec(ctx, s.failSQL, ids, errs, dead, retry, from, to); err != nil {
-		return fmt.Errorf("outboxkit: record failures: %w", err)
+		return fmt.Errorf("outboxkit/pgstore: record failures: %w", err)
 	}
 	return nil
 }
@@ -247,7 +247,7 @@ func (s *Store) ReviveDead(ctx context.Context, filter outboxkit.ReviveFilter) (
 	}
 	tag, err := s.db.Exec(ctx, s.reviveSQL, ids, filter.Subject, since)
 	if err != nil {
-		return 0, fmt.Errorf("outboxkit: revive dead: %w", err)
+		return 0, fmt.Errorf("outboxkit/pgstore: revive dead: %w", err)
 	}
 	return tag.RowsAffected(), nil
 }
@@ -258,7 +258,7 @@ func (s *Store) ReviveDead(ctx context.Context, filter outboxkit.ReviveFilter) (
 func (s *Store) Backlog(ctx context.Context) ([]outboxkit.SubjectBacklog, error) {
 	rows, err := s.db.Query(ctx, s.backlogSQL)
 	if err != nil {
-		return nil, fmt.Errorf("outboxkit: backlog query: %w", err)
+		return nil, fmt.Errorf("outboxkit/pgstore: backlog query: %w", err)
 	}
 	defer rows.Close()
 	var out []outboxkit.SubjectBacklog
@@ -266,13 +266,13 @@ func (s *Store) Backlog(ctx context.Context) ([]outboxkit.SubjectBacklog, error)
 		var b outboxkit.SubjectBacklog
 		var seconds float64
 		if err := rows.Scan(&b.Subject, &seconds, &b.Pending); err != nil {
-			return nil, fmt.Errorf("outboxkit: backlog scan: %w", err)
+			return nil, fmt.Errorf("outboxkit/pgstore: backlog scan: %w", err)
 		}
 		b.Oldest = time.Duration(seconds * float64(time.Second))
 		out = append(out, b)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("outboxkit: backlog: %w", err)
+		return nil, fmt.Errorf("outboxkit/pgstore: backlog: %w", err)
 	}
 	return out, nil
 }

@@ -41,7 +41,7 @@ import "git.stit.tech/stit-core/golibinfra/telemetry"
 
 `telemetry.Module` подключается первым — остальные киты пишут в поднятый им
 pipeline. Конфиг приложение собирает само или через `telemetry.NewConfig`
-(envconfig + `Validate`). `logkit.Config` модулю нужен, чтобы построить
+(ENV + `Validate`). `logkit.Config` модулю нужен, чтобы построить
 stdout-логгер для ошибок экспорта.
 
 ```go
@@ -191,8 +191,8 @@ stderr — так их печатает SDK по умолчанию.
 | Символ | Назначение |
 |---|---|
 | `Config` / `(Config) Validate() error` | конфиг bootstrap'а; `ErrConfig` при невалидных значениях |
-| `Headers` / `(*Headers) Decode(string) error` | заголовки OTLP из `OTEL_EXPORTER_OTLP_HEADERS`; `envconfig.Decoder` |
-| `NewConfig() (Config, error)` | envconfig + `Validate` |
+| `Headers` / `(*Headers) Decode(string) error` | заголовки OTLP из `OTEL_EXPORTER_OTLP_HEADERS`; `Decode` — разбор значения переменной |
+| `NewConfig() (Config, error)` | ENV + `Validate`; ошибка чтения — `ErrConfig` с именем переменной |
 | `Module` | fx-модуль: Init providers + `Shutdown` на OnStop, `fx.Invoke` внутри. Принимает `Config`, `logkit.Config` и опционально `logkit.RedactConfig`, provide'ит `*Providers` и `log.LoggerProvider`. **Config не provide'ит** |
 | `Init(ctx, cfg, opts...) (*Providers, error)` | bootstrap без fx: providers, глобальные провайдеры, propagator, runtime-инструментация |
 | `Option` / `WithErrorLogger(slog.Handler)` | куда уводить ошибки экспорта и внутренние сообщения SDK |

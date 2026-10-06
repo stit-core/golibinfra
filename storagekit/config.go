@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Источник учётных данных S3.
@@ -77,8 +77,8 @@ type Config struct {
 // старт приложения, а не первый запрос.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return Config{}, fmt.Errorf("%w: env: %w", ErrConfig, err)
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	if err := c.Validate(); err != nil {
 		return Config{}, err

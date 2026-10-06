@@ -1,9 +1,11 @@
 package anthropickit
 
 import (
-	"github.com/kelseyhightower/envconfig"
+	"fmt"
+
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -20,8 +22,8 @@ var Module = fx.Module(
 // NewConfig грузит Config из окружения и валидирует её.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

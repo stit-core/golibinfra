@@ -5,10 +5,10 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/clockkit"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
@@ -65,8 +65,8 @@ func (c Config) Validate() error {
 // и валидирует его.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("outboxkit: pgstore config: %w", err)
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", outboxkit.ErrConfig, err)
 	}
 	return c, c.Validate()
 }

@@ -4,7 +4,7 @@
 
 `anthropickit.Config` — публичный env-контракт. Загружается через
 config-композицию (ENV) либо напрямую `anthropickit.NewConfig()`
-(`envconfig.Process` + `Validate`).
+(ENV ридером китов + `Validate`).
 
 > **Public API.** Имена полей и их `envconfig`/`default`/`required`-теги —
 > часть стабильного контракта. Менять их = breaking change: выпускается

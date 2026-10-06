@@ -73,7 +73,7 @@ func NewRegistry() *Registry
 func (r *Registry) Register(role string, perms ...Permission)
 func (r *Registry) Has(role string, p Permission) bool
 
-// envconfig-конструкторы (для приложений без App-pattern)
+// конструкторы конфигов из ENV (для приложений без App-pattern)
 func NewArgon2idParams() (Argon2idParams, error)
 func NewJWTConfig() (JWTConfig, error)
 func NewTOTPConfig() (TOTPConfig, error)

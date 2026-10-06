@@ -1,8 +1,11 @@
 package flagkit
 
 import (
-	"github.com/kelseyhightower/envconfig"
+	"fmt"
+
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Module не provide'ит Config: его регистрирует caller — App-структурой или
@@ -18,8 +21,8 @@ var Module = fx.Module(
 // запись роняет старт приложения, а не выключает флаг молча.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

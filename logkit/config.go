@@ -6,10 +6,11 @@ import (
 	"log/slog"
 	"strings"
 
-	"github.com/kelseyhightower/envconfig"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
-// ErrConfig — невалидный уровень, формат, regex или строка-замена redact'а.
+// ErrConfig — невалидный конфиг: неразбираемое значение ENV, уровень, формат, regex или
+// строка-замена redact'а.
 var ErrConfig = errors.New("logkit: invalid config")
 
 // Config — уровень, формат и назначение локального sink'а. Zero-value валиден:
@@ -34,7 +35,7 @@ func (c Config) Validate() error {
 // встречается внутри квантификаторов ({10,15}); литеральная «;» — как «\;».
 type Patterns []string
 
-// Decode реализует envconfig.Decoder: режет значение по неэкранированным «;».
+// Decode разбирает значение LOG_REDACT_PATTERNS: режет его по неэкранированным «;».
 func (p *Patterns) Decode(value string) error {
 	var (
 		out Patterns
@@ -92,8 +93,8 @@ type ServiceConfig struct {
 // NewConfig читает LOG_* из окружения и валидирует результат.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }
@@ -101,8 +102,8 @@ func NewConfig() (Config, error) {
 // NewRedactConfig читает LOG_REDACT_* из окружения и валидирует результат.
 func NewRedactConfig() (RedactConfig, error) {
 	var c RedactConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return c, err
+	if err := envconf.Load(&c); err != nil {
+		return RedactConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }
@@ -110,7 +111,10 @@ func NewRedactConfig() (RedactConfig, error) {
 // NewServiceConfig читает идентичность сервиса из окружения.
 func NewServiceConfig() (ServiceConfig, error) {
 	var c ServiceConfig
-	return c, envconfig.Process("", &c)
+	if err := envconf.Load(&c); err != nil {
+		return ServiceConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
+	}
+	return c, nil
 }
 
 func parseLevel(s string) (slog.Level, error) {

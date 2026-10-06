@@ -12,10 +12,11 @@ import (
 )
 
 type appConfig struct {
-	Addr    string `envconfig:"ADDR" default:":8080"`
-	Workers int    `envconfig:"WORKERS" default:"2"`
-	Debug   bool   `envconfig:"DEBUG"`
-	Region  string
+	Addr    string   `envconfig:"ADDR" default:":8080"`
+	Workers int      `envconfig:"WORKERS" default:"2"`
+	Debug   bool     `envconfig:"DEBUG"`
+	Origins []string `envconfig:"ORIGINS" default:"https://a.example"`
+	Name    string   `ignored:"true"`
 }
 
 type pgSection struct {
@@ -64,52 +65,75 @@ func TestEnvPrefixed_FallsBackToUnprefixed(t *testing.T) {
 	}
 }
 
-// Fallback работает только для полей с envconfig-тегом: у поля без тега
-// альтернативного (непрефиксованного) имени нет.
-func TestEnvPrefixed_UntaggedFieldHasNoFallback(t *testing.T) {
-	t.Setenv("REGION", "eu")
+// Пустая переменная равна незаданной: Helm `value: ""` и compose без подстановки дают дефолт.
+func TestEnv_EmptyValueIsUnset(t *testing.T) {
+	t.Setenv("ADDR", "")
+	t.Setenv("WORKERS", "")
+	t.Setenv("ORIGINS", "")
 
 	var cfg appConfig
-	if err := config.Load(&cfg, config.EnvPrefixed("cfgtest")); err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if cfg.Region != "" {
-		t.Fatalf("Region = %q, want empty: untagged field reads only CFGTEST_REGION", cfg.Region)
-	}
-}
-
-func TestEnv_NestedStructFieldNameBecomesPrefix(t *testing.T) {
-	t.Setenv("PG_DSN", "via-tag")
-	t.Setenv("POSTGRES_PG_DSN", "via-field-prefix")
-
-	var cfg nestedConfig
 	if err := config.Load(&cfg, config.Env()); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if cfg.Postgres.DSN != "via-field-prefix" {
-		t.Fatalf("DSN = %q, want POSTGRES_PG_DSN to win over PG_DSN", cfg.Postgres.DSN)
+	if cfg.Addr != ":8080" || cfg.Workers != 2 || len(cfg.Origins) != 1 {
+		t.Fatalf("cfg = %+v, want defaults", cfg)
 	}
 }
 
-func TestEnv_NestedStructFallsBackToTagName(t *testing.T) {
+func TestEnv_EmptyMarkerSetsEmptyList(t *testing.T) {
+	t.Setenv("ORIGINS", "-")
+
+	var cfg appConfig
+	if err := config.Load(&cfg, config.Env()); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Origins != nil {
+		t.Fatalf("Origins = %v, want an explicit empty list", cfg.Origins)
+	}
+}
+
+// Поле без тега из ENV не читается, поэтому без ignored:"true" это ошибка, а не тихий ноль.
+func TestEnv_UntaggedFieldIsAnError(t *testing.T) {
+	type app struct {
+		Region string
+	}
+	t.Setenv("REGION", "eu")
+	err := config.Load(&app{}, config.Env())
+	if err == nil || !strings.Contains(err.Error(), "app.Region has no envconfig tag") {
+		t.Fatalf("err = %v, want an error naming the untagged field", err)
+	}
+}
+
+// Вложенная структура читается теми же именами тегов: теневых имён с приставкой поля нет.
+func TestEnv_NestedStructUsesTagNames(t *testing.T) {
 	t.Setenv("PG_DSN", "via-tag")
+	t.Setenv("POSTGRES_PG_DSN", "shadow")
 
 	var cfg nestedConfig
 	if err := config.Load(&cfg, config.Env()); err != nil {
 		t.Fatalf("Load: %v", err)
 	}
 	if cfg.Postgres.DSN != "via-tag" {
-		t.Fatalf("DSN = %q, want fallback to PG_DSN", cfg.Postgres.DSN)
+		t.Fatalf("DSN = %q, want PG_DSN", cfg.Postgres.DSN)
+	}
+
+	t.Setenv("CFGTEST_PG_DSN", "prefixed")
+	cfg = nestedConfig{}
+	if err := config.Load(&cfg, config.EnvPrefixed("cfgtest")); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Postgres.DSN != "prefixed" {
+		t.Fatalf("DSN = %q, want CFGTEST_PG_DSN", cfg.Postgres.DSN)
 	}
 }
 
-func TestEnv_ParseErrorIsWrappedWithIndex(t *testing.T) {
+func TestEnv_ParseErrorNamesSourceAndVariable(t *testing.T) {
 	t.Setenv("WORKERS", "many")
 
 	var cfg appConfig
 	err := config.Load(&cfg, config.Env())
-	if err == nil || !strings.Contains(err.Error(), "config: source[0]") {
-		t.Fatalf("err = %v, want wrapped with source index", err)
+	if err == nil || !strings.Contains(err.Error(), "config: source[0]: WORKERS: ") {
+		t.Fatalf("err = %v, want wrapped with source index and the variable", err)
 	}
 }
 

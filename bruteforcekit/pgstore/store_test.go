@@ -537,5 +537,5 @@ func expireLock(t *testing.T, ctx context.Context, db *pgkit.DB, subject, ip str
 }
 
 func hasKitPrefix(err error) bool {
-	return err != nil && strings.HasPrefix(err.Error(), "bruteforcekit: ")
+	return err != nil && strings.HasPrefix(err.Error(), "bruteforcekit/pgstore: ")
 }

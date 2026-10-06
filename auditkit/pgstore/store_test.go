@@ -29,8 +29,8 @@ func TestStore_Log_ErrorPrefix(t *testing.T) {
 	err := s.Log(context.Background(), auditkit.Entry{
 		Action: "x", Resource: "y", Metadata: map[string]any{"bad": make(chan int)},
 	})
-	if err == nil || !strings.HasPrefix(err.Error(), "auditkit: ") {
-		t.Fatalf("err = %v, want auditkit: prefix", err)
+	if err == nil || !strings.HasPrefix(err.Error(), "auditkit/pgstore: ") {
+		t.Fatalf("err = %v, want auditkit/pgstore: prefix", err)
 	}
 }
 
@@ -196,8 +196,8 @@ func TestStore_Log_InsertError(t *testing.T) {
 	canceled, cancel := context.WithCancel(ctx)
 	cancel()
 	err := s.Log(canceled, auditkit.Entry{Action: "user.create", Resource: "user"})
-	if err == nil || !strings.HasPrefix(err.Error(), "auditkit: insert: ") {
-		t.Fatalf("Log with canceled ctx = %v, want auditkit: insert: prefix", err)
+	if err == nil || !strings.HasPrefix(err.Error(), "auditkit/pgstore: insert: ") {
+		t.Fatalf("Log with canceled ctx = %v, want auditkit/pgstore: insert: prefix", err)
 	}
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("Log error must wrap context.Canceled, got %v", err)

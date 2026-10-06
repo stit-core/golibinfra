@@ -1,6 +1,6 @@
 # pgkit — конфигурация
 
-Все значения читаются из окружения через `envconfig`. `Module` и
+Все значения читаются из окружения ридером ENV китов ([корневой README § Стабильность API](../../README.md#стабильность-api)). `Module` и
 `MigrateModule` сами Config'и **не** provide'ят — caller регистрирует фабрики
 (`NewPoolConfig`, `NewReplicaConfig`, `NewMigrateRunnerConfig`) или собирает
 App-структуру (см. [architecture.md § fx-композиция](architecture.md)).
@@ -71,7 +71,7 @@ lifetime/idle, `HealthCheck`, `ConnectTimeout`, `OTelTrace`, сессионны�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `PG_MIGRATIONS_PATH` | `Path` | `string` | `/migrations` | каталог с `*.up.sql`/`*.down.sql` приложения (источник `app`); пустая строка — у приложения нет своих миграций, применяются только источники китов |
+| `PG_MIGRATIONS_PATH` | `Path` | `string` | `/migrations` | каталог с `*.up.sql`/`*.down.sql` приложения (источник `app`); `-` (пустая строка в `Path`) — у приложения нет своих миграций, применяются только источники китов |
 | `PG_MIGRATE_TIMEOUT` | `Timeout` | `time.Duration` | `2m` | лимит на ожидание advisory-lock'а **и** прогон всех миграций в `OnStart` |
 
 DSN для миграций `MigrateModule` берёт из `PoolConfig.DSN` (тот же `PG_DSN`).

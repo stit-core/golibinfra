@@ -14,7 +14,7 @@ import (
 
 // ErrPendingRows — retention пропустил партиции с неопубликованными событиями;
 // текст ошибки перечисляет их.
-var ErrPendingRows = errors.New("outboxkit: partition holds unpublished events")
+var ErrPendingRows = errors.New("outboxkit/pgstore: partition holds unpublished events")
 
 // SchemaSQL возвращает DDL партиционированной таблицы outbox + индекс для
 // заданного имени. Обычно не нужен напрямую: миграции кастомной таблицы даёт
@@ -71,7 +71,7 @@ func (s *Store) EnsurePartitions(ctx context.Context, monthsAhead int) error {
 		m := base.AddDate(0, i, 0)
 		_, sql := PartitionSQL(s.table, m)
 		if _, err := s.db.Exec(ctx, sql); err != nil && !createdConcurrently(err) {
-			return fmt.Errorf("outboxkit: ensure partition %s: %w", m.Format("2006-01"), err)
+			return fmt.Errorf("outboxkit/pgstore: ensure partition %s: %w", m.Format("2006-01"), err)
 		}
 	}
 	return nil
@@ -118,7 +118,7 @@ func (s *Store) DropOldPartitions(ctx context.Context, keepMonths int) error {
 		return nil
 	}
 	if pgkit.InTx(ctx) {
-		return errors.New("outboxkit: DropOldPartitions must run outside a transaction")
+		return errors.New("outboxkit/pgstore: DropOldPartitions must run outside a transaction")
 	}
 	cutoff := monthStart(s.clock.Now()).AddDate(0, -keepMonths, 0)
 
@@ -132,7 +132,7 @@ func (s *Store) DropOldPartitions(ctx context.Context, keepMonths int) error {
 		// name прошёл partitionMonth — это валидный `<table>_YYYY_MM`, безопасно инлайнить.
 		var hasPending bool
 		if err := s.db.QueryRow(ctx, fmt.Sprintf(s.pendingSQLFmt, p.name)).Scan(&hasPending); err != nil {
-			return fmt.Errorf("outboxkit: check partition %s: %w", p.name, err)
+			return fmt.Errorf("outboxkit/pgstore: check partition %s: %w", p.name, err)
 		}
 		if hasPending {
 			pending = append(pending, p.name)
@@ -144,7 +144,7 @@ func (s *Store) DropOldPartitions(ctx context.Context, keepMonths int) error {
 			}
 		}
 		if _, err := s.db.Exec(ctx, "DROP TABLE IF EXISTS "+p.name); err != nil {
-			return fmt.Errorf("outboxkit: drop partition %s: %w", p.name, err)
+			return fmt.Errorf("outboxkit/pgstore: drop partition %s: %w", p.name, err)
 		}
 	}
 	if len(pending) > 0 {
@@ -156,14 +156,14 @@ func (s *Store) DropOldPartitions(ctx context.Context, keepMonths int) error {
 func (s *Store) oldPartitions(ctx context.Context, cutoff time.Time) ([]partitionRef, error) {
 	rows, err := s.db.Query(ctx, listPartitionsSQL, s.table)
 	if err != nil {
-		return nil, fmt.Errorf("outboxkit: list partitions: %w", err)
+		return nil, fmt.Errorf("outboxkit/pgstore: list partitions: %w", err)
 	}
 	defer rows.Close()
 	var out []partitionRef
 	for rows.Next() {
 		var p partitionRef
 		if err := rows.Scan(&p.name, &p.attached, &p.detachPending); err != nil {
-			return nil, fmt.Errorf("outboxkit: scan partition: %w", err)
+			return nil, fmt.Errorf("outboxkit/pgstore: scan partition: %w", err)
 		}
 		if m, ok := partitionMonth(s.table, p.name); !ok || !m.Before(cutoff) {
 			continue
@@ -171,7 +171,7 @@ func (s *Store) oldPartitions(ctx context.Context, cutoff time.Time) ([]partitio
 		out = append(out, p)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("outboxkit: list partitions: %w", err)
+		return nil, fmt.Errorf("outboxkit/pgstore: list partitions: %w", err)
 	}
 	return out, nil
 }
@@ -186,7 +186,7 @@ func (s *Store) detachPartition(ctx context.Context, p partitionRef) error {
 		stmt = fmt.Sprintf("ALTER TABLE %s DETACH PARTITION %s FINALIZE", s.table, p.name)
 	}
 	if _, err := s.db.Exec(ctx, stmt); err != nil {
-		return fmt.Errorf("outboxkit: detach partition %s: %w", p.name, err)
+		return fmt.Errorf("outboxkit/pgstore: detach partition %s: %w", p.name, err)
 	}
 	return nil
 }

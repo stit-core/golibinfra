@@ -4,8 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // OptionGroup — fx-группа опций клиента: всё, что нельзя выразить через ENV
@@ -47,13 +48,13 @@ func NewConfig() (Config, error) {
 	return NewConfigPrefixed("")
 }
 
-// NewConfigPrefixed читает конфиг из `<PREFIX>_HTTPCLIENT_*` с fallback на
-// голые `HTTPCLIENT_*`: базовая политика на сервис, точечные переопределения на
-// upstream (`AMOCRM_HTTPCLIENT_RETRY_MAX_WAIT`).
+// NewConfigPrefixed читает конфиг из `<PREFIX>_HTTPCLIENT_*` (breaker — из
+// `<PREFIX>_HTTPCLIENT_BREAKER_*`) с fallback на голые `HTTPCLIENT_*`: базовая политика на
+// сервис, точечные переопределения на upstream (`AMOCRM_HTTPCLIENT_RETRY_MAX_WAIT`).
 func NewConfigPrefixed(prefix string) (Config, error) {
 	var c Config
-	if err := envconfig.Process(prefix, &c); err != nil {
-		return Config{}, fmt.Errorf("httpclient: config: %w", err)
+	if err := envconf.LoadPrefixed(&c, prefix, true); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

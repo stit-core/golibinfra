@@ -197,28 +197,6 @@ func TestInflightGroup_WaitHonoursContext(t *testing.T) {
 	}
 }
 
-func TestLoadEnv_ParseErrors(t *testing.T) {
-	tests := []struct {
-		name, key, value string
-	}{
-		{"bool", "NATS_JETSTREAM_ENABLED", "sure"},
-		{"int", "NATS_MAX_RECONNECTS", "many"},
-		{"duration", "NATS_CONNECT_TIMEOUT", "5"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Setenv(tt.key, tt.value)
-			var c Config
-			if err := loadEnv("", &c); err == nil {
-				t.Fatalf("loadEnv(%s=%q) = nil, want error", tt.key, tt.value)
-			}
-		})
-	}
-	if err := loadEnv("", Config{}); err == nil {
-		t.Fatal("loadEnv on non-pointer = nil, want error")
-	}
-}
-
 func TestNakDelay_GrowsToCap(t *testing.T) {
 	defaults := JetStreamConfig{NakBackoff: time.Second}
 	tests := []struct {

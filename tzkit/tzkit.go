@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 
 	// tzdata вшивается в бинарь: рантайм-образы сервисов — alpine без пакета
 	// tzdata, а CGO_ENABLED=0 отключает системный резолв зон. Без этого импорта
@@ -107,7 +107,7 @@ type Config struct {
 // NewConfig читает Config из окружения и валидирует его.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
+	if err := envconf.Load(&c); err != nil {
 		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
@@ -116,11 +116,16 @@ func NewConfig() (Config, error) {
 // Validate требует заданной и резолвящейся зоны: дефолта у APP_TZ нет, потому
 // что любая подставленная зона — это чужие границы суток без единого сигнала.
 func (c Config) Validate() error {
-	if _, err := Load(c.TZ); err != nil {
-		return fmt.Errorf("%w: APP_TZ: %w", ErrConfig, err)
-	}
-	return nil
+	_, err := NewZone(c)
+	return err
 }
 
-// NewZone — fx-фабрика Zone из Config. Ошибка резолва валит старт приложения.
-func NewZone(cfg Config) (Zone, error) { return Load(cfg.TZ) }
+// NewZone — fx-фабрика Zone из Config. Пустая, Local или неизвестная зона — ErrConfig
+// (и ErrEmptyZone, ErrLocalZone): старт приложения падает.
+func NewZone(cfg Config) (Zone, error) {
+	z, err := Load(cfg.TZ)
+	if err != nil {
+		return Zone{}, fmt.Errorf("%w: APP_TZ: %w", ErrConfig, err)
+	}
+	return z, nil
+}

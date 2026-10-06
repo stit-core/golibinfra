@@ -48,7 +48,7 @@ func installErrorLogging(h slog.Handler) {
 		if err == nil || !lim.allow(err.Error()) {
 			return
 		}
-		log.LogAttrs(context.Background(), slog.LevelError, "otel sdk error", slog.String("err", err.Error()))
+		log.LogAttrs(context.Background(), slog.LevelError, "telemetry: otel sdk error", slog.String("err", err.Error()))
 	}))
 	otel.SetLogger(logr.FromSlogHandler(&logrHandler{Handler: &limitHandler{Handler: h, lim: lim}}))
 }

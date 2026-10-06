@@ -1,10 +1,12 @@
 package client
 
 import (
-	"github.com/kelseyhightower/envconfig"
+	"fmt"
+
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/httpclient"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Module провайдит *Client поверх httpclient.Client. Config не provide'ится
@@ -34,8 +36,8 @@ func newClient(p clientParams) (*Client, error) {
 // а не ErrUnavailable на каждом запросе).
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return Config{}, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

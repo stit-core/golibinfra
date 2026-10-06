@@ -1,6 +1,6 @@
 // Command envdoc (make envdoc-check) сверяет env-переменные кода с доками китов:
 // строка таблицы и дефолт у каждой переменной, нет переменных-призраков в доках,
-// нет полей конфига, которые envconfig прочитал бы мимо тегов. Правила — check.
+// нет полей конфига без тега, которые ридер ENV отверг бы. Правила — check.
 package main
 
 import (
@@ -63,7 +63,7 @@ type envVar struct {
 //     каталога выше; ячейка дефолта таблицы совпадает с default-тегом (без тега —
 //     «—» или нулевое значение типа); каталог без таких доков — ошибка;
 //   - поле без envconfig-тега в структуре с тегами — ошибка, если оно экспортируется,
-//     не помечено ignored:"true" и не вложенный конфиг: envconfig прочитает его по имени;
+//     не помечено ignored:"true" и не вложенный конфиг: ридер ENV его отвергает;
 //   - UPPER_SNAKE-токен доков китов — переменная кода или строка allow.txt;
 //   - корневая таблица § Per-concern endpoints — переменные кода с теми же дефолтами,
 //     и в ней каждая endpoint-переменная (_URL, _DSN, _ENDPOINT, _ADDR, _TARGET).
@@ -183,7 +183,7 @@ func (p *pkg) envVars(pkgs map[string]*pkg, allow map[string]bool) (vars []envVa
 }
 
 // structVars — теги структуры; вложенный конфиг без своих тегов проверяется вместе
-// с ней: envconfig идёт в него рекурсивно.
+// с ней: ридер ENV идёт в него рекурсивно.
 func (p *pkg) structVars(pkgs map[string]*pkg, f *ast.File, name string, st *ast.StructType) (vars []envVar, problems []string) {
 	for _, field := range st.Fields.List {
 		tag := reflect.StructTag("")
@@ -206,7 +206,7 @@ func (p *pkg) structVars(pkgs map[string]*pkg, f *ast.File, name string, st *ast
 			}
 			continue
 		}
-		problems = append(problems, fmt.Sprintf("%s: поле %s.%s без envconfig-тега в конфиге с тегами — envconfig прочитает его по имени поля; нужен тег или ignored:\"true\"",
+		problems = append(problems, fmt.Sprintf("%s: поле %s.%s без envconfig-тега в конфиге с тегами — ридер ENV его отвергает; нужен тег или ignored:\"true\"",
 			p.pos(field), name, fieldName(field)))
 	}
 	return vars, problems
@@ -217,7 +217,7 @@ type structRef struct {
 	st  *ast.StructType
 }
 
-// container — структура модуля, в которую envconfig идёт рекурсивно (T, *T, pkg.T).
+// container — структура модуля, в которую ридер ENV идёт рекурсивно (T, *T, pkg.T).
 func (p *pkg) container(pkgs map[string]*pkg, f *ast.File, expr ast.Expr) *structRef {
 	if star, ok := expr.(*ast.StarExpr); ok {
 		expr = star.X
@@ -278,7 +278,7 @@ func fieldName(field *ast.Field) string {
 	return ""
 }
 
-// zeroValue — нулевое значение типа поля в записи доков: без default-тега envconfig
+// zeroValue — нулевое значение типа поля в записи доков: без default-тега ридер ENV
 // оставляет его.
 func zeroValue(t ast.Expr) string {
 	switch t := t.(type) {

@@ -43,7 +43,9 @@ description: Завести в golibinfra новый kit по конвенция
      что down каждой версии возвращает схему к её up.
 3. **Конфиг (если есть env-параметры).** Структура с `envconfig`-тегами — это
    **public API** (порядок тегов: `envconfig` первым, затем `default`).
-   `NewConfig() (Config, error)` читает ENV и вызывает `Config.Validate()`
+   `NewConfig() (Config, error)` читает ENV ридером `internal/envconf` (`envconf.Load`,
+   ошибка — `fmt.Errorf("%w: %w", ErrConfig, err)`; конструктор — строка в
+   `internal/envconf/kits_test.go`) и вызывает `Config.Validate()`
    (sentinel `<kit>.ErrConfig`); `Validate` зовут и конструкторы `New*`, чтобы
    собранный литералом конфиг тоже проверялся. Zero-value `Config` либо безопасен
    и полезен, либо отвергается `Validate`. `Module` конфиг **не** provide'ит — его

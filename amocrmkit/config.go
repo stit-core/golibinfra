@@ -5,7 +5,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // defaultMaxWait — потолок ожидания слота, если MaxWait не задан.
@@ -64,8 +64,8 @@ func parseHostOverride(s string) (*url.URL, error) {
 // provide'ит — caller регистрирует fx.Provide(amocrmkit.NewConfig).
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("%w: %w", ErrConfig, err)
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

@@ -3,10 +3,11 @@ package sync
 import (
 	"context"
 	"errors"
+	"fmt"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
@@ -50,8 +51,8 @@ func closeEnginesOnStop(lc fx.Lifecycle, engines []*Engine) {
 // NewConfig читает HUB_SYNC_* из ENV и валидирует их (ErrConfig на старте).
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return Config{}, err
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

@@ -102,10 +102,14 @@ func TestNewConfig_ValidatesEnv(t *testing.T) {
 	if cfg.Leeway != sso.DefaultLeeway || cfg.Cookie != sso.DefaultCookie {
 		t.Fatalf("defaults not applied: %+v", cfg)
 	}
-	// Явно пустой HUB_SSO_ISSUER не подменяется дефолтом — конфиг обязан упасть.
+	// Пустой HUB_SSO_ISSUER равен незаданному, явная пустота «-» — отказ конфига.
 	t.Setenv("HUB_SSO_ISSUER", "")
+	if cfg, err := sso.NewConfig(); err != nil || cfg.Issuer != "https://id.stit.tech" {
+		t.Fatalf("NewConfig with HUB_SSO_ISSUER= : %+v, %v, want the default issuer", cfg, err)
+	}
+	t.Setenv("HUB_SSO_ISSUER", "-")
 	if _, err := sso.NewConfig(); !errors.Is(err, sso.ErrConfig) {
-		t.Fatalf("NewConfig with empty issuer: %v", err)
+		t.Fatalf("NewConfig with HUB_SSO_ISSUER=- : %v, want ErrConfig", err)
 	}
 }
 

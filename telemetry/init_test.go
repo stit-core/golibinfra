@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -277,6 +278,9 @@ func TestShutdown_ExpiredContextStillRunsEveryStep(t *testing.T) {
 	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("err = %v, want DeadlineExceeded", err)
+	}
+	if !strings.HasPrefix(err.Error(), "telemetry: shutdown tracer: ") {
+		t.Fatalf("err = %v, want the telemetry prefix and the step", err)
 	}
 }
 

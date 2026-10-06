@@ -19,8 +19,8 @@ const defaultExportTimeout = 10 * time.Second
 // Headers — заголовки OTLP-запросов из OTEL_EXPORTER_OTLP_HEADERS.
 type Headers map[string]string
 
-// Decode разбирает формат спецификации OTel: `k1=v1,k2=v2`, значения в
-// percent-encoding. Реализует envconfig.Decoder.
+// Decode разбирает OTEL_EXPORTER_OTLP_HEADERS в формате спецификации OTel: `k1=v1,k2=v2`,
+// значения в percent-encoding.
 func (h *Headers) Decode(value string) error {
 	out := Headers{}
 	for pair := range strings.SplitSeq(value, ",") {
@@ -30,11 +30,11 @@ func (h *Headers) Decode(value string) error {
 		k, v, found := strings.Cut(pair, "=")
 		k = strings.TrimSpace(k)
 		if !found || k == "" {
-			return fmt.Errorf("%w: OTEL_EXPORTER_OTLP_HEADERS %q: want key=value pairs separated by comma", ErrConfig, pair)
+			return fmt.Errorf("%q: want key=value pairs separated by comma", pair)
 		}
 		decoded, err := url.PathUnescape(v)
 		if err != nil {
-			return fmt.Errorf("%w: OTEL_EXPORTER_OTLP_HEADERS %q: %w", ErrConfig, pair, err)
+			return fmt.Errorf("%q: %w", pair, err)
 		}
 		out[k] = strings.TrimSpace(decoded)
 	}

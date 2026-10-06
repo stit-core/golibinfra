@@ -1,13 +1,13 @@
 // Package config композирует источники значений конфигурации: Source
 // заполняет произвольную структуру, Load прогоняет её через переданные
-// источники по порядку. Штатный источник — переменные окружения (envconfig).
+// источники по порядку. Штатный источник — переменные окружения, тем же ридером, что у китов.
 package config
 
 import (
 	"errors"
 	"fmt"
 
-	"github.com/kelseyhightower/envconfig"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Source заполняет переданную структуру значениями из своего хранилища. Load
@@ -31,16 +31,16 @@ func Load(dst any, sources ...Source) error {
 	return errors.Join(errs...)
 }
 
-// Env возвращает источник, читающий переменные окружения по envconfig-тегам
-// без приставки.
+// Env возвращает источник, читающий переменные окружения с именами envconfig-тегов: пустая
+// переменная — как незаданная, поле без тега и без ignored:"true" — ошибка.
 func Env() Source { return envSource{} }
 
 // EnvPrefixed возвращает источник, читающий переменные окружения с приставкой
-// PREFIX_; при отсутствии PREFIX_NAME значение берётся из NAME.
+// PREFIX_; при незаданной PREFIX_NAME значение берётся из NAME.
 func EnvPrefixed(prefix string) Source { return envSource{prefix: prefix} }
 
 type envSource struct{ prefix string }
 
 func (s envSource) Apply(dst any) error {
-	return envconfig.Process(s.prefix, dst)
+	return envconf.LoadPrefixed(dst, s.prefix, true)
 }

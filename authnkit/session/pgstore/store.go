@@ -83,7 +83,7 @@ func (s *Store) Issue(ctx context.Context, subject string) (session.Token, error
 	if _, err := s.db.Exec(ctx, issueSQL, t.SessionID, subject, t.SessionExpiresAt, now,
 		authnkit.HashToken(t.Value), t.ExpiresAt); err != nil {
 		s.instr.issue(ctx, resultError)
-		return session.Token{}, fmt.Errorf("authnkit/session: issue: %w", err)
+		return session.Token{}, fmt.Errorf("authnkit/session/pgstore: issue: %w", err)
 	}
 	s.instr.issue(ctx, resultOK)
 	return t, nil
@@ -129,7 +129,7 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	}
 	if !pgkit.IsNoRows(err) {
 		s.instr.rotate(ctx, resultError)
-		return session.Token{}, fmt.Errorf("authnkit/session: rotate: %w", err)
+		return session.Token{}, fmt.Errorf("authnkit/session/pgstore: rotate: %w", err)
 	}
 	result, err := s.reject(ctx, refresh, now)
 	s.instr.rotate(ctx, result)
@@ -159,11 +159,11 @@ func (s *Store) reject(ctx context.Context, refresh string, now time.Time) (stri
 	case pgkit.IsNoRows(err):
 		return resultInvalid, session.ErrInvalid
 	case err != nil:
-		return resultError, fmt.Errorf("authnkit/session: rotate: lookup: %w", err)
+		return resultError, fmt.Errorf("authnkit/session/pgstore: rotate: lookup: %w", err)
 	case used:
 		tag, err := s.db.Exec(ctx, revokeSessionSQL, sessionID, now)
 		if err != nil {
-			return resultError, fmt.Errorf("authnkit/session: rotate: revoke reused session: %w", err)
+			return resultError, fmt.Errorf("authnkit/session/pgstore: rotate: revoke reused session: %w", err)
 		}
 		s.instr.revoke(ctx, reasonReused, tag.RowsAffected())
 		return resultReused, &session.ReusedError{SessionID: sessionID, Subject: subject}
@@ -186,7 +186,7 @@ WHERE revoked_at IS NULL
 func (s *Store) Revoke(ctx context.Context, refresh string) error {
 	tag, err := s.db.Exec(ctx, logoutSQL, authnkit.HashToken(refresh), s.now())
 	if err != nil {
-		return fmt.Errorf("authnkit/session: revoke: %w", err)
+		return fmt.Errorf("authnkit/session/pgstore: revoke: %w", err)
 	}
 	s.instr.revoke(ctx, reasonLogout, tag.RowsAffected())
 	return nil
@@ -201,7 +201,7 @@ func (s *Store) RevokeAll(ctx context.Context, subject string) error {
 	}
 	tag, err := s.db.Exec(ctx, revokeSubjectSQL, subject, s.now())
 	if err != nil {
-		return fmt.Errorf("authnkit/session: revoke all: %w", err)
+		return fmt.Errorf("authnkit/session/pgstore: revoke all: %w", err)
 	}
 	s.instr.revoke(ctx, reasonAll, tag.RowsAffected())
 	return nil
@@ -224,7 +224,7 @@ func (s *Store) Cleanup(ctx context.Context) error {
 	for {
 		tag, err := s.db.Exec(ctx, cleanupSQL, now, cleanupBatchSize)
 		if err != nil {
-			return fmt.Errorf("authnkit/session: cleanup: %w", err)
+			return fmt.Errorf("authnkit/session/pgstore: cleanup: %w", err)
 		}
 		deleted := tag.RowsAffected()
 		s.instr.cleanupDeleted.Add(ctx, deleted)

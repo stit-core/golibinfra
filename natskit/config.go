@@ -8,13 +8,15 @@ import (
 	"slices"
 	"strings"
 	"time"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // DefaultInstance — имя дефолтного (безымянного) инстанса в метриках и спанах.
 const DefaultInstance = "default"
 
 // ErrConfig — невалидный конфиг инстанса: возвращается Validate, NewConfig,
-// NewConfigPrefixed и New, чтобы сервис падал на старте.
+// NewInstanceConfig и New, чтобы сервис падал на старте.
 var ErrConfig = errors.New("natskit: invalid config")
 
 const (
@@ -80,20 +82,20 @@ type Config struct {
 
 // NewConfig читает и валидирует конфиг дефолтного инстанса из `NATS_*`.
 func NewConfig() (Config, error) {
-	return NewConfigPrefixed("")
+	return NewInstanceConfig("")
 }
 
-// NewConfigPrefixed читает и валидирует конфиг инстанса из `<PREFIX>_NATS_*`.
-// Голые `NATS_*` при этом игнорируются — набор переменных инстанса изолирован.
-func NewConfigPrefixed(prefix string) (Config, error) {
-	if prefix != "" && !validInstanceName(prefix) {
-		return Config{}, fmt.Errorf("%w: instance %q: allowed characters are letters, digits, '_', '-', '.'", ErrConfig, prefix)
+// NewInstanceConfig читает и валидирует конфиг инстанса name из `<NAME>_NATS_*`. Голые
+// `NATS_*` ему не достаются — набор переменных инстанса изолирован; пустое имя — NewConfig.
+func NewInstanceConfig(name string) (Config, error) {
+	if name != "" && !validInstanceName(name) {
+		return Config{}, fmt.Errorf("%w: instance %q: allowed characters are letters, digits, '_', '-', '.'", ErrConfig, name)
 	}
 	var c Config
-	if err := loadEnv(envPrefix(prefix), &c); err != nil {
-		return Config{}, err
+	if err := envconf.LoadPrefixed(&c, envPrefix(name), false); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
-	c.Instance = prefix
+	c.Instance = name
 	if err := c.Validate(); err != nil {
 		return Config{}, err
 	}

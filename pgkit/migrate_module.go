@@ -7,14 +7,15 @@ import (
 	"strings"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // MigrateRunnerConfig — параметры прогона миграций в OnStart (MigrateModule).
 type MigrateRunnerConfig struct {
-	// Path — каталог миграций приложения; пустая строка — приложение своих
-	// миграций не имеет, применяются только источники китов.
+	// Path — каталог миграций приложения; пустая строка (в ENV — «-») — своих миграций у
+	// приложения нет, применяются только источники китов.
 	Path    string        `envconfig:"PG_MIGRATIONS_PATH" default:"/migrations"`
 	Timeout time.Duration `envconfig:"PG_MIGRATE_TIMEOUT" default:"2m"`
 }
@@ -33,8 +34,8 @@ func (c MigrateRunnerConfig) Validate() error {
 // NewMigrateRunnerConfig читает MigrateRunnerConfig из ENV и валидирует его.
 func NewMigrateRunnerConfig() (MigrateRunnerConfig, error) {
 	var c MigrateRunnerConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("pgkit: migrate config: %w", err)
+	if err := envconf.Load(&c); err != nil {
+		return MigrateRunnerConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

@@ -55,6 +55,28 @@ func TestNewConfigPrefixed(t *testing.T) {
 	}
 }
 
+// Breaker читается с тем же префиксом, что и плоские поля; имён с приставкой поля Breaker нет.
+func TestNewConfigPrefixed_BreakerSharesPrefix(t *testing.T) {
+	t.Setenv("AMOCRM_HTTPCLIENT_BREAKER_FAILURE_THRESHOLD", "1")
+	t.Setenv("AMOCRM_HTTPCLIENT_BREAKER_RECOVERY_TIMEOUT", "2s")
+	t.Setenv("BREAKER_HTTPCLIENT_BREAKER_FAILURE_THRESHOLD", "7")
+
+	cfg, err := NewConfigPrefixed("AMOCRM")
+	if err != nil {
+		t.Fatalf("NewConfigPrefixed: %v", err)
+	}
+	if cfg.Breaker.FailureThreshold != 1 || cfg.Breaker.RecoveryTimeout != 2*time.Second {
+		t.Fatalf("Breaker = %+v, want AMOCRM_HTTPCLIENT_BREAKER_*", cfg.Breaker)
+	}
+	base, err := NewConfig()
+	if err != nil {
+		t.Fatalf("NewConfig: %v", err)
+	}
+	if base.Breaker.FailureThreshold != 5 {
+		t.Fatalf("FailureThreshold = %d, want the default: BREAKER_HTTPCLIENT_BREAKER_* is no name", base.Breaker.FailureThreshold)
+	}
+}
+
 func TestModule_ProvidesClientAndClosesOnStop(t *testing.T) {
 	var (
 		client *Client

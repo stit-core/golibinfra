@@ -22,7 +22,7 @@ provide'ит — её собирает приложение. Дешёвый пу
 
 ```go
 app := fx.New(
-	fx.Provide(anthropickit.NewConfig, logkit.NewConfig), // конфиги из ENV (envconfig + Validate)
+	fx.Provide(anthropickit.NewConfig, logkit.NewConfig), // конфиги из ENV (+ Validate)
 	logkit.Module,                                        // даёт logkit.Logger
 	anthropickit.Module,                                  // даёт anthropickit.API
 	healthkit.Provide(anthropickit.Probe),                // опционально: проба в /ready

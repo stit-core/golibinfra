@@ -46,7 +46,7 @@ func main() {
 		logkit.Module,
 		fx.Provide(logkit.NewConfig), // Config логгера из ENV
 		grpckit.Module,
-		fx.Provide(grpckit.NewConfig), // Config сервера из ENV (envconfig)
+		fx.Provide(grpckit.NewConfig), // Config сервера из ENV
 		fx.Provide(newGreeterServer),
 		fx.Provide(fx.Annotate(
 			newGreeterRegistrar,

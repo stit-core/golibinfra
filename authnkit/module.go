@@ -3,8 +3,9 @@ package authnkit
 import (
 	"fmt"
 
-	"github.com/kelseyhightower/envconfig"
 	"go.uber.org/fx"
+
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // Module не provide'ит Argon2idParams, JWTConfig и TOTPConfig — caller
@@ -30,8 +31,8 @@ func newTOTPGenerator(cfg TOTPConfig) (*TOTPGenerator, error) { return NewTOTP(c
 // NewArgon2idParams читает ARGON2_* из ENV и валидирует их.
 func NewArgon2idParams() (Argon2idParams, error) {
 	var p Argon2idParams
-	if err := envconfig.Process("", &p); err != nil {
-		return Argon2idParams{}, fmt.Errorf("%w: argon2id: %w", ErrConfig, err)
+	if err := envconf.Load(&p); err != nil {
+		return Argon2idParams{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return p, p.Validate()
 }
@@ -39,8 +40,8 @@ func NewArgon2idParams() (Argon2idParams, error) {
 // NewJWTConfig читает JWT_* из ENV и валидирует их.
 func NewJWTConfig() (JWTConfig, error) {
 	var c JWTConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return JWTConfig{}, fmt.Errorf("%w: jwt: %w", ErrConfig, err)
+	if err := envconf.Load(&c); err != nil {
+		return JWTConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }
@@ -48,8 +49,8 @@ func NewJWTConfig() (JWTConfig, error) {
 // NewTOTPConfig читает TOTP_* из ENV и валидирует их.
 func NewTOTPConfig() (TOTPConfig, error) {
 	var c TOTPConfig
-	if err := envconfig.Process("", &c); err != nil {
-		return TOTPConfig{}, fmt.Errorf("%w: totp: %w", ErrConfig, err)
+	if err := envconf.Load(&c); err != nil {
+		return TOTPConfig{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

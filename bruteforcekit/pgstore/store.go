@@ -95,7 +95,7 @@ func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit
 			return nil, nil
 		}
 		if !pgkit.IsNoRows(err) {
-			return nil, fmt.Errorf("bruteforcekit: attempt: %w", err)
+			return nil, fmt.Errorf("bruteforcekit/pgstore: attempt: %w", err)
 		}
 
 		var st bruteforcekit.LockState
@@ -105,10 +105,10 @@ func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit
 			return &st, nil
 		}
 		if !pgkit.IsNoRows(err) {
-			return nil, fmt.Errorf("bruteforcekit: attempt: read lock: %w", err)
+			return nil, fmt.Errorf("bruteforcekit/pgstore: attempt: read lock: %w", err)
 		}
 	}
-	return nil, fmt.Errorf("bruteforcekit: attempt: lock changed %d times during one attempt", attemptRounds)
+	return nil, fmt.Errorf("bruteforcekit/pgstore: attempt: lock changed %d times during one attempt", attemptRounds)
 }
 
 const recordSuccessSQL = `
@@ -122,7 +122,7 @@ func (s *Store) RecordSuccess(ctx context.Context, subject, ip string) error {
 		return err
 	}
 	if _, err := s.db.Exec(ctx, recordSuccessSQL, subject, ip); err != nil {
-		return fmt.Errorf("bruteforcekit: record success: %w", err)
+		return fmt.Errorf("bruteforcekit/pgstore: record success: %w", err)
 	}
 	return nil
 }
@@ -147,7 +147,7 @@ func (s *Store) Cleanup(ctx context.Context) error {
 	for {
 		tag, err := s.db.Exec(ctx, cleanupSQL, s.cfg.CleanupRetention.Seconds(), cleanupBatchSize)
 		if err != nil {
-			return fmt.Errorf("bruteforcekit: cleanup: %w", err)
+			return fmt.Errorf("bruteforcekit/pgstore: cleanup: %w", err)
 		}
 		deleted := tag.RowsAffected()
 		s.instr.cleanupDeleted.Add(ctx, deleted)

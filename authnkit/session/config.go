@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // ErrConfig — невалидный конфиг сессий; возвращается Validate, NewConfig и
@@ -27,8 +27,8 @@ type Config struct {
 // NewConfig читает Config из ENV и валидирует его.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("%w: %w", ErrConfig, err)
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

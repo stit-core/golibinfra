@@ -221,7 +221,7 @@ Access-log идёт отдельно, через интерсепторы и `lo
 | `WithDialOptions` | `func(...grpc.DialOption) Option` | Доп. `grpc.DialOption` поверх дефолтных |
 | `WithStatsHandlerOptions` | `func(...otelgrpc.Option) Option` | Опции otelgrpc-хендлера (фильтр, message events, свой provider) |
 | `Option` | `func(*options)` | Функциональная опция для `Dial` |
-| `NewConfig` | `func() (Config, error)` | `Config` из ENV (`envconfig.Process`) + `Validate` |
+| `NewConfig` | `func() (Config, error)` | `Config` из ENV + `Validate` |
 | `Module` | `fx.Options` | Провайдит один `*grpc.ClientConn`; lifecycle-aware (`OnStop` → `Close`) |
 | `ErrConfig` | `error` | Sentinel невалидной конфигурации |
 

@@ -3,6 +3,7 @@ package telemetry
 import (
 	"errors"
 	"maps"
+	"strings"
 	"testing"
 	"time"
 )
@@ -110,8 +111,18 @@ func TestHeaders_Decode(t *testing.T) {
 	}
 	for _, bad := range []string{"nokey", "=value", "a=%zz"} {
 		var got Headers
-		if err := got.Decode(bad); !errors.Is(err, ErrConfig) {
-			t.Errorf("Decode(%q) err = %v, want ErrConfig", bad, err)
+		if err := got.Decode(bad); err == nil {
+			t.Errorf("Decode(%q) = nil, want error", bad)
+		}
+	}
+}
+
+func TestNewConfig_BadHeadersIsErrConfig(t *testing.T) {
+	for _, bad := range []string{"nokey", "=value", "a=%zz"} {
+		t.Setenv("OTEL_EXPORTER_OTLP_HEADERS", bad)
+		_, err := NewConfig()
+		if !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "OTEL_EXPORTER_OTLP_HEADERS: ") {
+			t.Errorf("OTEL_EXPORTER_OTLP_HEADERS=%q: %v, want ErrConfig naming the variable", bad, err)
 		}
 	}
 }

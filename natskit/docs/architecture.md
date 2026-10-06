@@ -33,8 +33,7 @@ retry-политика бизнес-уровня, выбор subject'ов и str
 | `subscription.go` | `Handler`, `Subscription` (`Unsubscribe`/`Drain`), внутренняя `subscription` и `inflightGroup` — учёт работающих обработчиков. |
 | `conn.go` | `Conn` — соединение + реестр подписок; `NewConn` (аутентификация, handlers nats.go → logkit), `Healthy`, graceful `Close`/`CloseContext`, `redactURL`, ctx обработчиков. |
 | `client.go` | `Client` — инстанс шины (соединение + `Bus` + `StreamBus`), `New`, `Probe` (`healthkit.Probe`). |
-| `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewConfigPrefixed`, `Validate` и `ErrConfig`. |
-| `env.go` | Чтение конфига по тегам `envconfig` с префиксом инстанса — без fallback на беспрефиксные переменные. |
+| `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewInstanceConfig` (ENV — ридером китов `internal/envconf`, префикс инстанса без fallback на беспрефиксные переменные), `Validate` и `ErrConfig`. |
 | `context.go` | `SubjectFromContext` / `HeadersFromContext` — доступ к subject и header'ам входящего сообщения внутри обработчика. |
 | `instrumentation.go` | `natsInstruments` (5 otel-инструментов через `internal/otelkit`), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
 | `module.go` | fx `Module(name)` (`*Client` + `Bus` + `StreamBus`), `ProvideConfig(name)`, `HealthProbe(name)`, `SubscribeOnStart` — подписка в `OnStart`, drain в `OnStop`. |
@@ -356,12 +355,11 @@ fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
   приложение (`fx.Provide(natskit.NewConfig)` / `natskit.ProvideConfig(name)`),
   кит лишь его потребляет — конфиг можно подменить своим конструктором, не
   прибегая к `fx.Decorate`.
-- **Свой загрузчик ENV.** `envconfig.Process(prefix, &cfg)` при незаданной
-  префиксной переменной берёт значение одноимённой беспрефиксной, и именованный
-  инстанс молча унаследовал бы URL и стримы дефолтного — то есть ушёл бы
-  публиковать в чужую шину. Загрузчик кита (`env.go`) читает только ключи своего
-  префикса.
-- **`Validate` на старте.** Пустой `NATS_URL` молча подключил бы сервис к
-  `nats://127.0.0.1:4222`, а `NATS_JS_ACK_WAIT=1ns` сломал бы keepalive на первом
-  сообщении. Конфиг проверяется целиком в `NewConfig`/`NewConfigPrefixed`/`New`,
-  и сервис падает на старте с `ErrConfig`.
+- **Переменные инстанса без запасного имени.** `NewInstanceConfig(name)` читает
+  только `<NAME>_NATS_*`: возьми он при незаданной префиксной переменной
+  одноимённую беспрефиксную, именованный инстанс молча унаследовал бы URL и стримы
+  дефолтного — то есть ушёл бы публиковать в чужую шину.
+- **`Validate` на старте.** URL без хоста или с чужой схемой, отрицательный таймаут
+  и `NATS_JS_ACK_WAIT=1ns` (keepalive ломается на первом сообщении) отвергаются
+  целиком в `NewConfig`/`NewInstanceConfig`/`New`: сервис падает на старте с
+  `ErrConfig`, а не на первой публикации.

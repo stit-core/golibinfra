@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kelseyhightower/envconfig"
+	"git.stit.tech/stit-core/golibinfra/internal/envconf"
 )
 
 // ErrConfig — sentinel невалидной конфигурации клиента.
@@ -46,8 +46,8 @@ const (
 // на старте приложения, а не на первом вызове.
 func NewConfig() (Config, error) {
 	var c Config
-	if err := envconfig.Process("", &c); err != nil {
-		return c, fmt.Errorf("grpcclient: read config: %w", err)
+	if err := envconf.Load(&c); err != nil {
+		return Config{}, fmt.Errorf("%w: %w", ErrConfig, err)
 	}
 	return c, c.Validate()
 }

@@ -217,7 +217,7 @@ func NewAlertPublisher(hub natskit.StreamBus) *AlertPublisher { … }
 Без fx инстанс собирается напрямую:
 
 ```go
-cfg, err := natskit.NewConfigPrefixed("hub")
+cfg, err := natskit.NewInstanceConfig("hub")
 client, err := natskit.New("hub", cfg, log)
 defer client.Close()
 

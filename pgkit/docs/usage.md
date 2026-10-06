@@ -153,7 +153,7 @@ if pgkit.IsLockNotAvailable(err) {
 fx-группы `pgkit.migrations` (их регистрируют `Module` китов —
 `auditkit/pgstore`, `outboxkit/pgstore`, `bruteforcekit/pgstore` — и
 `outboxkit.Instance`), затем каталог приложения из `PG_MIGRATIONS_PATH`
-(default `/migrations`; пустая строка — у приложения своих миграций нет). DSN
+(default `/migrations`; `-` — у приложения своих миграций нет). DSN
 берётся из `PoolConfig`.
 
 ```go
