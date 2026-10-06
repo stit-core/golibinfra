@@ -252,7 +252,7 @@ blocked-by: —
 - **Метрики.** Хелперы `counted`/`counter` и свой `ManualReader` → `metrictest.NewProvider()`:
   подтесты `auth`, `verification` — `NewMetrics(p.Meter("test"))`, `p.Collect(t).Get(t, name, "result",
   …)`; `TestBoot` — `tapped.MeterProvider = p.MeterProvider` в `fx.Decorate`, `IsType` глобального
-  провайдера остаётся (`NewProvider` его не ставит, `metrictest.Collect` в этом бинаре падает).
+  провайдера остаётся: `NewProvider` его не ставит, а `metrictest.Collect` с telemetry не смешивают.
 - **Тесты.** Лесенка `cmd/migrate/migrate_test.go` может перейти на хелпер testkit (иначе —
   `repair-harness` S7: `testkit.MigrationLadder(t, testkit.WithMigrations(sources.Kits...), …)`).
   `scripts/tools/test.sh:21-22` — testkit без Docker вне `-short` — FAIL, обход
@@ -274,7 +274,8 @@ blocked-by: —
 Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`); круг фиксов B1,
 B2, N1–N9 сделан (N10 — в S8), дальше перепроверка валидатором, затем S8 (natskit). Хвост для
 S8: `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
-(1 прогон из 4), а дока обещает «снимает интерес сразу».
+(1 прогон из 4), а дока обещает «снимает интерес сразу»; в круге фиксов natskit упал в 1 из 7
+прогонов гейта (тест не записан), при `-count=2` — 8 давних падений JetStream-тестов (N10).
 
 Заготовка аннотации второй половины v1.3.0:
 - Поведение — logkit, timerkit, auditkit/pgstore, bruteforcekit/pgstore, storagekit/minio, httpkit:
