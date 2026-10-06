@@ -40,7 +40,7 @@ blocked-by: —
 - [x] **AC1** — Инструменты китов пишут в текущий глобальный `MeterProvider`, в том числе в
   тестовый. `testkit/metrictest` проверяет запись метрики (имя, тип, unit, labels, значение) китов и
   кода с переданным `Meter` (параллельно, без глобального провайдера) и коллизии имён в Prometheus.
-  Проверка: `go test -race ./testkit/metrictest/` → PASS; `M/kits-audit/fx-observability/run.sh <rev>
+  Проверка: `go test -race -count=3 ./testkit/metrictest/` → PASS; `M/kits-audit/fx-observability/run.sh <rev>
   obs-provider` → KO09 PASS; `M/kits-audit/httpkit-b/run.sh <rev> exp` → HO06 PASS
   - Подтверждено: metrictest PASS (коллизия KOBS-01, параллельные `NewProvider`); KO09, HO06 → PASS
 - [x] **AC2** — Запись аудита без `RequestID` или `IP` получает их из ctx запроса, явные значения не
@@ -174,8 +174,10 @@ blocked-by: —
   `Collect`, не импорт: иначе импорт ради `NewProvider` делал пустой проверку «граф поставил
   глобальный провайдер» и менял делегат OTel под тестом; цена — записи до первого `Collect` не видны.
   Подмена после первого `Collect` роняет его. `Get` — ровно эти labels, `Find`/`Value` — фильтр;
-  `Sub` оставляет новую серию и с нулём, gauge — текущим. Коллизии — своя трансляция
-  `UnderscoreEscapingWithSuffixes`. Свой провайдер — у `internal/otelkit` и `telemetry` (связка с SDK).
+  `Sub` оставляет новую серию и с нулём, gauge — текущим. Повтор (`-count`): тесты снимков — на
+  `NewProvider`, UpDownCounter на провайдере процесса — labels с номером прогона (natskit). Коллизии —
+  своя трансляция `UnderscoreEscapingWithSuffixes`. Свой провайдер — у `internal/otelkit` и
+  `telemetry` (связка с SDK).
 - **Аудит.** `Entry.Enrich(ctx)` ядра auditkit зовут pgstore, `audittest` и свой `Logger` до
   `Validate`. Ключ IP — из `internal/`, auditkit не импортирует httpkit.
 - **Токены.** Hex: маска hex ≥ 32 в logkit ловит его, base64url — нет (`logkit-redact-gaps`).
@@ -271,7 +273,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап S1–S7 сделан, валидатор — FAIL (`M/validation-harden-authn-release-A.md`). Круг фиксов:
-B1 (переданный `Meter` — `NewProvider`) — сделан; дальше B2 (повтор прогонов), N1–N5, перепроверка
+B1 (переданный `Meter` — `NewProvider`) и B2 (повтор прогонов) — сделаны; дальше N1–N5, перепроверка
 валидатором, затем S8 (natskit). Хвост для S8:
 `TestStreamBus_SubscriptionUnsubscribe` под нагрузкой гейта получил доставку после `Unsubscribe`
 (1 прогон из 4), а дока обещает «снимает интерес сразу».

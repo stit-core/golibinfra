@@ -95,8 +95,10 @@ func TestCollect_InstrumentCreatedBeforeInstall(t *testing.T) {
 	}
 }
 
+// Тесты снимков — на провайдере теста: серии прошлых прогонов (-count) в них не попадают.
 func TestSnapshot_KindsUnitsLabelsValues(t *testing.T) {
-	m := otel.Meter("metrictest/kinds")
+	p := NewProvider()
+	m := p.Meter("metrictest/kinds")
 	ctx := t.Context()
 	counter, _ := m.Int64Counter("kinds_requests_total")
 	updown, _ := m.Int64UpDownCounter("kinds_inflight")
@@ -105,7 +107,7 @@ func TestSnapshot_KindsUnitsLabelsValues(t *testing.T) {
 		metric.WithExplicitBucketBoundaries(0.1, 1))
 
 	counter.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "ok")))
-	before := Collect(t)
+	before := p.Collect(t)
 	counter.Add(ctx, 2, metric.WithAttributes(attribute.String("result", "ok")))
 	counter.Add(ctx, 1, metric.WithAttributes(attribute.String("result", "error"), attribute.Int("code", 503)))
 	updown.Add(ctx, 3)
@@ -113,7 +115,7 @@ func TestSnapshot_KindsUnitsLabelsValues(t *testing.T) {
 	gauge.Record(ctx, 21.5)
 	hist.Record(ctx, 0.5, metric.WithAttributes(attribute.String("op", "get")))
 	hist.Record(ctx, 2, metric.WithAttributes(attribute.String("op", "get")))
-	d := Collect(t).Sub(before)
+	d := p.Collect(t).Sub(before)
 
 	if s := d.Get(t, "kinds_requests_total", "result", "ok"); s.Kind != Counter || s.Value != 2 || s.Scope != "metrictest/kinds" {
 		t.Errorf("counter: %+v, want counter delta 2 in scope metrictest/kinds", s)
@@ -137,35 +139,38 @@ func TestSnapshot_KindsUnitsLabelsValues(t *testing.T) {
 	if got := len(d.Find("kinds_requests_total", "result", "error")); got != 1 {
 		t.Errorf("Find by label subset: %d series, want 1", got)
 	}
-	var kinds []Series
-	for _, x := range d.All() {
-		if x.Scope == "metrictest/kinds" {
-			kinds = append(kinds, x)
-		}
-	}
-	if len(kinds) != 5 {
-		t.Errorf("All: %v, want 5 series of the test scope", kinds)
+	if got := d.All(); len(got) != 5 {
+		t.Errorf("All: %v, want 5 series", got)
 	}
 }
 
 func TestSub_DropsUnchangedKeepsNewAndGauges(t *testing.T) {
-	m := otel.Meter("metrictest/sub")
+	p := NewProvider()
+	m := p.Meter("metrictest/sub")
 	ctx := t.Context()
 	idle, _ := m.Int64Counter("sub_idle_total")
 	level, _ := m.Int64Gauge("sub_level")
 	inflight, _ := m.Int64UpDownCounter("sub_inflight")
+	old := metric.WithAttributes(attribute.String("queue", "old"))
 	idle.Add(ctx, 5)
 	level.Record(ctx, 7)
+	inflight.Add(ctx, 1, old)
+	inflight.Add(ctx, -1, old)
 
-	before := Collect(t)
+	before := p.Collect(t)
 	inflight.Add(ctx, 1)
 	inflight.Add(ctx, -1)
-	d := Collect(t).Sub(before)
+	inflight.Add(ctx, 1, old)
+	inflight.Add(ctx, -1, old)
+	d := p.Collect(t).Sub(before)
 	if got := d.Find("sub_idle_total"); len(got) != 0 {
 		t.Errorf("unchanged counter in delta: %v", got)
 	}
 	if got := d.Get(t, "sub_inflight"); got.Value != 0 {
 		t.Errorf("new series must stay in delta with its value, got %v", got)
+	}
+	if got := d.Find("sub_inflight", "queue", "old"); len(got) != 0 {
+		t.Errorf("series of before unchanged by +1 −1 must leave the delta, got %v", got)
 	}
 	if got := d.Get(t, "sub_level"); got.Value != 7 {
 		t.Errorf("gauge in delta = %v, want current value 7", got)
@@ -176,9 +181,10 @@ func TestSub_DropsUnchangedKeepsNewAndGauges(t *testing.T) {
 }
 
 func TestGet_MissingSeriesFails(t *testing.T) {
-	c, _ := otel.Meter("metrictest/get").Int64Counter("get_calls_total")
+	p := NewProvider()
+	c, _ := p.Meter("metrictest/get").Int64Counter("get_calls_total")
 	c.Add(t.Context(), 1, metric.WithAttributes(attribute.String("result", "ok"), attribute.String("extra", "x")))
-	snap := Collect(t)
+	snap := p.Collect(t)
 	msg := fatalOf(t, func(tb testing.TB) { snap.Get(tb, "get_calls_total", "result", "ok") })
 	if !strings.Contains(msg, "нет серии get_calls_total") || !strings.Contains(msg, "extra=x") {
 		t.Fatalf("Get must require the exact label set and list the metric's series, got %q", msg)
@@ -223,12 +229,13 @@ func TestPromName(t *testing.T) {
 // Пара kit-гистограммы и гистограммы otelhttp с одним именем в Prometheus.
 func TestCollisions_SameHistogramNameFromTwoScopes(t *testing.T) {
 	ctx := t.Context()
-	kit, _ := otel.Meter("metrictest/kit").Float64Histogram("http_client_request_duration_seconds", metric.WithUnit("s"))
-	contrib, _ := otel.Meter("metrictest/contrib").Float64Histogram("http.client.request.duration", metric.WithUnit("s"))
+	p := NewProvider()
+	kit, _ := p.Meter("metrictest/kit").Float64Histogram("http_client_request_duration_seconds", metric.WithUnit("s"))
+	contrib, _ := p.Meter("metrictest/contrib").Float64Histogram("http.client.request.duration", metric.WithUnit("s"))
 	kit.Record(ctx, 0.1)
 	contrib.Record(ctx, 0.1)
 
-	got := Collect(t).Collisions()["http_client_request_duration_seconds"]
+	got := p.Collect(t).Collisions()["http_client_request_duration_seconds"]
 	want := []string{
 		"metrictest/contrib http.client.request.duration",
 		"metrictest/kit http_client_request_duration_seconds",

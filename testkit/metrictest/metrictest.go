@@ -184,7 +184,9 @@ func appendHistograms[N int64 | float64](out []Series, base Series, points []met
 
 // Sub — разница с более ранним снимком: у Counter, UpDownCounter и Histogram —
 // приращение, у Gauge — значение этого снимка. Серия, которой не было в before,
-// остаётся и с нулём (UpDownCounter +1 −1); серия before без изменений отброшена.
+// остаётся и с нулём (UpDownCounter +1 −1); серия before без изменений отброшена, в
+// том числе UpDownCounter после +1 −1 — на провайдере процесса такой тест берёт
+// labels, уникальные на прогон (-count).
 func (s Snapshot) Sub(before Snapshot) Snapshot {
 	prev := make(map[string]Series, len(before.series))
 	for _, b := range before.series {
