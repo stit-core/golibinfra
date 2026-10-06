@@ -391,6 +391,17 @@ func TestModule_TickTimeoutBelowIdleInTx(t *testing.T) {
 			scheduler(),
 			outboxkit.Instance("orders", "outbox_orders"),
 		),
+		// Тик сверяется по конфигу инстанса, а не графа: override дольше общего конфига.
+		"Instance override": fx.Options(
+			fx.Provide(
+				func() outboxkit.RepositoryFactory { return &fakeFactory{repo: &fakeRepo{}} },
+				func() natskit.StreamBus { return &capturingBus{} },
+				func() pgkit.Transactor { return &pgtest.Recorder{} },
+				func() outboxkit.Config { return valid(outboxkit.Config{TickTimeout: time.Second}) },
+			),
+			scheduler(),
+			outboxkit.Instance("orders", "outbox_orders", outboxkit.WithInstanceConfig(cfg)),
+		),
 	}
 	for name, graph := range graphs {
 		if err := fx.New(fx.NopLogger, graph).Err(); err != nil {

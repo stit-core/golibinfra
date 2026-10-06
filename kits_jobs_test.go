@@ -18,6 +18,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/outboxkit"
+	outboxpgstore "git.stit.tech/stit-core/golibinfra/outboxkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/natstest"
 	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
@@ -41,6 +42,16 @@ func TestKitSchemaJobsStartAfterMigrations(t *testing.T) {
 			),
 			outboxkit.Module,
 		),
+		"outboxkit.Instance": fx.Options(
+			fx.Provide(
+				outboxkit.NewConfig,
+				func() outboxkit.RepositoryFactory { return idleFactory{} },
+				func() natskit.StreamBus { return natstest.New() },
+				func() pgkit.Transactor { return pgtest.Identity{} },
+			),
+			outboxkit.Instance("orders", "outbox_orders"),
+		),
+		"outboxkit/pgstore": fx.Options(fx.Provide(outboxpgstore.NewConfig), outboxpgstore.Module),
 	}
 	for name, kit := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -96,6 +107,15 @@ func (h *hookOrder) index(caller string) int {
 		}
 	}
 	return -1
+}
+
+// idleFactory — хранилища инстансов без строк и без job'ов обслуживания.
+type idleFactory struct{}
+
+func (idleFactory) Repository(string) (outboxkit.Repository, error) { return idleRepo{}, nil }
+
+func (idleFactory) Migrations(table string) pgkit.Source {
+	return pgkit.Source{Name: table, FS: fstest.MapFS{"m/0001_t.up.sql": {Data: []byte("SELECT 1;")}}, Dir: "m"}
 }
 
 // idleRepo — Repository без строк: drain-job до тика к нему не обращается.
