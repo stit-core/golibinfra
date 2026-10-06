@@ -2,6 +2,7 @@ package httpkit_test
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"io"
 	"net/http"
@@ -172,6 +173,21 @@ func TestRequestID_ValidatesClientValue(t *testing.T) {
 	h.ServeHTTP(rec, req)
 	if seen == "" || len(seen) > 128 || strings.Contains(seen, "\n") {
 		t.Fatalf("invalid client id must be replaced, got %q", seen)
+	}
+}
+
+// Поле request_id — только у записи с request-id в ctx: пустым оно в лог не попадает.
+func TestRequestID_LogFieldOnlyWithID(t *testing.T) {
+	var buf bytes.Buffer
+	log, err := logkit.New(logkit.Config{}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+	if err != nil {
+		t.Fatal(err)
+	}
+	log.Info(context.Background(), "without")
+	log.Info(httpkit.ContextWithRequestID(context.Background(), "req-7"), "with")
+	lines := strings.Split(strings.TrimSpace(buf.String()), "\n")
+	if len(lines) != 2 || strings.Contains(lines[0], `"request_id"`) || !strings.Contains(lines[1], `"request_id":"req-7"`) {
+		t.Fatalf("request_id must be logged only with an id in ctx: %q", lines)
 	}
 }
 

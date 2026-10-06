@@ -230,6 +230,97 @@ func TestModule_StopDrainsReadyBeforeClosingListener(t *testing.T) {
 	}
 }
 
+// Пауза дренажа не выходит из бюджета остановки: длиннее двух третей бюджета fx она
+// обрывается на них, и хук после HTTP получает остаток.
+func TestModule_StopDrainPauseKeepsBudget(t *testing.T) {
+	t.Setenv("HTTP_SHUTDOWN_DRAIN_DELAY", "5s")
+	var left atomic.Int64
+	later := fx.Module("later", fx.Invoke(func(lc fx.Lifecycle) {
+		lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+			if deadline, ok := ctx.Deadline(); ok {
+				left.Store(int64(time.Until(deadline)))
+			}
+			return nil
+		}})
+	}))
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")), fx.Provide(logkit.Nop), later, httpkit.Module)
+	startCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.Start(startCtx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+
+	const budget = 1500 * time.Millisecond
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), budget)
+	defer stopCancel()
+	start := time.Now()
+	if err := app.Stop(stopCtx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if took := time.Since(start); took > budget {
+		t.Fatalf("stop with a 5s drain pause took %s, longer than its budget %s", took, budget)
+	}
+	if got := time.Duration(left.Load()); got < budget/5 {
+		t.Fatalf("the hook after HTTP got %s of the stop budget, want about a third", got)
+	}
+}
+
+// После паузы дренажа запрос в полёте дорабатывает ещё HTTP_SHUTDOWN_TIMEOUT: пауза не
+// съедает время запросов.
+func TestModule_StopRequestGetsShutdownTimeoutAfterPause(t *testing.T) {
+	t.Setenv("HTTP_SHUTDOWN_DRAIN_DELAY", "1s")
+	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "1s")
+	log := logtest.Capture()
+	entered := make(chan struct{})
+	routes := fx.Invoke(func(api huma.API) {
+		huma.Get(api, "/slow", func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+			close(entered)
+			select {
+			case <-time.After(1500 * time.Millisecond): // пауза и половина HTTP_SHUTDOWN_TIMEOUT
+				return nil, nil //nolint:nilnil // тело не нужно
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			}
+		})
+	})
+	var srv *httpkit.Server
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")),
+		fx.Provide(func() logkit.Logger { return log }), routes, httpkit.Module, fx.Populate(&srv))
+	startCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.Start(startCtx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	status := make(chan int, 1)
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+srv.Addr().String()+"/slow", nil)
+		if err != nil {
+			status <- 0
+			return
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			status <- 0
+			return
+		}
+		_ = resp.Body.Close()
+		status <- resp.StatusCode
+	}()
+	<-entered
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 10*time.Second) // ⅔ — больше паузы и таймаута
+	defer stopCancel()
+	if err := app.Stop(stopCtx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if got := <-status; got != http.StatusNoContent {
+		t.Fatalf("request finishing within HTTP_SHUTDOWN_TIMEOUT after the pause: status %d, want 204", got)
+	}
+	if w, ok := log.Find(slog.LevelWarn, "http server stop deadline: requests cancelled, connections closed"); ok {
+		t.Fatalf("stop deadline hit before the pause and HTTP_SHUTDOWN_TIMEOUT ran out: %+v", w)
+	}
+}
+
 // Запрос дольше остановки не съедает бюджет fx: на дедлайне HTTP — две трети остатка — ctx
 // хендлеров отменяется (и у захваченного соединения, которое Close не закрывает: WebSocket),
 // соединения закрываются (и у хендлера, который ctx не слушает), а хук после HTTP получает
