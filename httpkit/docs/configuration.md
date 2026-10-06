@@ -11,10 +11,10 @@
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
 | `HTTP_ADDR` | `Addr` | `string` | `:8080` | bind-адрес; `:0` — свободный порт (`Server.Addr()`) |
-| `HTTP_READ_TIMEOUT` | `ReadTimeout` | `time.Duration` | `15s` | `http.Server.ReadTimeout` |
-| `HTTP_READ_HEADER_TIMEOUT` | `ReadHeaderTimeout` | `time.Duration` | `10s` | `http.Server.ReadHeaderTimeout` (slowloris) |
-| `HTTP_WRITE_TIMEOUT` | `WriteTimeout` | `time.Duration` | `30s` | `http.Server.WriteTimeout`; для SSE ставьте `0` |
-| `HTTP_IDLE_TIMEOUT` | `IdleTimeout` | `time.Duration` | `60s` | `http.Server.IdleTimeout` |
+| `HTTP_READ_TIMEOUT` | `ReadTimeout` | `time.Duration` | `15s` | `http.Server.ReadTimeout`; `0` — без таймаута (net/http) |
+| `HTTP_READ_HEADER_TIMEOUT` | `ReadHeaderTimeout` | `time.Duration` | `10s` | `http.Server.ReadHeaderTimeout` (slowloris); `0` — берётся `ReadTimeout`, оба `0` — без защиты (net/http) |
+| `HTTP_WRITE_TIMEOUT` | `WriteTimeout` | `time.Duration` | `30s` | `http.Server.WriteTimeout`; `0` — без таймаута (net/http), для SSE ставьте `0` |
+| `HTTP_IDLE_TIMEOUT` | `IdleTimeout` | `time.Duration` | `60s` | `http.Server.IdleTimeout`; `0` — берётся `ReadTimeout` (net/http) |
 | `HTTP_SHUTDOWN_DRAIN_DELAY` | `ShutdownDrainDelay` | `time.Duration` | `0s` | пауза остановки: `/ready` отвечает `503`, listener ещё принимает запросы — балансировщик выводит инстанс; за балансировщиком (k8s) — 5–10 с; `>= 0` (§ Остановка) |
 | `HTTP_SHUTDOWN_TIMEOUT` | `ShutdownTimeout` | `time.Duration` | `10s` | сколько после паузы дорабатывают запросы в полёте; на дедлайне их ctx отменяется, соединения закрываются; `> 0` (§ Остановка) |
 | `HTTP_API_TITLE` | `APITitle` | `string` | `API` | title в OpenAPI; не пуст |

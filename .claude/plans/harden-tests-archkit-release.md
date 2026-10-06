@@ -223,6 +223,21 @@ blocked-by: harden-kits-contracts — первая половина партии
 
 ## Handoff
 **Шаблон, `repair-harness` S7 — bump v1.4.0** (плюс Handoff `harden-kits-contracts` при его закрытии):
+- **Конфиг и формы API (S1–S3 `harden-kits-contracts`).** Правки шаблона по местам:
+  - App (`internal/platform/config/config.go:45`) и `cmd/seed-admin:66` читают ENV envconfig'ом
+    напрямую — переходят на `config.Load(&cfg, config.Env())` и `authnkit.NewArgon2idConfig()`: одна
+    семантика `KEY=` с китами, теневое `COOKIE_COOKIE_SECURE` уходит; `APP_ENV=` — «required»,
+    правится `TestModule_EmptyEnvIsNotDev`;
+  - `cmd/api/main.go`: `authnkit.NewArgon2idConfig`, `healthkit.ProvideProbe(pgkit.Probe)`,
+    `natskit.ProvideProbe("")`;
+  - `cmd/seed-admin`: `authnkit.Argon2idConfig`, `sessionpg.NewStore(cfg, db)` — и в `main_test.go`
+    (тег `integration`);
+  - `internal/platform/authgate/module.go`: `httpkit.ProvideSecurityScheme` вместо сырого тега группы;
+  - `identitytest`, `identity_test`: `httpkit.ClientIP(0, log)`;
+  - `authgate/jwt_test.go`, `internal/domain/auth/infra/jwt/jwt_test.go`: `JWTConfig` с `AccessTTL`
+    (без него — `ErrConfig`), без удалённых `authnkit.DefaultAccessTTL`/`DefaultLeeway`;
+  - правила и доки: `timerkit.ProvideJob`/`JobsGroup` — `.claude/rules/events-and-messaging.md`,
+    `docs/reference/architecture.md`, `docs/stack/_templates/runtime.md`.
 - **archkit.** Семь проверок `internal/archtest` (список — «Решения») → один тест с
   `archkit.Check(t, …)`: внешние пакеты корня — нынешний `rootLibs`, чистым слоям —
   `internal/platform/identity` и `pkg/policy`, каталоги `internal/` — `testkit` и `archtest`,

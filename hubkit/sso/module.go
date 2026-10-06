@@ -100,7 +100,7 @@ func (p verifierParams) doer() Doer {
 // OptionGroup — fx-группа опций верификаторов (`hubkit.sso.option`).
 const OptionGroup = "hubkit.sso.option"
 
-// ProvideOption добавляет Option в граф: `fx.Provide(sso.ProvideOption(func() sso.Option {...}))`.
+// ProvideOption добавляет Option в граф: `sso.ProvideOption(func() sso.Option {...})`.
 func ProvideOption(ctor any) fx.Option {
 	return fx.Provide(fx.Annotate(ctor, fx.ResultTags(`group:"`+OptionGroup+`"`)))
 }

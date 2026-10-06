@@ -246,14 +246,13 @@ bruteforcekit, дефолты и входы. Вторая половина и р
 ## Handoff
 При закрытии — в Handoff `harden-tests-archkit-release`. Что меняет потребитель на bump v1.4.0:
 - **ENV.** `KEY=` — дефолт во всех китах и в `config.Env`: пустую строку или список задаёт `-`
-  (`PG_MIGRATIONS_PATH=-`); ошибки — `ErrConfig`. App на `config.Env` — без приставки имени поля
-  (`PG_DSN`), поле без тега — `ignored:"true"`; `natskit.NewInstanceConfig`.
+  (`PG_MIGRATIONS_PATH=-`), список из одних разделителей — ошибка; ошибки — `ErrConfig`. App на
+  `config.Env` — без приставки имени поля (`PG_DSN`) и без тега на вложенной структуре, поле без тега —
+  `ignored:"true"`; `natskit.NewInstanceConfig`.
 - **Конструкторы и формы.** `httpkit.NewServer(cfg, log, …)` (цепочка кита; extractor —
   `WithAuthExtractor`), `outboxkit.New`/`NewWorker`, `natskit.NewBus`, `minio.NewStorage` — с
-  ошибкой; литерал с нулями — `ErrConfig`; handlertest — с цепочкой кита. Шаблон:
-  `healthkit.ProvideProbe`, `natskit.ProvideProbe("")`, `NewArgon2idConfig` (`cmd/api`),
-  `Argon2idConfig` (`seed-admin`), `httpkit.ProvideSecurityScheme` вместо сырого тега (`authgate`),
-  `ClientIP(0, log)` (`identitytest`, `identity_test`); `timerkit.ProvideJob`/`JobsGroup` в правилах.
+  ошибкой; литерал с нулями — `ErrConfig`; handlertest — с цепочкой кита. Правки шаблона S1–S3 по
+  местам (App на `config.Env`, `seed-admin`, тесты JWT) — в Handoff `harden-tests-archkit-release`.
 - **pgkit.** Вложенная транзакция строже внешней — ошибка; хранилища китов без миграций — ошибка
   старта; таймаут блокировки мигратора — env.
 - **outbox.** Новая миграция кита (мигратор берёт её сам); метрики без `subject` (`WithMetricSubject`).
@@ -267,34 +266,35 @@ bruteforcekit, дефолты и входы. Вторая половина и р
 
 ## Где мы сейчас
 S1–S3 закрыты, AC1–AC3 подтверждены; валидатор A — FAIL (`M/validation-harden-kits-contracts-A.md`),
-фиксы `fix(…)`: envconf (B1, N3, V1, V2), natskit (N4), outboxkit (V8, V11), timerkit (M18); дальше S4.
+фиксы `fix(…)`: envconf, natskit, outboxkit, timerkit, доки (B1, N1, N3–N8, V1, V2, V8, V11, M18); дальше S4.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`,
   `NewBus(cfg, conn, log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов
   (`POSTGRES_PG_DSN` → `PG_DSN`), поле без тега — ошибка `Load` (тег или `ignored:"true"`), тег на
   вложенной структуре — ошибка (был приставкой, `DB_PG_DSN`: снять тег, имена — `PG_*`), нет
-  `*envconfig.ParseError`. httpkit: `NewServer(cfg, log, opts…) (*Server, error)` ставит цепочку кита
-  и `HumaAuth` (`WithAuthExtractor`, `WithIdempotencyStore`), `WithLogger` удалён; `ClientIP(hops,
-  log)`, `HumaAuth(extract, log)`, `RegisterHealth(api, timeout, log, probes…)`, схема —
+  `*envconfig.ParseError`. httpkit: `NewServer(cfg, log, opts…) (*Server, error)` ставит цепочку кита и
+  `HumaAuth` (`WithAuthExtractor`, `WithIdempotencyStore`), `WithLogger` удалён; `ClientIP(hops, log)`,
+  `HumaAuth(extract, log)`, `RegisterHealth(api, timeout, log, probes…)`, схема —
   `ProvideSecurityScheme(ctor)`; handlertest — с цепочкой кита. healthkit, timerkit: `Group` →
   `ProbesGroup`/`JobsGroup`, `Provide` → `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` →
   `SupplyMigrations`. outboxkit: `New(name, cfg, …)`, `NewWorker(instance, cfg, …)` с ошибкой,
   `Default{BatchSize,TickTimeout,MaxAttempts}` удалены. minio: `NewStorage(cfg, client, urls, log)` с
-  ошибкой. authnkit: `DefaultAccessTTL`, `DefaultLeeway` удалены, `Argon2idParams` → `Argon2idConfig`;
-  `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий. httpclient: `Validate` — value-приёмник,
-  группа опций → значение `httpclient.Options`. storagekit: `NewKey` → `string`,
-  `MemoryStorage.Bytes`/`Keys` удалены (`Get`). telemetry: `Headers.Decode` — без `ErrConfig`.
+  ошибкой. authnkit: `DefaultAccessTTL`, `DefaultLeeway` удалены, `Argon2idParams`/`NewArgon2idParams`
+  → `Argon2idConfig`/`NewArgon2idConfig`; `pgstore.NewStore(cfg, db…)` у bruteforcekit и сессий.
+  httpclient: `Validate` — value-приёмник, группа опций → значение `httpclient.Options`. storagekit:
+  `NewKey` → `string`, `MemoryStorage.Bytes`/`Keys` удалены (`Get`). telemetry: `Headers.Decode` — без
+  `ErrConfig`.
 - **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт; пустую строку или список задаёт `-`
   (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`, `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается,
   теневых имён нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые
   — десятичные; ошибка ENV — `<kit>.ErrConfig` с переменной (и у `tzkit.NewZone`). Литерал с нулями —
-  `ErrConfig`: httpclient (таймаут, ретрай, SSE; `MaxRedirects 0` — без редиректов), natskit
-  (таймауты, drain, потолки; JetStream — у включённого; `NakMaxBackoff 0` — постоянная задержка),
+  `ErrConfig`: httpclient (таймаут, ретрай, SSE; `MaxRedirects 0` — без редиректов), natskit (таймауты,
+  drain, потолки; JetStream — у включённого; `NakMaxBackoff 0` — постоянная задержка),
   `JWTConfig.AccessTTL`; `Leeway 0` — без допуска. Формат telemetry и JetStream — и у выключенного;
   невалидный `Config` у `storagekit.Module` и тик outbox ≥ `PG_IDLE_IN_TX_SESSION_TIMEOUT` — ошибка
   графа. nil-опции ничего не меняют; hook'и `WithBeforeAttempt` складываются, второй `WithTransport` —
   `ErrConfig`; проба natskit — `natskit` или `natskit:<name>`; cleanup bruteforcekit и сессий, drain
   outbox — после миграций; префиксы ошибок `<kit>/<sub>:`, воркер outbox — `outboxkit:`, `telemetry:
-  shutdown`.
+  shutdown`, лог ошибок SDK — `telemetry: otel sdk error`.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig.

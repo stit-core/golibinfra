@@ -147,7 +147,10 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   логгер — параметр, не опция. Test-хелперы — `testkit/<name>test`; в ките —
   только in-memory реализации двойного назначения (`cachekit.MemoryCache`,
   `storagekit.MemoryStorage`, `httpkit.MemoryStore`), фейки часов `clockkit` (часть контракта
-  `Clock`) и маркер транзакции `pgkit.WithTestTx`.
+  `Clock`) и маркер транзакции `pgkit.WithTestTx`. Исключения формы — названные: опции харнесса
+  `handlertest` (логгер — `WithLogger`), `telemetry.WithErrorLogger(slog.Handler)` (handler ошибок
+  SDK, а не логгер кита), `outboxkit/pgstore.NewStoreFor(db, table, …)`; киты вне объёма аудита
+  (hubkit, oidckit, amocrmkit, anthropickit) правятся только под API.
 - **Config провайдит caller.** `Module` не читает ENV сам: `fx.Provide(<kit>.NewConfig)`
   или App-структура. Каждый конфиг имеет `Validate() error` с sentinel'ом
   `<kit>.ErrConfig`; `NewConfig` и конструкторы (`New*`) его зовут, поэтому
