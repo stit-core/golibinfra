@@ -4,6 +4,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
 
+	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 )
 
@@ -27,7 +28,7 @@ func newInstruments() *instruments {
 			metric.WithDescription("Guard attempts by result (allowed|locked)"),
 		)),
 		locks: otelkit.Must(m.Int64Counter("bruteforce_locks_total",
-			metric.WithDescription("Transitions into the locked state (no active lock -> active lock)"),
+			metric.WithDescription("Transitions into the locked state (no active lock -> active lock) by scope (pair|subject)"),
 		)),
 		cleanupDeleted: otelkit.Must(m.Int64Counter("bruteforce_cleanup_deleted_total",
 			metric.WithDescription("Rows deleted by Cleanup"),
@@ -37,4 +38,8 @@ func newInstruments() *instruments {
 
 func resultAttr(result string) metric.MeasurementOption {
 	return metric.WithAttributes(attribute.String("result", result))
+}
+
+func scopeAttr(scope bruteforcekit.LockScope) metric.AddOption {
+	return metric.WithAttributes(attribute.String("scope", string(scope)))
 }

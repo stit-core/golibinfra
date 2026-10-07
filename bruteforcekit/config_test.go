@@ -14,6 +14,8 @@ func TestNewConfig_Defaults(t *testing.T) {
 	for _, env := range []string{
 		"BRUTEFORCE_MAX_FAILURES",
 		"BRUTEFORCE_LOCK_DURATION",
+		"BRUTEFORCE_SUBJECT_MAX_FAILURES",
+		"BRUTEFORCE_SUBJECT_LOCK_DURATION",
 		"BRUTEFORCE_CLEANUP_RETENTION",
 		"BRUTEFORCE_CLEANUP_INTERVAL",
 		"BRUTEFORCE_IPV6_PREFIX",
@@ -31,11 +33,13 @@ func TestNewConfig_Defaults(t *testing.T) {
 		t.Fatalf("NewConfig: %v", err)
 	}
 	want := bruteforcekit.Config{
-		MaxFailures:      5,
-		LockDuration:     15 * time.Minute,
-		CleanupRetention: 24 * time.Hour,
-		CleanupInterval:  5 * time.Minute,
-		IPv6Prefix:       64,
+		MaxFailures:         5,
+		LockDuration:        15 * time.Minute,
+		SubjectMaxFailures:  20,
+		SubjectLockDuration: time.Minute,
+		CleanupRetention:    24 * time.Hour,
+		CleanupInterval:     5 * time.Minute,
+		IPv6Prefix:          64,
 	}
 	if cfg != want {
 		t.Fatalf("NewConfig = %+v, want %+v", cfg, want)
@@ -45,7 +49,9 @@ func TestNewConfig_Defaults(t *testing.T) {
 func TestNewConfig_FromEnv(t *testing.T) {
 	t.Setenv("BRUTEFORCE_MAX_FAILURES", "7")
 	t.Setenv("BRUTEFORCE_LOCK_DURATION", "90s")
-	t.Setenv("BRUTEFORCE_CLEANUP_RETENTION", "0s")
+	t.Setenv("BRUTEFORCE_SUBJECT_MAX_FAILURES", "-1")
+	t.Setenv("BRUTEFORCE_SUBJECT_LOCK_DURATION", "30s")
+	t.Setenv("BRUTEFORCE_CLEANUP_RETENTION", "90s")
 	t.Setenv("BRUTEFORCE_CLEANUP_INTERVAL", "1m")
 	t.Setenv("BRUTEFORCE_IPV6_PREFIX", "128")
 
@@ -54,11 +60,13 @@ func TestNewConfig_FromEnv(t *testing.T) {
 		t.Fatalf("NewConfig: %v", err)
 	}
 	want := bruteforcekit.Config{
-		MaxFailures:      7,
-		LockDuration:     90 * time.Second,
-		CleanupRetention: 0,
-		CleanupInterval:  time.Minute,
-		IPv6Prefix:       bruteforcekit.FullIPv6Prefix,
+		MaxFailures:         7,
+		LockDuration:        90 * time.Second,
+		SubjectMaxFailures:  bruteforcekit.SubjectBudgetOff,
+		SubjectLockDuration: 30 * time.Second,
+		CleanupRetention:    90 * time.Second,
+		CleanupInterval:     time.Minute,
+		IPv6Prefix:          bruteforcekit.FullIPv6Prefix,
 	}
 	if cfg != want {
 		t.Fatalf("NewConfig = %+v, want %+v", cfg, want)
@@ -80,14 +88,21 @@ func TestNewConfig_InvalidEnv(t *testing.T) {
 func TestConfig_Validate(t *testing.T) {
 	t.Parallel()
 	valid := bruteforcekit.Config{
-		MaxFailures:      1,
-		LockDuration:     time.Second,
-		CleanupRetention: 0,
-		CleanupInterval:  time.Minute,
-		IPv6Prefix:       bruteforcekit.FullIPv6Prefix,
+		MaxFailures:         1,
+		LockDuration:        time.Second,
+		SubjectMaxFailures:  1,
+		SubjectLockDuration: time.Second,
+		CleanupRetention:    time.Second,
+		CleanupInterval:     time.Minute,
+		IPv6Prefix:          bruteforcekit.FullIPv6Prefix,
 	}
 	if err := valid.Validate(); err != nil {
 		t.Fatalf("valid config rejected: %v", err)
+	}
+	off := valid
+	off.SubjectMaxFailures = bruteforcekit.SubjectBudgetOff
+	if err := off.Validate(); err != nil {
+		t.Fatalf("subject budget off rejected: %v", err)
 	}
 
 	tests := map[string]func(c *bruteforcekit.Config){
@@ -96,6 +111,14 @@ func TestConfig_Validate(t *testing.T) {
 		"no lock":           func(c *bruteforcekit.Config) { c.LockDuration = 0 },
 		"negative lock":     func(c *bruteforcekit.Config) { c.LockDuration = -time.Second },
 		"negative reten":    func(c *bruteforcekit.Config) { c.CleanupRetention = -time.Second },
+		"reten below lock":  func(c *bruteforcekit.Config) { c.LockDuration = 2 * time.Second },
+		"reten below slock": func(c *bruteforcekit.Config) { c.SubjectLockDuration = 2 * time.Second },
+		"subject zero":      func(c *bruteforcekit.Config) { c.SubjectMaxFailures = 0 },
+		"subject below off": func(c *bruteforcekit.Config) { c.SubjectMaxFailures = -2 },
+		"no subject lock":   func(c *bruteforcekit.Config) { c.SubjectLockDuration = 0 },
+		"off, no lock": func(c *bruteforcekit.Config) {
+			c.SubjectMaxFailures, c.SubjectLockDuration = bruteforcekit.SubjectBudgetOff, 0
+		},
 		"no interval":       func(c *bruteforcekit.Config) { c.CleanupInterval = 0 },
 		"prefix too small":  func(c *bruteforcekit.Config) { c.IPv6Prefix = 0 },
 		"prefix too large":  func(c *bruteforcekit.Config) { c.IPv6Prefix = 129 },

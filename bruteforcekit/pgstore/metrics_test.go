@@ -11,6 +11,7 @@ func TestStore_Metrics(t *testing.T) {
 	db, ctx := startDB(t)
 	cfg := config()
 	cfg.MaxFailures = 2
+	cfg.SubjectMaxFailures = 3
 	cfg.CleanupRetention = time.Hour
 	before := metrictest.Collect(t)
 	s := newStore(t, db, cfg)
@@ -23,6 +24,11 @@ func TestStore_Metrics(t *testing.T) {
 		if st, err := s.Attempt(ctx, subject, ip); err != nil || st == nil {
 			t.Fatalf("Attempt under lock = %v, %v, want lock", st, err)
 		}
+	}
+	// Третья попытка subject'а с другого адреса исчерпывает бюджет субъекта, четвёртая упирается в него.
+	attempts(t, ctx, s, subject, "10.0.0.11", 1)
+	if st, err := s.Attempt(ctx, subject, "10.0.0.12"); err != nil || st == nil {
+		t.Fatalf("Attempt under the subject lock = %v, %v, want lock", st, err)
 	}
 
 	if _, err := db.Exec(ctx, `INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt)
@@ -39,9 +45,10 @@ func TestStore_Metrics(t *testing.T) {
 		labels []string
 		value  float64
 	}{
-		{"bruteforce_checks_total", []string{"result", "allowed"}, 2},
-		{"bruteforce_checks_total", []string{"result", "locked"}, 2},
-		{"bruteforce_locks_total", nil, 1},
+		{"bruteforce_checks_total", []string{"result", "allowed"}, 3},
+		{"bruteforce_checks_total", []string{"result", "locked"}, 3},
+		{"bruteforce_locks_total", []string{"scope", "pair"}, 1},
+		{"bruteforce_locks_total", []string{"scope", "subject"}, 1},
 		{"bruteforce_cleanup_deleted_total", nil, 1},
 	} {
 		if got := d.Get(t, want.name, want.labels...); got.Kind != metrictest.Counter || got.Value != want.value {

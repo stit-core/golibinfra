@@ -17,8 +17,7 @@ blocked-by: —
   `M/validation-release-v1.3.0.md`, заметка шаблона про subject длиннее 255 байт.
 - **Эксперименты** — `run.sh` углов в своём worktree: FAIL — дефект; правка под API без смены смысла (оригинал рядом).
 - **Потребитель** — шаблон: bump v1.4.0 в `repair-harness` S7 (Handoff — во втором плане).
-- **Правила шага:** README и `docs/` кита — тем же коммитом; breaking — `!`, `BREAKING CHANGE:` и строка заготовки
-  аннотации; новых зависимостей нет; киты вне объёма правятся под API тем же коммитом.
+- **Правила шага:** доки и киты вне объёма под API — тем же коммитом; breaking — `!` и строка аннотации; deps — нет.
 
 ## Не входит
 - Вторая половина партии 3 — `harden-tests-archkit-release` (fx, сигналы, фейки, мутанты, `archkit`, гейт, релиз).
@@ -79,10 +78,11 @@ blocked-by: —
   `TestVal_RedactBypassMatrix` (`M/val-kits-A/experiments/logkit_zz_val_exp_test.go`) → `leaked=false`, кроме
   ключей из «Решений»; `api-docs/scripts/claims-C/run.sh <wt>` → urlleak без секретов
   - Подтверждено: E02–E04 PASS, urlleak чист; матрица — `leaked=false`, кроме голого `code` (`M/hkc3e/logs/s1[01]-*`)
-- [ ] **AC10** — bruteforcekit: проверок пароля одного subject за окно не больше бюджета субъекта при любом числе
+- [x] **AC10** — bruteforcekit: проверок пароля одного subject за окно не больше бюджета субъекта при любом числе
   адресов; `CLEANUP_RETENTION` меньше `LOCK_DURATION` — `ErrConfig`; пауза отказа — по часам хранилища; ветка
   переучёта `Attempt` покрыта тестом; subject длиннее 255 байт учитывается. Проверка: `correctness-security/run.sh
   <rev> pg` → E11 PASS; `go test -race ./bruteforcekit/... ./testkit/bruteforcetest/` с Docker → PASS
+  - Подтверждено: E11 PASS — 10 и 10 проверок с 20 адресов (`M/hkc3e/logs/s12-e11.log`); test-full PASS
 - [ ] **AC11** — Входы и дефолты: endpoint S3 без схемы — TLS; токен OTLP по `http://` не на loopback без явного
   разрешения — ошибка старта; пароль длиннее предела отвергается до Argon2id; NUL, не-UTF-8 и `Metadata` сверх
   предела в записи аудита — `ErrInvalidEntry`; retention `audit_log` — job кита по явной настройке; отзыв сессии
@@ -130,8 +130,9 @@ blocked-by: —
 - [x] **S11** — Маски logkit (бэклог `logkit-redact-gaps`, `logkit-redact-containers`, `-otpauth`)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S10
   - Сделано: AC9 → PASS; мутанты `M/hkc3e/mut_s11.py` 18/18; цена записи без секрета — ×1.7–2.6 (потолок ×3)
-- [ ] **S12** — bruteforcekit (KSEC-04, KSEC-07, бэклог `bruteforcekit-*`, заметка шаблона про 255 байт)
+- [x] **S12** — bruteforcekit (KSEC-04, KSEC-07, бэклог `bruteforcekit-*`, заметки шаблона про 255 байт и NUL)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S4
+  - Сделано: AC10 → PASS; мутанты `M/hkc3e/mut_s12.py` 17/17; E11 правлен под API (бюджет 10 — его граница)
 - [ ] **S13** — Входы и дефолты: S3, OTLP, пароль, аудит, retention (KSEC-05, KCOR-06, C; N4 v1.3.0 — `Revoke`)
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: S4
 
@@ -141,29 +142,24 @@ blocked-by: —
   - Проверка: `make gate-clean` → зелёный · Закрывает: — · Зависит от: S6, S9, S11, S12, S13
 
 ## Решения
-- **ENV.** Ридер — `internal/envconf` (`New*Config`, `config.Env`): `KEY=` — как незаданная (U4), пустое — `-`;
-  имя `<P>_<TAG>`, вложенная структура — без тега с тем же префиксом (U5; тег — ошибка, B1), вторая секция —
-  `Load` с `EnvPrefixed`; тип вне ридера и поле без тега и `ignored` — ошибка; целые — десятичные.
-- **Конфиг.** `Validate` — только проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки или
-  `ErrConfig` («без предела» у новых — `-1`); формат — и у выключенного; nil-опции игнорируются; тик outbox против
-  простоя транзакции — при `pgkit.PoolConfig` в графе; `RedactConfig{}` безопасен.
+- **ENV.** `internal/envconf`: `KEY=` — как незаданная (U4), пустое — `-`; `<P>_<TAG>`, вложенная — без тега (U5, B1),
+  вторая секция — `EnvPrefixed`; тип вне ридера, поле без тега и `ignored` — ошибка; целые — десятичные.
+- **Конфиг.** `Validate` — проверка, value-приёмник; дефолты — в тегах; ноль — значение из доки или `ErrConfig`
+  («без предела» у новых — `-1`); формат — и у выключенного; nil-опции игнорируются; `RedactConfig{}` безопасен.
 - **Формы.** Группа — `<Thing>Group` = `<kit>.<thing>`, `Provide<Thing>` с проверкой типа, значение — `Supply<Thing>`;
   конструктор — `(cfg, зависимости…, log, opts…)` (исключения — в CLAUDE.md); опции httpclient — значение `Options`
   (KX50); `registerHealth` — `fx.In` (KFX-10); job'ы со схемой — после `Migrated` (KX61b).
-- **pgkit.** Мигратор — `lock_timeout` = `PG_MIGRATE_LOCK_TIMEOUT` (5 с) параметром `MigrateUp/Down/UpAll`, у
-  advisory-lock `MigrateUpAll` — только дедлайн; дедлайн — cancel request серверу до конца прогона (`GracefulStop` —
-  гонка флага, `M/exc2/logs/s4-gracefulstop-race.log`; E09). `OnStop` пула — 2/3 остатка, затем WARN и `nil` (KX65);
-  `ErrNestedTxStricter`; `CheckSchemaOnStart(src)` — после `Migrated`, у outbox — перед партициями (KX62).
-- **outbox.** `created_at` — `clock_timestamp()` вставки (E10). Предел — по JSONB-тексту тем же `INSERT`
-  (экспонента раздувает ×4): мерит хранилище, параметр `Repository.Insert(…, maxBytes)`. Строка хранит W3C
-  trace-context `Publish` (колонка 0003, без baggage), producer-спан — его ребёнок со ссылкой на тик (KO13); label
-  `subject` — только шаблоном `WithMetricSubject` (KO11, KO21); имя спана natskit — шаблон или `natskit.publish`.
+- **pgkit.** `lock_timeout` мигратора = `PG_MIGRATE_LOCK_TIMEOUT` (5 с), у lock'а `MigrateUpAll` — только дедлайн;
+  дедлайн — cancel request до конца прогона (E09; `GracefulStop` — гонка, `M/exc2/logs/s4-gracefulstop-race.log`).
+  `OnStop` пула — 2/3 остатка (KX65); `ErrNestedTxStricter`; `CheckSchemaOnStart` — после `Migrated` (KX62).
+- **outbox.** `created_at` — `clock_timestamp()` (E10); предел — по JSONB тем же `INSERT` (`Insert(…, maxBytes)`).
+  W3C trace-context `Publish` — колонка 0003, producer-спан — ребёнок со ссылкой на тик (KO13); label `subject` —
+  только шаблоном `WithMetricSubject` (KO11, KO21); спан natskit — шаблон или `natskit.publish`.
 - **Идемпотентность и кэш.** `SetNX`, `GetDel`, `Compare*` — вторым клиентом без повторов (E18); `Set` идемпотентности
   — compare-and-set по токену (E07), `!stored` — WARN; набор — `idempotencytest`. Предел — отказ, не вытеснение:
   `WithMaxKeys` (100 000), `httpkit.MemoryStore` — 100 000, httpclient `MaxHosts` (1024, `-1`), сверх — `other`.
-- **Контракт HTTP.** Лимит тела — один `MaxBytesReader` на первом чтении, `MaxBodyBytes` операции и скрытой — хуком
-  (H17). Не хранятся 408, 409, 425, 429 (H16) и запросы без субъекта и credentials. `WWW-Authenticate` — хук кита по
-  `components`, без хука — имена; HEAD — свой middleware, `Allow` — с HEAD. Дедлайн —
+- **Контракт HTTP.** Один `MaxBytesReader`, лимит операции и скрытой — хуком (H17); не хранятся 408, 409, 425, 429
+  (H16) и анонимы; `WWW-Authenticate` — хук по `components`; HEAD — свой middleware. Дедлайн —
   `HTTP_REQUEST_TIMEOUT` 25s < `WriteTimeout`, `ReserveTTL` больше, `-1s` — выкл.; над `Idempotency` (H35): 503 с
   `Content-Length` и `Connection: close` (клиент дочитывает его, пока хендлер работает); ответ после дедлайна — 503 и
   в гонке с таймером, запись после 503 отбрасывается без ошибки — huma паникует на ней (B1 валидатора B); без
@@ -175,8 +171,7 @@ blocked-by: —
   удалены (H15); схема вне `components` — `ErrRoutes` (N8), без `Extract` — `ErrAuthNotConfigured`. `Idempotency` —
   в цепочке huma после `HumaAuth` (HX07, KOBS-12). trace-context клиента — ссылкой на новом корне, без baggage (H18).
   XFF — адрес, затем `ParseAddrPort` (N9); `ContextWithClientIP` (N4); hubkit/sso, oidckit — схемы с `Extract`.
-- **Фикс этапа 2.** Тесты на выживших мутантов B (V1, V4, V6, V8, V11); backlog-gauge инстанса без шаблона — 0 у
-  пустой очереди (N8); локальный предел payload outbox — вторая мера, не берём; KDOC-11 — S12 второго плана.
+- **Фикс этапа 2.** Тесты на мутантов B (V1, V4, V6, V8, V11); gauge outbox — 0 у пустой очереди (N8); KDOC-11 — S12.
 - **Секреты в URL.** `internal/redact.URL`: userinfo целиком и значения query — `xxxxx` (маркер pgx), фрагмент снят,
   путь остаётся (README: секрет — не в пути); без схемы и неразбираемый — userinfo до последнего `@`; `ParseError` —
   без цитаты ввода; keyword-DSN скрывает pgx. httpclient: свой спан попытки вместо otelhttp, `*url.Error` — с
@@ -187,13 +182,11 @@ blocked-by: —
   ключей вместо обхода reflect): поля структур, указатели, свой `MarshalJSON`, `RawMessage`/`[]byte`. Маски значений
   дефолтного набора: base64url ≥ 20 с обоими регистрами и цифрой (ложных в `RedactHexFalsePositives` нет), пароль
   userinfo, пара `ключ=значение` с ключом-секретом (keyword-DSN, query, `otpauth`); pre-filter знает и их.
-- **bruteforcekit.** Второй бюджет — на subject по всем адресам (E11: 100 проверок с 20 адресов при
-  `MaxFailures=5`): превышение — `LockState` с областью «субъект» и коротким сроком, потребитель отвечает как на
-  блокировку пары. Пара блокируется строго, субъект — коротко: держать чужой аккаунт закрытым можно лишь
-  непрерывным потоком неудач. Ноль — `ErrConfig`, выключено — `-1`; E11 правится под API бюджетом 10 (его
-  граница). `LockState` несёт остаток по часам хранилища. subject длиннее предела — ключ по SHA-256, а не
-  `ErrInvalidKey` (заметка шаблона: обход в `auth/infra/bruteforce/guard.go:24`); предел — свой, не btree
-  (KDOC-09).
+- **bruteforcekit.** Второй бюджет — subject по всем адресам (E11): строка `(subject, '')` той же таблицы,
+  `BRUTEFORCE_SUBJECT_MAX_FAILURES` 20 (`-1` — выкл., 0 — `ErrConfig`) и короткий `SUBJECT_LOCK_DURATION` 1m; один
+  оператор: строка субъекта `FOR UPDATE`, upsert пары, upsert субъекта — под блокировкой одного не учитывается другой,
+  успех снимает оба. `LockState` — `RetryAfter` по часам базы и `Scope`. Длиннее 255 байт — ключ `SHA256:<hex>`
+  (KDOC-09), NUL и не-UTF-8 — `ErrInvalidKey` (`nul-guard-key` шаблона). Точка теста `lockSeen` — ветка переучёта.
 - **Входы и дефолты.** Endpoint S3 без схемы — TLS, plaintext — явно. `OTEL_TOKEN` или `Authorization` к `http://`
   не на loopback — ошибка старта без явного разрешения, как у grpcclient. Пароль длиннее 1 KiB — ошибка
   `Hash`/`Verify` до Argon2id (E05: не DoS, гигиена). auditkit: UTF-8 без NUL в строках и значениях `Metadata`,
@@ -208,7 +201,8 @@ blocked-by: —
 - **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate/module.go`); `handlertest.WithAuth` →
   `WithSecuritySchemes`: `handler_test.go` auth и user, `scripts/new-domain.sh:662`, `rules/tests-pipeline.md:47`,
   doc `identitytest.go:47`; `make gen` (`REQUEST_TIMEOUT` в `openapi.json`); `Security` из одних `{}` — `Public`.
-- **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — `LockState`; без обходов.
+- **bruteforcekit.** `limiter_test.go`: литерал `Config` — `Subject*`, `CleanupRetention` ≥ `LockDuration`; Retry-After
+  — `lock.RetryAfter`; обход длинного subject в адаптере не нужен, NUL — `ErrInvalidKey` (его маппинг — уже есть).
 - **logkit.** Маски шире (S11): тест, который ищет в логе `password=…`, base64url-токен или пароль URL, — на маркер.
 - **authnkit и auditkit.** Пароль длиннее 1 KiB — ошибка (DTO — свой `maxLength`); NUL и не-UTF-8 в аудите —
   `ErrInvalidEntry`; retention — env; владелец сессии из `Revoke` — автор аудита выхода.
@@ -217,8 +211,8 @@ blocked-by: —
   `HTTP_CORS_HEADERS` + `Idempotency-Key` (свой список — дописать); `STORAGE_S3_USE_SSL`; OTLP; Redis — 2× пул.
 
 ## Где мы сейчас
-Этап 1 принят (`M/validation-harden-kits-contracts-A.md`); этап 2 (S4–S9) закрыт, B1 и N1–N10 валидатора B
-(`M/validation-harden-kits-contracts-B.md`) — `3dea79c`, перепроверка — у валидатора. S10, S11 сделаны; следующий — S12.
+Этап 1 принят; этап 2 (S4–S9) закрыт, B1 и N1–N10 валидатора B (`M/validation-harden-kits-contracts-B.md`) —
+`3dea79c`, перепроверка — у валидатора. S10–S12 сделаны; следующий — S13.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
@@ -253,7 +247,9 @@ blocked-by: —
   одних `{}` — ошибка старта (`{}` — `httpkit.Public`); идемпотентность — только у операций huma: маршрут мимо huma с
   `Idempotency-Key` исполняется каждый раз — операция huma или обёртка `httpkit.Idempotency(cfg, store, log)`;
   handlertest: `WithAuth` → `WithSecuritySchemes` со схемой с `Extract`. oidckit, hubkit/sso: `Module` не кладёт
-  `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie своего контура).
+  `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie своего контура). bruteforcekit (S12): литерал
+  `Config` без `SubjectMaxFailures` (`20` или `SubjectBudgetOff`) и `SubjectLockDuration`, а `CleanupRetention` меньше
+  `LockDuration` — `ErrConfig`.
 - **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт; пустую строку или список задаёт `-`
   (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`, `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён
   нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые — десятичные; ошибка ENV —
@@ -291,10 +287,14 @@ blocked-by: —
   секрет по ключу — и `pass`, `sid`, `refresh`, `signature`, `tokens`, `passcode`, `code` после
   `verification`/`auth`/`sms`…; ключ на слово-счётчик (`otp_attempts`) — не код; ключи-секреты ищутся в полях
   структур, за указателями, в выводе `MarshalJSON` и в JSON из `RawMessage`/`[]byte`; маски значений — base64url-токен
-  ≥ 20, пароль userinfo URL, пара `ключ=значение` с ключом-секретом.
+  ≥ 20, пароль userinfo URL, пара `ключ=значение` с ключом-секретом. bruteforcekit (S12): бюджет субъекта — 20 попыток
+  со всех адресов, блокировка 1m (`LockState.Scope`), успех снимает его; `Retry-After` — `LockState.RetryAfter` по
+  часам базы; subject длиннее 255 байт — ключ по SHA-256, с NUL или не в UTF-8 — `ErrInvalidKey`;
+  `bruteforce_locks_total{scope}`.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,
   `outboxkit.WithMetricSubject`, `Message.TraceParent`, `OutMsg.MetricSubject`/`TraceParent`, миграция outbox 0003;
   `natskit.WithTraceParent`, `StreamMsg.TraceParent`; `testkit/idempotencytest`, `Cache.CompareAndSet`,
   `cachekit.WithMaxKeys`, `ErrMemoryFull`, `HTTPCLIENT_MAX_HOSTS`; `HTTP_REQUEST_TIMEOUT`, код `REQUEST_TIMEOUT`;
-  `HTTP_TRUST_TRACE_CONTEXT`, `httpkit.ContextWithClientIP`.
+  `HTTP_TRUST_TRACE_CONTEXT`, `httpkit.ContextWithClientIP`. `bruteforcekit.LockScope`,
+  `LockState.RetryAfter`/`Scope`, `SubjectBudgetOff`, `BRUTEFORCE_SUBJECT_*`.

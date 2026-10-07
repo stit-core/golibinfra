@@ -12,8 +12,8 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
-// validateKey — контракт ключа pgstore без агрегации IPv6: пустой или слишком
-// длинный subject, пустой либо неразбираемый ip — bruteforcekit.ErrInvalidKey.
+// validateKey — контракт ключа pgstore без агрегации IPv6: пустой subject, subject с NUL или не
+// в UTF-8, пустой либо неразбираемый ip — bruteforcekit.ErrInvalidKey.
 // Без этой проверки юнит-тест сервиса не заметил бы проводку, которая отдаёт
 // guard'у пустой ip и валится в проде.
 func validateKey(subject, ip string) error {
@@ -54,13 +54,13 @@ type Locked struct {
 	Until time.Time
 }
 
-// Attempt отдаёт блокировку до Until; в транзакции — bruteforcekit.ErrInTx,
-// невалидный ключ — bruteforcekit.ErrInvalidKey.
+// Attempt отдаёт блокировку пары до Until (RetryAfter — остаток по часам процесса); в
+// транзакции — bruteforcekit.ErrInTx, невалидный ключ — bruteforcekit.ErrInvalidKey.
 func (l Locked) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	if err := validateAttempt(ctx, subject, ip); err != nil {
 		return nil, err
 	}
-	return &bruteforcekit.LockState{Until: l.Until}, nil
+	return &bruteforcekit.LockState{Until: l.Until, RetryAfter: max(time.Until(l.Until), 0), Scope: bruteforcekit.ScopePair}, nil
 }
 
 // RecordSuccess ничего не делает; невалидный ключ — bruteforcekit.ErrInvalidKey.
@@ -124,10 +124,10 @@ func (r *Recorder) Successes() []Attempt {
 }
 
 // Counting — bruteforcekit.Guard в памяти с политикой pgstore: попытка
-// учитывается до проверки секрета, пройти в окне успевают MaxFailures попыток,
-// попытка под блокировкой счётчик не меняет, истечение блокировки начинает
-// новое окно, RecordSuccess стирает историю. Сценарий «N попыток → lock»
-// проверяется без Postgres.
+// учитывается до проверки секрета, пройти в окне успевают MaxFailures попыток пары и
+// SubjectMaxFailures попыток subject'а со всех адресов, попытка под блокировкой счётчики не
+// меняет, истечение блокировки начинает новое окно, RecordSuccess стирает историю пары и окно
+// субъекта. Сценарий «N попыток → lock» проверяется без Postgres.
 type Counting struct {
 	cfg   bruteforcekit.Config
 	clock clockkit.Clock
@@ -167,10 +167,26 @@ func (c *Counting) Attempt(ctx context.Context, subject, ip string) (*bruteforce
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	now := c.clock.Now()
+	subjectKey := Attempt{Subject: key.Subject}
+	budget := c.cfg.SubjectMaxFailures != bruteforcekit.SubjectBudgetOff
+	if row := c.rows[subjectKey]; budget && row != nil && row.lockedUntil.After(now) {
+		return row.lock(bruteforcekit.ScopeSubject, now), nil
+	}
+	if row := c.rows[key]; row != nil && row.lockedUntil.After(now) {
+		return row.lock(bruteforcekit.ScopePair, now), nil
+	}
+	c.count(key, c.cfg.MaxFailures, c.cfg.LockDuration, now)
+	if budget {
+		c.count(subjectKey, c.cfg.SubjectMaxFailures, c.cfg.SubjectLockDuration, now)
+	}
+	return nil, nil
+}
+
+// count учитывает попытку в строке без активной блокировки: истёкшая начинает новое окно, порог
+// ставит блокировку.
+func (c *Counting) count(key Attempt, threshold int, lockFor time.Duration, now time.Time) {
 	row, ok := c.rows[key]
 	switch {
-	case ok && row.lockedUntil.After(now):
-		return &bruteforcekit.LockState{Until: row.lockedUntil, FailedCount: row.failedCount}, nil
 	case !ok:
 		row = &countingRow{failedCount: 1}
 		c.rows[key] = row
@@ -180,13 +196,16 @@ func (c *Counting) Attempt(ctx context.Context, subject, ip string) (*bruteforce
 	default:
 		row.failedCount++
 	}
-	if row.failedCount >= c.cfg.MaxFailures {
-		row.lockedUntil = now.Add(c.cfg.LockDuration)
+	if row.failedCount >= threshold {
+		row.lockedUntil = now.Add(lockFor)
 	}
-	return nil, nil
 }
 
-// RecordSuccess стирает историю попыток пары (subject, ip).
+func (r *countingRow) lock(scope bruteforcekit.LockScope, now time.Time) *bruteforcekit.LockState {
+	return &bruteforcekit.LockState{Until: r.lockedUntil, RetryAfter: r.lockedUntil.Sub(now), FailedCount: r.failedCount, Scope: scope}
+}
+
+// RecordSuccess стирает историю попыток пары (subject, ip) и окно субъекта.
 func (c *Counting) RecordSuccess(_ context.Context, subject, ip string) error {
 	key, err := c.key(subject, ip)
 	if err != nil {
@@ -196,6 +215,7 @@ func (c *Counting) RecordSuccess(_ context.Context, subject, ip string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	delete(c.rows, key)
+	delete(c.rows, Attempt{Subject: key.Subject})
 	return nil
 }
 

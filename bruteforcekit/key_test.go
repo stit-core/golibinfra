@@ -11,11 +11,13 @@ import (
 
 func testConfig(ipv6Prefix int) bruteforcekit.Config {
 	return bruteforcekit.Config{
-		MaxFailures:      3,
-		LockDuration:     time.Minute,
-		CleanupRetention: time.Hour,
-		CleanupInterval:  time.Minute,
-		IPv6Prefix:       ipv6Prefix,
+		MaxFailures:         3,
+		LockDuration:        time.Minute,
+		SubjectMaxFailures:  20,
+		SubjectLockDuration: time.Minute,
+		CleanupRetention:    time.Hour,
+		CleanupInterval:     time.Minute,
+		IPv6Prefix:          ipv6Prefix,
 	}
 }
 
@@ -95,7 +97,8 @@ func TestConfig_NormalizeKey_Invalid(t *testing.T) {
 	}{
 		{name: "empty subject", subject: "", ip: "203.0.113.7"},
 		{name: "blank subject", subject: " \t ", ip: "203.0.113.7"},
-		{name: "long subject", subject: strings.Repeat("s", bruteforcekit.MaxSubjectLen+1), ip: "203.0.113.7"},
+		{name: "NUL in subject", subject: "u\x00@example.com", ip: "203.0.113.7"},
+		{name: "subject not UTF-8", subject: "u\xff@example.com", ip: "203.0.113.7"},
 		{name: "empty ip", subject: "u", ip: ""},
 		{name: "not an ip", subject: "u", ip: "example.com"},
 		{name: "ip with port", subject: "u", ip: "203.0.113.7:443"},
@@ -112,5 +115,25 @@ func TestConfig_NormalizeKey_Invalid(t *testing.T) {
 				t.Fatalf("error = %q, want bruteforcekit: prefix", err)
 			}
 		})
+	}
+}
+
+// Subject длиннее MaxSubjectLen учитывается по SHA-256: ключ фиксированной длины, один на
+// разные регистры, свой у другого subject'а и не совпадает с настоящим логином.
+func TestConfig_NormalizeKey_LongSubjectIsHashed(t *testing.T) {
+	t.Parallel()
+	cfg := testConfig(128)
+	long := strings.Repeat("s", bruteforcekit.MaxSubjectLen+1)
+	key, _, err := cfg.NormalizeKey(long, "203.0.113.7")
+	if err != nil {
+		t.Fatalf("NormalizeKey(long subject): %v", err)
+	}
+	if !strings.HasPrefix(key, "SHA256:") || len(key) != len("SHA256:")+64 {
+		t.Fatalf("key = %q, want SHA256:<64 hex>", key)
+	}
+	upper, _, _ := cfg.NormalizeKey(" "+strings.ToUpper(long), "203.0.113.7")
+	other, _, _ := cfg.NormalizeKey(long+"x", "203.0.113.7")
+	if upper != key || other == key {
+		t.Fatalf("keys: %q, case variant %q, other subject %q", key, upper, other)
 	}
 }

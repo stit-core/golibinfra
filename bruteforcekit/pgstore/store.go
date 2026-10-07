@@ -12,11 +12,14 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
-// Store — guard на таблице bruteforce_attempts с ключом (subject, ip).
+// Store — guard на таблице bruteforce_attempts с ключом (subject, ip); бюджет субъекта — строка
+// subject'а с пустым ip.
 type Store struct {
 	db    *pgkit.DB
 	cfg   bruteforcekit.Config
 	instr *instruments
+	// lockSeen — точка теста между upsert'ом, увидевшим блокировку, и её чтением; nil в работе.
+	lockSeen func()
 }
 
 var (
@@ -33,27 +36,49 @@ func NewStore(cfg bruteforcekit.Config, db *pgkit.DB) (*Store, error) {
 	return &Store{db: db, cfg: cfg, instr: newInstruments()}, nil
 }
 
-// Upsert учитывает попытку, только пока активной блокировки нет: WHERE не
-// пишет строку под блокировкой, и N одновременных попыток сериализуются на
-// строке — пройти успевают не больше MaxFailures. Истёкшая блокировка начинает
-// новое окно (failed_count = 1); блокировка ставится попыткой, на которой
-// счётчик достигает порога. Всё время — NOW() базы.
-const attemptSQL = `
-INSERT INTO bruteforce_attempts AS a (subject, ip, failed_count, last_attempt, locked_until)
-VALUES ($1, $2, 1, NOW(), CASE WHEN 1 >= $3 THEN NOW() + make_interval(secs => $4) END)
-ON CONFLICT (subject, ip) DO UPDATE
-SET failed_count = CASE WHEN a.locked_until IS NULL THEN a.failed_count + 1 ELSE 1 END,
-    last_attempt = NOW(),
-    locked_until = CASE
-        WHEN CASE WHEN a.locked_until IS NULL THEN a.failed_count + 1 ELSE 1 END >= $3
-        THEN NOW() + make_interval(secs => $4)
-    END
-WHERE a.locked_until IS NULL OR a.locked_until <= NOW()
-RETURNING failed_count, locked_until
+// subjectIP — ip строки бюджета субъекта: NormalizeKey пустой ip отвергает, с парой она не
+// совпадёт.
+const subjectIP = ""
+
+// windowUpsert — учёт попытки в строке счётчика, только пока активной блокировки нет: WHERE не
+// пишет строку под блокировкой, и одновременные попытки сериализуются на строке. Истёкшая
+// блокировка начинает новое окно (failed_count = 1); блокировку ставит попытка, на которой
+// счётчик достигает порога. %[1]s — ip строки, %[2]s и %[3]s — порог и срок, %[4]s — условие.
+const windowUpsert = `
+    INSERT INTO bruteforce_attempts AS a (subject, ip, failed_count, last_attempt, locked_until)
+    SELECT $1, %[1]s, 1, NOW(), CASE WHEN 1 >= %[2]s THEN NOW() + make_interval(secs => %[3]s) END
+    WHERE %[4]s
+    ON CONFLICT (subject, ip) DO UPDATE
+    SET failed_count = CASE WHEN a.locked_until IS NULL THEN a.failed_count + 1 ELSE 1 END,
+        last_attempt = NOW(),
+        locked_until = CASE
+            WHEN CASE WHEN a.locked_until IS NULL THEN a.failed_count + 1 ELSE 1 END >= %[2]s
+            THEN NOW() + make_interval(secs => %[3]s)
+        END
+    WHERE a.locked_until IS NULL OR a.locked_until <= NOW()
+    RETURNING failed_count, locked_until`
+
+// attemptSQL — попытка одним оператором: строка субъекта ($5 — бюджет включён) блокируется FOR
+// UPDATE первой, поэтому попытки одного subject со всех адресов идут по очереди и бюджет не
+// превышается; под блокировкой субъекта пара не учитывается, под блокировкой пары — субъект.
+// Всё время — NOW() базы.
+var attemptSQL = `
+WITH subject_row AS (
+    SELECT failed_count, locked_until FROM bruteforce_attempts
+    WHERE $5 AND subject = $1 AND ip = '' FOR UPDATE
+), subject_lock AS (
+    SELECT failed_count, locked_until FROM subject_row WHERE locked_until > NOW()
+), pair AS (` + fmt.Sprintf(windowUpsert, "$2", "$3", "$4", "NOT EXISTS (SELECT 1 FROM subject_lock)") + `
+), subject AS (` + fmt.Sprintf(windowUpsert, "''", "$6", "$7", "$5 AND EXISTS (SELECT 1 FROM pair)") + `
+)
+SELECT (SELECT failed_count FROM subject_lock), (SELECT locked_until FROM subject_lock),
+       EXISTS (SELECT 1 FROM pair), (SELECT failed_count FROM pair), (SELECT locked_until FROM pair),
+       EXISTS (SELECT 1 FROM subject), (SELECT failed_count FROM subject), (SELECT locked_until FROM subject),
+       NOW()
 `
 
 const activeLockSQL = `
-SELECT failed_count, locked_until
+SELECT failed_count, locked_until, NOW()
 FROM bruteforce_attempts
 WHERE subject = $1 AND ip = $2 AND locked_until > NOW()
 `
@@ -63,8 +88,21 @@ WHERE subject = $1 AND ip = $2 AND locked_until > NOW()
 // истечение).
 const attemptRounds = 3
 
-// Attempt учитывает попытку пары (subject, ip) до проверки секрета: nil —
-// попытка разрешена, *LockState — пара заблокирована. Внутри транзакции —
+// attemptResult — строка attemptSQL: блокировка субъекта до попытки, учёт пары и субъекта.
+type attemptResult struct {
+	subjectLockCount *int
+	subjectLockUntil *time.Time
+	pairCounted      bool
+	pairCount        *int
+	pairUntil        *time.Time
+	subjectCounted   bool
+	subjectCount     *int
+	subjectUntil     *time.Time
+	now              time.Time
+}
+
+// Attempt учитывает попытку пары (subject, ip) и subject'а до проверки секрета: nil —
+// попытка разрешена, *LockState — пара или subject заблокированы. Внутри транзакции —
 // bruteforcekit.ErrInTx, невалидный ключ — bruteforcekit.ErrInvalidKey.
 func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit.LockState, error) {
 	if pgkit.InTx(ctx) {
@@ -74,35 +112,52 @@ func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit
 	if err != nil {
 		return nil, err
 	}
+	budget := s.cfg.SubjectMaxFailures != bruteforcekit.SubjectBudgetOff
 	for range attemptRounds {
-		var (
-			failedCount int
-			lockedUntil *time.Time
-		)
-		err := s.db.QueryRow(ctx, attemptSQL, subject, ip, s.cfg.MaxFailures, s.cfg.LockDuration.Seconds()).
-			Scan(&failedCount, &lockedUntil)
-		if err == nil {
-			// WHERE пускает upsert только без активной блокировки: locked_until здесь — переход.
-			if lockedUntil != nil {
-				s.instr.locks.Add(ctx, 1)
-			}
-			// Счётчик выше порога бывает после понижения MaxFailures: бюджет окна исчерпан.
-			if lockedUntil != nil && failedCount > s.cfg.MaxFailures {
-				s.instr.checks.Add(ctx, 1, resultAttr(resultLocked))
-				return &bruteforcekit.LockState{Until: *lockedUntil, FailedCount: failedCount}, nil
-			}
+		var r attemptResult
+		err := s.db.QueryRow(ctx, attemptSQL, subject, ip, s.cfg.MaxFailures, s.cfg.LockDuration.Seconds(),
+			budget, s.cfg.SubjectMaxFailures, s.cfg.SubjectLockDuration.Seconds()).
+			Scan(&r.subjectLockCount, &r.subjectLockUntil, &r.pairCounted, &r.pairCount, &r.pairUntil,
+				&r.subjectCounted, &r.subjectCount, &r.subjectUntil, &r.now)
+		if err != nil {
+			return nil, fmt.Errorf("bruteforcekit/pgstore: attempt: %w", err)
+		}
+		if r.subjectLockUntil != nil {
+			return s.locked(ctx, bruteforcekit.ScopeSubject, *r.subjectLockCount, *r.subjectLockUntil, r.now), nil
+		}
+		if r.pairCounted && r.pairUntil != nil {
+			s.instr.locks.Add(ctx, 1, scopeAttr(bruteforcekit.ScopePair))
+		}
+		if r.subjectCounted && r.subjectUntil != nil {
+			s.instr.locks.Add(ctx, 1, scopeAttr(bruteforcekit.ScopeSubject))
+		}
+		// Счётчик выше порога бывает после понижения порога: бюджет окна исчерпан.
+		switch {
+		case r.pairCounted && r.pairUntil != nil && *r.pairCount > s.cfg.MaxFailures:
+			return s.locked(ctx, bruteforcekit.ScopePair, *r.pairCount, *r.pairUntil, r.now), nil
+		case r.subjectCounted && r.subjectUntil != nil && *r.subjectCount > s.cfg.SubjectMaxFailures:
+			return s.locked(ctx, bruteforcekit.ScopeSubject, *r.subjectCount, *r.subjectUntil, r.now), nil
+		case r.pairCounted && (r.subjectCounted || !budget):
 			s.instr.checks.Add(ctx, 1, resultAttr(resultAllowed))
 			return nil, nil
 		}
-		if !pgkit.IsNoRows(err) {
-			return nil, fmt.Errorf("bruteforcekit/pgstore: attempt: %w", err)
-		}
 
-		var st bruteforcekit.LockState
-		err = s.db.QueryRow(ctx, activeLockSQL, subject, ip).Scan(&st.FailedCount, &st.Until)
+		// Блокировку видел upsert, а её срок и счётчик — только чтение строки: пары, если она не
+		// пустила попытку, иначе субъекта.
+		lockIP, scope := ip, bruteforcekit.ScopePair
+		if r.pairCounted {
+			lockIP, scope = subjectIP, bruteforcekit.ScopeSubject
+		}
+		if s.lockSeen != nil {
+			s.lockSeen()
+		}
+		var (
+			count      int
+			until, now time.Time
+		)
+		err = s.db.QueryRow(ctx, activeLockSQL, subject, lockIP).Scan(&count, &until, &now)
 		if err == nil {
-			s.instr.checks.Add(ctx, 1, resultAttr(resultLocked))
-			return &st, nil
+			return s.locked(ctx, scope, count, until, now), nil
 		}
 		if !pgkit.IsNoRows(err) {
 			return nil, fmt.Errorf("bruteforcekit/pgstore: attempt: read lock: %w", err)
@@ -111,11 +166,19 @@ func (s *Store) Attempt(ctx context.Context, subject, ip string) (*bruteforcekit
 	return nil, fmt.Errorf("bruteforcekit/pgstore: attempt: lock changed %d times during one attempt", attemptRounds)
 }
 
+// locked — ответ «заблокировано» с остатком по часам базы.
+func (s *Store) locked(ctx context.Context, scope bruteforcekit.LockScope, count int, until, now time.Time) *bruteforcekit.LockState {
+	s.instr.checks.Add(ctx, 1, resultAttr(resultLocked))
+	return &bruteforcekit.LockState{Until: until, RetryAfter: max(until.Sub(now), 0), FailedCount: count, Scope: scope}
+}
+
+// recordSuccessSQL удаляет строку пары и строку субъекта; по ключу индекса строка субъекта
+// (пустой ip) идёт первой — в том же порядке её блокирует Attempt.
 const recordSuccessSQL = `
-DELETE FROM bruteforce_attempts WHERE subject = $1 AND ip = $2
+DELETE FROM bruteforce_attempts WHERE subject = $1 AND ip IN ($2, '')
 `
 
-// RecordSuccess удаляет строку пары (subject, ip) — успех обнуляет историю.
+// RecordSuccess удаляет строку пары (subject, ip) и окно субъекта — успех обнуляет историю.
 func (s *Store) RecordSuccess(ctx context.Context, subject, ip string) error {
 	subject, ip, err := s.cfg.NormalizeKey(subject, ip)
 	if err != nil {

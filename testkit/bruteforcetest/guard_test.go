@@ -2,7 +2,7 @@ package bruteforcetest_test
 
 import (
 	"errors"
-	"strings"
+	"fmt"
 	"testing"
 	"time"
 
@@ -94,7 +94,8 @@ func TestFakesRejectInvalidKeyLikePgstore(t *testing.T) {
 		{"u1", ""},
 		{"u1", "203.0.113.7:443"},
 		{"u1", "not-an-ip"},
-		{strings.Repeat("a", bruteforcekit.MaxSubjectLen+1), "203.0.113.7"},
+		{"u1\x00", "203.0.113.7"},
+		{"u\xff1", "203.0.113.7"},
 	}
 	for name, g := range guards {
 		for _, k := range keys {
@@ -163,11 +164,13 @@ func TestRecorder_KeepsKeyAsPassed(t *testing.T) {
 
 func countingConfig() bruteforcekit.Config {
 	return bruteforcekit.Config{
-		MaxFailures:      3,
-		LockDuration:     15 * time.Minute,
-		CleanupRetention: time.Hour,
-		CleanupInterval:  5 * time.Minute,
-		IPv6Prefix:       bruteforcekit.FullIPv6Prefix,
+		MaxFailures:         3,
+		LockDuration:        15 * time.Minute,
+		SubjectMaxFailures:  bruteforcekit.SubjectBudgetOff,
+		SubjectLockDuration: time.Minute,
+		CleanupRetention:    time.Hour,
+		CleanupInterval:     5 * time.Minute,
+		IPv6Prefix:          bruteforcekit.FullIPv6Prefix,
 	}
 }
 
@@ -286,5 +289,64 @@ func TestCounting_CleanupKeepsActiveLocks(t *testing.T) {
 		if st, err := g.Attempt(ctx, "fresh", "203.0.113.7"); err != nil || st != nil {
 			t.Fatalf("Attempt %d after Cleanup = %v, %v, want allowed", i+1, st, err)
 		}
+	}
+}
+
+// Бюджет субъекта — как в pgstore: SubjectMaxFailures попыток со всех адресов, затем
+// короткая блокировка субъекта с RetryAfter по часам фейка; под ней пара не учитывается,
+// истечение начинает новое окно, успех снимает его.
+func TestCounting_SubjectBudget(t *testing.T) {
+	t.Parallel()
+	clock := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+	cfg := countingConfig()
+	cfg.SubjectMaxFailures = 4
+	g, err := bruteforcetest.NewCounting(cfg, clock)
+	if err != nil {
+		t.Fatalf("NewCounting: %v", err)
+	}
+	ctx := t.Context()
+
+	allowed := 0
+	var last *bruteforcekit.LockState
+	for _, ip := range []string{"203.0.113.1", "203.0.113.2", "203.0.113.3"} {
+		for range cfg.MaxFailures {
+			st, err := g.Attempt(ctx, "u1", ip)
+			if err != nil {
+				t.Fatalf("Attempt: %v", err)
+			}
+			if st == nil {
+				allowed++
+			} else {
+				last = st
+			}
+		}
+	}
+	if allowed != cfg.SubjectMaxFailures || last == nil || last.Scope != bruteforcekit.ScopeSubject || last.RetryAfter != cfg.SubjectLockDuration {
+		t.Fatalf("allowed %d, last lock %+v; want %d and a subject lock for %s", allowed, last, cfg.SubjectMaxFailures, cfg.SubjectLockDuration)
+	}
+
+	clock.Advance(cfg.SubjectLockDuration)
+	if st, err := g.Attempt(ctx, "u1", "203.0.113.9"); err != nil || st != nil {
+		t.Fatalf("Attempt after the subject lock = %+v, %v, want allowed", st, err)
+	}
+	for range cfg.SubjectMaxFailures - 2 {
+		_, _ = g.Attempt(ctx, "u1", "203.0.113.10")
+	}
+	if err := g.RecordSuccess(ctx, "u1", "203.0.113.10"); err != nil {
+		t.Fatalf("RecordSuccess: %v", err)
+	}
+	for i := range cfg.SubjectMaxFailures {
+		if st, err := g.Attempt(ctx, "u1", fmt.Sprintf("203.0.113.%d", 20+i)); err != nil || st != nil {
+			t.Fatalf("Attempt %d after success = %+v, %v, want the subject window reset", i+1, st, err)
+		}
+	}
+}
+
+// Locked отдаёт блокировку пары с остатком до Until.
+func TestLocked_RetryAfter(t *testing.T) {
+	t.Parallel()
+	st, err := bruteforcetest.Locked{Until: time.Now().Add(time.Hour)}.Attempt(t.Context(), "u1", "203.0.113.7")
+	if err != nil || st == nil || st.Scope != bruteforcekit.ScopePair || st.RetryAfter <= 59*time.Minute {
+		t.Fatalf("Attempt = %+v, %v; want a pair lock with about an hour left", st, err)
 	}
 }

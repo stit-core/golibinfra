@@ -3,6 +3,7 @@ package pgstore_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -18,11 +19,13 @@ import (
 
 func config() bruteforcekit.Config {
 	return bruteforcekit.Config{
-		MaxFailures:      3,
-		LockDuration:     15 * time.Minute,
-		CleanupRetention: 24 * time.Hour,
-		CleanupInterval:  5 * time.Minute,
-		IPv6Prefix:       bruteforcekit.FullIPv6Prefix,
+		MaxFailures:         3,
+		LockDuration:        15 * time.Minute,
+		SubjectMaxFailures:  100,
+		SubjectLockDuration: time.Minute,
+		CleanupRetention:    24 * time.Hour,
+		CleanupInterval:     5 * time.Minute,
+		IPv6Prefix:          bruteforcekit.FullIPv6Prefix,
 	}
 }
 
@@ -68,8 +71,11 @@ func TestStore_InvalidKey(t *testing.T) {
 	if _, err := s.Attempt(ctx, "u", "not-an-ip"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
 		t.Fatalf("Attempt(bad ip) = %v, want ErrInvalidKey", err)
 	}
-	if err := s.RecordSuccess(ctx, strings.Repeat("s", bruteforcekit.MaxSubjectLen+1), "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
-		t.Fatalf("RecordSuccess(long subject) = %v, want ErrInvalidKey", err)
+	if err := s.RecordSuccess(ctx, "u\x00@example.com", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
+		t.Fatalf("RecordSuccess(subject with NUL) = %v, want ErrInvalidKey", err)
+	}
+	if _, err := s.Attempt(ctx, "u\x00@example.com", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
+		t.Fatalf("Attempt(subject with NUL) = %v, want ErrInvalidKey", err)
 	}
 	if _, err := s.Attempt(pgkit.WithTestTx(ctx), "u", "203.0.113.7"); !errors.Is(err, bruteforcekit.ErrInTx) {
 		t.Fatalf("Attempt(in tx) = %v, want ErrInTx", err)
@@ -538,4 +544,254 @@ func expireLock(t *testing.T, ctx context.Context, db *pgkit.DB, subject, ip str
 
 func hasKitPrefix(err error) bool {
 	return err != nil && strings.HasPrefix(err.Error(), "bruteforcekit/pgstore: ")
+}
+
+// Регрессия KSEC-04 (E11): проверок пароля одного subject'а за окно не больше
+// SubjectMaxFailures при любом числе адресов — и IPv4, и /64 одной /48. Под блокировкой
+// субъекта пара не учитывается, блокировка субъекта короткая и по часам базы, успех снимает её
+// окно, а истечение начинает новое.
+func TestStore_SubjectBudget(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	cfg.MaxFailures, cfg.SubjectMaxFailures = 5, 10
+	s := newStore(t, db, cfg)
+
+	spray := func(subject string, ips []string) (allowed int, last *bruteforcekit.LockState) {
+		for _, ip := range ips {
+			for range cfg.MaxFailures + 3 {
+				st, err := s.Attempt(ctx, subject, ip)
+				if err != nil {
+					t.Fatalf("Attempt(%s): %v", ip, err)
+				}
+				if st == nil {
+					allowed++
+				} else {
+					last = st
+				}
+			}
+		}
+		return allowed, last
+	}
+	v4, v6 := make([]string, 0, 20), make([]string, 0, 20)
+	for i := range 20 {
+		v4 = append(v4, fmt.Sprintf("203.0.113.%d", i+1))
+		v6 = append(v6, fmt.Sprintf("2001:db8:ab:%x::1", i))
+	}
+	for subject, ips := range map[string][]string{"victim4@example.com": v4, "victim6@example.com": v6} {
+		allowed, last := spray(subject, ips)
+		if allowed != cfg.SubjectMaxFailures || last == nil || last.Scope != bruteforcekit.ScopeSubject {
+			t.Fatalf("%s: %d password checks, last lock %+v; want %d and a subject lock", subject, allowed, last, cfg.SubjectMaxFailures)
+		}
+		if last.RetryAfter <= 0 || last.RetryAfter > cfg.SubjectLockDuration {
+			t.Fatalf("%s: RetryAfter = %s, want within SubjectLockDuration %s", subject, last.RetryAfter, cfg.SubjectLockDuration)
+		}
+	}
+	// 10 попыток прошли с двух адресов; под блокировкой субъекта третий адрес строки не завёл.
+	if n := failedCount(t, ctx, db, "victim4@example.com", "203.0.113.3"); n != -1 {
+		t.Fatalf("pair counted under the subject lock: failed_count = %d", n)
+	}
+
+	// Истечение блокировки субъекта — новое окно; успех снимает его сразу.
+	expireLock(t, ctx, db, "victim4@example.com", "")
+	attempts(t, ctx, s, "victim4@example.com", "203.0.113.30", 1)
+	if n := failedCount(t, ctx, db, "victim4@example.com", ""); n != 1 {
+		t.Fatalf("subject window after the lock expired: failed_count = %d, want 1", n)
+	}
+	if err := s.RecordSuccess(ctx, "victim4@example.com", "203.0.113.30"); err != nil {
+		t.Fatalf("RecordSuccess: %v", err)
+	}
+	if n := failedCount(t, ctx, db, "victim4@example.com", ""); n != -1 {
+		t.Fatalf("success left the subject window: failed_count = %d", n)
+	}
+
+	// Под блокировкой пары субъект не учитывается.
+	attempts(t, ctx, s, "pair@example.com", "198.51.100.1", cfg.MaxFailures)
+	if st, err := s.Attempt(ctx, "pair@example.com", "198.51.100.1"); err != nil || st == nil || st.Scope != bruteforcekit.ScopePair {
+		t.Fatalf("Attempt under the pair lock = %+v, %v, want a pair lock", st, err)
+	}
+	if n := failedCount(t, ctx, db, "pair@example.com", ""); n != cfg.MaxFailures {
+		t.Fatalf("subject counted under the pair lock: failed_count = %d, want %d", n, cfg.MaxFailures)
+	}
+}
+
+// Бюджет субъекта не превышается и под одновременными попытками с разных адресов.
+func TestStore_SubjectBudgetConcurrent(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	cfg.SubjectMaxFailures = 7
+	s := newStore(t, db, cfg)
+
+	const subject, n = "spray@example.com", 40
+	var (
+		wg      sync.WaitGroup
+		allowed atomic.Int64
+	)
+	errs := make(chan error, n)
+	for i := range n {
+		wg.Go(func() {
+			st, err := s.Attempt(ctx, subject, fmt.Sprintf("192.0.2.%d", i+1))
+			switch {
+			case err != nil:
+				errs <- err
+			case st == nil:
+				allowed.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("Attempt: %v", err)
+	}
+	if got := allowed.Load(); got != int64(cfg.SubjectMaxFailures) {
+		t.Fatalf("allowed attempts = %d, want %d", got, cfg.SubjectMaxFailures)
+	}
+}
+
+// Попытка, которая ждала строку субъекта, пока другой вход блокировал его, видит блокировку и
+// пару не учитывает: строка субъекта читается FOR UPDATE до учёта пары.
+func TestStore_SubjectLockSeenAfterWaiting(t *testing.T) {
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, tr := pg.DB(t), pg.Transactor(t)
+	s := newStore(t, db, config())
+	const subject, n = "waiting@example.com", 3 // пул testkit — 5 соединений: попытки, транзакция и опрос
+	if _, err := db.Exec(ctx, `INSERT INTO bruteforce_attempts (subject, ip, failed_count) VALUES ($1, '', 1)`, subject); err != nil {
+		t.Fatalf("seed the subject row: %v", err)
+	}
+
+	locks := make(chan *bruteforcekit.LockState, n)
+	err := tr.WithTx(ctx, func(txCtx context.Context) error {
+		if _, err := db.Exec(txCtx, `SELECT 1 FROM bruteforce_attempts WHERE subject = $1 AND ip = '' FOR UPDATE`, subject); err != nil {
+			return err
+		}
+		for i := range n {
+			go func() {
+				st, err := s.Attempt(ctx, subject, fmt.Sprintf("192.0.2.%d", i+1))
+				if err != nil {
+					t.Errorf("Attempt: %v", err)
+				}
+				locks <- st
+			}()
+		}
+		for waiting := 0; waiting < n; {
+			if err := db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&waiting); err != nil {
+				return err
+			}
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		_, err := db.Exec(txCtx, `UPDATE bruteforce_attempts SET locked_until = NOW() + interval '1 minute' WHERE subject = $1 AND ip = ''`, subject)
+		return err
+	})
+	if err != nil {
+		t.Fatalf("hold the subject row: %v", err)
+	}
+	for range n {
+		if st := <-locks; st == nil || st.Scope != bruteforcekit.ScopeSubject {
+			t.Fatalf("Attempt that waited for the subject row = %+v, want the subject lock", st)
+		}
+	}
+	var pairs int
+	if err := db.QueryRow(ctx, `SELECT count(*) FROM bruteforce_attempts WHERE subject = $1 AND ip <> ''`, subject).Scan(&pairs); err != nil {
+		t.Fatal(err)
+	}
+	if pairs != 0 {
+		t.Fatalf("pair rows = %d, want none: attempts under the subject lock counted their pairs", pairs)
+	}
+}
+
+// Понижение SubjectMaxFailures блокирует subject, чей счётчик уже выше нового порога, следующей
+// же попыткой, как у пары.
+func TestStore_SubjectBudgetLowered(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	cfg.SubjectMaxFailures = 10
+	for i := range 4 {
+		attempts(t, ctx, newStore(t, db, cfg), "lowered@example.com", fmt.Sprintf("192.0.2.%d", i+1), 1)
+	}
+	cfg.SubjectMaxFailures = 3
+	st, err := newStore(t, db, cfg).Attempt(ctx, "lowered@example.com", "192.0.2.9")
+	if err != nil || st == nil || st.Scope != bruteforcekit.ScopeSubject || st.FailedCount != 5 {
+		t.Fatalf("Attempt over the lowered budget = %+v, %v, want a subject lock with FailedCount 5", st, err)
+	}
+}
+
+// SubjectBudgetOff — учёт только по паре: строки субъекта нет, каждый адрес даёт MaxFailures.
+func TestStore_SubjectBudgetOff(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	cfg.SubjectMaxFailures = bruteforcekit.SubjectBudgetOff
+	s := newStore(t, db, cfg)
+	for i := range 3 {
+		attempts(t, ctx, s, "free@example.com", fmt.Sprintf("192.0.2.%d", i+1), cfg.MaxFailures)
+	}
+	if n := failedCount(t, ctx, db, "free@example.com", ""); n != -1 {
+		t.Fatalf("subject row with the budget off: failed_count = %d", n)
+	}
+}
+
+// RetryAfter — остаток по часам базы: сервис с убежавшими часами отдаёт тот же Retry-After.
+func TestStore_RetryAfterByDatabaseClock(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	s := newStore(t, db, cfg)
+	const subject, ip = "clock@example.com", "10.0.0.20"
+	attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+	if _, err := db.Exec(ctx, `UPDATE bruteforce_attempts SET locked_until = NOW() + interval '90 seconds'
+		WHERE subject = $1 AND ip = $2`, subject, ip); err != nil {
+		t.Fatalf("set lock: %v", err)
+	}
+	st, err := s.Attempt(ctx, subject, ip)
+	if err != nil || st == nil || st.RetryAfter <= 80*time.Second || st.RetryAfter > 90*time.Second {
+		t.Fatalf("Attempt = %+v, %v; want RetryAfter just under 90s", st, err)
+	}
+}
+
+// Регрессия bruteforcekit-subject-255: subject длиннее MaxSubjectLen учитывается по SHA-256, а не
+// отказом — обход в адаптере не нужен.
+func TestStore_LongSubjectIsCounted(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	s := newStore(t, db, cfg)
+	long := strings.Repeat("a", 300) + "@example.com"
+	attempts(t, ctx, s, long, "10.0.0.21", cfg.MaxFailures)
+	if st, err := s.Attempt(ctx, long, "10.0.0.21"); err != nil || st == nil {
+		t.Fatalf("Attempt over budget = %+v, %v, want lock", st, err)
+	}
+	var key string
+	if err := db.QueryRow(ctx, `SELECT subject FROM bruteforce_attempts WHERE ip = '10.0.0.21'`).Scan(&key); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasPrefix(key, "SHA256:") {
+		t.Fatalf("stored subject = %q, want the SHA-256 key", key)
+	}
+}
+
+// Регрессия bruteforcekit-attempt-retry-test: блокировка, не пустившая upsert, снялась до чтения
+// (успех параллельного входа) — попытка учитывается заново, в новом окне.
+func TestStore_AttemptRecountsWhenLockVanishes(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	s := newStore(t, db, cfg)
+	const subject, ip = "race@example.com", "10.0.0.22"
+	attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+
+	var seen atomic.Int32
+	pgstore.SetLockSeen(s, func() {
+		if seen.Add(1) == 1 {
+			if err := s.RecordSuccess(ctx, subject, ip); err != nil {
+				t.Errorf("RecordSuccess: %v", err)
+			}
+		}
+	})
+	if st, err := s.Attempt(ctx, subject, ip); err != nil || st != nil {
+		t.Fatalf("Attempt after the lock vanished = %+v, %v, want allowed", st, err)
+	}
+	if seen.Load() != 1 || failedCount(t, ctx, db, subject, ip) != 1 {
+		t.Fatalf("lock seen %d times, failed_count %d; want one recount into a new window", seen.Load(), failedCount(t, ctx, db, subject, ip))
+	}
 }
