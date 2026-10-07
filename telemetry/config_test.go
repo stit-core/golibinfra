@@ -30,6 +30,7 @@ func TestSignalURL(t *testing.T) {
 		{"https://otlp.example.com/", "v1/metrics", "https://otlp.example.com/v1/metrics"},
 		{"https://otlp.example.com/otlp", "v1/logs", "https://otlp.example.com/otlp/v1/logs"},
 		{"https://otlp.example.com/otlp/", "v1/traces", "https://otlp.example.com/otlp/v1/traces"},
+		{"https://otlp.example.com/u/me%40x.com/", "v1/traces", "https://otlp.example.com/u/me%40x.com/v1/traces"},
 	}
 	for _, c := range cases {
 		got, err := signalURL(c.endpoint, c.signal)
@@ -48,6 +49,12 @@ func TestSignalURL(t *testing.T) {
 	for _, b := range bad {
 		if _, err := signalURL(b, "v1/traces"); !errors.Is(err, ErrConfig) {
 			t.Errorf("signalURL(%q) err = %v, want ErrConfig", b, err)
+		}
+	}
+	// Неэкранированный `@` в пути — хвост пароля с `/`: отказ со своим текстом.
+	for _, b := range []string{"https://u:12/PWx@collector:4318", "https://collector:4318/u/me@x.com"} {
+		if _, err := signalURL(b, "v1/traces"); !errors.Is(err, ErrConfig) || !strings.Contains(err.Error(), "'@' after the host") {
+			t.Errorf("signalURL(%q) err = %v, want ErrConfig about '@' after the host", b, err)
 		}
 	}
 }

@@ -78,7 +78,7 @@ func (s *Service) Do(ctx context.Context) (err error) {
 | `OTEL_SERVICE_NAME` | `ServiceName` | `string` | — (**required**, если не `OTEL_SDK_DISABLED`) | `service.name` |
 | `OTEL_SERVICE_VERSION` | `ServiceVersion` | `string` | `dev` | `service.version` — semver / git short-sha |
 | `APP_ENV` | `Environment` | `string` | `dev` | `deployment.environment.name` — `prod` / `staging` / `smoke` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | `OTLPEndpoint` | `string` | `http://localhost:4318` | базовый URL коллектора: `http://` — без TLS, `https://` — TLS; путь сохраняется, per-signal `/v1/<signal>` дописывается. `host:port` без схемы и `@` в пути (хвост пароля с `/`) — ошибка конфигурации; в её тексте всё до последнего `@` — `xxxxx` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | `OTLPEndpoint` | `string` | `http://localhost:4318` | базовый URL коллектора: `http://` — без TLS, `https://` — TLS; путь сохраняется, per-signal `/v1/<signal>` дописывается. `host:port` без схемы и неэкранированный `@` в пути (хвост пароля с `/`; `@` пути — `%40`, он сохраняется) — ошибка конфигурации; в её тексте всё до последнего `@` — `xxxxx` |
 | `OTEL_TRACES_SAMPLER_ARG` | `SampleRatio` | `float64` | `1.0` | доля сэмплируемых трейсов, `[0, 1]` (`ParentBased(TraceIDRatioBased)`) |
 | `OTEL_EXPORT_TIMEOUT` | `ExportTimeout` | `time.Duration` | `10s` | таймаут одного OTLP-запроса у всех трёх экспортёров и их процессоров |
 | `OTEL_TRACES_BATCH_DELAY` | `TraceBatchDelay` | `time.Duration` | `5s` | период сброса очереди batch-processor'а трейсов |

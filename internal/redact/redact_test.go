@@ -80,6 +80,31 @@ func TestRequestURL(t *testing.T) {
 	}
 }
 
+// `@` пути — хвост пароля с `/`, только если он не экранирован: RawPath разбор хранит, когда
+// исходный путь отличается от канонического (`%40`).
+func TestAtInPath(t *testing.T) {
+	for raw, want := range map[string]bool{
+		"https://u:12/PWxsecret@cdn.example.com":    true,
+		"https://cdn.example.com/u/me@x.com":        true,
+		"https://cdn.example.com/u/me%40x.com":      false,
+		"https://cdn.example.com/a%2Fb/me%40x.com":  false,
+		"https://cdn.example.com/a%2Fb/me@x.com":    true,
+		"https://collector.example.com/otlp":        false,
+		"https://user:p@ss@collector.example.com/x": false,
+		"https://cdn.example.com/u?email=me@x.com":  false,
+		"nats://app:12/PWxsecret@127.0.0.1:1":       true,
+		"nats://app:PWx%2Fsecret@127.0.0.1:1/x%40y": false,
+	} {
+		u, err := url.Parse(raw)
+		if err != nil {
+			t.Fatalf("url.Parse(%q): %v", raw, err)
+		}
+		if got := AtInPath(u); got != want {
+			t.Errorf("AtInPath(%q) = %v, want %v", raw, got, want)
+		}
+	}
+}
+
 func TestParseError(t *testing.T) {
 	malformed := []string{"redis://:s3cr%zz@cache:6379", "nats://user:s3cret/x@nats"}
 	_, escape := url.Parse(malformed[0])

@@ -23,8 +23,9 @@
   (= `healthkit.Probe`); проверка здоровья контейнера — `Healthcheck(ctx)` (код выхода),
   `CheckHealth(ctx, addr)`.
 - **Прочее**: `RequestIDFrom`, `ContextWithRequestID`, `HeaderRequestID`,
-  `HeaderIdempotentReplayed`, `ClientIPFrom`, `ContextWithClientIP` (IP клиента в ctx теста без
-  middleware), `IsMaxBodyError`, `NewMemoryStore`, `NewConfig`, `Config.Validate`, `ErrConfig`.
+  `HeaderIdempotentReplayed`, `ClientIPFrom` (в ctx теста без middleware IP кладёт
+  `handlertest.ContextWithClientIP`), `IsMaxBodyError`, `NewMemoryStore`, `NewConfig`,
+  `Config.Validate`, `ErrConfig`.
 
 ## Сервер через fx Module
 

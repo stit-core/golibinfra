@@ -70,6 +70,7 @@ func TestConfig_Validate(t *testing.T) {
 		}},
 		{name: "valid empty public base url", mutate: func(c *storagekit.Config) { c.PublicBaseURL = "" }},
 		{name: "valid virtual url style", mutate: func(c *storagekit.Config) { c.URLStyle = storagekit.URLStyleVirtual }},
+		{name: "valid escaped at in public base url path", mutate: func(c *storagekit.Config) { c.PublicBaseURL = "https://cdn.example.com/u/me%40x.com" }},
 
 		{name: "empty endpoint", wantErr: true, mutate: func(c *storagekit.Config) { c.Endpoint = "" }},
 		{name: "endpoint with path", wantErr: true, mutate: func(c *storagekit.Config) { c.Endpoint = "https://s3.example.com/bucket" }},
@@ -113,6 +114,24 @@ func TestConfig_Validate(t *testing.T) {
 				t.Fatalf("Validate() = %v, want nil", err)
 			}
 		})
+	}
+}
+
+// Неэкранированный `@` в пути публичного URL — хвост пароля с `/`: отказ со своим текстом; `%40` —
+// законный путь, и ссылки его сохраняют.
+func TestConfig_PublicBaseURLAtInPath(t *testing.T) {
+	cfg := validConfig()
+	cfg.PublicBaseURL = "https://cdn.example.com/u/me@x.com"
+	if err := cfg.Validate(); !errors.Is(err, storagekit.ErrConfig) || !strings.Contains(err.Error(), "'@' after the host") ||
+		strings.Contains(err.Error(), "without credentials") {
+		t.Errorf("Validate() = %v, want ErrConfig about '@' after the host", err)
+	}
+	cfg.PublicBaseURL = "https://cdn.example.com/u/me%40x.com"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() = %v, want nil for an escaped '@'", err)
+	}
+	if got := storagekit.NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle).Build("a/b.png"); got != "https://cdn.example.com/u/me%40x.com/"+cfg.Bucket+"/a/b.png" {
+		t.Errorf("Build = %q, want the escaped base path kept", got)
 	}
 }
 

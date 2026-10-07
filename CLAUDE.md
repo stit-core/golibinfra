@@ -91,8 +91,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
   `internal/envconf` (ридер ENV — `New*Config` китов и `config.Env`),
-  `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента,
-  свёртка IPv6 — у лимитера httpkit и bruteforcekit),
+  `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента — httpkit
+  и `handlertest`, свёртка IPv6 — у лимитера httpkit и bruteforcekit),
   `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`), `internal/redact`
   (URL без секретов — ошибки, логи и спаны natskit, cachekit, storagekit, telemetry, httpclient),
   `internal/grpcstatus` (классификация gRPC-кодов), `internal/grpclogkit`
@@ -148,9 +148,7 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   логгер — параметр, не опция. Test-хелперы — `testkit/<name>test`; в ките —
   только in-memory реализации двойного назначения (`cachekit.MemoryCache`,
   `storagekit.MemoryStorage`, `httpkit.MemoryStore`), фейки часов `clockkit` (часть контракта
-  `Clock`), маркер транзакции `pgkit.WithTestTx` и IP клиента в ctx `httpkit.ContextWithClientIP`
-  (ключ — во внутреннем `internal/clientip`, снаружи модуля его ставит только httpkit, пара к
-  `ClientIPFrom`). Исключения формы — названные: опции харнесса
+  `Clock`) и маркер транзакции `pgkit.WithTestTx`. Исключения формы — названные: опции харнесса
   `handlertest` (логгер — `WithLogger`), `telemetry.WithErrorLogger(slog.Handler)` (handler ошибок
   SDK, а не логгер кита), `outboxkit/pgstore.NewStoreFor(db, table, …)`; киты вне объёма аудита
   (hubkit, oidckit, amocrmkit, anthropickit) правятся только под API.

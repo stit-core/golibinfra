@@ -1,17 +1,20 @@
 // Package handlertest — хелперы для тестов huma-хендлеров: in-memory API сервера httpkit с той
-// же цепочкой middleware, контрактом ошибок, auth-гейтом и проверкой маршрутов, что у сервера, и
-// разбор тела ошибки httpkit.APIError.
+// же цепочкой middleware, контрактом ошибок, auth-гейтом и проверкой маршрутов, что у сервера,
+// разбор тела ошибки httpkit.APIError и IP клиента в ctx теста usecase'а.
 package handlertest
 
 import (
+	"context"
 	"encoding/json"
 	"net/http/httptest"
+	"net/netip"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/internal/clientip"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -115,4 +118,14 @@ func AssertAPIError(t testing.TB, resp *httptest.ResponseRecorder, status int, c
 	if id := resp.Header().Get(httpkit.HeaderRequestID); got.RequestID != id {
 		t.Fatalf("handlertest: request_id = %q, want X-Request-ID %q", got.RequestID, id)
 	}
+}
+
+// ContextWithClientIP кладёт IP клиента в ctx, как middleware httpkit.ClientIP: тест usecase'а читает
+// его httpkit.ClientIPFrom без прогона через сервер. Не IP — ctx без изменений.
+func ContextWithClientIP(ctx context.Context, ip string) context.Context {
+	addr, err := netip.ParseAddr(ip)
+	if err != nil {
+		return ctx
+	}
+	return clientip.With(ctx, addr)
 }

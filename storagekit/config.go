@@ -130,9 +130,12 @@ func (c Config) Validate() error {
 		if err != nil {
 			return fmt.Errorf("%w: STORAGE_PUBLIC_BASE_URL %q: %w", ErrConfig, redact.URL(c.PublicBaseURL), redact.ParseError(err))
 		}
-		// `@` в пути — хвост пароля с `/`, который разбор принял за порт и путь: он ушёл бы в каждую ссылку.
-		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil || strings.Contains(u.Path, "@") {
+		if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || u.User != nil {
 			return fmt.Errorf("%w: STORAGE_PUBLIC_BASE_URL %q must be an absolute http(s) URL without credentials", ErrConfig, redact.URL(c.PublicBaseURL))
+		}
+		// Хвост пароля с `/` ушёл бы в каждую ссылку.
+		if redact.AtInPath(u) {
+			return fmt.Errorf("%w: STORAGE_PUBLIC_BASE_URL %q: %s", ErrConfig, redact.URL(c.PublicBaseURL), redact.AtInPathHint)
 		}
 	}
 	return nil

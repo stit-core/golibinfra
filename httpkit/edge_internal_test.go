@@ -97,17 +97,6 @@ func TestClientIP_ForwardedForWithPort(t *testing.T) {
 	}
 }
 
-// N4 валидатора v1.3.0: тест usecase'а кладёт IP клиента в ctx без middleware — в той же
-// канонической форме, что ClientIP.
-func TestContextWithClientIP(t *testing.T) {
-	if got := ClientIPFrom(ContextWithClientIP(context.Background(), "::ffff:192.0.2.1")); got != "192.0.2.1" {
-		t.Fatalf("ClientIPFrom = %q, want 192.0.2.1", got)
-	}
-	if got := ClientIPFrom(ContextWithClientIP(context.Background(), "not-an-ip")); got != "" {
-		t.Fatalf("invalid ip: ClientIPFrom = %q, want empty", got)
-	}
-}
-
 // f1-07 валидатора B harden-gate-defaults: claim берёт операцию того же METHOD и пути, а не первую
 // ожидающую того же метода.
 func TestRegistry_ClaimMatchesPath(t *testing.T) {

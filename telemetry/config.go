@@ -147,10 +147,15 @@ func signalURL(endpoint, signalPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: %w", ErrConfig, redact.URL(endpoint), redact.ParseError(err))
 	}
-	// `@` в пути — хвост пароля с `/`, который разбор принял за порт и путь: экспорт ушёл бы не туда.
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.Contains(u.Path, "@") {
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: want a full URL like http(s)://host:port", ErrConfig, redact.URL(endpoint))
 	}
+	// Хвост пароля с `/` разбор принял за порт и путь: экспорт ушёл бы не туда.
+	if redact.AtInPath(u) {
+		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: %s", ErrConfig, redact.URL(endpoint), redact.AtInPathHint)
+	}
+	// RawPath — вместе с Path: иначе String() раскодирует `%40` базового пути.
+	u.RawPath = strings.TrimRight(u.EscapedPath(), "/") + "/" + signalPath
 	u.Path = strings.TrimRight(u.Path, "/") + "/" + signalPath
 	return u.String(), nil
 }

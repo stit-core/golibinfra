@@ -132,6 +132,9 @@ blocked-by: —
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
 
 ## Решения
+- **Перед S1** (`fix`). `ContextWithClientIP` — в `handlertest` (ключ `internal/clientip` видит testkit), исключение снято; в v1.3.0
+  его нет (`2df4487`) — не Breaking, новое API. `@` пути — `redact.AtInPath` по сырому пути (`%40` законен) у публичного URL, OTLP и
+  `NATS_URL` (один способ), текст «'@' after the host…»; граница масок (заголовок строкой) — в `logkit/README.md`.
 - **fx.** `fx.Invoke` потребителя типа — в модулях, чьи доки обещают fail-fast (flagkit, natskit, cachekit, tzkit; KX40). Ошибки
   финального экспорта telemetry пишет её error-логгер, `Shutdown` — nil: телеметрия best-effort, а код 1 у Job без коллектора хуже
   (KX66). `FxLogger` — свой логгер из `logkit.Config` и `RedactConfig` без OTel-sink, как error-логгер telemetry (KX67a). go-redis
@@ -215,9 +218,7 @@ blocked-by: —
 Первая половина партии 3 закрыта (`harden-kits-contracts`: S14 — эксперименты AC1–AC11 PASS); `fix-reference-code` шаблона закрыт
 — перед S7 сверить `git log -- internal/archtest` шаблона. Для S13: эксперименты правлены под API партии, оригиналы —
 `M/exs8/orig/*.v130`, `*.s12`; подтест H15 про `[{}]` не адаптирован (старт — `ErrRoutes` по решению); `expected-signals.json` —
-из доков HEAD; KX64 — FX-12. KDOC-09: 255 у auditkit и сессий — уже в доках. Следующий шаг — S1, перед ним отдельным `fix` —
-мелочи перепроверки C: граница масок (заголовок строкой в msg, `Cookie: …`, — только атрибутом) — в `logkit/README.md`; `@` в пути
-`STORAGE_PUBLIC_BASE_URL` и OTLP endpoint — по экранированному пути (`%40` — не `ErrConfig`), свой текст ошибки.
+из доков HEAD; KX64 — FX-12. KDOC-09: 255 у auditkit и сессий — уже в доках. Следующий шаг — S1.
 
 Заготовка аннотации v1.4.0 (первая половина — `harden-kits-contracts`; вторая — по шагам):
 - **Breaking.** config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`); ошибка `Load`: поле без тега (тег или

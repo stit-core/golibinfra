@@ -247,6 +247,8 @@ func TestConfig_Validate(t *testing.T) {
 		{"jetstream off needs no values", func(c *natskit.Config) { c.JetStream = natskit.JetStreamConfig{} }, false},
 		{"url list", func(c *natskit.Config) { c.URL = "nats://a:4222,nats://b:4222" }, false},
 		{"url without scheme", func(c *natskit.Config) { c.URL = "localhost:4222" }, false},
+		{"escaped at in websocket path", func(c *natskit.Config) { c.URL = "wss://nats.example.com/u/me%40x.com" }, false},
+		{"bare at in websocket path", func(c *natskit.Config) { c.URL = "wss://nats.example.com/u/me@x.com" }, true},
 		{"creds file present", func(c *natskit.Config) { c.CredsFile = existingFile }, false},
 		{"instance name", func(c *natskit.Config) { c.Instance = "hub-2.eu" }, false},
 

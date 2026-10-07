@@ -1,5 +1,5 @@
-// Package clientip — ctx-ключ и каноническая форма IP клиента: httpkit кладёт адрес в ctx,
-// лимитер httpkit и bruteforcekit сворачивают его в ключ одной функцией.
+// Package clientip — ctx-ключ и каноническая форма IP клиента: httpkit (в тестах — handlertest)
+// кладёт адрес в ctx, лимитер httpkit и bruteforcekit сворачивают его в ключ одной функцией.
 package clientip
 
 import (

@@ -21,16 +21,6 @@ func ClientIPFrom(ctx context.Context) string {
 	return ""
 }
 
-// ContextWithClientIP кладёт IP клиента в ctx, как ClientIP: тест usecase'а читает его ClientIPFrom
-// без прогона через middleware. Не IP — ctx без изменений.
-func ContextWithClientIP(ctx context.Context, ip string) context.Context {
-	addr, err := netip.ParseAddr(ip)
-	if err != nil {
-		return ctx
-	}
-	return clientip.With(ctx, addr)
-}
-
 // ClientIP кладёт IP клиента в ctx (ClientIPFrom). trustProxyHops (HTTP_TRUST_PROXY_HOPS) —
 // сколько доверенных прокси перед сервисом дописывают X-Forwarded-For: 0 — адрес соединения,
 // N — N-я справа запись X-Forwarded-For (IP или ip:port), левее неё — то, что прислал сам клиент;

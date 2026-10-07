@@ -308,3 +308,23 @@ func TestNewAPI_WithLogger(t *testing.T) {
 		t.Fatalf("handler error line with request_id: %s", line)
 	}
 }
+
+// IP из ContextWithClientIP — тот же, что middleware ClientIP кладёт по адресу соединения: тест
+// usecase'а видит адрес в канонической форме, как в проде; не IP — ctx без адреса.
+func TestContextWithClientIP(t *testing.T) {
+	var viaMiddleware string
+	h := httpkit.ClientIP(0, logkit.Nop())(http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+		viaMiddleware = httpkit.ClientIPFrom(r.Context())
+	}))
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "[::ffff:192.0.2.1]:4711"
+	h.ServeHTTP(httptest.NewRecorder(), req)
+
+	got := httpkit.ClientIPFrom(handlertest.ContextWithClientIP(context.Background(), "::ffff:192.0.2.1"))
+	if got != "192.0.2.1" || got != viaMiddleware {
+		t.Fatalf("ClientIPFrom = %q, middleware = %q, want both 192.0.2.1", got, viaMiddleware)
+	}
+	if got := httpkit.ClientIPFrom(handlertest.ContextWithClientIP(context.Background(), "not-an-ip")); got != "" {
+		t.Fatalf("invalid ip: ClientIPFrom = %q, want empty", got)
+	}
+}

@@ -55,6 +55,19 @@ func RequestURL(raw string) string {
 	return c.String()
 }
 
+// AtInPathHint — текст ошибки конфига при AtInPath: как записать URL.
+const AtInPathHint = "'@' after the host: percent-encode '@' in the path (%40) and '/' in the password (%2F)"
+
+// AtInPath — в пути URL неэкранированный `@`: так разбор кладёт в путь хвост пароля с `/`
+// (`u:12/pass@host` — порт 12 и путь `/pass@host`). `%40` в пути — не хвост пароля.
+func AtInPath(u *url.URL) bool {
+	raw := u.RawPath
+	if raw == "" {
+		raw = u.Path
+	}
+	return strings.Contains(raw, "@")
+}
+
 // maskQuery заменяет значения параметров query, имена остаются; параметр без `=` сам может быть
 // токеном и заменяется целиком.
 func maskQuery(raw string) string {
