@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
 	"os"
 	"slices"
 	"strings"
@@ -134,6 +135,43 @@ func TestModule_RedactsErrorLogger(t *testing.T) {
 				t.Fatalf("export-error log went out unredacted: %s", got)
 			}
 		})
+	}
+}
+
+// Регрессия KFX-05: недоступный коллектор на остановке — запись ERROR логгера ошибок, а Stop — без
+// ошибки: телеметрия best-effort, код выхода сервиса и Job от коллектора не зависит.
+func TestModule_StopWithCollectorDownIsBestEffort(t *testing.T) {
+	restoreGlobals(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	refused := "http://" + ln.Addr().String()
+	_ = ln.Close()
+	cfg := Config{
+		ServiceName:     "svc",
+		OTLPEndpoint:    refused,
+		SampleRatio:     1,
+		ExportTimeout:   time.Second,
+		TraceBatchDelay: time.Hour, // экспорт — только финальный, на остановке
+		MetricInterval:  time.Hour,
+		LogBatchDelay:   time.Hour,
+	}
+
+	stdout := captureStdout(t)
+	app := fx.New(fx.NopLogger, fx.Supply(cfg, logkit.Config{Level: "info"}), Module)
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	_, span := otel.Tracer("test").Start(context.Background(), "job")
+	span.End()
+	if err := app.Stop(t.Context()); err != nil {
+		t.Fatalf("Stop with the collector down = %v, want nil", err)
+	}
+	got := stdout()
+	if !strings.Contains(got, `"level":"ERROR","msg":"telemetry: shutdown"`) || !strings.Contains(got, "connection refused") {
+		t.Fatalf("no ERROR record of the failed final export:\n%s", got)
 	}
 }
 

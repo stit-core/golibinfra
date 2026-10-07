@@ -42,7 +42,7 @@ func TestBridgeMapsLevels(t *testing.T) {
 	}
 	for _, tc := range cases {
 		e, ok := rec.FindFunc(func(e logtest.Entry) bool {
-			return e.Level == tc.level && strings.TrimSpace(e.Str("msg")) == tc.want
+			return e.Level == tc.level && strings.TrimSpace(e.Str("detail")) == tc.want
 		})
 		if !ok {
 			t.Errorf("%v %q not captured, entries: %+v", tc.level, tc.want, rec.Entries())

@@ -12,6 +12,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/cachekit"
 	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 )
 
@@ -37,6 +38,7 @@ func offlineConfig(t *testing.T) cachekit.Config {
 	return cfg
 }
 
+// Регрессия KFX-03: недоступный Redis валит старт и без потребителя Cache — Module строит его сам.
 func TestModule_PingOnStartFailsFast(t *testing.T) {
 	cfg := offlineConfig(t)
 	cfg.PingOnStart = true
@@ -44,9 +46,8 @@ func TestModule_PingOnStartFailsFast(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(cfg),
+		fx.Provide(logkit.Nop),
 		cachekit.Module,
-		healthkit.ProvideProbe(cachekit.Probe),
-		fx.Invoke(func(cachekit.Cache) {}),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -66,6 +67,7 @@ func TestModule_StartsWithoutPingAndClosesOnStop(t *testing.T) {
 	app := fxtest.New(
 		t,
 		fx.Supply(cfg),
+		fx.Provide(logkit.Nop),
 		cachekit.Module,
 		healthkit.ProvideProbe(cachekit.Probe),
 		fx.Populate(&cache),
@@ -95,8 +97,8 @@ func TestModule_RejectsOldRedisServer(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(cfg),
+		fx.Provide(logkit.Nop),
 		cachekit.Module,
-		fx.Invoke(func(cachekit.Cache) {}),
 	)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
@@ -107,7 +109,7 @@ func TestModule_RejectsOldRedisServer(t *testing.T) {
 	}
 
 	cfg.SkipVersionCheck = true
-	skipping := fxtest.New(t, fx.Supply(cfg), cachekit.Module, fx.Invoke(func(cachekit.Cache) {}))
+	skipping := fxtest.New(t, fx.Supply(cfg), fx.Provide(logkit.Nop), cachekit.Module)
 	skipping.RequireStart()
 	skipping.RequireStop()
 }
@@ -118,11 +120,12 @@ func TestModule_StartsOnSupportedServer(t *testing.T) {
 	cfg.URL = testkit.StartRedis(t).URL
 	cfg.PingOnStart = true
 
-	app := fxtest.New(t, fx.Supply(cfg), cachekit.Module, fx.Invoke(func(cachekit.Cache) {}))
+	app := fxtest.New(t, fx.Supply(cfg), fx.Provide(logkit.Nop), cachekit.Module)
 	app.RequireStart()
 	app.RequireStop()
 }
 
+// Невалидный конфиг валит сборку графа и без потребителя Cache.
 func TestModule_InvalidConfigStopsGraph(t *testing.T) {
 	cfg := validConfig()
 	cfg.PoolSize = 0
@@ -130,10 +133,17 @@ func TestModule_InvalidConfigStopsGraph(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(cfg),
+		fx.Provide(logkit.Nop),
 		cachekit.Module,
-		fx.Invoke(func(cachekit.Cache) {}),
 	)
 	if err := app.Err(); !errors.Is(err, cachekit.ErrConfig) {
 		t.Fatalf("app.Err() = %v, want ErrConfig", err)
+	}
+}
+
+// Module берёт логгер из графа: без logkit.Logger граф не собирается.
+func TestModule_RequiresLogger(t *testing.T) {
+	if err := fx.ValidateApp(fx.Supply(validConfig()), cachekit.Module); err == nil {
+		t.Fatal("ValidateApp without logkit.Logger = nil, want a missing type error")
 	}
 }

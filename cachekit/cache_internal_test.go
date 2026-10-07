@@ -70,7 +70,7 @@ func TestRedisCache_InvalidateByTagIsOneCommand(t *testing.T) {
 	c, err := newRedisCache(Config{
 		URL: url, PoolSize: 5, MaxRetries: -1,
 		DialTimeout: 5 * time.Second, ReadTimeout: 3 * time.Second, WriteTimeout: 3 * time.Second,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newRedisCache: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestCheckServerVersion_PropagatesClientError(t *testing.T) {
 	c, err := newRedisCache(Config{
 		URL: "redis://127.0.0.1:6379/0", PoolSize: 1, MaxRetries: -1,
 		DialTimeout: time.Second, ReadTimeout: time.Second, WriteTimeout: time.Second,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newRedisCache: %v", err)
 	}
@@ -162,7 +162,7 @@ func TestRedisCache_NonIdempotentCommandsAreNotRetried(t *testing.T) {
 	c, err := newRedisCache(Config{
 		URL: url, PoolSize: 16, MaxRetries: 10,
 		DialTimeout: 5 * time.Second, ReadTimeout: 200 * time.Millisecond, WriteTimeout: time.Second,
-	})
+	}, nil)
 	if err != nil {
 		t.Fatalf("newRedisCache: %v", err)
 	}

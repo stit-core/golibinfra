@@ -127,7 +127,8 @@ func SubjectMatches(filter, subject string) bool
 ## Подключение через fx
 
 `natskit.Module(name)` поднимает инстанс шины и provide'ит `*Client`, `Bus` и
-`StreamBus`. Конфиг регистрирует приложение: `fx.Provide(natskit.NewConfig)` для
+`StreamBus`; клиент подключается на старте и без потребителя (недоступный NATS валит
+запуск). Конфиг регистрирует приложение: `fx.Provide(natskit.NewConfig)` для
 дефолтного инстанса, `natskit.ProvideConfig(name)` — для именованного.
 
 ```go

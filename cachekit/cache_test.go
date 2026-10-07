@@ -10,6 +10,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/cachekit"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/idempotencytest"
 )
@@ -34,7 +35,7 @@ func newCache(t *testing.T, url, prefix string) cachekit.Cache {
 	cfg.URL = url
 	cfg.KeyPrefix = prefix
 	cfg.PoolSize = 5
-	cache, err := cachekit.NewRedisCache(cfg)
+	cache, err := cachekit.NewRedisCache(cfg, logkit.Nop())
 	if err != nil {
 		t.Fatalf("new redis cache: %v", err)
 	}

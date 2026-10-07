@@ -7,13 +7,18 @@ import (
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // Module не provide'ит Config (caller регистрирует его сам) и не кладёт Probe в
-// граф: пробу регистрирует потребитель через healthkit.ProvideProbe(cachekit.Probe).
+// граф: пробу регистрирует потребитель через healthkit.ProvideProbe(cachekit.Probe). Логгер —
+// logkit.Module. Cache строится на старте и без потребителя: невалидный конфиг и (при
+// REDIS_PING_ON_START) недоступный Redis валят запуск.
 var Module = fx.Module(
 	"cachekit",
 	fx.Provide(newCacheWithLifecycle),
+	// Без Invoke конструктор ленив: проверки старта ждали бы первого потребителя Cache.
+	fx.Invoke(func(Cache) {}),
 )
 
 // NewConfig читает REDIS_* из окружения и валидирует их.
@@ -25,8 +30,8 @@ func NewConfig() (Config, error) {
 	return c, c.Validate()
 }
 
-func newCacheWithLifecycle(lc fx.Lifecycle, cfg Config) (Cache, error) {
-	c, err := newRedisCache(cfg)
+func newCacheWithLifecycle(lc fx.Lifecycle, cfg Config, log logkit.Logger) (Cache, error) {
+	c, err := newRedisCache(cfg, log)
 	if err != nil {
 		return nil, err
 	}

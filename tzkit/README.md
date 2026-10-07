@@ -51,7 +51,7 @@ import "git.stit.tech/stit-core/golibinfra/tzkit"
 ```go
 fx.New(
 	fx.Provide(tzkit.NewConfig), // читает APP_TZ и валидирует его
-	tzkit.Module,                // provide Zone
+	tzkit.Module,                // provide Zone — на старте, и без потребителя
 	clockkit.Module,
 	fx.Provide(NewService),
 ).Run()
@@ -122,7 +122,8 @@ task.Due = tzkit.DayFromPg(row.DueDate)     // pgtype.Date → Day
 `ErrEmptyZone`/`ErrLocalZone` внутри, их видно через `errors.Is`). `Config` kit
 не провайдит — его регистрирует caller: `fx.Provide(tzkit.NewConfig)` или поле
 App-конфига. `NewZone` возвращает ошибку на пустом имени, на неизвестной зоне и
-на `"Local"`; во fx это отказ старта.
+на `"Local"`; во fx это отказ старта — и в графе, где `Zone` пока никто не берёт:
+`Module` строит её на старте.
 
 Дефолта у `APP_TZ` нет намеренно: любая зона, подставленная библиотекой, — это
 чужие границы суток без единого сигнала в логе. Переменная задаётся в каждом
@@ -151,7 +152,7 @@ App-конфига. `NewZone` возвращает ошибку на пусто�
 | `ErrEmptyZone`, `ErrLocalZone` | пустое имя зоны и запрещённая `"Local"` |
 | `ErrConfig` | невалидный `Config` (из `NewConfig`/`Validate`) |
 | `Config`, `NewConfig()`, `Config.Validate()` | `APP_TZ` |
-| `Module` | fx-модуль: `Zone` из `Config` |
+| `Module` | fx-модуль: `Zone` из `Config`, на старте и без потребителя |
 
 ### `Zone`
 

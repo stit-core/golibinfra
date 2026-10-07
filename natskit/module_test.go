@@ -76,6 +76,27 @@ func TestModule_ProbeViaHealthkitProvideProbe(t *testing.T) {
 	}
 }
 
+// Регрессия KFX-03: недоступный NATS валит сборку графа и без потребителя шины — у дефолтного и у
+// именованного инстанса.
+func TestModule_UnreachableNATSFailsGraphWithoutConsumer(t *testing.T) {
+	t.Setenv("NATS_URL", "nats://127.0.0.1:1")
+	t.Setenv("HUB_NATS_URL", "nats://127.0.0.1:1")
+	t.Setenv("NATS_CONNECT_TIMEOUT", "1s")
+	t.Setenv("HUB_NATS_CONNECT_TIMEOUT", "1s")
+	for name, mod := range map[string]fx.Option{
+		"default": fx.Options(fx.Provide(natskit.NewConfig), natskit.Module("")),
+		"named":   fx.Options(natskit.ProvideConfig("hub"), natskit.Module("hub")),
+	} {
+		t.Run(name, func(t *testing.T) {
+			app := fx.New(fx.NopLogger, fx.Provide(logkit.Nop), mod)
+			if app.Err() == nil {
+				_ = app.Stop(t.Context())
+				t.Fatal("fx.New with an unreachable NATS = nil error, want a connect error")
+			}
+		})
+	}
+}
+
 // Имя инстанса, из которого нельзя собрать префикс ENV, валит сборку графа.
 func TestModule_RejectsInvalidInstanceName(t *testing.T) {
 	err := fx.ValidateApp(

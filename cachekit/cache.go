@@ -16,6 +16,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/internal/redact"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // ErrConfig — невалидный Config: сервис падает на старте, а не на первой команде.
@@ -159,16 +160,18 @@ type redisCache struct {
 	prefix string
 }
 
-// NewRedisCache собирает Cache поверх go-redis; без fx закрывать Close самому.
+// NewRedisCache собирает Cache поверх go-redis; без fx закрывать Close самому. Внутренний лог
+// go-redis (пул, переподключения) уходит в log записью WARN; nil и logkit.Nop его не забирают.
 // Версию сервера проверяет Module на старте — вне fx это делает checkServerVersion.
-func NewRedisCache(cfg Config) (Cache, error) {
-	return newRedisCache(cfg)
+func NewRedisCache(cfg Config, log logkit.Logger) (Cache, error) {
+	return newRedisCache(cfg, log)
 }
 
-func newRedisCache(cfg Config) (*redisCache, error) {
+func newRedisCache(cfg Config, log logkit.Logger) (*redisCache, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
 	}
+	redisLog.install(log)
 	opts, err := redis.ParseURL(cfg.URL)
 	if err != nil {
 		return nil, fmt.Errorf("cachekit: parse redis url: %w", redact.ParseError(err))

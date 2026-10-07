@@ -14,6 +14,8 @@ import (
 // caller — `fx.Provide(natskit.NewConfig)` для дефолтного инстанса, для
 // именованного `natskit.ProvideConfig(name)` (конфиг из `<NAME>_NATS_*` под
 // fx-тегом `name:"<name>"`). Пустое имя — дефолтный инстанс, provide без тега.
+// Клиент подключается на старте и без потребителя: невалидный конфиг и недоступный NATS
+// валят запуск.
 func Module(name string) fx.Option {
 	if name == "" {
 		return fx.Module(
@@ -23,6 +25,8 @@ func Module(name string) fx.Option {
 				func(c *Client) Bus { return c.Bus() },
 				func(c *Client) StreamBus { return c.Stream() },
 			),
+			// Без Invoke конструктор ленив: подключение ждало бы первого потребителя шины.
+			fx.Invoke(func(*Client) {}),
 		)
 	}
 	if !validInstanceName(name) {
@@ -48,6 +52,7 @@ func Module(name string) fx.Option {
 				fx.ParamTags(tag), fx.ResultTags(tag),
 			),
 		),
+		fx.Invoke(fx.Annotate(func(*Client) {}, fx.ParamTags(tag))),
 	)
 }
 

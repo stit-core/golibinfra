@@ -30,7 +30,7 @@ func main() {
 		// Config не входит в flagkit.Module — регистрируется отдельно.
 		// Дешёвый mode без App-pattern:
 		fx.Provide(flagkit.NewConfig),
-		flagkit.Module, // provide'ит flagkit.Store (через NewEnvStore)
+		flagkit.Module, // flagkit.Store (через NewEnvStore) — на старте, и без потребителя
 		fx.Invoke(func(flags flagkit.Store) {
 			if flags.Bool("new_checkout") {
 				// фича включена
@@ -170,7 +170,8 @@ empty.String("anything") // ""
   динамический feature-flag-сервис.
 - **Строгий разбор.** Невалидная запись роняет `NewConfig`/`NewEnvStore` с
   `ErrConfig` — опечатка в переменной деплоя останавливает старт, а не выключает
-  kill-switch молча. Опечатка в *имени* флага при этом не диагностируется:
+  kill-switch молча. `Module` строит `Store` на старте и без потребителя: граф, где
+  флаги пока никто не читает, тоже не стартует с мусором в `FEATURE_FLAGS`. Опечатка в *имени* флага при этом не диагностируется:
   неизвестное имя всегда даёт дефолт.
 - **Дефолт при отсутствии флага.** Неизвестное имя — это `false` для `Bool` и
   `""` для `String`. Стор не различает «флаг задан со значением `false`» и «флага

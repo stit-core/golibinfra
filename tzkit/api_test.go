@@ -331,12 +331,11 @@ func TestModuleProvidesZone(t *testing.T) {
 		t.Fatalf("Zone = %s, want Europe/Moscow", got.Name())
 	}
 
-	// Невалидная зона валит сборку графа, а не первый запрос.
+	// Невалидная зона валит сборку графа, а не первый запрос, — и без потребителя Zone (KFX-03).
 	bad := fx.New(
 		fx.NopLogger,
 		fx.Supply(tzkit.Config{}),
 		tzkit.Module,
-		fx.Invoke(func(tzkit.Zone) {}),
 	)
 	if err := bad.Err(); !errors.Is(err, tzkit.ErrEmptyZone) {
 		t.Fatalf("fx err = %v, want ErrEmptyZone", err)

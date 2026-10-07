@@ -66,7 +66,7 @@ fx.New(
 	fx.Provide(logkit.NewRedactConfig),  // RedactConfig из ENV (LOG_REDACT_*)
 	telemetry.Module,                    // опционально: даёт log.LoggerProvider → OTLP-sink
 	logkit.Module,                       // → logkit.Logger, *slog.Logger
-	logkit.FxLogger,                     // события fx — в тот же лог
+	logkit.FxLogger,                     // события fx — в локальный лог
 	fx.Invoke(func(lc fx.Lifecycle, log logkit.Logger) {
 		lc.Append(fx.Hook{
 			OnStart: func(ctx context.Context) error {
@@ -82,12 +82,14 @@ fx.New(
 без первого сборка графа падает. Граф без `telemetry.Module` собирается и
 работает: OTLP-sink не подключается, локальный sink пишет как обычно.
 
-`FxLogger` (`fx.WithLogger` поверх `*slog.Logger` графа) пишет события fx
-структурными записями той же цепочки: ошибки сборки и старта (конструктор,
-`Invoke`, `OnStart`/`OnStop`, откат) — `ERROR` с полем `error`, рутина
-(`provided`, `invoking`, хуки, `started`) — `DEBUG`. Опция ставится на верхний
-уровень `fx.New`; вместе с `fx.RecoverFromPanics()` паника конструктора или
-`Invoke` становится такой же ошибкой старта.
+`FxLogger` (`fx.WithLogger`) пишет события fx логгером из `Config` и `RedactConfig`
+графа — формат, маски и локальный sink те же, что у `Module`, OTel-sink'а нет: логгер
+событий не зависит от графа `logkit.Module`, поэтому отказ того, что этот граф тянет
+(ошибка конфигурации `telemetry` — `log.LoggerProvider`), — тоже запись `ERROR`, а не
+текст fx в stderr. Ошибки сборки и старта (конструктор, `Invoke`, `OnStart`/`OnStop`,
+откат) — `ERROR` с полем `error`, рутина (`provided`, `invoking`, хуки, `started`) —
+`DEBUG`. Опция ставится на верхний уровень `fx.New`; вместе с `fx.RecoverFromPanics()`
+паника конструктора или `Invoke` становится такой же ошибкой старта.
 
 ### Без fx
 
@@ -334,7 +336,7 @@ func (c RedactConfig) Validate() error
 
 var ErrConfig error                             // невалидный уровень, формат, regex или строка-замена
 var Module fx.Option                            // provides *slog.Logger, Logger; optional: RedactConfig, log.LoggerProvider
-var FxLogger fx.Option                          // fx.WithLogger: события fx через *slog.Logger графа; ошибки — ERROR, рутина — DEBUG
+var FxLogger fx.Option                          // fx.WithLogger: события fx логгером из Config и RedactConfig графа, без OTel; ошибки — ERROR, рутина — DEBUG
 ```
 
 Цепочка handler'ов: redact → метрика → `RegisterAttr`-атрибуты → fan-out
@@ -388,7 +390,7 @@ OTel-sink проверяется через `sdklog.NewLoggerProvider` с `Simpl
   без `telemetry.Module` логи идут только в локальный sink.
 - **Ошибка конфигурации — при конструировании**, не на первой записи:
   невалидный `LOG_LEVEL`/`LOG_FORMAT`/regex/`ReplaceWith` валит старт. Этой
-  ошибки `FxLogger` не видит: логгер событий fx сам собирается из графа, и fx
+  ошибки `FxLogger` не видит: логгер событий fx строится из того же конфига, и fx
   пишет причину текстом в stderr.
 - **`FxLogger` — только на верхнем уровне `fx.New`.** Внутри `fx.Module` опция
   ловит лишь события этого модуля, остальные идут в stderr fx.

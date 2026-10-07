@@ -11,10 +11,11 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module поднимает SDK и гасит его на OnStop. Config он не provide'ит — caller
-// регистрирует telemetry.NewConfig и logkit.NewConfig сам. Инструменты киты
-// берут у глобальных провайдеров (otel.Tracer/otel.Meter), поэтому в граф
-// уходят только *Providers и log.LoggerProvider (второй sink для logkit).
+// Module поднимает SDK и гасит его на OnStop: ошибка финального экспорта (коллектор недоступен) —
+// запись ERROR логгера ошибок, а не ошибка остановки, — телеметрия best-effort. Config он не
+// provide'ит — caller регистрирует telemetry.NewConfig и logkit.NewConfig сам. Инструменты киты
+// берут у глобальных провайдеров (otel.Tracer/otel.Meter), поэтому в граф уходят только
+// *Providers и log.LoggerProvider (второй sink для logkit).
 //
 // fx.Invoke обязателен: без него конструктор ленив, и граф без потребителя
 // *Providers стартовал бы с no-op инструментацией всех китов и без Shutdown.
@@ -58,6 +59,12 @@ func newProvidersWithLifecycle(p providerParams) (*Providers, error) {
 	if err != nil {
 		return nil, err
 	}
-	p.LC.Append(fx.Hook{OnStop: providers.Shutdown})
+	p.LC.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+		// Ошибка остановки — код выхода 1: Job без коллектора упал бы, хотя работа сделана.
+		if err := providers.Shutdown(ctx); err != nil {
+			l.ErrorContext(ctx, "telemetry: shutdown", "error", err)
+		}
+		return nil
+	}})
 	return providers, nil
 }

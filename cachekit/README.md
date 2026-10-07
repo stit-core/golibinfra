@@ -31,7 +31,7 @@ type Profile struct{ Name string }
 fx.New(
     fx.Provide(logkit.NewConfig, logkit.New),   // logkit.Logger в графе
     fx.Provide(cachekit.NewConfig),             // REDIS_* из ENV (caller провайдит явно)
-    cachekit.Module,                            // Cache: Ping на старте, Close на стопе
+    cachekit.Module,                            // Cache на старте (и без потребителя): Ping, Close на стопе
     healthkit.ProvideProbe(cachekit.Probe),          // /ready через httpkit
 
     fx.Invoke(func(lc fx.Lifecycle, c cachekit.Cache) {
@@ -51,7 +51,11 @@ fx.New(
 )
 ```
 
-Без fx: `cachekit.NewRedisCache(cfg)`; закрывать `Close()` самому.
+`Module` строит `Cache` на старте и без потребителя: невалидный конфиг валит сборку
+графа, недоступный Redis (при `REDIS_PING_ON_START`) — старт. Логгер — `logkit.Logger`
+графа.
+
+Без fx: `cachekit.NewRedisCache(cfg, log)`; закрывать `Close()` самому.
 
 ## Конфигурация
 
@@ -104,6 +108,13 @@ Instrumentation-scope `git.stit.tech/stit-core/golibinfra/cachekit`, глоба�
 
 Ключи и значения в атрибуты спанов не попадают: PII и неограниченная
 кардинальность.
+
+Внутренний лог go-redis (отказы пула, переподключения) — запись `WARN` `redis`
+логгера кита с текстом в поле `detail`: JSON, маски и
+`trace_id` logkit, а не строка в stderr. Логгер у go-redis один на процесс: из
+нескольких кэшей с настоящими логгерами пишет последний собранный, `nil` и
+`logkit.Nop()` его не занимают; пока логгера нет, строка идёт в stderr, как у
+go-redis без кита.
 
 Health-проба:
 
@@ -213,7 +224,8 @@ var ErrMemoryFull error
 
 Интеграционные тесты поднимают Redis через `testkit.StartRedis`: в `-short`
 пропускаются, без Docker падают; `MemoryCache`, хук наблюдаемости,
-`Config.Validate`, `Module` и работа с закрытым клиентом покрыты unit-тестами.
+`Config.Validate`, `Module` (и без потребителя `Cache`) и работа с закрытым клиентом
+покрыты unit-тестами, лог go-redis при отказе пула — записью `WARN` логгера кита.
 `IdempotencyStore` на памяти и на Redis проходит контракт
 `testkit/idempotencytest.RunContract` — тот же, что `httpkit.MemoryStore`.
 Отдельные интеграционные проверки: старт на `redis:6-alpine` валится

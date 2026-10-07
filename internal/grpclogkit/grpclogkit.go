@@ -88,8 +88,8 @@ func (b *bridge) logger() logkit.Logger {
 	return nil
 }
 
-// grpc-go передаёт готовое сообщение, поэтому у записи одно поле: msg. Ключ
-// "grpc" отделяет транспортный шум от access-log кита.
+// grpc-go передаёт готовое сообщение: оно — поле detail записи "grpc" (сообщение записи отделяет
+// транспортный шум от access-log кита, а ключ msg второй раз сломал бы JSON-запись).
 func (b *bridge) write(level slog.Level, msg string) {
 	log := b.logger()
 	if log == nil {
@@ -99,11 +99,11 @@ func (b *bridge) write(level slog.Level, msg string) {
 	ctx := context.Background()
 	switch level {
 	case slog.LevelDebug:
-		log.Debug(ctx, "grpc", "msg", msg)
+		log.Debug(ctx, "grpc", "detail", msg)
 	case slog.LevelWarn:
-		log.Warn(ctx, "grpc", "msg", msg)
+		log.Warn(ctx, "grpc", "detail", msg)
 	default:
-		log.Error(ctx, "grpc", "msg", msg)
+		log.Error(ctx, "grpc", "detail", msg)
 	}
 }
 

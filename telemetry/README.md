@@ -194,7 +194,7 @@ stderr — так их печатает SDK по умолчанию.
 | `Config` / `(Config) Validate() error` | конфиг bootstrap'а; `ErrConfig` при невалидных значениях |
 | `Headers` / `(*Headers) Decode(string) error` | заголовки OTLP из `OTEL_EXPORTER_OTLP_HEADERS`; `Decode` — разбор значения переменной |
 | `NewConfig() (Config, error)` | ENV + `Validate`; ошибка чтения — `ErrConfig` с именем переменной |
-| `Module` | fx-модуль: Init providers + `Shutdown` на OnStop, `fx.Invoke` внутри. Принимает `Config`, `logkit.Config` и опционально `logkit.RedactConfig`, provide'ит `*Providers` и `log.LoggerProvider`. **Config не provide'ит** |
+| `Module` | fx-модуль: Init providers + `Shutdown` на OnStop (ошибка — запись `ERROR` логгера ошибок, `OnStop` — `nil`), `fx.Invoke` внутри. Принимает `Config`, `logkit.Config` и опционально `logkit.RedactConfig`, provide'ит `*Providers` и `log.LoggerProvider`. **Config не provide'ит** |
 | `Init(ctx, cfg, opts...) (*Providers, error)` | bootstrap без fx: providers, глобальные провайдеры, propagator, runtime-инструментация |
 | `Option` / `WithErrorLogger(slog.Handler)` | куда уводить ошибки экспорта и внутренние сообщения SDK |
 | `Providers` | `TracerProvider` / `MeterProvider` / `LoggerProvider` (SDK-типы) |
@@ -212,9 +212,10 @@ stderr — так их печатает SDK по умолчанию.
 `ErrSchemaURLConflict`; `Init` с `OTEL_SDK_DISABLED` (propagator, глобальный
 logger provider, спаны без записи); `Init` против `httptest`-коллектора — все три
 сигнала приходят на `<base>/v1/{traces,metrics,logs}` с Bearer- и env-заголовками;
-`Module` под `fxtest` (Shutdown на OnStop сливает очередь логов, SDK поднимается
-и без потребителя `*Providers`, redact доходит до логгера ошибок, граф не
-занимает `metric.Meter`/`trace.Tracer`); деление дедлайна `Shutdown` между
+`Module` под `fxtest` (Shutdown на OnStop сливает очередь логов, недоступный коллектор
+на остановке — запись `ERROR`, а `Stop` без ошибки, SDK поднимается и без потребителя
+`*Providers`, redact доходит до логгера ошибок, граф не занимает
+`metric.Meter`/`trace.Tracer`); деление дедлайна `Shutdown` между
 сигналами; маршрутизация, уровни и дросселирование диагностики SDK; фактический
 список runtime-метрик.
 
@@ -238,6 +239,10 @@ go test -short -race ./telemetry/
   занимает в графе общие интерфейсы.
 - **`OTEL_EXPORTER_OTLP_ENDPOINT` — полный URL.** Схема задаёт TLS, путь
   сохраняется (`https://otlp.example.com/otlp` → `…/otlp/v1/traces`).
+- **Остановка `Module` — best-effort.** Ошибка финального экспорта (коллектор
+  недоступен или не ответил в бюджет) — запись `ERROR` `telemetry: shutdown` логгера
+  ошибок с полем `error`, а `OnStop` возвращает `nil`: код выхода сервиса и Job не
+  зависит от коллектора. Без fx `Shutdown` ошибку возвращает — решает вызывающий.
 - **`fx.StopTimeout` делится на три сигнала.** `Shutdown` даёт каждому провайдеру
   `min(OTEL_EXPORT_TIMEOUT, остаток дедлайна / число оставшихся шагов)` — при
   недоступном коллекторе логи (последние в порядке) всё равно получают живой

@@ -12,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"git.stit.tech/stit-core/golibinfra/cachekit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // blackHoleRedis принимает соединения и молчит: так выглядит зависший Redis.
@@ -52,7 +53,7 @@ func TestRedisCache_ContextDeadlineReachesSocket(t *testing.T) {
 	cfg.MaxRetries = -1
 	cfg.ReadTimeout = 10 * time.Second
 	cfg.WriteTimeout = 10 * time.Second
-	cache, err := cachekit.NewRedisCache(cfg)
+	cache, err := cachekit.NewRedisCache(cfg, logkit.Nop())
 	if err != nil {
 		t.Fatalf("new redis cache: %v", err)
 	}
@@ -76,7 +77,7 @@ func TestRedisCache_ContextDeadlineReachesSocket(t *testing.T) {
 func TestRedisCache_ClosedClient(t *testing.T) {
 	cfg := validConfig()
 	cfg.URL = "redis://" + closedAddr(t)
-	cache, err := cachekit.NewRedisCache(cfg)
+	cache, err := cachekit.NewRedisCache(cfg, logkit.Nop())
 	if err != nil {
 		t.Fatalf("new redis cache: %v", err)
 	}

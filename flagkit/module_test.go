@@ -55,12 +55,12 @@ func TestModule_ProvidesStore(t *testing.T) {
 	}
 }
 
+// Регрессия KFX-03: мусор в FEATURE_FLAGS валит сборку графа и без потребителя Store.
 func TestModule_InvalidConfigFailsGraph(t *testing.T) {
 	app := fx.New(
 		fx.NopLogger,
 		fx.Supply(Config{Definitions: "new_checkout"}),
 		Module,
-		fx.Invoke(func(Store) {}),
 	)
 
 	err := app.Err()

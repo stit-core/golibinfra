@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/cachekit"
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 func validConfig() cachekit.Config {
@@ -52,7 +53,7 @@ func TestConfig_Validate(t *testing.T) {
 			case !tt.ok && !errors.Is(err, cachekit.ErrConfig):
 				t.Fatalf("Validate() = %v, want ErrConfig", err)
 			}
-			cache, err := cachekit.NewRedisCache(cfg)
+			cache, err := cachekit.NewRedisCache(cfg, logkit.Nop())
 			switch {
 			case tt.ok && err != nil:
 				t.Fatalf("NewRedisCache() = %v, want nil", err)
