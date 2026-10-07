@@ -16,3 +16,10 @@
   `RecvMsg`, а access-log сервер пишет после возврата хендлера — тест читает лог раньше записи.
   Фикс — дочитать стрим до `io.EOF` или ждать запись с дедлайном. grpckit вне объёма аудита.
   Триггер: падение в pre-push или правка grpckit.
+- **bool-default-true-literal** — поля bool с `default:"true"` (`outboxkit/pgstore.RequireTx`, `cachekit.PingOnStart`,
+  `storagekit.ProbeOnStart`, `pgkit.OTelTrace`, `natskit.StreamManaged`) в литерале с нулями выключаются — расходится с «ноль
+  литерала — значение доки» (по нему снят `STORAGE_S3_USE_SSL`); у `pgstore.Config{}` снят tx-guard. Триггер: повторный аудит
+  угла 1 или потребитель на литерале конфига.
+- **testkit-reaper-test-logger** — фикстуры testkit отдают жнецу testcontainers `tclog.TestLogger(t)` (`testkit/postgres.go:49`,
+  nats, redis, minio): под `-count>1` контейнер прошлого прогона снимается логгером завершённого теста, `tzkit` `TestPgxInterop`
+  паникует «Log in goroutine after … has completed». Триггер: прогоны с `-count>1` (stress, flaky) или падение в pre-push.
