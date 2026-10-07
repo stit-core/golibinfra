@@ -6,21 +6,29 @@
 package auditkit
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"time"
+	"unicode/utf8"
 
 	"git.stit.tech/stit-core/golibinfra/internal/clientip"
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
 )
 
-// ErrInvalidEntry — запись не проходит Entry.Validate: пустое обязательное поле
-// или значение длиннее предела кита.
+// ErrInvalidEntry — запись не проходит Entry.Validate: пустое обязательное поле, значение
+// длиннее предела кита, строка с NUL или не в UTF-8, Metadata без JSON-представления или сверх
+// MaxMetadataBytes.
 var ErrInvalidEntry = errors.New("auditkit: invalid entry")
 
-// Предельные длины полей, попадающих в btree-индексы audit_log: значение длиннее
-// не помещается в индексную запись Postgres, и INSERT падает уже в базе.
+// ErrConfig — невалидный конфиг хранилища аудита (pgstore.RetentionConfig).
+var ErrConfig = errors.New("auditkit: invalid config")
+
+// Предельные длины полей-ключей индексов audit_log — собственный предел кита, а не Postgres:
+// идентификатор или имя действия длиннее — ошибка вызывающего кода, а не данные события.
 const (
 	// MaxActorIDLen — предел длины Entry.ActorID.
 	MaxActorIDLen = 255
@@ -31,6 +39,10 @@ const (
 	// MaxResourceIDLen — предел длины Entry.ResourceID.
 	MaxResourceIDLen = 255
 )
+
+// MaxMetadataBytes — предел Entry.Metadata в байтах её JSON: контекст события, а не дамп
+// payload'а.
+const MaxMetadataBytes = 64 << 10
 
 // Entry — одна запись аудита: кто (ActorID), что сделал (Action) над каким
 // ресурсом (Resource, ResourceID) и когда (At).
@@ -69,9 +81,41 @@ func (e Entry) Enrich(ctx context.Context) Entry {
 	return e
 }
 
-// Validate проверяет обязательные поля и предельные длины; нарушение —
-// ErrInvalidEntry. Logger вызывает её до записи.
+// Validate проверяет запись до похода в хранилище: обязательные поля, предельные длины, строки
+// в UTF-8 без NUL, Metadata — как у MetadataJSON; нарушение — ErrInvalidEntry. Logger зовёт её
+// (или MetadataJSON) после Enrich.
 func (e Entry) Validate() error {
+	_, err := e.MetadataJSON()
+	return err
+}
+
+// MetadataJSON проверяет запись, как Validate, и отдаёт Metadata в JSON — то, что сохраняет
+// хранилище; пустая Metadata — nil. Metadata без JSON-представления, длиннее MaxMetadataBytes,
+// с \u0000 или не в UTF-8 (Postgres JSONB такое не хранит) — ErrInvalidEntry.
+func (e Entry) MetadataJSON() ([]byte, error) {
+	if err := e.checkFields(); err != nil {
+		return nil, err
+	}
+	if len(e.Metadata) == 0 {
+		return nil, nil
+	}
+	// Не-UTF-8 в строках encoding/json сам меняет на U+FFFD; сырые байты RawMessage и
+	// MarshalJSON он пропускает как есть — их ловит utf8.Valid.
+	js, err := json.Marshal(e.Metadata)
+	switch {
+	case err != nil:
+		return nil, fmt.Errorf("%w: Metadata has no JSON form: %w", ErrInvalidEntry, err)
+	case len(js) > MaxMetadataBytes:
+		return nil, fmt.Errorf("%w: Metadata is longer than %d bytes of JSON", ErrInvalidEntry, MaxMetadataBytes)
+	case !utf8.Valid(js):
+		return nil, fmt.Errorf("%w: Metadata is not valid UTF-8", ErrInvalidEntry)
+	case hasNULEscape(js):
+		return nil, fmt.Errorf("%w: Metadata contains NUL", ErrInvalidEntry)
+	}
+	return js, nil
+}
+
+func (e Entry) checkFields() error {
 	switch {
 	case e.Action == "":
 		return fmt.Errorf("%w: Action is required", ErrInvalidEntry)
@@ -86,7 +130,42 @@ func (e Entry) Validate() error {
 	case len(e.ResourceID) > MaxResourceIDLen:
 		return fmt.Errorf("%w: ResourceID is longer than %d bytes", ErrInvalidEntry, MaxResourceIDLen)
 	}
+	for _, f := range []struct{ name, value string }{
+		{"ActorID", e.ActorID},
+		{"Action", e.Action},
+		{"Resource", e.Resource},
+		{"ResourceID", e.ResourceID},
+		{"IP", e.IP},
+		{"RequestID", e.RequestID},
+	} {
+		switch {
+		case !utf8.ValidString(f.value):
+			return fmt.Errorf("%w: %s is not valid UTF-8", ErrInvalidEntry, f.name)
+		case strings.IndexByte(f.value, 0) >= 0:
+			return fmt.Errorf("%w: %s contains NUL", ErrInvalidEntry, f.name)
+		}
+	}
 	return nil
+}
+
+// hasNULEscape — в JSON есть экранированный NUL: \u0000, перед которым чётное число обратных
+// слешей (нечётное — это экранированный слеш и литерал u0000).
+func hasNULEscape(js []byte) bool {
+	for off := 0; ; {
+		i := bytes.Index(js[off:], []byte(`\u0000`))
+		if i < 0 {
+			return false
+		}
+		i += off
+		slashes := 0
+		for j := i - 1; j >= 0 && js[j] == '\\'; j-- {
+			slashes++
+		}
+		if slashes%2 == 0 {
+			return true
+		}
+		off = i + 1
+	}
 }
 
 // Logger — порт записи аудита; реализация в библиотеке — auditkit/pgstore.

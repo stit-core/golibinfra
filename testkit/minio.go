@@ -11,8 +11,8 @@ import (
 // MinIOImage — образ StartMinIO по умолчанию; переопределяется WithImage.
 const MinIOImage = "minio/minio:RELEASE.2025-01-20T14-49-07Z"
 
-// MinIOFixture — живой MinIO теста: S3-эндпоинт, креды и handle контейнера.
-// Бакеты создаёт тест — фикстура их не заводит.
+// MinIOFixture — живой MinIO теста: S3-эндпоинт (host:port, plaintext — storagekit.Config
+// берёт "http://"+Endpoint), креды и handle контейнера. Бакеты создаёт тест — фикстура их не заводит.
 type MinIOFixture struct {
 	Endpoint  string
 	AccessKey string

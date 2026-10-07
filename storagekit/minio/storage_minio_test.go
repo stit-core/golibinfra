@@ -30,7 +30,7 @@ func containerConfig(t *testing.T, mutate ...func(*storagekit.Config)) storageki
 	fix := minioFixture(t)
 
 	cfg := storagekit.Config{
-		Endpoint:      fix.Endpoint,
+		Endpoint:      "http://" + fix.Endpoint, // контейнер — plaintext, без схемы был бы TLS
 		AccessKey:     fix.AccessKey,
 		SecretKey:     fix.SecretKey,
 		Credentials:   storagekit.CredentialsStatic,

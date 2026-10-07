@@ -25,6 +25,14 @@ var ErrInvalidHash = errors.New("authnkit: invalid argon2id hash")
 // ErrInvalidHash, поэтому errors.Is по нему тоже истинен.
 var ErrHashParams = fmt.Errorf("%w: parameters out of window", ErrInvalidHash)
 
+// ErrPasswordTooLong — пароль длиннее MaxPasswordLen: в Argon2id он не попадает.
+var ErrPasswordTooLong = errors.New("authnkit: password too long")
+
+// MaxPasswordLen — предел длины пароля в байтах, длиннее любой парольной фразы: Argon2id над
+// мегабайтами чужого ввода — лишняя работа. DTO берёт тот же предел (maxLength): отказ — понятный
+// 4xx до usecase, а не ErrPasswordTooLong из Hash.
+const MaxPasswordLen = 1024
+
 // Окно параметров Argon2id, принимаемых и при Hash, и при Verify: параметры
 // PHC-строки приходят из хранилища и без окна управляли бы CPU/RAM процесса.
 const (
@@ -64,9 +72,11 @@ var phcB64 = base64.RawStdEncoding.Strict()
 
 // Hasher — хэш пароля и проверка против сохранённой PHC-строки.
 type Hasher interface {
-	// Hash — самоописывающая PHC-строка для plain.
+	// Hash — самоописывающая PHC-строка для plain; plain длиннее MaxPasswordLen —
+	// ErrPasswordTooLong.
 	Hash(ctx context.Context, plain string) (string, error)
-	// Verify — совпал ли plain с encoded; ErrInvalidHash — encoded не разобрать.
+	// Verify — совпал ли plain с encoded; ErrInvalidHash — encoded не разобрать,
+	// ErrPasswordTooLong — plain длиннее MaxPasswordLen (за то же время, что неверный пароль).
 	Verify(ctx context.Context, plain, encoded string) (bool, error)
 	// NeedsRehash — параметры encoded отличаются от текущих параметров хэшера.
 	NeedsRehash(encoded string) bool
@@ -133,9 +143,12 @@ func NewArgon2idHasher(p Argon2idConfig) (*Argon2idHasher, error) {
 	}, nil
 }
 
-// Hash считает Argon2id со случайной солью и кодирует результат в PHC-строку;
-// отмена ctx в очереди вычислений — ошибка с ctx.Err().
+// Hash считает Argon2id со случайной солью и кодирует результат в PHC-строку; plain длиннее
+// MaxPasswordLen — ErrPasswordTooLong без вычисления, отмена ctx в очереди — ошибка с ctx.Err().
 func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error) {
+	if err := checkPasswordLen(plain); err != nil {
+		return "", err
+	}
 	start := time.Now()
 	defer func() {
 		h.instr.hashDuration.Record(ctx, time.Since(start).Seconds())
@@ -159,9 +172,14 @@ func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error)
 }
 
 // Verify сверяет plain с PHC-строкой encoded: (false, ErrInvalidHash) — encoded
-// битый или вне окна параметров; (false, nil) — пароль не совпал; отмена ctx в
-// очереди вычислений — ошибка с ctx.Err().
+// битый или вне окна параметров; (false, ErrPasswordTooLong) — plain длиннее MaxPasswordLen:
+// вместо него считается холостой VerifyDummy, и время ответа не выдаёт учётную запись;
+// (false, nil) — пароль не совпал; отмена ctx в очереди вычислений — ошибка с ctx.Err().
 func (h *Argon2idHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) {
+	if err := checkPasswordLen(plain); err != nil {
+		h.VerifyDummy(ctx)
+		return false, err
+	}
 	start := time.Now()
 	defer func() {
 		h.instr.verifyDuration.Record(ctx, time.Since(start).Seconds())
@@ -176,6 +194,14 @@ func (h *Argon2idHasher) Verify(ctx context.Context, plain, encoded string) (boo
 		return false, err
 	}
 	return subtle.ConstantTimeCompare(got, ph.hash) == 1, nil
+}
+
+// checkPasswordLen — plain не длиннее MaxPasswordLen, иначе ErrPasswordTooLong.
+func checkPasswordLen(plain string) error {
+	if len(plain) > MaxPasswordLen {
+		return fmt.Errorf("%w: %d bytes, the limit is %d", ErrPasswordTooLong, len(plain), MaxPasswordLen)
+	}
+	return nil
 }
 
 // dummy* — фиксированные входы VerifyDummy: значения не важны, важна та же

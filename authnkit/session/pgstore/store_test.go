@@ -90,7 +90,7 @@ func TestStore_WritesJoinTransaction(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Issue: %v", err)
 	}
-	rolledBack(func(txCtx context.Context) error { return s.Revoke(txCtx, tok.Value) })
+	rolledBack(func(txCtx context.Context) error { _, err := s.Revoke(txCtx, tok.Value); return err })
 	if tok, err = s.Rotate(ctx, tok.Value); err != nil {
 		t.Fatalf("Rotate after a rolled back Revoke: %v", err)
 	}
@@ -209,8 +209,11 @@ func TestStore_Metrics(t *testing.T) {
 	_, _ = s.Rotate(ctx, a.Value)    // reused: сессия a закрыта
 	_, _ = s.Rotate(ctx, next.Value) // invalid: сессия закрыта
 	_, _ = s.Rotate(ctx, "unknown")  // invalid
-	if err := s.Revoke(ctx, b.Value); err != nil {
+	if _, err := s.Revoke(ctx, b.Value); err != nil {
 		t.Fatalf("Revoke: %v", err)
+	}
+	if _, err := s.Revoke(ctx, b.Value); err != nil { // закрытая раньше: сессий в счётчике не прибавляет
+		t.Fatalf("Revoke again: %v", err)
 	}
 	_, _ = s.Rotate(pgkit.WithTestTx(ctx), c.Value) // error: ErrInTx
 	clock.Advance(time.Hour)

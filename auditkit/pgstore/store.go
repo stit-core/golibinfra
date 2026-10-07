@@ -1,10 +1,9 @@
-// Package pgstore — реализация auditkit.Logger поверх Postgres (pgkit):
-// один INSERT в таблицу audit_log, миграции кита и fx-проводка.
+// Package pgstore — реализация auditkit.Logger поверх Postgres (pgkit): один INSERT в
+// таблицу audit_log, миграции кита, opt-in retention и fx-проводка; метрики audit_log_*.
 package pgstore
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"time"
 
@@ -34,27 +33,18 @@ VALUES ($1, $2, $3, $4, $5, $6, $7, COALESCE($8::timestamptz, NOW()))
 // Log пишет запись в audit_log; пустые RequestID и IP — из ctx запроса
 // (auditkit.Entry.Enrich). Если ctx получен из pgkit.Transactor.WithTx, INSERT
 // участвует в этой транзакции (откат домена откатывает и запись аудита); иначе
-// идёт отдельным соединением пула в autocommit. Невалидная Entry —
+// идёт отдельным соединением пула в autocommit. Невалидная Entry (Entry.MetadataJSON) —
 // auditkit.ErrInvalidEntry, запрос не выполняется.
 func (s *Store) Log(ctx context.Context, e auditkit.Entry) error {
 	e = e.Enrich(ctx)
-	if err := e.Validate(); err != nil {
+	metaJSON, err := e.MetadataJSON()
+	if err != nil {
 		s.instr.invalid(ctx)
 		return err
 	}
 
-	var metaJSON []byte
-	if len(e.Metadata) > 0 {
-		var err error
-		metaJSON, err = json.Marshal(e.Metadata)
-		if err != nil {
-			s.instr.invalid(ctx)
-			return fmt.Errorf("auditkit/pgstore: marshal metadata: %w", err)
-		}
-	}
-
 	start := time.Now()
-	_, err := s.db.Exec(
+	_, err = s.db.Exec(
 		ctx, insertAuditSQL,
 		nullStr(e.ActorID),
 		e.Action,

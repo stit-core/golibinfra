@@ -57,19 +57,17 @@ func TestNewClient_EndpointAndTLS(t *testing.T) {
 	tests := []struct {
 		name       string
 		endpoint   string
-		useSSL     bool
 		wantScheme string
 		wantHost   string
 	}{
-		{name: "plain host:port", endpoint: "s3.example.com:9000", wantScheme: "http", wantHost: "s3.example.com:9000"},
-		{name: "use ssl flag", endpoint: "s3.example.com:9000", useSSL: true, wantScheme: "https", wantHost: "s3.example.com:9000"},
+		{name: "host:port is TLS", endpoint: "s3.example.com:9000", wantScheme: "https", wantHost: "s3.example.com:9000"},
 		{name: "https url", endpoint: "https://s3.example.com", wantScheme: "https", wantHost: "s3.example.com"},
-		{name: "http url", endpoint: "http://localhost:9000", wantScheme: "http", wantHost: "localhost:9000"},
+		{name: "plaintext only with http url", endpoint: "http://localhost:9000", wantScheme: "http", wantHost: "localhost:9000"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := unitConfig()
-			cfg.Endpoint, cfg.UseSSL = tt.endpoint, tt.useSSL
+			cfg.Endpoint = tt.endpoint
 
 			client, err := skminio.NewClient(cfg)
 			if err != nil {

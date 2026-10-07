@@ -15,7 +15,8 @@ type Hasher interface {
 func NewArgon2idHasher(p Argon2idConfig) (*Argon2idHasher, error)
 func (p Argon2idConfig) Validate() error
 
-var ErrConfig, ErrInvalidHash, ErrHashParams error // ErrHashParams заворачивает ErrInvalidHash
+var ErrConfig, ErrInvalidHash, ErrHashParams, ErrPasswordTooLong error // ErrHashParams заворачивает ErrInvalidHash
+const MaxPasswordLen = 1024 // байт; длиннее — ErrPasswordTooLong у Hash и Verify
 
 // JWT
 type JWTSigner interface {
@@ -53,7 +54,7 @@ func HashToken(token string) string  // SHA-256 в hex — для хранени
 type Store interface { // session.Store
 	Issue(ctx context.Context, subject string) (Token, error)
 	Rotate(ctx context.Context, refresh string) (Token, error)
-	Revoke(ctx context.Context, refresh string) error
+	Revoke(ctx context.Context, refresh string) (subject string, err error) // владелец закрытой этим вызовом сессии
 	RevokeAll(ctx context.Context, subject string) error
 }
 type Token struct{ Value, SessionID, Subject string; ExpiresAt, SessionExpiresAt time.Time }
@@ -102,6 +103,7 @@ if err != nil {
 
 ok, err := hasher.Verify(ctx, submittedPassword, encoded)
 // errors.Is(err, ErrInvalidHash) — encoded битый/чужого формата/вне окна (не «пароль неверен»)
+// errors.Is(err, ErrPasswordTooLong) — пароль длиннее MaxPasswordLen
 // ok == false — пароль не совпал
 
 if ok && hasher.NeedsRehash(encoded) {
@@ -111,6 +113,11 @@ if ok && hasher.NeedsRehash(encoded) {
 
 `encoded` хранится в БД как есть — соль и параметры внутри строки. Соль на
 каждый `Hash` новая, поэтому одинаковые пароли дают разные строки.
+
+Пароль длиннее `MaxPasswordLen` (1024 байта) в Argon2id не попадает: `Hash` отказывает
+сразу, `Verify` — после холостого вычисления (`VerifyDummy`), поэтому длина не выдаёт
+учётную запись таймингом. DTO берёт тот же предел (`maxLength:"1024"`): отказ — понятный
+4xx до usecase, а не `ErrPasswordTooLong` из `Hash` на регистрации или смене пароля.
 
 ## Логин без timing-оракула
 
@@ -282,8 +289,13 @@ case err != nil:
 }
 u, err := users.Get(ctx, next.Subject) // заблокирован → отказ, next не выдавать
 
-// Выход и отзыв всех сессий — в транзакции смены статуса пользователя.
-err = sessions.Revoke(ctx, refreshCookie)
+// Выход: владелец сессии — автор записи аудита; "" — токен неизвестен или сессия уже закрыта.
+owner, err := sessions.Revoke(ctx, refreshCookie)
+if err == nil && owner != "" {
+	err = audit.Log(ctx, auditkit.Entry{ActorID: owner, Action: "logout", Resource: "session"})
+}
+
+// Отзыв всех сессий — в транзакции смены статуса пользователя.
 err = tx.WithTx(ctx, func(ctx context.Context) error {
 	if err := users.Block(ctx, userID); err != nil {
 		return err
@@ -345,9 +357,10 @@ App-структуры — отдельный `fx.Provide` не нужен. Не
 ## Инварианты и подводные камни
 
 - **`Verify`-ошибка ≠ «пароль неверен».** `Hasher.Verify` возвращает `(false,
-  ErrInvalidHash)` при битой/чужой кодировке и `(false, nil)` при несовпадении
-  пароля. Логируй `err`, но пользователю всегда отдавай одинаковый «неверные
-  учётные данные» (не выдавай, какой именно случай).
+  ErrInvalidHash)` при битой/чужой кодировке, `(false, ErrPasswordTooLong)` при пароле
+  длиннее `MaxPasswordLen` и `(false, nil)` при несовпадении пароля. Логируй `err`, но
+  пользователю всегда отдавай одинаковый «неверные учётные данные» (не выдавай, какой
+  именно случай).
 - **Окно параметров Argon2id.** PHC-строка вне окна (`t` вне `1..64`, `p` вне
   `1..16`, `m` вне `8 МиБ..1 ГиБ`, произведение `t*m` больше
   `MaxCostKiBPasses` = 786432 КиБ·прохода, соль/хэш вне `8..64`/`16..128`

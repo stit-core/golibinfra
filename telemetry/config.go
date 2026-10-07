@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -70,6 +71,9 @@ type Config struct {
 
 	// OTLPBearerToken переопределяет Authorization из OTLPHeaders.
 	OTLPBearerToken string `envconfig:"OTEL_TOKEN"`
+	// AllowInsecureToken разрешает OTLPBearerToken и Authorization по http:// не на loopback:
+	// без него такой конфиг — ошибка старта, токен ушёл бы в сеть открытым.
+	AllowInsecureToken bool `envconfig:"OTEL_ALLOW_INSECURE_TOKEN" default:"false"`
 }
 
 // Validate проверяет конфиг на старте: невалидные значения должны валить процесс, а не первый
@@ -93,6 +97,10 @@ func (c Config) Validate() error {
 	if _, err := signalURL(c.OTLPEndpoint, "v1/traces"); err != nil {
 		return err
 	}
+	if c.credentials() && !c.AllowInsecureToken && plaintextRemote(c.OTLPEndpoint) {
+		return fmt.Errorf("%w: OTEL_TOKEN or the Authorization header over plaintext %q to a non-loopback host: use https or set OTEL_ALLOW_INSECURE_TOKEN=true",
+			ErrConfig, redact.URL(c.OTLPEndpoint))
+	}
 	switch {
 	case c.Disabled:
 		return nil
@@ -102,6 +110,34 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: OTEL_EXPORT_TIMEOUT, OTEL_TRACES_BATCH_DELAY, OTEL_METRICS_INTERVAL and OTEL_LOGS_BATCH_DELAY must be > 0", ErrConfig)
 	}
 	return nil
+}
+
+// credentials — экспорт несёт секрет: OTEL_TOKEN или заголовок Authorization.
+func (c Config) credentials() bool {
+	if c.OTLPBearerToken != "" {
+		return true
+	}
+	for k := range c.OTLPHeaders {
+		if strings.EqualFold(k, "Authorization") {
+			return true
+		}
+	}
+	return false
+}
+
+// plaintextRemote — endpoint по http:// не на loopback (localhost, 127.0.0.0/8, ::1): трафик
+// уходит из процесса в сеть открытым.
+func plaintextRemote(endpoint string) bool {
+	u, err := url.Parse(endpoint)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	if strings.EqualFold(host, "localhost") {
+		return false
+	}
+	addr, err := netip.ParseAddr(host)
+	return err != nil || !addr.IsLoopback()
 }
 
 // signalURL — <endpoint>/<signalPath> по OTel-спецификации: путь базового URL

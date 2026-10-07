@@ -86,7 +86,8 @@ func (s *Service) Do(ctx context.Context) (err error) {
 | `OTEL_LOGS_BATCH_DELAY` | `LogBatchDelay` | `time.Duration` | `1s` | период сброса очереди batch-processor'а логов |
 | `OTEL_TENANT` | `Tenant` | `string` | `""` | непустой выставляет resource-атрибуты `service.namespace` и `tenant` (одно значение); пусто — их нет |
 | `OTEL_EXPORTER_OTLP_HEADERS` | `OTLPHeaders` | `Headers` | — (без заголовков) | заголовки всех трёх экспортёров, формат спецификации `k1=v1,k2=v2` (значения в percent-encoding); ошибка разбора называет ключ, а не значение |
-| `OTEL_TOKEN` | `OTLPBearerToken` | `string` | `""` | `Authorization: Bearer <token>` к каждому OTLP-запросу; переопределяет `Authorization` из `OTEL_EXPORTER_OTLP_HEADERS` |
+| `OTEL_TOKEN` | `OTLPBearerToken` | `string` | `""` | `Authorization: Bearer <token>` к каждому OTLP-запросу; переопределяет `Authorization` из `OTEL_EXPORTER_OTLP_HEADERS`. Токен или `Authorization` по `http://` не на loopback — ошибка старта без `OTEL_ALLOW_INSECURE_TOKEN` |
+| `OTEL_ALLOW_INSECURE_TOKEN` | `AllowInsecureToken` | `bool` | `false` | `true` разрешает токен и `Authorization` по `http://` не на loopback (коллектор-агент в доверенной сети); иначе — `https://` или loopback (`localhost`, `127.0.0.0/8`, `::1`) |
 
 `Validate` отвергает всегда, и при `OTEL_SDK_DISABLED=true`: `SampleRatio` вне `[0, 1]`,
 отрицательные таймеры, endpoint без схемы или хоста, невалидное имя заголовка; у

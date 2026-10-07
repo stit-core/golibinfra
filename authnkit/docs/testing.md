@@ -27,7 +27,9 @@ func StripHashPrefix(encoded string) string                                     
 
 `Hash` возвращает `"hash:" + plain` (детерминированно, без соли), `Verify`
 сравнивает строкой, `StripHashPrefix` достаёт исходный plain из закодированной
-строки — удобно для ассертов в тестах фикстур.
+строки — удобно для ассертов в тестах фикстур. Пароль длиннее
+`authnkit.MaxPasswordLen` оба метода отвергают `authnkit.ErrPasswordTooLong`, как
+боевой хэшер.
 
 ```go
 var _ authnkit.Hasher = authntest.DeterministicHasher{} // удовлетворяет интерфейсу
@@ -68,7 +70,8 @@ _, err := jwt.ParseAccess(ctx, tok) // ErrTokenExpired
 `sessiontest.New(cfg, clock)` — in-memory `session.Store` с семантикой pgstore;
 `Active(subject)` показывает, сколько сессий открыто после `RevokeAll`.
 `sessiontest.RunContract(t, newStore)` — общий контракт `session.Store`: его проходят и
-фейк, и `pgstore.Store`, так что поведение в юнит-тесте не расходится с продом.
+фейк, и `pgstore.Store`, так что поведение в юнит-тесте не расходится с продом (в том числе
+владелец из `Revoke` — только у вызова, закрывшего сессию).
 Откат транзакции фейк не видит — `RevokeAll` в откатанной транзакции
 проверяется на pgstore.
 

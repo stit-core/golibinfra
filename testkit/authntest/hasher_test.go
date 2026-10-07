@@ -2,6 +2,8 @@ package authntest_test
 
 import (
 	"context"
+	"errors"
+	"strings"
 	"testing"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
@@ -33,6 +35,24 @@ func TestDeterministicHasher_HashThenVerify(t *testing.T) {
 		t.Fatal("NeedsRehash must be false")
 	}
 	h.VerifyDummy(ctx)
+}
+
+// Предел длины пароля — как у боевого хэшера: тест домена видит тот же отказ.
+func TestDeterministicHasher_PasswordTooLong(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	h := authntest.DeterministicHasher{}
+	atLimit := strings.Repeat("p", authnkit.MaxPasswordLen)
+	enc, err := h.Hash(ctx, atLimit)
+	if err != nil {
+		t.Fatalf("Hash of %d bytes: %v", authnkit.MaxPasswordLen, err)
+	}
+	if _, err := h.Hash(ctx, atLimit+"p"); !errors.Is(err, authnkit.ErrPasswordTooLong) {
+		t.Fatalf("Hash of a too long password = %v, want ErrPasswordTooLong", err)
+	}
+	if ok, err := h.Verify(ctx, atLimit+"p", enc); ok || !errors.Is(err, authnkit.ErrPasswordTooLong) {
+		t.Fatalf("Verify of a too long password = %v %v, want ErrPasswordTooLong", ok, err)
+	}
 }
 
 // VerifyDummy — путь «пользователь не найден»: у детерминированного хешера

@@ -229,3 +229,36 @@ func TestNewConfig_ReportsEnvconfigError(t *testing.T) {
 		t.Fatal("NewConfig must fail on a non-boolean OTEL_SDK_DISABLED")
 	}
 }
+
+// Регрессия KSEC-05 (E08): токен OTLP и заголовок Authorization по http:// не на loopback —
+// ошибка старта без OTEL_ALLOW_INSECURE_TOKEN; loopback, https и заголовки без секрета — нет.
+func TestValidate_InsecureToken(t *testing.T) {
+	t.Parallel()
+	for name, c := range map[string]struct {
+		endpoint string
+		token    string
+		headers  Headers
+		allow    bool
+		wantErr  bool
+	}{
+		"token to remote http":         {endpoint: "http://collector:4318", token: "t", wantErr: true},
+		"authorization to remote http": {endpoint: "http://10.0.0.5:4318", headers: Headers{"authorization": "Basic x"}, wantErr: true},
+		"token to remote https":        {endpoint: "https://collector:4318", token: "t"},
+		"token to localhost":           {endpoint: "http://localhost:4318", token: "t"},
+		"token to 127.0.0.1":           {endpoint: "http://127.0.0.1:4318", token: "t"},
+		"token to ::1":                 {endpoint: "http://[::1]:4318", token: "t"},
+		"allowed explicitly":           {endpoint: "http://collector:4318", token: "t", allow: true},
+		"plain header to remote http":  {endpoint: "http://collector:4318", headers: Headers{"x-scope-orgid": "acme"}},
+	} {
+		cfg := validConfig()
+		cfg.OTLPEndpoint, cfg.OTLPBearerToken, cfg.OTLPHeaders, cfg.AllowInsecureToken = c.endpoint, c.token, c.headers, c.allow
+		err := cfg.Validate()
+		if c.wantErr != errors.Is(err, ErrConfig) {
+			t.Errorf("%s: Validate = %v, want error %v", name, err, c.wantErr)
+		}
+	}
+	disabled := Config{Disabled: true, OTLPEndpoint: "http://collector:4318", OTLPBearerToken: "t"}
+	if err := disabled.Validate(); !errors.Is(err, ErrConfig) {
+		t.Errorf("disabled with a token to remote http: %v, want ErrConfig", err)
+	}
+}

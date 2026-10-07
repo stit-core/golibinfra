@@ -132,13 +132,12 @@ API`). Менять имена/типы полей или их `envconfig`-те�
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `STORAGE_S3_ENDPOINT` | `Endpoint` | `string` | — | `host[:port]` или `scheme://host[:port]` (per-concern endpoint) |
+| `STORAGE_S3_ENDPOINT` | `Endpoint` | `string` | — | `host[:port]` (TLS) или `scheme://host[:port]`; plaintext — только `http://` (per-concern endpoint) |
 | `STORAGE_S3_ACCESS_KEY` | `AccessKey` | `string` | — | Access key (при `STORAGE_S3_CREDENTIALS=static`) |
 | `STORAGE_S3_SECRET_KEY` | `SecretKey` | `string` | — | Secret key (при `STORAGE_S3_CREDENTIALS=static`) |
 | `STORAGE_S3_CREDENTIALS` | `Credentials` | `string` | `static` | `static` — ключи из ENV; `chain` — цепочка minio-go (AWS/MinIO env → IAM/IRSA) |
 | `STORAGE_S3_BUCKET` | `Bucket` | `string` | — | Имя бакета; часть публичного URL, цель presign и health-пробы |
 | `STORAGE_S3_REGION` | `Region` | `string` | — | Регион бакета для SigV4; у MinIO может быть пустым |
-| `STORAGE_S3_USE_SSL` | `UseSSL` | `bool` | `false` | TLS до endpoint'а, если тот задан без схемы |
 | `STORAGE_S3_BUCKET_LOOKUP` | `BucketLookup` | `string` | `auto` | Адресация бакета: `auto` / `path` / `dns` (virtual-hosted) |
 | `STORAGE_S3_CREATE_BUCKET` | `CreateBucket` | `bool` | `false` | Создавать бакет в `OnStart`, если его нет (нужны права `s3:CreateBucket`) |
 | `STORAGE_S3_PART_SIZE` | `PartSize` | `uint64` | `16777216` | Размер части multipart в байтах: [5 MiB, 5 GiB]; он же потолок памяти на `Put` |
@@ -152,8 +151,8 @@ API`). Менять имена/типы полей или их `envconfig`-те�
 `ErrConfig` и валит старт приложения. Правила `Validate`:
 
 - `STORAGE_S3_ENDPOINT` — непустой `host[:port]` **или** `http(s)://host[:port]`
-  без пути, query и кредов. Схема в значении задаёт TLS сама; `http://…` вместе
-  с `STORAGE_S3_USE_SSL=true` — ошибка.
+  без пути, query и кредов. Без схемы и с `https://` — TLS; plaintext (MinIO в
+  локальном compose) — только явным `http://`.
 - `STORAGE_S3_BUCKET` — непустой и без `/`.
 - `STORAGE_S3_CREDENTIALS` ∈ {`static`, `chain`}; при `static` access и secret
   задаются вместе (оба пустых — анонимный доступ).

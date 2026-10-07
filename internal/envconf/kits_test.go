@@ -13,6 +13,8 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/amocrmkit"
 	"git.stit.tech/stit-core/golibinfra/anthropickit"
+	"git.stit.tech/stit-core/golibinfra/auditkit"
+	auditpg "git.stit.tech/stit-core/golibinfra/auditkit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/authnkit"
 	"git.stit.tech/stit-core/golibinfra/authnkit/session"
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
@@ -61,6 +63,7 @@ func kitConfigs() []kitConfig {
 		{"authnkit.NewJWTConfig", "", authnkit.ErrConfig, ctor(authnkit.NewJWTConfig)},
 		{"authnkit.NewTOTPConfig", "", authnkit.ErrConfig, ctor(authnkit.NewTOTPConfig)},
 		{"session.NewConfig", "", session.ErrConfig, ctor(session.NewConfig)},
+		{"auditkit/pgstore.NewRetentionConfig", "", auditkit.ErrConfig, ctor(auditpg.NewRetentionConfig)},
 		{"outboxkit.NewConfig", "", outboxkit.ErrConfig, ctor(outboxkit.NewConfig)},
 		{"outboxkit/pgstore.NewConfig", "", outboxkit.ErrConfig, ctor(outboxpg.NewConfig)},
 		{"bruteforcekit.NewConfig", "", bruteforcekit.ErrConfig, ctor(bruteforcekit.NewConfig)},
@@ -103,6 +106,7 @@ func setRequired(t *testing.T) {
 	}
 	for k, v := range map[string]string{
 		"PG_DSN":                  "postgres://u:p@localhost:5432/db",
+		"AUDIT_RETENTION_DAYS":    "365",
 		"JWT_SECRET":              "0123456789abcdef0123456789abcdef",
 		"TOTP_ISSUER":             "svc",
 		"APP_TZ":                  "Europe/Moscow",

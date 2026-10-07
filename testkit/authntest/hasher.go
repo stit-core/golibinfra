@@ -6,6 +6,8 @@ import (
 	"context"
 	"strings"
 	"testing"
+
+	"git.stit.tech/stit-core/golibinfra/authnkit"
 )
 
 // HashPrefix — префикс «хеша» DeterministicHasher.
@@ -16,15 +18,23 @@ const HashPrefix = "hash:"
 // попасть в базу из-за ошибки проводки fx.
 type DeterministicHasher struct{}
 
-// Hash возвращает HashPrefix + plain.
+// Hash возвращает HashPrefix + plain; plain длиннее authnkit.MaxPasswordLen —
+// authnkit.ErrPasswordTooLong, как у боевого хэшера.
 func (DeterministicHasher) Hash(_ context.Context, plain string) (string, error) {
 	mustRunInTest(testing.Testing())
+	if len(plain) > authnkit.MaxPasswordLen {
+		return "", authnkit.ErrPasswordTooLong
+	}
 	return HashPrefix + plain, nil
 }
 
-// Verify сравнивает encoded с HashPrefix + plain.
+// Verify сравнивает encoded с HashPrefix + plain; plain длиннее authnkit.MaxPasswordLen —
+// authnkit.ErrPasswordTooLong, как у боевого хэшера.
 func (DeterministicHasher) Verify(_ context.Context, plain, encoded string) (bool, error) {
 	mustRunInTest(testing.Testing())
+	if len(plain) > authnkit.MaxPasswordLen {
+		return false, authnkit.ErrPasswordTooLong
+	}
 	return encoded == HashPrefix+plain, nil
 }
 

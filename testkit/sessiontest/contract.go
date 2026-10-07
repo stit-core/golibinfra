@@ -34,6 +34,7 @@ func RunContract(t *testing.T, newStore func(t *testing.T, cfg session.Config, c
 		{"AbsoluteDeadlineIsNotExtended", absoluteDeadline},
 		{"IdleTokenExpires", idleExpiry},
 		{"RevokeClosesSession", revokeClosesSession},
+		{"ConcurrentRevokeHasOneOwner", concurrentRevoke},
 		{"RevokeAllClosesSubjectSessions", revokeAll},
 		{"UnknownToken", unknownToken},
 		{"InvalidSubject", invalidSubject},
@@ -180,16 +181,50 @@ func revokeClosesSession(t *testing.T, s session.Store, _ *clockkit.Tickable) {
 	subj := subject(t)
 	tok := mustIssue(t, s, subj)
 	other := mustIssue(t, s, subj)
-	for range 2 {
-		if err := s.Revoke(t.Context(), tok.Value); err != nil {
-			t.Fatalf("Revoke: %v", err)
-		}
+	if owner, err := s.Revoke(t.Context(), tok.Value); err != nil || owner != subj {
+		t.Fatalf("Revoke = %q, %v; want the owner %q", owner, err, subj)
 	}
-	if err := s.Revoke(t.Context(), "unknown"); err != nil {
-		t.Fatalf("Revoke(unknown) = %v, want nil", err)
+	// Владельца отдаёт только вызов, закрывший сессию: повтор выхода — не событие аудита.
+	if owner, err := s.Revoke(t.Context(), tok.Value); err != nil || owner != "" {
+		t.Fatalf("Revoke of a closed session = %q, %v; want empty owner and nil", owner, err)
+	}
+	if owner, err := s.Revoke(t.Context(), "unknown"); err != nil || owner != "" {
+		t.Fatalf("Revoke(unknown) = %q, %v; want empty owner and nil", owner, err)
 	}
 	wantRotateErr(t, s, tok.Value, session.ErrInvalid)
 	mustRotate(t, s, other.Value)
+}
+
+// Параллельные выходы одной сессией: владельца получает один вызов — запись аудита одна.
+func concurrentRevoke(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	subj := subject(t)
+	tok := mustIssue(t, s, subj)
+	const n = 8
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		owners []string
+		errs   []error
+	)
+	start := make(chan struct{})
+	for range n {
+		wg.Go(func() {
+			<-start
+			owner, err := s.Revoke(context.Background(), tok.Value)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+			} else if owner != "" {
+				owners = append(owners, owner)
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	if len(errs) != 0 || len(owners) != 1 || owners[0] != subj {
+		t.Fatalf("%d parallel Revoke: owners %q, errors %v; want exactly one %q", n, owners, errs, subj)
+	}
 }
 
 func revokeAll(t *testing.T, s session.Store, _ *clockkit.Tickable) {
@@ -204,6 +239,9 @@ func revokeAll(t *testing.T, s session.Store, _ *clockkit.Tickable) {
 	mustRotate(t, s, bystander.Value)
 	if err := s.RevokeAll(t.Context(), subj); err != nil {
 		t.Fatalf("RevokeAll without open sessions: %v", err)
+	}
+	if owner, err := s.Revoke(t.Context(), a.Value); err != nil || owner != "" {
+		t.Fatalf("Revoke after RevokeAll = %q, %v; want empty owner and nil", owner, err)
 	}
 }
 

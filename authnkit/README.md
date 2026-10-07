@@ -1,7 +1,7 @@
 # authnkit
 
 Криптографически-корректные кирпичики для аутентификации: `Hasher` поверх
-Argon2id, JWT sign/verify на HS256 с типом токена, `iss`/`aud` из конфига и ротацией
+Argon2id (пароль — до `MaxPasswordLen`, 1024 байта), JWT sign/verify на HS256 с типом токена, `iss`/`aud` из конфига и ротацией
 секрета (`HS256JWT`, go-jose; `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_PREVIOUS_SECRET`),
 TOTP-генератор по RFC 6238 (`TOTPGenerator`), одноразовые непрозрачные токены
 (`NewToken`, `HashToken`), in-process RBAC-реестр (`Registry`) и сессии
@@ -41,6 +41,7 @@ func main() {
 	if err != nil {
 		panic(err) // ErrConfig: параметры вне окна
 	}
+	// Пароль длиннее authnkit.MaxPasswordLen — ErrPasswordTooLong: DTO берёт тот же предел.
 	encoded, _ := hasher.Hash(ctx, "s3cr3t")       // $argon2id$v=19$m=...$salt$hash
 	ok, _ := hasher.Verify(ctx, "s3cr3t", encoded) // true
 	if ok && hasher.NeedsRehash(encoded) {

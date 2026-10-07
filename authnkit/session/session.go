@@ -27,8 +27,8 @@ var (
 	ErrInTx = errors.New("authnkit/session: Rotate must not run inside a transaction")
 )
 
-// MaxSubjectLen — предел длины subject в байтах: значение длиннее не помещается в
-// индексную запись хранилища.
+// MaxSubjectLen — предел длины subject в байтах: id пользователя короче, длиннее — ошибка
+// вызывающего кода (индексная запись Postgres вместила бы и больше).
 const MaxSubjectLen = 255
 
 // Token — выданный refresh-токен. Value отдаётся клиенту, хранилище держит только
@@ -74,9 +74,9 @@ type Store interface {
 	// использованного токена — *ReusedError (сессия отозвана), внутри транзакции из
 	// ctx — ErrInTx.
 	Rotate(ctx context.Context, refresh string) (Token, error)
-	// Revoke закрывает сессию токена (выход); неизвестный токен или уже
-	// закрытая сессия — nil.
-	Revoke(ctx context.Context, refresh string) error
+	// Revoke закрывает сессию токена (выход) и отдаёт её владельца — автора записи аудита
+	// выхода; неизвестный токен или сессия, закрытая раньше этого вызова, — "" и nil.
+	Revoke(ctx context.Context, refresh string) (subject string, err error)
 	// RevokeAll закрывает все сессии subject: блокировка, удаление, смена роли или
 	// пароля.
 	RevokeAll(ctx context.Context, subject string) error

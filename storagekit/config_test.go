@@ -72,9 +72,6 @@ func TestConfig_Validate(t *testing.T) {
 		{name: "endpoint with two ports", wantErr: true, mutate: func(c *storagekit.Config) { c.Endpoint = "s3.example.com:90:00" }},
 		{name: "endpoint host is only a port", wantErr: true, mutate: func(c *storagekit.Config) { c.Endpoint = "http://:9000" }},
 		{name: "unparsable endpoint url", wantErr: true, mutate: func(c *storagekit.Config) { c.Endpoint = "https://s3.example%zz.com" }},
-		{name: "http endpoint with UseSSL", wantErr: true, mutate: func(c *storagekit.Config) {
-			c.Endpoint, c.UseSSL = "http://s3.example.com", true
-		}},
 		{name: "empty bucket", wantErr: true, mutate: func(c *storagekit.Config) { c.Bucket = "" }},
 		{name: "bucket with path", wantErr: true, mutate: func(c *storagekit.Config) { c.Bucket = "media/uploads" }},
 		{name: "half creds", wantErr: true, mutate: func(c *storagekit.Config) { c.SecretKey = "" }},
@@ -114,20 +111,19 @@ func TestConfig_EndpointAddr(t *testing.T) {
 	tests := []struct {
 		name       string
 		endpoint   string
-		useSSL     bool
 		wantAddr   string
 		wantSecure bool
 	}{
-		{name: "host:port keeps UseSSL", endpoint: "s3.example.com:9000", wantAddr: "s3.example.com:9000"},
-		{name: "host:port with UseSSL", endpoint: "s3.example.com:9000", useSSL: true, wantAddr: "s3.example.com:9000", wantSecure: true},
-		{name: "https scheme wins", endpoint: "https://s3.example.com", wantAddr: "s3.example.com", wantSecure: true},
-		{name: "http scheme wins", endpoint: "http://localhost:9000", wantAddr: "localhost:9000"},
+		{name: "host:port is TLS", endpoint: "s3.example.com:9000", wantAddr: "s3.example.com:9000", wantSecure: true},
+		{name: "host is TLS", endpoint: "s3.example.com", wantAddr: "s3.example.com", wantSecure: true},
+		{name: "https scheme", endpoint: "https://s3.example.com", wantAddr: "s3.example.com", wantSecure: true},
+		{name: "plaintext only with http scheme", endpoint: "http://localhost:9000", wantAddr: "localhost:9000"},
 		{name: "trailing slash allowed", endpoint: "https://s3.example.com/", wantAddr: "s3.example.com", wantSecure: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg := validConfig()
-			cfg.Endpoint, cfg.UseSSL = tt.endpoint, tt.useSSL
+			cfg.Endpoint = tt.endpoint
 
 			addr, secure, err := cfg.EndpointAddr()
 			if err != nil {
@@ -143,7 +139,7 @@ func TestConfig_EndpointAddr(t *testing.T) {
 func TestNewConfig_DefaultsAndValidation(t *testing.T) {
 	for _, env := range []string{
 		"STORAGE_S3_ENDPOINT", "STORAGE_S3_ACCESS_KEY", "STORAGE_S3_SECRET_KEY", "STORAGE_S3_BUCKET",
-		"STORAGE_S3_CREDENTIALS", "STORAGE_S3_REGION", "STORAGE_S3_USE_SSL", "STORAGE_S3_BUCKET_LOOKUP",
+		"STORAGE_S3_CREDENTIALS", "STORAGE_S3_REGION", "STORAGE_S3_BUCKET_LOOKUP",
 		"STORAGE_S3_CREATE_BUCKET", "STORAGE_S3_PART_SIZE", "STORAGE_S3_MAX_RETRIES", "STORAGE_S3_PROBE_TIMEOUT",
 		"STORAGE_S3_PROBE_ON_START", "STORAGE_S3_URL_STYLE", "STORAGE_PUBLIC_BASE_URL",
 	} {

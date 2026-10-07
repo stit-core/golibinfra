@@ -114,14 +114,21 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	return next, nil
 }
 
-// Revoke закрывает сессию токена; неизвестный токен — nil.
-func (s *Store) Revoke(_ context.Context, refresh string) error {
+// Revoke закрывает сессию токена и отдаёт её владельца; неизвестный токен или закрытая
+// раньше сессия — "" и nil.
+func (s *Store) Revoke(_ context.Context, refresh string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if tok, ok := s.tokens[authnkit.HashToken(refresh)]; ok {
-		s.sessions[tok.sessionID].revoked = true
+	tok, ok := s.tokens[authnkit.HashToken(refresh)]
+	if !ok {
+		return "", nil
 	}
-	return nil
+	sess := s.sessions[tok.sessionID]
+	if sess.revoked {
+		return "", nil
+	}
+	sess.revoked = true
+	return sess.subject, nil
 }
 
 // RevokeAll закрывает все сессии subject; невалидный subject — session.ErrInvalidSubject.

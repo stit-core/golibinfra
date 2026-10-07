@@ -74,7 +74,7 @@ func TestStorage_CleanupFailureIsLogged(t *testing.T) {
 		return r.Method == http.MethodDelete
 	})
 
-	cfg := containerConfig(t, func(c *storagekit.Config) { c.Endpoint = hostOf(t, proxy.URL) })
+	cfg := containerConfig(t, func(c *storagekit.Config) { c.Endpoint = proxy.URL })
 	client, err := skminio.NewClient(cfg)
 	if err != nil {
 		t.Fatalf("NewClient: %v", err)
@@ -115,7 +115,7 @@ func TestStorage_PutFailureIsWrapped(t *testing.T) {
 		return r.Method == http.MethodPut || r.Method == http.MethodPost
 	})
 	cfg := direct
-	cfg.Endpoint = hostOf(t, proxy.URL)
+	cfg.Endpoint = proxy.URL
 	blocked, err := skminio.NewClient(cfg)
 	if err != nil {
 		t.Fatalf("NewClient through proxy: %v", err)
@@ -145,7 +145,7 @@ func TestModule_CreateBucketFailureFailsStart(t *testing.T) {
 		return r.Method == http.MethodPut
 	})
 	cfg := containerConfig(t, func(c *storagekit.Config) {
-		c.Endpoint = hostOf(t, proxy.URL)
+		c.Endpoint = proxy.URL
 		c.CreateBucket = true
 	})
 
@@ -160,7 +160,7 @@ func TestModule_CreateBucketFailureFailsStart(t *testing.T) {
 	}
 }
 
-// Данные кита ходят по TLS так же, как по plaintext: путь STORAGE_S3_USE_SSL
+// Данные кита ходят по TLS так же, как по plaintext: endpoint без схемы — TLS, и это
 // проверяется на живом сервере, а не только сборкой клиента.
 func TestStorage_ServesOverTLS(t *testing.T) {
 	fix := minioFixture(t)
@@ -170,7 +170,6 @@ func TestStorage_ServesOverTLS(t *testing.T) {
 	pool.AddCert(proxy.Certificate())
 	cfg := containerConfig(t, func(c *storagekit.Config) {
 		c.Endpoint = hostOf(t, proxy.URL)
-		c.UseSSL = true
 	})
 	if _, secure, err := cfg.EndpointAddr(); err != nil || !secure {
 		t.Fatalf("EndpointAddr() secure = %v, err = %v, want secure", secure, err)

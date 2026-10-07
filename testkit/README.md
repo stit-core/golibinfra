@@ -68,7 +68,7 @@ func TestRepository(t *testing.T) {
 	_ = rdb.URL // redis://host:port
 
 	s3 := testkit.StartMinIO(t)
-	_ = s3.Endpoint // host:port для minio-go; бакеты создаёт тест
+	_ = s3.Endpoint // host:port для minio-go; storagekit — "http://" + s3.Endpoint (без схемы — TLS); бакеты создаёт тест
 
 	// ... тело теста на db / tx / nats.URL / rdb.URL / s3
 }
@@ -229,8 +229,8 @@ huma-хендлеры поверх `httpkit`, `idempotencytest` — хранил
 | Сабпакет | Обслуживает | Что даёт |
 | --- | --- | --- |
 | [`anthropictest`](anthropictest/) | `anthropickit` | `Stub` — настраиваемый `anthropickit.API` с безопасными дефолтами; `ScriptStream`, `ScriptStreamErr` (обрыв посреди стрима), `ErrStream`. |
-| [`audittest`](audittest/) | `auditkit` | `Recorder` — in-memory `auditkit.Logger`: `Log` как pgstore берёт пустые `RequestID` и `IP` из ctx (`Entry.Enrich`), валидирует `Entry` (`auditkit.ErrInvalidEntry`) и хранит копию `Metadata`; запросы `Entries`/`Actions`/`Has`/`Last`/`ByResource` + `Reset`. |
-| [`authntest`](authntest/) | `authnkit` | `DeterministicHasher` — `authnkit.Hasher` без Argon2 (хеш = `"hash:"+plain`); `HashPrefix`, `StripHashPrefix`. |
+| [`audittest`](audittest/) | `auditkit` | `Recorder` — in-memory `auditkit.Logger`: `Log` как pgstore берёт пустые `RequestID` и `IP` из ctx (`Entry.Enrich`), валидирует `Entry` теми же правилами (`Entry.Validate`: NUL, не-UTF-8, предел `Metadata` — `auditkit.ErrInvalidEntry`) и хранит копию `Metadata`; запросы `Entries`/`Actions`/`Has`/`Last`/`ByResource` + `Reset`. |
+| [`authntest`](authntest/) | `authnkit` | `DeterministicHasher` — `authnkit.Hasher` без Argon2 (хеш = `"hash:"+plain`, пароль длиннее `authnkit.MaxPasswordLen` — `ErrPasswordTooLong`, как у боевого); `HashPrefix`, `StripHashPrefix`. |
 | [`bruteforcetest`](bruteforcetest/) | `bruteforcekit` | `bruteforcekit.Guard`-фейки, все держат контракт pgstore: ключ `(subject, ip)` (`bruteforcekit.ErrInvalidKey`) и `Attempt` вне транзакции (`bruteforcekit.ErrInTx`): `Permissive` (всегда пропускает), `Locked{Until}` (всегда заблокирован), `Recorder` (копит вызовы с парами ключей — `Attempts()`/`Successes()`), `NewCounting(cfg, clock)` (политика pgstore в памяти: «N попыток → lock», попытка под блокировкой ничего не меняет, истечение окна, `RecordSuccess` стирает историю; единственный, кто сворачивает ключ как pgstore — subject в нижнем регистре, IPv6 по `Config.IPv6Prefix`, — и реализует `bruteforcekit.Cleaner`). |
 | [`grpctest`](grpctest/) | `grpckit` | `StartServer` — bufconn-харнесс: `grpckit.Server` in-process и `*grpc.ClientConn` к нему. |
 | [`handlertest`](handlertest/) | `httpkit` (huma) | `NewAPI` поднимает `humatest.TestAPI` (алиас `API`) поверх API сервера `httpkit.NewServer` — цепочка middleware кита и контракт ошибок как в проде (`request_id`, `Retry-After`, 404/405, коды `ErrorMap.Declare` в OpenAPI), `HumaAuth` до маршрутов (схема без extractor'а — `500 AUTH_NOT_CONFIGURED`), проверка маршрутов старта `Module`, конфиг `httpkit.NewConfig()` (docs, как у сервера, по умолчанию выключены); опции `WithConfig`, `WithLogger`, `WithSecuritySchemes` (схемы с extractor'ами); `DecodeAPIError` → `httpkit.APIError`, `AssertStatus`, `AssertAPIError` (статус, problem+json, `code`, `request_id` = `X-Request-ID`). |
@@ -242,7 +242,7 @@ huma-хендлеры поверх `httpkit`, `idempotencytest` — хранил
 | [`oidctest`](oidctest/) | `oidckit` | `New(t)` поднимает stub OIDC-провайдера (discovery, JWKS, `/authorize`, `/token`, RS256/ES256): `SetClaims`, `SetStatus`, `SetTokenBody`, `SetDiscoveryOverride`, `Hits`, `LastAuthorize`; токены для негативных тестов — `IDToken`, `IDTokenWithKID`, `IDTokenHS256`, `IDTokenUnsigned`. |
 | [`outboxtest`](outboxtest/) | `outboxkit` | `Recorder` — in-memory `outboxkit.Publisher`: `Publish` вне транзакции (`pgkit.InTx`) отвечает `outboxkit.ErrNoTx` и событие не копит, как pgstore с `OUTBOX_REQUIRE_TX=true`; запросы `All`/`Published`/`Last`/`Count` + `Reset`. |
 | [`pgtest`](pgtest/) | `pgkit` | `pgkit.Transactor`-фейки (`WithTx` и `WithTxOptions`): `Identity` (прогоняет `fn` без транзакции), `Recorder` (то же + счётчик `Calls`). Оба помечают `ctx` через `pgkit.WithTestTx`, поэтому код с гейтом на `pgkit.InTx` проходит без Postgres. |
-| [`sessiontest`](sessiontest/) | `authnkit/session` | `New(cfg, clock)` — in-memory `session.Store` с семантикой `session/pgstore`: те же сроки (`IdleTTL`, абсолютный срок), ротация, отзыв сессии при повторе токена (`*session.ReusedError`), `session.ErrInTx` у `Rotate` в транзакции (`pgkit.InTx`); `Active(subject)` — число открытых сессий; откат транзакции фейк не видит. `RunContract(t, newStore)` — контрактный набор `session.Store`: время двигает набор через переданные часы, его проходят и фейк, и pgstore. |
+| [`sessiontest`](sessiontest/) | `authnkit/session` | `New(cfg, clock)` — in-memory `session.Store` с семантикой `session/pgstore`: те же сроки (`IdleTTL`, абсолютный срок), ротация, отзыв сессии при повторе токена (`*session.ReusedError`), владелец сессии из `Revoke` (только у закрывшего её вызова), `session.ErrInTx` у `Rotate` в транзакции (`pgkit.InTx`); `Active(subject)` — число открытых сессий; откат транзакции фейк не видит. `RunContract(t, newStore)` — контрактный набор `session.Store`: время двигает набор через переданные часы, его проходят и фейк, и pgstore. |
 | [`storagetest`](storagetest/) | `storagekit` | `RunContract(t, newSubject)` — общий контрактный набор для `storagekit.Storage`/`Presigner`: боевой адаптер и in-memory проверяются одними кейсами; `Subject{Storage, Presigner, Keys}` описывает проверяемую реализацию. |
 
 ## Observability

@@ -345,6 +345,40 @@ func TestVerifyDummy(t *testing.T) {
 	}
 }
 
+// Пароль длиннее MaxPasswordLen в Argon2id не попадает: Hash отказывает без вычисления, Verify —
+// после холостого вычисления над входом VerifyDummy, иначе длина выдала бы учётную запись таймингом.
+func TestPasswordLengthLimit(t *testing.T) {
+	ctx := t.Context()
+	h := defaultHasher(t)
+	atLimit := strings.Repeat("p", MaxPasswordLen)
+	encoded, err := h.Hash(ctx, atLimit)
+	if err != nil {
+		t.Fatalf("Hash of %d bytes: %v", MaxPasswordLen, err)
+	}
+	if ok, err := h.Verify(ctx, atLimit, encoded); err != nil || !ok {
+		t.Fatalf("Verify of %d bytes: ok=%v err=%v", MaxPasswordLen, ok, err)
+	}
+
+	var derived [][]byte
+	h.derive = func(password, _ []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+		derived = append(derived, password)
+		return make([]byte, keyLen)
+	}
+	tooLong := atLimit + "p"
+	if _, err := h.Hash(ctx, tooLong); !errors.Is(err, ErrPasswordTooLong) {
+		t.Fatalf("Hash of %d bytes = %v, want ErrPasswordTooLong", len(tooLong), err)
+	}
+	if len(derived) != 0 {
+		t.Fatalf("Hash of a too long password ran argon2id %d times", len(derived))
+	}
+	if ok, err := h.Verify(ctx, tooLong, encoded); ok || !errors.Is(err, ErrPasswordTooLong) {
+		t.Fatalf("Verify of %d bytes: ok=%v err=%v, want ErrPasswordTooLong", len(tooLong), ok, err)
+	}
+	if len(derived) != 1 || string(derived[0]) != string(dummyPassword) {
+		t.Fatalf("Verify of a too long password: argon2id inputs %q, want one dummy computation", derived)
+	}
+}
+
 var _ Hasher = (*Argon2idHasher)(nil)
 
 // Регрессия SEC-09: каждый Argon2id держит Memory КиБ, а логин анонимен —

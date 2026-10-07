@@ -24,17 +24,7 @@ func startStore(t *testing.T) (*pgstore.Store, *testkit.PostgresFixture, context
 	return pgstore.NewStore(pg.DB(t)), pg, ctx
 }
 
-func TestStore_Log_ErrorPrefix(t *testing.T) {
-	s := pgstore.NewStore(nil)
-	err := s.Log(context.Background(), auditkit.Entry{
-		Action: "x", Resource: "y", Metadata: map[string]any{"bad": make(chan int)},
-	})
-	if err == nil || !strings.HasPrefix(err.Error(), "auditkit/pgstore: ") {
-		t.Fatalf("err = %v, want auditkit/pgstore: prefix", err)
-	}
-}
-
-// Запрос не должен уходить в базу: невалидную Entry ловит Validate.
+// Запрос не должен уходить в базу (у Store нет пула): невалидную Entry ловит Entry.MetadataJSON.
 func TestStore_Log_InvalidEntry(t *testing.T) {
 	s := pgstore.NewStore(nil)
 	for _, e := range []auditkit.Entry{
@@ -42,10 +32,45 @@ func TestStore_Log_InvalidEntry(t *testing.T) {
 		{Action: "user.create"},
 		{Resource: "user"},
 		{Action: strings.Repeat("a", auditkit.MaxActionLen+1), Resource: "user"},
+		{Action: "x", Resource: "y", Metadata: map[string]any{"bad": make(chan int)}},
+		{Action: "x", Resource: "y", Metadata: map[string]any{"k": strings.Repeat("v", auditkit.MaxMetadataBytes)}},
 	} {
 		if err := s.Log(context.Background(), e); !errors.Is(err, auditkit.ErrInvalidEntry) {
-			t.Fatalf("Log(%+v) = %v, want ErrInvalidEntry", e, err)
+			t.Fatalf("Log(%.80v) = %v, want ErrInvalidEntry", e, err)
 		}
+	}
+}
+
+// Регрессия KCOR-06 (E12): NUL и не-UTF-8 Postgres не хранит — Log отвергает их ErrInvalidEntry до
+// INSERT, метрика пишет invalid, а не error. Граничные значения, которые база хранит, проходят.
+func TestStore_Log_UnstorableInput(t *testing.T) {
+	s, pg, ctx := startStore(t)
+	for name, e := range map[string]auditkit.Entry{
+		"NUL in ResourceID":    {Action: "user.update", Resource: "user", ResourceID: "42\x00"},
+		"NUL in Metadata":      {Action: "user.update", Resource: "user", Metadata: map[string]any{"name": "bob\x00"}},
+		"bad UTF-8 in ActorID": {Action: "user.update", Resource: "user", ActorID: "\xff\xfe"},
+		"bad UTF-8 raw JSON":   {Action: "user.update", Resource: "user", Metadata: map[string]any{"raw": json.RawMessage("\"\xff\"")}},
+	} {
+		if err := s.Log(ctx, e); !errors.Is(err, auditkit.ErrInvalidEntry) {
+			t.Errorf("%s: Log = %v, want ErrInvalidEntry", name, err)
+		}
+	}
+
+	stored := map[string]any{
+		"slash":   `\u0000`,
+		"replace": "a\xffb",
+		"big":     strings.Repeat("x", auditkit.MaxMetadataBytes-64),
+	}
+	if err := s.Log(ctx, auditkit.Entry{Action: "edge.metadata", Resource: "user", Metadata: stored}); err != nil {
+		t.Fatalf("Log of storable edge Metadata: %v", err)
+	}
+	var slash, replace string
+	if err := pg.DB(t).QueryRow(ctx, `SELECT metadata->>'slash', metadata->>'replace' FROM audit_log WHERE action = 'edge.metadata'`).
+		Scan(&slash, &replace); err != nil {
+		t.Fatalf("scan edge row: %v", err)
+	}
+	if slash != `\u0000` || replace != "a\uFFFDb" {
+		t.Errorf("stored slash %q, replace %q; want %q and %q", slash, replace, `\u0000`, "a\uFFFDb")
 	}
 }
 

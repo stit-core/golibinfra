@@ -176,20 +176,27 @@ func (s *Store) reject(ctx context.Context, refresh string, now time.Time) (stri
 	return resultInvalid, session.ErrInvalid
 }
 
+// Условие revoked_at IS NULL: из параллельных выходов одной сессии владельца получает один.
 const logoutSQL = `
 UPDATE authn_sessions SET revoked_at = $2
 WHERE revoked_at IS NULL
   AND id = (SELECT session_id FROM authn_session_tokens WHERE token_hash = $1)
+RETURNING subject
 `
 
-// Revoke закрывает сессию токена (выход); неизвестный токен или закрытая сессия — nil.
-func (s *Store) Revoke(ctx context.Context, refresh string) error {
-	tag, err := s.db.Exec(ctx, logoutSQL, authnkit.HashToken(refresh), s.now())
-	if err != nil {
-		return fmt.Errorf("authnkit/session/pgstore: revoke: %w", err)
+// Revoke закрывает сессию токена (выход) и отдаёт её владельца; неизвестный токен или
+// закрытая раньше сессия — "" и nil.
+func (s *Store) Revoke(ctx context.Context, refresh string) (string, error) {
+	var subject string
+	err := s.db.QueryRow(ctx, logoutSQL, authnkit.HashToken(refresh), s.now()).Scan(&subject)
+	switch {
+	case pgkit.IsNoRows(err):
+		return "", nil
+	case err != nil:
+		return "", fmt.Errorf("authnkit/session/pgstore: revoke: %w", err)
 	}
-	s.instr.revoke(ctx, reasonLogout, tag.RowsAffected())
-	return nil
+	s.instr.revoke(ctx, reasonLogout, 1)
+	return subject, nil
 }
 
 const revokeSubjectSQL = `UPDATE authn_sessions SET revoked_at = $2 WHERE subject = $1 AND revoked_at IS NULL`

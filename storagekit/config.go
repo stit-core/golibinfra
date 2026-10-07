@@ -58,7 +58,6 @@ type Config struct {
 	Credentials  string `envconfig:"STORAGE_S3_CREDENTIALS" default:"static"`
 	Bucket       string `envconfig:"STORAGE_S3_BUCKET"`
 	Region       string `envconfig:"STORAGE_S3_REGION"`
-	UseSSL       bool   `envconfig:"STORAGE_S3_USE_SSL" default:"false"`
 	BucketLookup string `envconfig:"STORAGE_S3_BUCKET_LOOKUP" default:"auto"`
 	CreateBucket bool   `envconfig:"STORAGE_S3_CREATE_BUCKET" default:"false"`
 
@@ -138,9 +137,8 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// EndpointAddr разбирает STORAGE_S3_ENDPOINT в `host[:port]` и флаг TLS.
-// Схема в значении (`https://s3.example.com`) задаёт TLS сама; без схемы TLS
-// берётся из STORAGE_S3_USE_SSL.
+// EndpointAddr разбирает STORAGE_S3_ENDPOINT в `host[:port]` и флаг TLS: без схемы и с
+// `https://` — TLS, plaintext — только явным `http://`.
 func (c Config) EndpointAddr() (addr string, secure bool, err error) {
 	raw := strings.TrimSpace(c.Endpoint)
 	if raw == "" {
@@ -151,7 +149,7 @@ func (c Config) EndpointAddr() (addr string, secure bool, err error) {
 		if err := validateHostPort(raw, shown); err != nil {
 			return "", false, err
 		}
-		return raw, c.UseSSL, nil
+		return raw, true, nil
 	}
 
 	u, parseErr := url.Parse(raw)
@@ -167,11 +165,7 @@ func (c Config) EndpointAddr() (addr string, secure bool, err error) {
 	if err := validateHostPort(u.Host, shown); err != nil {
 		return "", false, err
 	}
-	secure = u.Scheme == "https"
-	if c.UseSSL && !secure {
-		return "", false, fmt.Errorf("%w: STORAGE_S3_ENDPOINT %q is http, but STORAGE_S3_USE_SSL is true", ErrConfig, shown)
-	}
-	return u.Host, secure, nil
+	return u.Host, u.Scheme == "https", nil
 }
 
 // validateHostPort проверяет `host[:port]` endpoint'а; shown — endpoint без секретов для текста

@@ -19,8 +19,9 @@ const (
 )
 
 type instruments struct {
-	writes        metric.Int64Counter
-	writeDuration metric.Float64Histogram
+	writes           metric.Int64Counter
+	writeDuration    metric.Float64Histogram
+	retentionDeleted metric.Int64Counter
 }
 
 // newInstruments зовётся в NewStore: инструмент берёт текущий глобальный
@@ -35,6 +36,9 @@ func newInstruments() *instruments {
 			metric.WithDescription("Audit log INSERT duration"),
 			metric.WithUnit("s"),
 			otelkit.DurationBuckets(),
+		)),
+		retentionDeleted: otelkit.Must(m.Int64Counter("audit_log_retention_deleted_total",
+			metric.WithDescription("Audit log rows deleted by retention"),
 		)),
 	}
 }
