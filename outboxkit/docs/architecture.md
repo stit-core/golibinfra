@@ -144,7 +144,7 @@ backoff попытки растянуты во времени (с дефолта
 больше не вычитываются `ListUnpublished` (фильтр `dead_at IS NULL`) — они освобождают
 очередь, но остаются в таблице для разбора (`last_error`, `attempts`) до retention партиции.
 Каждый переход в dead после коммита тика `Worker` пишет в лог — ERROR `outboxkit: event dead`
-с `instance`, `id`, `subject`, `attempts`, `err` — и считает в `outbox_events_dead_total`:
+с `instance`, `id`, `subject`, `attempts`, `error` — и считает в `outbox_events_dead_total`:
 событие больше не доставится, а без telemetry метрика — no-op. `OUTBOX_MAX_ATTEMPTS=-1` —
 без предела: poison не становится dead и в `ordered` держит очередь, пока причину не починят.
 

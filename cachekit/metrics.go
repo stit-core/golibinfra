@@ -10,6 +10,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/metric"
+	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
 	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
@@ -54,7 +55,10 @@ func (h *observeHook) ProcessHook(next redis.ProcessHook) redis.ProcessHook {
 func (h *observeHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.ProcessPipelineHook {
 	return func(ctx context.Context, cmds []redis.Cmder) error {
 		ctx, span := h.start(ctx, "pipeline")
-		span.SetAttributes(attribute.Int("db.redis.batch_size", len(cmds)))
+		// semconv: батч — от двух операций, размер 1 не пишется.
+		if len(cmds) > 1 {
+			span.SetAttributes(semconv.DBOperationBatchSize(len(cmds)))
+		}
 		start := time.Now()
 		err := next(ctx, cmds)
 		h.record(ctx, "pipeline", start, err)
@@ -63,14 +67,12 @@ func (h *observeHook) ProcessPipelineHook(next redis.ProcessPipelineHook) redis.
 	}
 }
 
-// start — ключи и значения в атрибуты не кладём: PII и неограниченная кардинальность.
+// start — ключи и значения в атрибуты не кладём: PII и неограниченная кардинальность. semconv —
+// та же версия, что у natskit и httpclient.
 func (h *observeHook) start(ctx context.Context, cmd string) (context.Context, trace.Span) {
 	return h.tracer.Start(ctx, "redis "+cmd,
 		trace.WithSpanKind(trace.SpanKindClient),
-		trace.WithAttributes(
-			attribute.String("db.system", "redis"),
-			attribute.String("db.operation", cmd),
-		))
+		trace.WithAttributes(semconv.DBSystemNameRedis, semconv.DBOperationName(cmd)))
 }
 
 func (h *observeHook) end(span trace.Span, err error) {

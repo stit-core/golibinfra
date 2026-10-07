@@ -442,7 +442,7 @@ func TestStreamBus_HandlerErrorLogged(t *testing.T) {
 		return log.has("error", "natskit: jetstream handler error")
 	})
 	e := log.find("error", "natskit: jetstream handler error")
-	if e.value("subject") != subject || fmt.Sprint(e.value("err")) != "boom" {
+	if e.value("subject") != subject || fmt.Sprint(e.value("error")) != "boom" {
 		t.Fatalf("handler error entry without subject or err: %v", e.text())
 	}
 	if !handlerTrace.IsValid() || e.trace != handlerTrace {

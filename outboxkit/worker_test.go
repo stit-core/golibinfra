@@ -268,7 +268,7 @@ func TestWorkerDeadIsLogged(t *testing.T) {
 	if !ok {
 		t.Fatalf("no ERROR «outboxkit: event dead»: %+v", log.Entries())
 	}
-	want := map[string]string{"instance": "orders", "id": "7", "subject": "order.created", "attempts": "3", "err": "nak"}
+	want := map[string]string{"instance": "orders", "id": "7", "subject": "order.created", "attempts": "3", "error": "nak"}
 	for k, v := range want {
 		if got := e.Str(k); got != v {
 			t.Errorf("%s = %q, want %q", k, got, v)

@@ -249,6 +249,9 @@ fx.New(
 `internal/otelkit.DurationBuckets` (`0.005 … 30`). Для операций, штатно идущих
 минутами, есть вторая именованная шкала `otelkit.LongDurationBuckets`
 (`0.005 … 600`) — ею пользуется `anthropickit`. Собственных границ киты не заводят.
+Спаны БД — semconv v1.41 (`db.system.name`, `db.operation.name`), имя спана — операция,
+а не текст запроса. Ключ ошибки в записи лога — `error` у всех китов (так пишет и
+`FxLogger`).
 
 ### Business-метрики (`biz_*`)
 

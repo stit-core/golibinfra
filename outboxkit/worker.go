@@ -299,7 +299,7 @@ func (w *Worker) recordCommitted(ctx context.Context, res tickResult) {
 		// Dead — событие больше не доставится: без telemetry метрика — no-op, строка лога остаётся.
 		w.log.Error(ctx, "outboxkit: event dead",
 			"instance", w.name, "id", f.msg.ID, "subject", f.msg.Subject,
-			"attempts", f.msg.Attempts+1, "err", f.err)
+			"attempts", f.msg.Attempts+1, "error", f.err)
 	}
 }
 

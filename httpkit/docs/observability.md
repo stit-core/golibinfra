@@ -56,26 +56,26 @@ server-span и извлекает входящий `traceparent`, а все по
 Остальные строки кита:
 
 - `panic recovered` (Error) со `stack` — `Recovery`.
-- `handler error` (Error) с `operation`, `status`, `code` и причиной `err` — любой
+- `handler error` (Error) с `operation`, `status`, `code` и причиной `error` — любой
   5xx из huma (Transformer сервера); клиенту уходит только статус, код и `request_id`.
 - `auth rejected` (Debug) / `auth backend unavailable` (Warn) / `auth failed` (Error, с
   `code`: extractor вернул 5xx `APIError`) / `auth not configured` (Error, с `operation`) —
   `HumaAuth`.
-- `idempotency store failed` (Warn) с `op` (`get`, `reserve`, `set`, `release`), `err` и
+- `idempotency store failed` (Warn) с `op` (`get`, `reserve`, `set`, `release`), `error` и
   `fail_closed` — `Idempotency`; тот же отказ считает `http_idempotency_total{result="error"}`.
 - `request deadline exceeded` (Warn) с `timeout` — дедлайн запроса: ответ не начат,
   клиенту ушёл `503 REQUEST_TIMEOUT` ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)).
 - `idempotency reservation expired before the response` (Warn) с `reserve_ttl` —
   `Idempotency`: handler шёл дольше `HTTP_IDEMPOTENCY_RESERVE_TTL`, ответ не сохранён
   (`http_idempotency_total{result="skipped"}`).
-- `readiness probe failed` (Warn) с `probe` и `err` — `/ready`; текст ошибки
+- `readiness probe failed` (Warn) с `probe` и `error` — `/ready`; текст ошибки
   клиенту не отдаётся. `readiness probe panicked` (Error) с `probe`, `panic` и
   `stack` — panic пробы; проба `down`, процесс жив.
 - `http server listening` (Info) с фактическим `addr` — старт;
   `http server stopped` (Error) — падение `Serve`, после которого приложение
   гасится.
 - `http server stop deadline: requests cancelled, connections closed` (Warn) с
-  `requests` — числом запросов в полёте — и `err` — дедлайн остановки: их ctx
+  `requests` — числом запросов в полёте — и `error` — дедлайн остановки: их ctx
   отменён, соединения закрыты ([configuration.md § Остановка](configuration.md#остановка)).
 - `http server error` (Warn) — ошибки net/http из `http.Server.ErrorLog`.
 - `x-forwarded-for ignored: HTTP_TRUST_PROXY_HOPS=0, client ip is the peer address` (Warn,

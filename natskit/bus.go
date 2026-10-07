@@ -180,7 +180,7 @@ func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler Handler) {
 		span.RecordError(err)
 		span.SetStatus(codes.Error, err.Error())
 		if !errors.Is(err, context.Canceled) {
-			b.log.Error(ctx, "natskit: handler error", "subject", subject, "err", err)
+			b.log.Error(ctx, "natskit: handler error", "subject", subject, "error", err)
 		}
 	}
 }

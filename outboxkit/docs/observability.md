@@ -21,12 +21,12 @@ label дал бы серию на сущность. Гистограммы `_sec
 | `outbox_events_inserted_total` | Int64Counter | `instance`, `subject`¹, `status` (`ok`\|`error`\|`marshal_error`\|`payload_too_large`\|`undeclared_subject`) | Вставки события в outbox (`Bus.Publish` → `Repository.Insert`). |
 | `outbox_events_processed_total` | Int64Counter | `instance`, `subject`¹, `status` (`published`\|`publish_error`\|`mark_error`) | Исход обработки события `Worker`'ом. |
 | `outbox_events_dead_total` | Int64Counter | `instance`, `subject`¹ | Переходы строки в dead (исчерпан `OUTBOX_MAX_ATTEMPTS`). |
-
-¹ — только с `WithMetricSubject` инстанса, значение — шаблон.
 | `outbox_revived_total` | Int64Counter | `instance` | Dead-строки, возвращённые в очередь `Outbox.ReviveDead`. |
 | `outbox_batch_size` | Int64Histogram | `instance` | Размер батча, вычитанного за тик `Worker`'а. |
 | `outbox_batch_duration_seconds` | Float64Histogram (`s`) | `instance` | Длительность всего тика `Worker`'а (включая транзакцию). |
 | `outbox_publish_duration_seconds` | Float64Histogram (`s`) | `instance` | Длительность фазы публикации в тике. |
+
+¹ — только с `WithMetricSubject` инстанса, значение — шаблон.
 
 Семантика `status` у `outbox_events_inserted_total`:
 
@@ -89,7 +89,7 @@ callback зарегистрирован:
 
 | Уровень | Сообщение | Поля |
 |---|---|---|
-| ERROR | `outboxkit: event dead` | `instance`, `id`, `subject`, `attempts`, `err` |
+| ERROR | `outboxkit: event dead` | `instance`, `id`, `subject`, `attempts`, `error` |
 
 Событие больше не доставится — без telemetry `outbox_events_dead_total` — no-op, и запись
 лога остаётся единственным сигналом. Прочие ошибки тика (публикация, хранилище) `Worker.Run`

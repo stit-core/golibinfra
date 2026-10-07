@@ -92,7 +92,8 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 		pcfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
 	}
 	if cfg.OTelTrace {
-		pcfg.ConnConfig.Tracer = otelpgx.NewTracer()
+		// Имя спана — операция (`query SELECT`), а не текст SQL: текст — в db.query.text.
+		pcfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
 	}
 	applySessionTimeouts(pcfg, cfg)
 

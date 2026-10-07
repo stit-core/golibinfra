@@ -188,7 +188,7 @@ WebSocket-upgrade. Повторное оборачивание того же wri
   пароль, проверяет схема, а не декодер.
 - 5xx, собранная китом, — только `title`, `status`, `code` и `request_id`: текст
   причины и `detail` уходят в лог строкой `handler error` (`operation`, `status`,
-  `code`, `err`).
+  `code`, `error`).
 - `Retry-After` в секундах (вверх) — из метода `RetryAfter() time.Duration` в
   цепочке причины; у 429 — не меньше секунды, даже без такой причины. Свой
   `Retry-After` хендлера (`huma.ErrorWithHeaders`) кит не перетирает.

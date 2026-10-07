@@ -145,7 +145,7 @@ func TestErrorMap_UnmappedIs500WithOperation(t *testing.T) {
 	assertProblem(t, resp, contractCase{status: http.StatusInternalServerError, code: "INTERNAL", logged: true}, logs)
 	var found bool
 	for _, rec := range logs.lines(t) {
-		if rec["msg"] == "handler error" && rec["operation"] == "getUser" && strings.Contains(fmt.Sprint(rec["err"]), "pq: password=") {
+		if rec["msg"] == "handler error" && rec["operation"] == "getUser" && strings.Contains(fmt.Sprint(rec["error"]), "pq: password=") {
 			found = true
 		}
 	}

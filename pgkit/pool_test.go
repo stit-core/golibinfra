@@ -5,8 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"testing"
 	"time"
+
+	"go.opentelemetry.io/otel"
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
@@ -142,5 +147,49 @@ func TestNewPool_WithoutOTelTracer(t *testing.T) {
 	}
 	if _, err := pool.Exec(context.Background(), "SELECT 1"); err != nil {
 		t.Fatalf("exec: %v", err)
+	}
+}
+
+// Регрессия KOBS-06: спан запроса otelpgx — `query <операция>` с db.system.name=postgresql, текст SQL
+// (и литералы в нём) — только в db.query.text, не в имени спана.
+func TestNewPool_QuerySpanNameIsOperation(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	pg := testkit.StartPostgres(t)
+	pool, err := pgkit.NewPool(context.Background(), pg.PoolConfig())
+	if err != nil {
+		t.Fatalf("NewPool: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	// otelpgx пишет спан запроса только внутри записываемого спана вызова.
+	ctx, parent := otel.Tracer("test").Start(context.Background(), "request")
+	const query = "select 'zzspan-literal'::text"
+	if _, err := pool.Exec(ctx, query); err != nil {
+		t.Fatalf("exec: %v", err)
+	}
+	parent.End()
+
+	var found bool
+	for _, s := range rec.Ended() {
+		if strings.Contains(s.Name(), "zzspan-literal") {
+			t.Errorf("span name %q carries the SQL text", s.Name())
+		}
+		attrs := map[string]string{}
+		for _, a := range s.Attributes() {
+			attrs[string(a.Key)] = a.Value.String()
+		}
+		if attrs["db.query.text"] != query {
+			continue
+		}
+		found = true
+		if s.Name() != "query SELECT" || attrs["db.system.name"] != "postgresql" || attrs["db.operation.name"] != "SELECT" {
+			t.Errorf("span %q attrs %v, want query SELECT with db.system.name=postgresql and db.operation.name=SELECT", s.Name(), attrs)
+		}
+	}
+	if !found {
+		t.Fatal("no otelpgx span with db.query.text of the query")
 	}
 }

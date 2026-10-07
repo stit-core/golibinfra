@@ -12,9 +12,8 @@ blocked-by: —
 шаблона (решение владельца: узко); гейт, обвязка, `/plan` с шаблоном, доки; повтор экспериментов и релиз для `repair-harness` S7.
 
 ## Контекст
-- **Порядок.** После `harden-kits-contracts` (закрыт; его Handoff и заготовка аннотации — здесь). Программа, метод и push —
-  `go-backend-template/.claude/plans/audit-program.md`; находки и «Как повторить аудит» — `M/kits-audit/summary.md` и отчёты углов
-  (`M` — `/home/mm/.cache/stit-audit-program/`).
+- **Порядок.** После `harden-kits-contracts` (его Handoff и аннотация — здесь); программа — `audit-program.md` шаблона; находки и
+  «Как повторить аудит» — `M/kits-audit/summary.md` (`M` = `/home/mm/.cache/stit-audit-program/`).
 - **archkit — источник.** `go-backend-template/internal/archtest/` (`archtest_test.go`, `imports_test.go`, `crossdomain_test.go`;
   обвязка шаблона — `harness_test.go`, `template_test.go`), allowlist — `internal/testkit/allowlist`. Потребитель —
   `repair-harness` S7 и AC9 (инъекции — AC7, разбор — `M/s12-harden-gate.md`). Раскладку `internal/domain/<d>` делят три шаблона;
@@ -29,8 +28,7 @@ blocked-by: —
 ## Не входит
 - Правила обвязки шаблона (HTTP-типы, таблицы ошибок, subject'ы, `Trusted`, `fx.As`, тесты без утверждений, проводка доменов,
   проза, `//nolint`, `.template`) — остаются в его archtest и едут git-способом: `archkit` узкий.
-- Сырой тег группы timerkit — не правило раскладки, `backlog.md`; копии `/plan` в остальных репо экосистемы; правки шаблона — его
-  `repair-harness` по Handoff; push — дирижёр.
+- Сырой тег группы timerkit (`backlog.md`), копии `/plan` в других репо, правки шаблона (его `repair-harness` по Handoff), push.
 
 ## Критерии приёмки
 `<rev>` — проверяемый коммит, `<wt>` — worktree на нём; скрипты — от `M/kits-audit/`.
@@ -38,11 +36,12 @@ blocked-by: —
   недоступном коллекторе — без ошибки и кода 1; ошибка конфига telemetry и строки go-redis — JSON-записи logkit. Проверка:
   `fx-observability/run.sh <rev> fx` → KX40, KX67 (a, d) PASS, KX66 — `Stop` без ошибки
   - Подтверждено: дерево S1 — KX40–43, KX67a, d PASS (stderr 0 байт), KX66 `err=<nil>`, KX67f exit 0; fx-docker — как в S14
-- [ ] **AC2** — Одна конвенция сигналов: спаны БД — `db.system.name`, имя спана otelpgx — без текста SQL; ключ ошибки в логах —
+- [x] **AC2** — Одна конвенция сигналов: спаны БД — `db.system.name`, имя спана otelpgx — без текста SQL; ключ ошибки в логах —
   `error` во всех китах; `Stat` отсутствующего ключа — `not_found`; повтор кода TOTP — `replay`, не `ok`; метрик otelhttp у
   anthropickit нет; сигналы совпадают с доками. Проверка: `fx-observability/run.sh <rev> obs-unit obs` → KO15, KO16, KO18 PASS,
   `compare.py` — 0 расхождений с контрактом из доков HEAD, `promname` — 0 коллизий; `api-docs/claims-A-exp/run.sh <wt>` (`authn`)
   → `ok:1 replay:1`
+  - Подтверждено: дерево S2 — KO01–08, KO11–21 PASS (KO15: 67 спанов `query <операция>`), compare 0, promname 0; `ok:1 replay:1`
 - [ ] **AC3** — Фейки testkit ведут себя как боевые: расхождения зонда — только задокументированные (база — 26 из 50);
   `pgkit.WithTestTx` на ctx usecase'а не пропускает `Publish` мимо транзакции. Проверка: `tests-gate/run-all.sh <rev> probes` →
   расхождений вне доков нет; `api-docs/claims-A-exp/run.sh <wt>` (`fakes`, `logtest`, `clock`) → по докам
@@ -88,9 +87,10 @@ blocked-by: —
   logkit (KFX-03, KFX-05, KFX-06, KOBS-08)
   - Проверка: AC1 → выполнен · Закрывает: AC1 · Зависит от: —
   - Сделано: AC1 → PASS; мутанты `M/tsa/mut_s1.py` 19/19; под API — KX09, KX42, KX63c, KX35, E18, зонд, literal (`*.p2s1`)
-- [ ] **S2** — Конвенции сигналов: semconv БД, ключ `error`, `not_found`, TOTP, otelhttp anthropickit (KOBS-06, KOBS-07, KOBS-09,
+- [x] **S2** — Конвенции сигналов: semconv БД, ключ `error`, `not_found`, TOTP, otelhttp anthropickit (KOBS-06, KOBS-07, KOBS-09,
   KDOC-05, класс KOBS-01)
   - Проверка: AC2 → выполнен · Закрывает: AC2 · Зависит от: —
+  - Сделано: AC2 → PASS; мутанты `M/tsa/mut_s2.py` 12/12; контракт — `M/tsa/tools/gen_contract.py`, KO15 под доку (`*.p2s2`)
 - [ ] **S3** — Фейки данных и шины: `natstest`, `outboxtest`, `audittest`, `pgtest` с откатом, маркер `WithTestTx` (KTST-03,
   KTST-04, KDOC-08, бэклог `outboxtest-withtesttx`)
   - Проверка: зонд по этим фейкам → без расхождений вне доков · Закрывает: AC3 · Зависит от: —
@@ -132,16 +132,13 @@ blocked-by: —
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
 
 ## Решения
-- **Перед S1.** `ContextWithClientIP` — в `handlertest` (ключ видит testkit); в v1.3.0 его нет — не Breaking. `@` пути — сырой путь
-  (`%40` законен) у публичного URL, OTLP и `NATS_URL` (один способ), текст «'@' after the host…».
-- **fx.** Fail-fast — `fx.Invoke` потребителя типа (KX40). Остановка telemetry best-effort: `OnStop` — ERROR и nil (код 1 у Job без
-  коллектора хуже), `Providers.Shutdown` без fx ошибку возвращает (KX66). `FxLogger` — свой логгер из `logkit.Config` и
-  `RedactConfig` без OTel (KX67a). Мост go-redis — как grpclogkit, в `init`; логгер — параметр `NewRedisCache` и `Module` (KX67d);
-  текст мостов grpc и go-redis — `detail` (второй ключ `msg` grpclogkit дублировал ключ в JSON).
-- **Сигналы.** cachekit — semconv версии natskit и httpclient (`db.system.name`, `db.operation.name`), старые ключи не
-  дублируются; otelpgx — имя `query <операция>`, текст — в `db.query.text`; дока pgkit — к факту, KO15 — под неё. Ключ ошибки —
-  `error`: его пишет `fxevent.SlogLogger` у `FxLogger` (natskit и telemetry меняются, канон шаблона — Handoff). Проверка TOTP без
-  метрики — внутренняя, итог пишут `Verify` и `VerifyOnce`. anthropickit — noop `MeterProvider` у otelhttp, как httpclient.
+- **Перед S1.** `ContextWithClientIP` → `handlertest` (в v1.3.0 его нет — не Breaking); `@` пути — по сырому (URL, OTLP, NATS).
+- **fx.** Fail-fast — `fx.Invoke` потребителя (KX40). `OnStop` telemetry — ERROR и nil (код 1 у Job без коллектора хуже), без fx
+  `Shutdown` ошибку возвращает (KX66). `FxLogger` — логгер из `logkit.Config` и `RedactConfig` без OTel (KX67a). go-redis — мост
+  как grpclogkit, в `init`, логгер — параметр (KX67d); текст мостов — `detail`.
+- **Сигналы.** cachekit — semconv v1.41, без старых ключей; otelpgx — `WithTrimSQLInSpanName`, дока pgkit — к факту. Ключ ошибки —
+  `error` (как у `FxLogger`) во всех китах и hubkit, держит AST-тест logkit. TOTP — `validate`, `markUsed` без метрики, итог пишут
+  `Verify`, `VerifyOnce`. anthropickit — noop `MeterProvider` у otelhttp.
 - **Фейки.** Фейки зовут проверки боевых китов (natskit — subject, durable, DLQ-петля; payload и `Metadata` — `json.Marshal`,
   `\u0000`, UTF-8) и хранят `json.RawMessage`. `pgtest.Identity` — отменяемые записи в ctx, при ошибке `fn` фейки их выкидывают.
   Маркер транзакции фейка и `pgkit.WithTestTx` — разные: `outboxtest` принимает транзакцию кода под тестом, ручная пометка на ctx
@@ -209,12 +206,12 @@ blocked-by: —
   правилах и package-doc — на archkit, «корень домена не дотягивается до I/O через `internal/platform/*`» — правило archkit.
 - **Логи, тесты, telemetry.** Ключ ошибки — `error`, не `err`, в каноне и коде; `outboxtest`: ручная `pgkit.WithTestTx` на ctx
   usecase'а — ошибка, транзакцию открывает `pgtest`; `natstest` проверяет стримы — объявить их в тесте; `logtest` — с масками;
-  `Stop` telemetry без коллектора — без ошибки и кода 1; `cmd/api/boot_test.go`: `FxLogger` пишет не через `*slog.Logger` графа —
-  хуки ловит `fx.WithLogger` теста с `hookLog` (действует последний), а не `teeLog`.
+  `Stop` telemetry без коллектора — без ошибки; `cmd/api/boot_test.go`: хуки — `fx.WithLogger` теста с `hookLog`, не `teeLog`
+  (`FxLogger` пишет не через `*slog.Logger` графа).
 - **`/plan`.** Строка «Формат проверяет …» SKILL.md — из golibinfra, pre-commit — в `references/repo.md` шаблона: копии совпадают.
 
 ## Где мы сейчас
-S1 закрыт, дальше — S2; перед S7 — `git log -- internal/archtest` шаблона. S13: эксперименты под API (`M/exs8/orig/*.v130`,
+S1, S2 закрыты, дальше — S3; перед S7 — `git log -- internal/archtest` шаблона. S13: эксперименты под API (`M/exs8/orig/*.v130`,
 `*.s12`, `*.p2s1`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках.
 
 Заготовка аннотации v1.4.0 (первая половина — `harden-kits-contracts`; вторая — по шагам):
@@ -292,9 +289,12 @@ S1 закрыт, дальше — S2; перед S7 — `git log -- internal/arc
   1m (`LockState.Scope`); успех снимает её и обнуляет строку субъекта (её уберёт cleanup, занятые попыткой строки он пропускает);
   `Retry-After` — `LockState.RetryAfter` по часам базы; subject длиннее 255 байт — ключ SHA-256, с NUL или не в UTF-8 —
   `ErrInvalidKey`; `bruteforce_locks_total{scope}`. Входы: `Verify` пароля длиннее 1024 байт — за время `VerifyDummy`;
-  `auditkit/pgstore.Module` даёт и `*Store`. Старт: flagkit, natskit, cachekit, tzkit строят тип и без потребителя (мусор в
+  `auditkit/pgstore.Module` даёт и `*Store`. Старт: flagkit, natskit, cachekit, tzkit строят тип и без потребителя (мусор
   `FEATURE_FLAGS`, пустая `APP_TZ`, нет NATS, Redis — отказ); `Stop` telemetry без коллектора — ERROR `telemetry: shutdown`, не
-  ошибка; `FxLogger` без OTel, отказ графа logkit — ERROR в stdout; go-redis — WARN `redis`, текст мостов — `detail`.
+  ошибка; `FxLogger` без OTel, отказ графа logkit — ERROR в stdout; go-redis — WARN `redis`, текст мостов — `detail`. Сигналы: ключ
+  ошибки логов — `error` (запросы по `err` — переписать); cachekit — `db.system.name`, `db.operation.name`; спан otelpgx —
+  `query <операция>`; нет ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов (`replay`); otelhttp у anthropickit
+  без метрик.
 - **Изменения.** Новое API, env и метрики — по `make release-diff PREV=v1.3.0` (apidiff, env, метрики); сверх них — ридер ENV без
   envconfig, миграция outbox 0003, `testkit/idempotencytest`, срок хранения аудита (opt-in: `auditkit/pgstore.RetentionModule`,
   `AUDIT_RETENTION_DAYS`, `audit_log_retention_deleted_total`).

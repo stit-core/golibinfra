@@ -57,20 +57,24 @@ pgxpool.
 ## Спаны и метрики `otelpgx`
 
 При `PG_OTEL_TRACE=true` (default) на `ConnConfig.Tracer` ставится
-`otelpgx.NewTracer()`; pgxpool дополнительно распознаёт его как `AcquireTracer`.
-Все спаны — `SpanKind=client`, scope `github.com/exaring/otelpgx`, атрибут
-`db.system=postgresql`; они наследуют контекст вызова через `ctx` и встраиваются
-в общую трассу запроса.
+`otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())`; pgxpool дополнительно распознаёт его как
+`AcquireTracer`. Все спаны — `SpanKind=client`, scope `github.com/exaring/otelpgx`, атрибуты
+semconv БД (`db.system.name=postgresql`, `db.namespace`, `server.address`, `server.port`,
+`user.name`); у спанов запроса — ещё `db.operation.name` (первое слово SQL в верхнем регистре) и
+`db.query.text`. Спаны otelpgx пишутся только внутри записываемого спана вызова (запрос HTTP,
+job, обработка сообщения) и встраиваются в его трассу: запрос вне трассы спана не даёт.
 
 | Спан | Когда |
 |---|---|
-| `query <SQL>` | `Exec`/`Query`/`QueryRow` |
+| `query <операция>` (`query SELECT`) | `Exec`/`Query`/`QueryRow` и каждый запрос внутри батча |
 | `batch start` | начало `SendBatch` |
-| `batch query <SQL>` | каждый запрос внутри батча |
-| `prepare <SQL>` | подготовка statement'а (кэш prepared statements pgx) |
+| `prepare <операция>` | подготовка statement'а (кэш prepared statements pgx) |
 | `copy_from <table>` | `CopyFrom` |
 | `connect` | установка физического соединения |
 | `pool.acquire` | получение соединения из пула |
+
+Имя спана — операция, а не текст SQL: у имени конечное множество значений, литералы SQL в него не
+попадают.
 
 Тот же tracer эмитит две метрики в глобальный Meter (scope
 `github.com/exaring/otelpgx`, не `pgkit`): `db.client.operation.duration`

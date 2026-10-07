@@ -71,7 +71,7 @@ func TestInstallErrorLogging_RoutesOTelErrorsToHandler(t *testing.T) {
 	if lines[0]["level"] != "ERROR" {
 		t.Fatalf("level = %v, want ERROR", lines[0]["level"])
 	}
-	if got, _ := lines[0]["err"].(string); !strings.Contains(got, "connection refused") {
+	if got, _ := lines[0]["error"].(string); !strings.Contains(got, "connection refused") {
 		t.Fatalf("err field = %q", got)
 	}
 }

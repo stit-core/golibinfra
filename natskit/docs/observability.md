@@ -101,9 +101,9 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | Уровень | Сообщение | Когда |
 |---|---|---|
 | `error` | `natskit: async error` | Асинхронная ошибка клиента nats.go: slow consumer (поля `subject`, `dropped` — сколько сообщений потеряно), сбой drain, ошибки протокола. |
-| `warn` | `natskit: disconnected` | Разрыв соединения (не при `Close`). Поле `err` — причина, если есть. |
+| `warn` | `natskit: disconnected` | Разрыв соединения (не при `Close`). Поле `error` — причина, если есть. |
 | `info` | `natskit: reconnected` | Переподключение; поле `url` (userinfo скрыт). |
-| `error` | `natskit: connection closed, reconnects exhausted` | `NATS_MAX_RECONNECTS` исчерпан: соединение закрыто навсегда, подписки мертвы. Поля `url`, `err` (`LastError`). |
+| `error` | `natskit: connection closed, reconnects exhausted` | `NATS_MAX_RECONNECTS` исчерпан: соединение закрыто навсегда, подписки мертвы. Поля `url`, `error` (`LastError`). |
 | `info` | `natskit: dlq subject is stored in a stream` | На старте: DLQ-subject накрыт стримом `stream`, копии уйдут JetStream-публикацией с `PubAck`. |
 | `warn` | `natskit: dlq stream lookup` | Не удалось выяснить, накрыт ли DLQ-subject стримом; копии уйдут Core-публикацией. |
 | `warn` | `natskit: stream config drift` | Конфиг существующего стрима расходится с ENV (поля `stream`, `field`, `want`, `have`); кит стрим не переписывает. |
@@ -112,11 +112,11 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | `warn` | `natskit: drain timeout, closing connection` | Flush публикаций не уложился в остаток бюджета — соединение закрыто принудительно. |
 | `warn` | `natskit: jetstream consume error` | Ошибка pull-консьюмера (нет heartbeat, консьюмер удалён, соединение закрыто); поля `stream`, `subject`, `durable`. |
 | `warn` | `natskit: jetstream in-progress` | Не удалось отправить `InProgress` — сервер может переотправить сообщение раньше, чем обработчик закончит. |
-| `error` | `natskit: handler error` / `natskit: jetstream handler error` | Обработчик вернул ошибку (кроме `context.Canceled`): поля `subject`, `err`, `trace_id` спана обработки. Обработчик ошибку возвращает и сам её не логирует — запись уже есть. |
+| `error` | `natskit: handler error` / `natskit: jetstream handler error` | Обработчик вернул ошибку (кроме `context.Canceled`): поля `subject`, `error`, `trace_id` спана обработки. Обработчик ошибку возвращает и сам её не логирует — запись уже есть. |
 | `error` | `natskit: handler panic` / `natskit: jetstream handler panic` | Паника обработчика, со стеком. |
 | `warn` | `natskit: jetstream nak error` | Не удалось вернуть сообщение на ретрай; сервер переотправит его после `AckWait`. |
-| `error` | `natskit: jetstream message dead` | Сообщение больше не ретраится (DLQ-копия сохранена, оригинал терминирован): поля `stream`, `durable`, `subject`, `stream_seq` — sequence сообщения в стриме (по нему его достают руками), `deliveries`, `reason` (`terminal`/`max-deliver`), `dlq`, `err` — причина последней попытки. |
-| `error` | `natskit: jetstream dlq publish failed, message kept for redelivery` | DLQ-публикация мёртвого сообщения не удалась: `Term` не сделан, оригинал ушёл на ределивери. Поля те же плюс `err` — ошибка публикации, `cause` — причина смерти. |
+| `error` | `natskit: jetstream message dead` | Сообщение больше не ретраится (DLQ-копия сохранена, оригинал терминирован): поля `stream`, `durable`, `subject`, `stream_seq` — sequence сообщения в стриме (по нему его достают руками), `deliveries`, `reason` (`terminal`/`max-deliver`), `dlq`, `error` — причина последней попытки. |
+| `error` | `natskit: jetstream dlq publish failed, message kept for redelivery` | DLQ-публикация мёртвого сообщения не удалась: `Term` не сделан, оригинал ушёл на ределивери. Поля те же плюс `error` — ошибка публикации, `cause` — причина смерти. |
 | `error` | `natskit: jetstream ack error` / `… term error` | Сбой подтверждения сообщения. |
 
 ## Health-probe

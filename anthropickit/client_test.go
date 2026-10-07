@@ -247,6 +247,13 @@ func TestComplete_ParsesResponseAndRecordsSignals(t *testing.T) {
 	if transport != 1 {
 		t.Errorf("otelhttp spans = %d, want 1", transport)
 	}
+	// Метрик otelhttp транспорт не пишет: http.client.request.duration в Prometheus совпало бы с
+	// http_client_request_duration_seconds httpclient (класс KOBS-01).
+	for _, name := range []string{"http.client.request.duration", "http.client.request.body.size", "http.client.response.body.size"} {
+		if got := metrics().Find(name); len(got) != 0 {
+			t.Errorf("otelhttp metric %s emitted: %v", name, got)
+		}
+	}
 	if kit == nil {
 		t.Fatal("no anthropic.messages span")
 	}

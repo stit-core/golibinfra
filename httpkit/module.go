@@ -173,7 +173,7 @@ func serve(in serveIn) {
 			log.Info(ctx, "http server listening", "addr", s.Addr().String())
 			go func() { //nolint:gosec // горутина сервера живёт дольше ctx OnStart; фоновый ctx только для терминального лога
 				if err := s.Serve(); err != nil {
-					log.Error(context.Background(), "http server stopped", "err", err)
+					log.Error(context.Background(), "http server stopped", "error", err)
 					// Упавший listener — не «работающий» сервис: fx должен погасить приложение.
 					_ = sd.Shutdown(fx.ExitCode(1))
 				}

@@ -367,12 +367,29 @@ func TestStorage_EmitsMetrics(t *testing.T) {
 	if err := st.Delete(ctx, ref.Key); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	if _, err := st.Stat(ctx, "missing.png"); err == nil {
-		t.Fatal("Stat of a missing key must fail")
+	// KOBS-09: отсутствующий ключ — not_found, а не error; ошибка операции — error.
+	if _, err := st.Stat(ctx, "missing.png"); !errors.Is(err, storagekit.ErrNotFound) {
+		t.Fatalf("Stat of a missing key = %v, want ErrNotFound", err)
+	}
+	if _, _, err := st.Get(ctx, "missing.png"); !errors.Is(err, storagekit.ErrNotFound) {
+		t.Fatalf("Get of a missing key = %v, want ErrNotFound", err)
+	}
+	if err := st.Delete(ctx, ""); err == nil {
+		t.Fatal("Delete without a key must fail")
 	}
 	d := metrictest.Collect(t).Sub(before)
 
-	for _, k := range [][2]string{{"put", "ok"}, {"get", "ok"}, {"stat", "ok"}, {"presign_get", "ok"}, {"presign_put", "ok"}, {"delete", "ok"}, {"stat", "error"}} {
+	for _, k := range [][2]string{
+		{"put", "ok"},
+		{"get", "ok"},
+		{"stat", "ok"},
+		{"presign_get", "ok"},
+		{"presign_put", "ok"},
+		{"delete", "ok"},
+		{"stat", "not_found"},
+		{"get", "not_found"},
+		{"delete", "error"},
+	} {
 		if got := d.Get(t, "storage_ops_total", "op", k[0], "result", k[1]); got.Kind != metrictest.Counter || got.Value != 1 {
 			t.Errorf("storage_ops_total: %v (%s), want counter delta 1", got, got.Kind)
 		}

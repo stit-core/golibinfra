@@ -17,6 +17,7 @@ import (
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
+	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
@@ -96,7 +97,9 @@ func New(cfg Config, log logkit.Logger, opts ...Option) (*Client, error) {
 // ограничивает.
 const responseHeaderTimeout = 10 * time.Minute
 
-// tracedHTTPClient оборачивает транспорт в otelhttp — SDK сам спанов не ведёт.
+// tracedHTTPClient оборачивает транспорт в otelhttp — SDK сам спанов не ведёт. Метрики otelhttp
+// выключены: `http.client.request.duration` в Prometheus совпало бы с гистограммой httpclient, свои
+// метрики вызова — anthropic_api_*.
 func tracedHTTPClient(base *http.Client) *http.Client {
 	hc := http.Client{}
 	if base != nil {
@@ -106,7 +109,7 @@ func tracedHTTPClient(base *http.Client) *http.Client {
 	if rt == nil {
 		rt = defaultTransport()
 	}
-	hc.Transport = otelhttp.NewTransport(rt)
+	hc.Transport = otelhttp.NewTransport(rt, otelhttp.WithMeterProvider(metricnoop.NewMeterProvider()))
 	return &hc
 }
 

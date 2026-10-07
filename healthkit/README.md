@@ -104,7 +104,7 @@ health-loop `grpckit` зовут пробы в своих горутинах, г
 
 Своих метрик и спанов у кита нет. Результат проб виден в `httpkit`: код ответа
 `/ready`, тело со статусом каждой пробы по имени и warn-лог
-`readiness probe failed` с полями `probe` (значение `Probe.Name`) и `err`; panic
+`readiness probe failed` с полями `probe` (значение `Probe.Name`) и `error`; panic
 пробы — error-лог `readiness probe panicked` с `probe`, `panic` и `stack`.
 
 ## Инварианты

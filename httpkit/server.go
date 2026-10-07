@@ -404,7 +404,7 @@ func (s *Server) Stop(ctx context.Context) error {
 		return fmt.Errorf("httpkit: close: %w", err)
 	}
 	s.log.Warn(ctx, "http server stop deadline: requests cancelled, connections closed",
-		"requests", inflight, "err", err)
+		"requests", inflight, "error", err)
 	return nil
 }
 
@@ -422,7 +422,7 @@ func (s *Server) transformError(hc huma.Context, _ string, v any) (any, error) {
 			kv = append(kv, "operation", op.OperationID)
 		}
 		if e.cause != nil {
-			kv = append(kv, "err", e.cause)
+			kv = append(kv, "error", e.cause)
 		}
 		s.log.Error(ctx, "handler error", kv...)
 	}
@@ -487,7 +487,7 @@ func (h logkitHandler) Enabled(ctx context.Context, l slog.Level) bool {
 }
 
 func (h logkitHandler) Handle(ctx context.Context, r slog.Record) error {
-	h.log.Warn(ctx, "http server error", "err", r.Message)
+	h.log.Warn(ctx, "http server error", "error", r.Message)
 	return nil
 }
 

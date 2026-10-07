@@ -94,7 +94,7 @@ func runProbes(ctx context.Context, log logkit.Logger, timeout time.Duration, pr
 				log.Error(ctx, "readiness probe panicked", "probe", p.Name, "panic", panicked.Value, "stack", string(panicked.Stack))
 			case err != nil:
 				statuses[i].Status = "down"
-				log.Warn(ctx, "readiness probe failed", "probe", p.Name, "err", err)
+				log.Warn(ctx, "readiness probe failed", "probe", p.Name, "error", err)
 			}
 		})
 	}

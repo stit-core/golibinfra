@@ -1,10 +1,15 @@
 package authnkit_test
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/pquerna/otp/totp"
+
 	"git.stit.tech/stit-core/golibinfra/authnkit"
+	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
@@ -72,4 +77,56 @@ func TestMetricsEmitted(t *testing.T) {
 	if got := d.Find("authn_totp_verifications_total"); len(got) == 0 {
 		t.Error("metric authn_totp_verifications_total not emitted")
 	}
+}
+
+// Регрессия KDOC-05: authn_totp_verifications_total — одна запись итога на вызов Verify/VerifyOnce:
+// повтор принятого кода — replay, а не ok и replay; сбой хранилища — store_error без ok.
+func TestTOTPMetric_OneRecordPerCall(t *testing.T) {
+	ctx := t.Context()
+	now := time.Unix(1_700_000_000, 0)
+	clock := clockkit.NewFixed(now)
+	gen, err := authnkit.NewTOTP(authnkit.TOTPConfig{Issuer: "t"}, authnkit.WithClock(clock))
+	if err != nil {
+		t.Fatalf("NewTOTP: %v", err)
+	}
+	const secret = "JBSWY3DPEHPK3PXP"
+	code, err := totp.GenerateCode(secret, now)
+	if err != nil {
+		t.Fatalf("GenerateCode: %v", err)
+	}
+	wrong := "000000"
+	if code == wrong {
+		wrong = "111111"
+	}
+	store := authnkit.NewMemoryUsedCodeStore(authnkit.WithClock(clock))
+
+	before := metrictest.Collect(t)
+	for _, call := range []func() (bool, error){
+		func() (bool, error) { return gen.VerifyOnce(ctx, secret, code, store) },           // ok
+		func() (bool, error) { return gen.VerifyOnce(ctx, secret, code, store) },           // replay
+		func() (bool, error) { return gen.VerifyOnce(ctx, secret, wrong, store) },          // invalid
+		func() (bool, error) { return gen.VerifyOnce(ctx, secret, code, downCodeStore{}) }, // store_error
+		func() (bool, error) { return gen.Verify(ctx, secret, code) },                      // ok: Verify без однократности
+		func() (bool, error) { return gen.Verify(ctx, "not base32 !", code) },              // secret_invalid
+	} {
+		_, _ = call()
+	}
+	d := metrictest.Collect(t).Sub(before)
+	var total float64
+	for result, want := range map[string]float64{"ok": 2, "replay": 1, "invalid": 1, "store_error": 1, "secret_invalid": 1} {
+		got := d.Value("authn_totp_verifications_total", "result", result)
+		total += got
+		if got != want {
+			t.Errorf("result=%s: %v, want %v (all: %v)", result, got, want, d.Find("authn_totp_verifications_total"))
+		}
+	}
+	if total != 6 {
+		t.Errorf("records: %v, want one per call (6)", total)
+	}
+}
+
+type downCodeStore struct{}
+
+func (downCodeStore) MarkUsed(context.Context, string, time.Duration) (bool, error) {
+	return false, errors.New("store down")
 }

@@ -89,16 +89,9 @@ API не было.
 `http.response.status_code`), дочерний спану кита; trace-context уходит в
 заголовках запроса.
 
-Тот же транспорт эмитит собственные метрики otelhttp — их имена и labels
-задаёт `go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp`, не кит:
-
-| Метрика | Labels |
-|---|---|
-| `http.client.request.duration` | `server.address`, `server.port`, `url.scheme`, `http.request.method`, `http.response.status_code` |
-| `http.client.request.body.size` | те же |
-
-Их бакеты и семантика — вне контроля кита; для «своих» дашбордов используйте
-`anthropic_api_*`.
+Метрик otelhttp транспорт не эмитит (`MeterProvider` otelhttp — noop): его
+`http.client.request.duration` в Prometheus совпало бы с
+`http_client_request_duration_seconds` кита `httpclient`. Метрики вызова — `anthropic_api_*`.
 
 ## Логи
 

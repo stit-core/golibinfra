@@ -298,21 +298,21 @@ func authError(ctx context.Context, log logkit.Logger, failures []error) *APIErr
 	var apiErr *APIError
 	for _, err := range failures {
 		if errors.Is(err, ErrAuthUnavailable) {
-			log.Warn(ctx, "auth backend unavailable", "err", err)
+			log.Warn(ctx, "auth backend unavailable", "error", err)
 			return Unavailable("AUTH_UNAVAILABLE", "")
 		}
 	}
 	for _, err := range failures {
 		if errors.As(err, &apiErr) {
 			if apiErr.Status >= http.StatusInternalServerError {
-				log.Error(ctx, "auth failed", "err", err, "code", apiErr.Code)
+				log.Error(ctx, "auth failed", "error", err, "code", apiErr.Code)
 			} else {
-				log.Debug(ctx, "auth rejected", "err", err, "code", apiErr.Code)
+				log.Debug(ctx, "auth rejected", "error", err, "code", apiErr.Code)
 			}
 			return apiErr
 		}
 	}
-	log.Debug(ctx, "auth rejected", "err", errors.Join(failures...))
+	log.Debug(ctx, "auth rejected", "error", errors.Join(failures...))
 	return Unauthorized(codeUnauthorized, "unauthorized")
 }
 

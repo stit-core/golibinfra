@@ -217,7 +217,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 		instr.idempotency.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
 	}
 	storeFailed := func(ctx context.Context, op string, err error) {
-		log.Warn(ctx, "idempotency store failed", "op", op, "err", err, "fail_closed", cfg.FailClosed)
+		log.Warn(ctx, "idempotency store failed", "op", op, "error", err, "fail_closed", cfg.FailClosed)
 	}
 	unavailable := func(ctx context.Context, w http.ResponseWriter, op string, err error) bool {
 		storeFailed(ctx, op, err)

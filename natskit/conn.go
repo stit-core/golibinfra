@@ -171,17 +171,17 @@ func (c *Conn) CloseContext(ctx context.Context) {
 
 	for _, s := range subs {
 		if err := s.request(true); err != nil {
-			c.log.Warn(ctx, "natskit: subscription drain", "subject", s.subject, "err", err)
+			c.log.Warn(ctx, "natskit: subscription drain", "subject", s.subject, "error", err)
 		}
 	}
 	for _, s := range subs {
 		if err := s.wait(ctx); err != nil {
-			c.log.Warn(ctx, "natskit: subscription drain", "subject", s.subject, "err", err)
+			c.log.Warn(ctx, "natskit: subscription drain", "subject", s.subject, "error", err)
 		}
 	}
 	if err := c.inflight.wait(ctx); err != nil {
 		c.log.Warn(ctx, "natskit: drain timeout, handlers still in flight",
-			"inflight", c.inflight.count(), "err", err)
+			"inflight", c.inflight.count(), "error", err)
 		c.cancelHandlers()
 	}
 
@@ -236,7 +236,7 @@ func (c *Conn) isClosing() bool {
 }
 
 func (c *Conn) onAsyncError(_ *nats.Conn, sub *nats.Subscription, err error) {
-	kv := []any{"err", err}
+	kv := []any{"error", err}
 	if sub != nil {
 		kv = append(kv, "subject", sub.Subject)
 		if dropped, derr := sub.Dropped(); derr == nil {
@@ -252,7 +252,7 @@ func (c *Conn) onDisconnect(_ *nats.Conn, err error) {
 	}
 	kv := []any{"url", c.url}
 	if err != nil {
-		kv = append(kv, "err", err)
+		kv = append(kv, "error", err)
 	}
 	c.log.Warn(context.Background(), "natskit: disconnected", kv...)
 }
@@ -275,7 +275,7 @@ func (c *Conn) onClosed(nc *nats.Conn) {
 	kv := []any{"url", c.url}
 	if nc != nil {
 		if err := nc.LastError(); err != nil {
-			kv = append(kv, "err", err)
+			kv = append(kv, "error", err)
 		}
 	}
 	c.log.Error(context.Background(), "natskit: connection closed, reconnects exhausted", kv...)

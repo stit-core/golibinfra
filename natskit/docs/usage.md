@@ -450,7 +450,7 @@ sub, err := bus.Subscribe(ctx, "orders.>", func(ctx context.Context, payload []b
 ## Обработка ошибок и паник
 
 - Обработчик вернул ошибку: кит пишет `error`-запись `natskit: handler error` /
-  `natskit: jetstream handler error` с `subject`, `err` и `trace_id` (кроме
+  `natskit: jetstream handler error` с `subject`, `error` и `trace_id` (кроме
   `context.Canceled`) — обработчик ту же ошибку в лог не пишет. Core: сообщение
   уже сконсюмлено; JetStream: `NakWithDelay` с растущей задержкой (ретрай).
 - Обработчик вернул ошибку, обёрнутую `natskit.ErrTerminal`: JetStream — DLQ +

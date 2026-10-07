@@ -117,6 +117,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   пакетной переменной из функции держит ревью. Запись в тестах проверяет `testkit/metrictest` —
   кит через провайдер процесса (`Collect`), код с переданным `Meter` — через `NewProvider`;
   глобальный `MeterProvider` тест не ставит.
+- Ключ ошибки в записи лога — `error` (так пишет и `FxLogger`): запрос по одному ключу видит все
+  киты; `TestLogErrorKeyIsError` (`logkit`) ловит литерал `"err"` аргументом вызова и в `[]any`.
 - **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
   business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 - Гистограммы длительности — в секундах, `WithUnit("s")` + общие границы

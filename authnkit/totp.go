@@ -85,22 +85,26 @@ func (g *TOTPGenerator) Generate(accountName string) (secret, otpauthURL string,
 // Verify проверяет код в окне ±Skew. Нечитаемый секрет → ошибка (не «код
 // неверен»). От повторного ввода того же кода не защищает — см. VerifyOnce.
 func (g *TOTPGenerator) Verify(ctx context.Context, secret, code string) (bool, error) {
-	ok, err := totp.ValidateCustom(code, secret, g.clock.Now().UTC(), totp.ValidateOpts{
+	result, ok, err := g.validate(secret, code)
+	g.instr.recordTOTP(ctx, result)
+	return ok, err
+}
+
+// validate — код в окне ±Skew, без метрики: её пишут Verify и VerifyOnce одной записью итога.
+func (g *TOTPGenerator) validate(secret, code string) (result string, ok bool, err error) {
+	valid, err := totp.ValidateCustom(code, secret, g.clock.Now().UTC(), totp.ValidateOpts{
 		Period:    uint(TOTPPeriod / time.Second),
 		Skew:      g.skew,
 		Digits:    otp.DigitsSix,
 		Algorithm: otp.AlgorithmSHA1,
 	})
-	if err != nil {
-		g.instr.recordTOTP(ctx, "secret_invalid")
-		return false, fmt.Errorf("authnkit: totp verify: %w", err)
+	switch {
+	case err != nil:
+		return "secret_invalid", false, fmt.Errorf("authnkit: totp verify: %w", err)
+	case !valid:
+		return "invalid", false, nil
 	}
-	if !ok {
-		g.instr.recordTOTP(ctx, "invalid")
-		return false, nil
-	}
-	g.instr.recordTOTP(ctx, "ok")
-	return true, nil
+	return "ok", true, nil
 }
 
 // UsedCodeStore — однократность принятого TOTP-кода: MarkUsed возвращает false,
@@ -115,20 +119,24 @@ type UsedCodeStore interface {
 // своего окна, отвергается (false, nil). Ошибка store → (false, error):
 // решение «пускать или нет» при недоступном хранилище остаётся за потребителем.
 func (g *TOTPGenerator) VerifyOnce(ctx context.Context, secret, code string, store UsedCodeStore) (bool, error) {
-	ok, err := g.Verify(ctx, secret, code)
-	if err != nil || !ok {
-		return false, err
+	result, ok, err := g.validate(secret, code)
+	if ok {
+		result, ok, err = g.markUsed(ctx, secret, code, store)
 	}
+	g.instr.recordTOTP(ctx, result)
+	return ok, err
+}
+
+// markUsed — однократность принятого кода; повтор в своём окне — replay.
+func (g *TOTPGenerator) markUsed(ctx context.Context, secret, code string, store UsedCodeStore) (result string, ok bool, err error) {
 	fresh, err := store.MarkUsed(ctx, usedCodeKey(secret, code), g.codeLifetime())
-	if err != nil {
-		g.instr.recordTOTP(ctx, "store_error")
-		return false, fmt.Errorf("authnkit: totp used-code store: %w", err)
+	switch {
+	case err != nil:
+		return "store_error", false, fmt.Errorf("authnkit: totp used-code store: %w", err)
+	case !fresh:
+		return "replay", false, nil
 	}
-	if !fresh {
-		g.instr.recordTOTP(ctx, "replay")
-		return false, nil
-	}
-	return true, nil
+	return "ok", true, nil
 }
 
 // codeLifetime — сколько код остаётся валидным: своё окно плюс ±Skew соседних.

@@ -133,7 +133,7 @@ func (e *Engine) Run(ctx context.Context) error {
 	case errors.Is(ctx.Err(), context.Canceled):
 		// Graceful stop посреди тика — не сбой синка: курсор сохранён, catch-up
 		// продолжится со следующего запуска. Дедлайн тика (Timeout) — сбой.
-		e.log.Debug(ctx, "sync tick cancelled", "err", err)
+		e.log.Debug(ctx, "sync tick cancelled", "error", err)
 		return nil
 	default:
 		e.instr.recordError(ctx)

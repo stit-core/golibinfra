@@ -96,7 +96,7 @@ Instrumentation-scope `git.stit.tech/stit-core/golibinfra/cachekit`, глоба�
 |---|---|---|---|
 | `cache_commands_total` | Int64 Counter | `cmd`, `result` | Команды по имени; `result` — `ok`, `miss` (`redis.Nil`), `error` |
 | `cache_command_duration_seconds` | Float64 Histogram (`s`) | `cmd` | Round-trip команды; общие бакеты длительности |
-| спан `redis <cmd>` | Client span | `db.system=redis`, `db.operation`, `db.redis.batch_size` (пайплайн) | Латентность Redis внутри трейса запроса; статус `Error` на ошибке, `redis.Nil` — не ошибка |
+| спан `redis <cmd>` | Client span | `db.system.name=redis`, `db.operation.name` (= `cmd`), `db.operation.batch.size` (пайплайн от двух команд) — semconv v1.41, как у natskit и httpclient | Латентность Redis внутри трейса запроса; статус `Error` на ошибке, `redis.Nil` — не ошибка |
 
 `cmd` — имя команды go-redis: `get`, `set` (и `Set`, и `SetNX`), `getdel`,
 `unlink` (`Delete`), `evalsha`/`eval` (`SetWithTags`, `CompareAndDelete`,

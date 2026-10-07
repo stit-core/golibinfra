@@ -193,7 +193,7 @@ func (b *jsBus) dlqCoveredByStream(ctx context.Context) bool {
 	name, err := b.js.StreamNameBySubject(ctx, b.dlqSubject)
 	if err != nil {
 		if !errors.Is(err, jetstream.ErrStreamNotFound) {
-			b.log.Warn(ctx, "natskit: dlq stream lookup", "subject", b.dlqSubject, "err", err)
+			b.log.Warn(ctx, "natskit: dlq stream lookup", "subject", b.dlqSubject, "error", err)
 		}
 		return false
 	}
@@ -499,7 +499,7 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 			}()
 		}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
 			b.log.Warn(context.Background(), "natskit: jetstream consume error",
-				"stream", stream, "subject", subject, "durable", durable, "err", err)
+				"stream", stream, "subject", subject, "durable", durable, "error", err)
 		}))
 		if err != nil {
 			return nil, fmt.Errorf("natskit: jetstream consume: %w", err)
@@ -542,7 +542,7 @@ func (b *jsBus) handleStreamOne(sc streamConsumer, msg jetstream.Msg, handler Ha
 		span.SetStatus(codes.Error, handlerErr.Error())
 		status = b.failStream(ctx, sc, msg, handlerErr, panicked)
 	} else if err := msg.Ack(); err != nil {
-		b.log.Error(ctx, "natskit: jetstream ack error", "subject", subject, "err", err)
+		b.log.Error(ctx, "natskit: jetstream ack error", "subject", subject, "error", err)
 	}
 
 	b.instr.consumedTotal.Add(ctx, 1,
@@ -577,7 +577,7 @@ func (b *jsBus) keepInProgress(ctx context.Context, msg jetstream.Msg, subject s
 				}
 				if !warned {
 					warned = true
-					b.log.Warn(ctx, "natskit: jetstream in-progress", "subject", subject, "err", err)
+					b.log.Warn(ctx, "natskit: jetstream in-progress", "subject", subject, "error", err)
 				}
 			}
 		}
@@ -612,22 +612,22 @@ func (b *jsBus) failStream(ctx context.Context, sc streamConsumer, msg jetstream
 			b.log.Error(ctx, "natskit: jetstream dlq publish failed, message kept for redelivery",
 				"stream", sc.stream, "durable", sc.durable, "subject", subject, "stream_seq", streamSeq,
 				"deliveries", deliveries, "reason", reason, "dlq", b.dlqSubject,
-				"err", err, "cause", cause)
+				"error", err, "cause", cause)
 			b.nak(ctx, msg, subject, deliveries)
 			return "dlq_error"
 		}
 		b.log.Error(ctx, "natskit: jetstream message dead",
 			"stream", sc.stream, "durable", sc.durable, "subject", subject, "stream_seq", streamSeq,
-			"deliveries", deliveries, "reason", reason, "dlq", b.dlqSubject, "err", cause)
+			"deliveries", deliveries, "reason", reason, "dlq", b.dlqSubject, "error", cause)
 		if err := msg.TermWithReason(truncate(headerValue(cause.Error()), maxTermReasonLen)); err != nil {
-			b.log.Error(ctx, "natskit: jetstream term error", "subject", subject, "err", err)
+			b.log.Error(ctx, "natskit: jetstream term error", "subject", subject, "error", err)
 		}
 		return "dead"
 	}
 
 	b.nak(ctx, msg, subject, deliveries)
 	if !panicked && !errors.Is(cause, context.Canceled) {
-		b.log.Error(ctx, "natskit: jetstream handler error", "subject", subject, "err", cause)
+		b.log.Error(ctx, "natskit: jetstream handler error", "subject", subject, "error", cause)
 	}
 	if panicked {
 		return "panic"
@@ -645,7 +645,7 @@ func (b *jsBus) nak(ctx context.Context, msg jetstream.Msg, subject string, deli
 		err = msg.Nak()
 	}
 	if err != nil {
-		b.log.Warn(ctx, "natskit: jetstream nak error", "subject", subject, "err", err)
+		b.log.Warn(ctx, "natskit: jetstream nak error", "subject", subject, "error", err)
 	}
 }
 

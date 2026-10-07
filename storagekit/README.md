@@ -183,7 +183,7 @@ virtual-hosted), ставьте `STORAGE_S3_URL_STYLE=virtual`, иначе ба�
 
 | Метрика | Тип | Labels | Что |
 |---|---|---|---|
-| `storage_ops_total` | counter | `op` (`put` / `get` / `stat` / `delete` / `presign_get` / `presign_put`), `result` (`ok` / `error`) | операции по исходу |
+| `storage_ops_total` | counter | `op` (`put` / `get` / `stat` / `delete` / `presign_get` / `presign_put`), `result` (`ok` / `not_found` — `ErrNotFound` у `get` и `stat` / `error`) | операции по исходу: проверка существования через `Stat` — `not_found`, алерт на `error` её не видит |
 | `storage_op_duration_seconds` | histogram (s) | `op` | длительность операции; границы — общие `otelkit.DurationBuckets` (0.005 … 30 s) |
 
 `MemoryStorage` метрик не эмитит. Спанов кит не эмитит; HTTP-вызовы `minio-go`

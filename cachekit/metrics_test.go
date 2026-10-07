@@ -3,6 +3,7 @@ package cachekit
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/redis/go-redis/v9"
@@ -77,8 +78,11 @@ func TestObserveHook_Spans(t *testing.T) {
 		if spans[i].SpanKind() != trace.SpanKindClient {
 			t.Errorf("span[%d] kind: got %v, want client", i, spans[i].SpanKind())
 		}
-		if !hasAttr(spans[i].Attributes(), "db.system", "redis") {
-			t.Errorf("span[%d]: db.system=redis missing: %v", i, spans[i].Attributes())
+		// semconv v1.41, как у natskit и httpclient: старые ключи db.system и db.operation не пишутся.
+		cmd := strings.TrimPrefix(want, "redis ")
+		if !hasAttr(spans[i].Attributes(), "db.system.name", "redis") || !hasAttr(spans[i].Attributes(), "db.operation.name", cmd) ||
+			hasKey(spans[i].Attributes(), "db.system") || hasKey(spans[i].Attributes(), "db.operation") {
+			t.Errorf("span[%d]: want db.system.name=redis, db.operation.name=%s and no legacy keys: %v", i, cmd, spans[i].Attributes())
 		}
 	}
 	if spans[0].Status().Code != codes.Unset || spans[1].Status().Code != codes.Unset {
@@ -87,10 +91,11 @@ func TestObserveHook_Spans(t *testing.T) {
 	if spans[2].Status().Code != codes.Error || len(spans[2].Events()) == 0 {
 		t.Errorf("failed command span: status=%v events=%d", spans[2].Status().Code, len(spans[2].Events()))
 	}
-	for _, attr := range spans[3].Attributes() {
-		if attr.Key == "db.redis.batch_size" && attr.Value.AsInt64() != 2 {
-			t.Errorf("batch_size: got %v, want 2", attr.Value.AsInt64())
-		}
+	if got := batchSize(spans[3].Attributes()); got != 2 {
+		t.Errorf("pipeline db.operation.batch.size: got %d, want 2", got)
+	}
+	if got := batchSize(spans[0].Attributes()); got != -1 {
+		t.Errorf("single command db.operation.batch.size: got %d, want none", got)
 	}
 	for _, span := range spans {
 		for _, attr := range span.Attributes() {
@@ -101,6 +106,22 @@ func TestObserveHook_Spans(t *testing.T) {
 	}
 }
 
+// Пайплайн из одной команды — не батч (semconv): db.operation.batch.size у него нет.
+func TestObserveHook_SingleCommandPipelineIsNotBatch(t *testing.T) {
+	rec := tracetest.NewSpanRecorder()
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+
+	ctx := context.Background()
+	pipeline := newObserveHook().ProcessPipelineHook(func(context.Context, []redis.Cmder) error { return nil })
+	_ = pipeline(ctx, []redis.Cmder{redis.NewStatusCmd(ctx, "ping")})
+	spans := rec.Ended()
+	if len(spans) != 1 || batchSize(spans[0].Attributes()) != -1 {
+		t.Fatalf("one-command pipeline: spans %d, db.operation.batch.size %d, want none", len(spans), batchSize(spans[0].Attributes()))
+	}
+}
+
 func hasAttr(attrs []attribute.KeyValue, key, value string) bool {
 	for _, a := range attrs {
 		if string(a.Key) == key && a.Value.AsString() == value {
@@ -108,4 +129,23 @@ func hasAttr(attrs []attribute.KeyValue, key, value string) bool {
 		}
 	}
 	return false
+}
+
+func hasKey(attrs []attribute.KeyValue, key string) bool {
+	for _, a := range attrs {
+		if string(a.Key) == key {
+			return true
+		}
+	}
+	return false
+}
+
+// batchSize — значение db.operation.batch.size, -1 — атрибута нет.
+func batchSize(attrs []attribute.KeyValue) int64 {
+	for _, a := range attrs {
+		if a.Key == "db.operation.batch.size" {
+			return a.Value.AsInt64()
+		}
+	}
+	return -1
 }

@@ -38,7 +38,7 @@ func newInstruments() *instruments {
 	m := otelkit.Meter("storagekit")
 	return &instruments{
 		ops: otelkit.Must(m.Int64Counter("storage_ops_total",
-			metric.WithDescription("Object storage operations by result"),
+			metric.WithDescription("Object storage operations by result (ok|not_found|error)"),
 		)),
 		opDuration: otelkit.Must(m.Float64Histogram("storage_op_duration_seconds",
 			metric.WithDescription("Object storage operation duration"),
@@ -48,9 +48,14 @@ func newInstruments() *instruments {
 	}
 }
 
+// observe — отсутствующий ключ — not_found, а не error: проверка существования через Stat штатна,
+// и алерт на result="error" не должен на ней шуметь.
 func (i *instruments) observe(ctx context.Context, op string, start time.Time, err error) {
 	result := "ok"
-	if err != nil {
+	switch {
+	case errors.Is(err, storagekit.ErrNotFound):
+		result = "not_found"
+	case err != nil:
 		result = "error"
 	}
 	i.opDuration.Record(ctx, time.Since(start).Seconds(), metric.WithAttributes(attribute.String("op", op)))

@@ -26,7 +26,7 @@ func Healthcheck(ctx context.Context) int {
 		return 0
 	}
 	if log, lerr := logkit.New(logkit.Config{}); lerr == nil {
-		log.Error(ctx, "healthcheck failed", "err", err)
+		log.Error(ctx, "healthcheck failed", "error", err)
 	}
 	return 1
 }

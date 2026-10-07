@@ -38,7 +38,7 @@ exemplar'ы вызывающего.
 
 | `result` | Когда |
 |---|---|
-| `ok` | код принят |
+| `ok` | код принят (у `VerifyOnce` — впервые в своём окне) |
 | `invalid` | код отвергнут |
 | `secret_invalid` | секрет не читается как base32 (порча данных, не ошибка ввода) |
 | `replay` | `VerifyOnce`: код уже был принят в своём окне |
@@ -73,7 +73,8 @@ Meter: `git.stit.tech/stit-core/golibinfra/authnkit/session`. Пишет хра�
 - `authn_jwt_verifications_total` инкрементится **только при разборе**; `Sign`
   и `SignAccess` метрик не пишут.
 - `authn_totp_verifications_total` инкрементится **только при проверке кода**
-  (ровно один раз на вызов `Verify`/`VerifyOnce`); `Generate` метрик не пишет.
+  (ровно один раз на вызов `Verify`/`VerifyOnce` — итогом: повтор кода — `replay`, а не `ok`
+  и `replay`); `Generate` метрик не пишет.
 - RBAC (`Registry`) метрик не эмитит.
 
 ## Инициализация
