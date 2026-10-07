@@ -137,17 +137,31 @@ func TestNewConn_AuthFiles(t *testing.T) {
 	}
 }
 
-// Пароль NATS_URL не попадает в ошибку старта — и у адреса без схемы, и у неразбираемого URL.
+// Пароль NATS_URL не попадает в ошибку старта — ни у адреса без схемы, ни у неразбираемого URL, ни
+// у пароля с `#`, `?` и `цифры/`, который разбор читает как фрагмент, query, порт и путь: что
+// пропустит Validate, проверяет ошибка NewConn (B1 валидатора C).
 func TestConn_ErrorsHideURLSecret(t *testing.T) {
-	cfg := clientConfig("app:" + testPassword + "@127.0.0.1:1")
-	cfg.ConnectTimeout = time.Second
-	if _, err := natskit.NewConn(cfg, nil); err == nil || strings.Contains(err.Error(), testPassword) ||
-		!strings.Contains(err.Error(), "xxxxx@127.0.0.1:1") {
-		t.Fatalf("NewConn error = %v, want the address without the password", err)
+	for _, raw := range []string{
+		"app:" + testPassword + "@127.0.0.1:1",
+		"nats://app:" + testPassword + "%zz@127.0.0.1:1",
+		"nats://app:" + testPassword + "#tail@127.0.0.1:1",
+		"nats://app:" + testPassword + "?tail@127.0.0.1:1",
+		"nats://app:12/" + testPassword + "@127.0.0.1:1",
+		"app:" + testPassword + "#tail@127.0.0.1:1",
+	} {
+		cfg := clientConfig(raw)
+		cfg.ConnectTimeout = 300 * time.Millisecond
+		err := cfg.Validate()
+		if err == nil {
+			_, err = natskit.NewConn(cfg, nil)
+		}
+		if err == nil || strings.Contains(err.Error(), testPassword) || strings.Contains(err.Error(), "tail") ||
+			!strings.Contains(err.Error(), "xxxxx@127.0.0.1:1") {
+			t.Errorf("NATS_URL %q: error = %v, want the address without the password", raw, err)
+		}
 	}
-	cfg.URL = "nats://app:" + testPassword + "%zz@nats:4222"
-	if err := cfg.Validate(); !errors.Is(err, natskit.ErrConfig) || strings.Contains(err.Error(), testPassword) ||
-		strings.Contains(err.Error(), "%zz") {
-		t.Fatalf("Validate error = %v, want ErrConfig without the password", err)
+	// `@` после хоста — хвост пароля с `/`: отказ конфига, а не подключение к хосту из имени.
+	if err := clientConfig("nats://app:12/" + testPassword + "@127.0.0.1:1").Validate(); !errors.Is(err, natskit.ErrConfig) {
+		t.Errorf("Validate of a password with a slash = %v, want ErrConfig", err)
 	}
 }

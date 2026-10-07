@@ -227,6 +227,10 @@ func validateURL(raw string) error {
 		if u.Host == "" {
 			return fmt.Errorf("%w: NATS_URL %q: host is empty", ErrConfig, redactURL(raw))
 		}
+		// `@` в пути — хвост пароля с `/`, который разбор принял за порт и путь: подключение ушло бы не туда.
+		if strings.Contains(u.Path, "@") {
+			return fmt.Errorf("%w: NATS_URL %q: '@' after the host: percent-encode the password", ErrConfig, redactURL(raw))
+		}
 	}
 	return nil
 }

@@ -136,3 +136,50 @@ func TestTrace_NoURLSecretsInSpansAndErrors(t *testing.T) {
 		t.Errorf("upstream traceparent %q, want the attempt span %s as parent", tp, attemptID)
 	}
 }
+
+// Формы пароля и токена, которые доходят до Do и Stream: userinfo с `@`, хвост пароля с `#` или
+// `/` после цифр (разбор читает их как порт и фрагмент или путь) и токен в query — ни в ошибке, ни в
+// спане (B1 и C1 валидатора C).
+func TestClient_ErrorsHideURLSecretForms(t *testing.T) {
+	rec := spanRecorder(t)
+	c := newTestClient(t, Config{})
+	for _, raw := range []string{
+		"http://u:PWx@secret@127.0.0.1:1/x",
+		"http://u:123#PWxsecret@127.0.0.1:1/x",
+		"http://u:12/PWxsecret@127.0.0.1:1/x",
+		"http://127.0.0.1:1/x?access_token=PWxsecret",
+	} {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, raw, nil)
+		if err != nil {
+			t.Fatalf("NewRequest(%q): %v", raw, err)
+		}
+		if _, err := c.Do(req); err == nil || strings.Contains(err.Error(), "PWx") || strings.Contains(err.Error(), "secret") ||
+			!strings.Contains(err.Error(), "127.0.0.1:1/") {
+			t.Errorf("Do(%q) error = %v, want one without the secret, with the address", raw, err)
+		}
+		sreq, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, raw, nil)
+		if _, err := c.Stream(sreq); err == nil || strings.Contains(err.Error(), "PWx") || strings.Contains(err.Error(), "secret") {
+			t.Errorf("Stream(%q) error = %v, want one without the secret", raw, err)
+		}
+	}
+	// Хост и путь запроса остаются: маска пути — только до последнего `@`.
+	req, _ := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://127.0.0.1:1/calendars/a@b.com/events", nil)
+	if _, err := c.Do(req); err == nil || !strings.Contains(err.Error(), `"http://127.0.0.1:1/xxxxx@b.com/events"`) {
+		t.Errorf("Do error = %v, want the host and the path after the last @", err)
+	}
+	for _, s := range rec.Ended() {
+		var dump strings.Builder
+		dump.WriteString(s.Name() + " " + s.Status().Description)
+		for _, a := range s.Attributes() {
+			dump.WriteString(" " + string(a.Key) + "=" + a.Value.String())
+		}
+		for _, ev := range s.Events() {
+			for _, a := range ev.Attributes {
+				dump.WriteString(" " + a.Value.String())
+			}
+		}
+		if strings.Contains(dump.String(), "PWx") || strings.Contains(dump.String(), "secret") {
+			t.Errorf("span keeps a secret: %s", dump.String())
+		}
+	}
+}

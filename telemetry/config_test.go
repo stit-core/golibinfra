@@ -128,12 +128,21 @@ func TestHeaders_Decode(t *testing.T) {
 	}
 }
 
-// Креды из OTLP-endpoint'а не попадают в текст ошибки конфига.
+// Креды из OTLP-endpoint'а не попадают в текст ошибки конфига — и у пароля с `%`, `#`, `?`, который
+// разбор читает как escape, фрагмент или query (B1 валидатора C).
 func TestConfig_EndpointErrorHidesSecret(t *testing.T) {
-	for _, endpoint := range []string{"otlp://user:s3cret@collector:4318", "https://user:s3cr%zz@collector:4318"} {
+	for _, endpoint := range []string{
+		"otlp://user:PWxsecret@collector:4318",
+		"https://user:PWx%zzsecret@collector:4318",
+		"https://user:PWx#secret@collector:4318",
+		"https://user:PWx?secret@collector:4318",
+		"https://user:12/PWxsecret@collector:4318",
+		"http://user:PWxsecret@collector:4318", // токен к http не на loopback: ошибка тоже без пароля
+	} {
 		c := validConfig()
-		c.OTLPEndpoint = endpoint
-		if err := c.Validate(); !errors.Is(err, ErrConfig) || strings.Contains(err.Error(), "s3cr") || !strings.Contains(err.Error(), "xxxxx@collector") {
+		c.OTLPEndpoint, c.OTLPBearerToken = endpoint, "t"
+		if err := c.Validate(); !errors.Is(err, ErrConfig) || strings.Contains(err.Error(), "PWx") || strings.Contains(err.Error(), "secret") ||
+			!strings.Contains(err.Error(), "xxxxx@collector") {
 			t.Errorf("Validate(%q) = %v, want ErrConfig with the redacted endpoint", endpoint, err)
 		}
 	}
@@ -247,6 +256,8 @@ func TestValidate_InsecureToken(t *testing.T) {
 		"token to localhost":           {endpoint: "http://localhost:4318", token: "t"},
 		"token to 127.0.0.1":           {endpoint: "http://127.0.0.1:4318", token: "t"},
 		"token to ::1":                 {endpoint: "http://[::1]:4318", token: "t"},
+		"token to localhost.evil.com":  {endpoint: "http://localhost.evil.com:4318", token: "t", wantErr: true},
+		"token to 127.0.0.1.nip.io":    {endpoint: "http://127.0.0.1.nip.io:4318", token: "t", wantErr: true},
 		"allowed explicitly":           {endpoint: "http://collector:4318", token: "t", allow: true},
 		"plain header to remote http":  {endpoint: "http://collector:4318", headers: Headers{"x-scope-orgid": "acme"}},
 	} {

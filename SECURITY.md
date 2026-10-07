@@ -52,9 +52,11 @@ golibinfra — общая lib, на которую завязаны бизнес
   спаны и метрики.
 - **`pgkit` / `cachekit` / `natskit` / `storagekit` / `telemetry` / `httpclient`** — инъекции и
   небезопасная сериализация, утечка креденшелов из DSN, URL и заголовков в логи, спаны и тексты
-  ошибок: userinfo и значения query URL — `xxxxx` (пароль DSN pgkit скрывает pgx), ошибки разбора
-  URL и `OTEL_EXPORTER_OTLP_HEADERS` не цитируют ввод. Путь URL остаётся как есть: секрет в пути
-  (вебхуки) — вне этой защиты. Токен OTLP (`OTEL_TOKEN`, `Authorization`) по `http://` не на
+  ошибок: у URL подключения (`NATS_URL`, `REDIS_URL`, endpoint'ы S3 и OTLP) всё от схемы до
+  последнего `@` — `xxxxx`, и у пароля с неэкранированными `#`, `?`, `/`, которые разбор читает как
+  фрагмент, query, порт и путь; значения query — `xxxxx` (пароль DSN pgkit скрывает pgx), ошибки
+  разбора URL и `OTEL_EXPORTER_OTLP_HEADERS` не цитируют ввод. У URL запроса httpclient хост и путь
+  остаются (до последнего `@` в пути — `xxxxx`): секрет в пути (вебхуки) — вне этой защиты. Токен OTLP (`OTEL_TOKEN`, `Authorization`) по `http://` не на
   loopback — ошибка старта без явного `OTEL_ALLOW_INSECURE_TOKEN`.
 
 Вне скоупа: уязвимости в upstream-зависимостях (pgx, huma, chi, otel-go и т.д.) —

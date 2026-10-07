@@ -431,7 +431,7 @@ func (c *Client) startSpan(req *http.Request, name string) (context.Context, tra
 		trace.WithAttributes(
 			semconv.HTTPRequestMethodKey.String(req.Method),
 			semconv.ServerAddress(req.URL.Hostname()),
-			semconv.URLFull(redact.URL(req.URL.String())),
+			semconv.URLFull(redact.RequestURL(req.URL.String())),
 		),
 	)
 }
@@ -454,7 +454,7 @@ func recordSpanResult(span trace.Span, resp *http.Response, err error) {
 func withoutURLSecrets(err error) error {
 	var urlErr *url.Error
 	if errors.As(err, &urlErr) {
-		urlErr.URL = redact.URL(urlErr.URL)
+		urlErr.URL = redact.RequestURL(urlErr.URL)
 	}
 	return err
 }

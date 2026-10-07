@@ -179,7 +179,8 @@ OTel-провайдеры (no-op без `MeterProvider`/`TracerProvider`).
 | `httpclient.Stream <METHOD>` | OTel span (client) | те же | Спан на весь стрим: закрывается вместе с потоком |
 | `HTTP <METHOD>` | OTel span (client) | `http.request.method`, `server.address`, `server.port`, `url.full`, `http.response.status_code` или `error.type`, `http.request.resend_count` у повтора | Дочерний спан попытки и шага редиректа — до заголовков ответа; его W3C trace-context уходит в upstream (глобальный propagator) |
 
-`url.full` — без секретов: userinfo и значения query — `xxxxx`, фрагмента нет, путь — как есть.
+`url.full` — без секретов: userinfo и значения query — `xxxxx`, фрагмента нет, путь до последнего
+`@` — `xxxxx` (так же разбор кладёт в путь хвост пароля с `/`), остальной путь — как есть.
 Длительность попытки видна в её спане, число повторов — `http_client_retry_attempts_total`.
 
 Значения `status`: код ответа (`200`, `503`), `breaker_open` при отказе открытой
@@ -248,9 +249,11 @@ var ErrConfig, ErrBreakerOpen, ErrTooManyRedirects, ErrCrossHostRedirect,
   исходящий вызов по адресу пользователя — держите для него отдельный `Client`
   (свой `NewConfigPrefixed`, `HTTPCLIENT_BREAKER_FAILURE_THRESHOLD=0`),
   валидируйте хост до вызова и не переиспользуйте клиент основных upstream'ов.
-- **Секрет — не в пути.** В спанах и в тексте ошибки (`*url.Error`) userinfo и значения query —
-  `xxxxx`, а путь остаётся как есть: токен в пути (вебхуки Slack, Telegram Bot API) уйдёт в
-  трейс — передавайте его заголовком или query.
+- **Секрет — не в пути.** В спанах и в тексте ошибки (`*url.Error`) userinfo, значения query и путь
+  до последнего `@` — `xxxxx`, остальной путь остаётся как есть: токен в пути (вебхуки Slack,
+  Telegram Bot API) уйдёт в трейс — передавайте его заголовком или query. Пароль с неэкранированным
+  `/` после цифр разбор Go читает как порт и путь: запрос уходит на хост из имени пользователя, а
+  цифры видны как `server.port` — пароль в URL запроса percent-кодируйте.
 - **`X-Request-ID`** ставится из ctx только если вызывающий не задал свой заголовок.
 - **`Close()` не обязателен** при использовании `Module` (вешает `OnStop`); при
   ручной сборке закрывайте клиент сами — он держит собственный пул соединений

@@ -147,7 +147,8 @@ func signalURL(endpoint, signalPath string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: %w", ErrConfig, redact.URL(endpoint), redact.ParseError(err))
 	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
+	// `@` в пути — хвост пароля с `/`, который разбор принял за порт и путь: экспорт ушёл бы не туда.
+	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" || strings.Contains(u.Path, "@") {
 		return "", fmt.Errorf("%w: OTEL_EXPORTER_OTLP_ENDPOINT %q: want a full URL like http(s)://host:port", ErrConfig, redact.URL(endpoint))
 	}
 	u.Path = strings.TrimRight(u.Path, "/") + "/" + signalPath

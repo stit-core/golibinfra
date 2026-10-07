@@ -27,20 +27,29 @@ func validConfig() storagekit.Config {
 }
 
 // Креды из endpoint'а и публичного URL не попадают в текст ошибки конфига — ни у URL, ни у адреса
-// без схемы, ни у неразбираемого значения.
+// без схемы, ни у неразбираемого значения, ни у пароля с `#`, `?` и `цифры/` (B1 валидатора C).
 func TestConfig_ErrorsHideURLSecrets(t *testing.T) {
-	for name, mutate := range map[string]func(*storagekit.Config){
-		"endpoint url":            func(c *storagekit.Config) { c.Endpoint = "http://AKIA:s3cret@minio:9000" },
-		"endpoint without scheme": func(c *storagekit.Config) { c.Endpoint = "AKIA:s3cret@minio:9000" },
-		"endpoint bad escape":     func(c *storagekit.Config) { c.Endpoint = "https://AKIA:s3cr%zz@minio:9000" },
-		"public url":              func(c *storagekit.Config) { c.PublicBaseURL = "https://u:s3cret@cdn.example.com" },
-		"public url bad escape":   func(c *storagekit.Config) { c.PublicBaseURL = "https://u:s3cr%zz@cdn.example.com" },
-	} {
-		cfg := validConfig()
-		mutate(&cfg)
-		err := cfg.Validate()
-		if !errors.Is(err, storagekit.ErrConfig) || strings.Contains(err.Error(), "s3cr") || !strings.Contains(err.Error(), "xxxxx@") {
-			t.Errorf("%s: Validate() = %v, want ErrConfig with the redacted value", name, err)
+	forms := map[string]string{
+		"plain":         "AKIA:PWxsecret",
+		"at":            "AKIA:PWx@secret",
+		"percent":       "AKIA:PWx%zzsecret",
+		"hash":          "AKIA:PWx#secret",
+		"question mark": "AKIA:PWx?secret",
+		"digits, slash": "AKIA:12/PWxsecret",
+	}
+	for form, userinfo := range forms {
+		for name, mutate := range map[string]func(*storagekit.Config){
+			"endpoint url":            func(c *storagekit.Config) { c.Endpoint = "https://" + userinfo + "@minio:9000" },
+			"endpoint without scheme": func(c *storagekit.Config) { c.Endpoint = userinfo + "@minio:9000" },
+			"public url":              func(c *storagekit.Config) { c.PublicBaseURL = "https://" + userinfo + "@cdn.example.com" },
+		} {
+			cfg := validConfig()
+			mutate(&cfg)
+			err := cfg.Validate()
+			if !errors.Is(err, storagekit.ErrConfig) || strings.Contains(err.Error(), "PWx") || strings.Contains(err.Error(), "secret") ||
+				!strings.Contains(err.Error(), "xxxxx@") {
+				t.Errorf("%s, %s: Validate() = %v, want ErrConfig with the redacted value", name, form, err)
+			}
 		}
 	}
 }

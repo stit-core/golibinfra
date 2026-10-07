@@ -11,35 +11,48 @@ import (
 // Marker — заглушка на месте секрета; её же pgx ставит на место пароля DSN.
 const Marker = "xxxxx"
 
-// URL — raw без секретов: userinfo целиком (в позиции пользователя живёт и токен), значения
-// query и фрагмент заменены, путь остаётся. Так же — у URL без схемы (`user:pass@host:port`) и у
-// неразбираемого URL: userinfo там — всё до последнего `@` перед query, пароль бывает с `/`.
+// URL — URL подключения из конфига без секретов: всё от схемы до последнего `@` (userinfo; в
+// позиции пользователя живёт и токен) — Marker, значения query — Marker, фрагмента нет, путь
+// остаётся. Разбор не нужен: пароль с неэкранированными `/`, `?`, `#` разбор читает как порт,
+// путь, query и фрагмент, а в URL подключения `@` вне userinfo не бывает. Так же — без схемы
+// (`user:pass@host:port`).
 func URL(raw string) string {
-	if !strings.Contains(raw, "://") {
+	scheme, rest, ok := strings.Cut(raw, "://")
+	if !ok {
 		if at := strings.LastIndex(raw, "@"); at >= 0 {
 			return Marker + raw[at:]
 		}
 		return raw
 	}
-	if u, err := url.Parse(raw); err == nil {
-		c := *u
-		if c.User != nil {
-			c.User = url.User(Marker)
-		}
-		c.RawQuery = maskQuery(c.RawQuery)
-		c.Fragment, c.RawFragment = "", ""
-		return c.String()
+	if at := strings.LastIndex(rest, "@"); at >= 0 {
+		rest = Marker + rest[at:]
 	}
-	scheme, rest, _ := strings.Cut(raw, "://")
 	rest, _, _ = strings.Cut(rest, "#")
-	head, query, hasQuery := strings.Cut(rest, "?")
-	if at := strings.LastIndex(head, "@"); at >= 0 {
-		head = Marker + head[at:]
+	if head, query, hasQuery := strings.Cut(rest, "?"); hasQuery {
+		rest = head + "?" + maskQuery(query)
 	}
-	if hasQuery {
-		head += "?" + maskQuery(query)
+	return scheme + "://" + rest
+}
+
+// RequestURL — URL исходящего запроса без секретов: хост и путь остаются (`server.address` и
+// маршрут спана), userinfo, который узнал разбор, и значения query — Marker, фрагмента нет. `@` в
+// пути запроса законен (`/calendars/a@b.com`), но так же разбор кладёт в путь хвост пароля с `/`:
+// путь до последнего `@` — Marker. Неразбираемый URL и `@` во фрагменте — как у URL.
+func RequestURL(raw string) string {
+	u, err := url.Parse(raw)
+	if err != nil || strings.Contains(u.Fragment, "@") {
+		return URL(raw)
 	}
-	return scheme + "://" + head
+	c := *u
+	if c.User != nil {
+		c.User = url.User(Marker)
+	}
+	if at := strings.LastIndex(c.Path, "@"); at >= 0 {
+		c.Path, c.RawPath = "/"+Marker+c.Path[at:], ""
+	}
+	c.RawQuery = maskQuery(c.RawQuery)
+	c.Fragment, c.RawFragment = "", ""
+	return c.String()
 }
 
 // maskQuery заменяет значения параметров query, имена остаются; параметр без `=` сам может быть
@@ -59,16 +72,12 @@ func maskQuery(raw string) string {
 	return strings.Join(params, "&")
 }
 
-// ParseError — ошибка разбора URL без цитаты ввода: *url.Error несёт сам URL, а неверный escape
-// и порт цитируют его куски, в том числе пароль; прочие ошибки — как есть.
+// ParseError — ошибка разбора URL без цитаты ввода: *url.Error несёт сам URL, неверный escape и
+// порт цитируют его куски, разбор go-redis — путь и номер базы, в том числе хвост пароля.
 func ParseError(err error) error {
 	var escape url.EscapeError
 	if errors.As(err, &escape) {
 		return errors.New("invalid percent-escape in URL")
 	}
-	var parse *url.Error
-	if errors.As(err, &parse) {
-		return errors.New("malformed URL")
-	}
-	return err
+	return errors.New("malformed URL")
 }

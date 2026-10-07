@@ -65,15 +65,23 @@ func TestConfig_Validate(t *testing.T) {
 	}
 }
 
-// Пароль REDIS_URL не попадает в ошибку конфига: неэкранированный `%` в пароле — частая ошибка
-// деплоя, а ошибка старта уходит в лог.
+// Пароль REDIS_URL не попадает в ошибку конфига: неэкранированный спецсимвол в пароле — частая
+// ошибка деплоя, а ошибка старта уходит в лог. Разбор читает `#`, `?` и `цифры/` в пароле как
+// фрагмент, query, порт и путь (B1 валидатора C).
 func TestConfig_ErrorHidesURLSecret(t *testing.T) {
-	cfg := validConfig()
-	cfg.URL = "redis://:s3cr%zz@cache:6379/0"
-	err := cfg.Validate()
-	if !errors.Is(err, cachekit.ErrConfig) || strings.Contains(err.Error(), "s3cr") || strings.Contains(err.Error(), "%zz") ||
-		!strings.Contains(err.Error(), `"redis://xxxxx@cache:6379/0"`) {
-		t.Fatalf("Validate() = %v, want ErrConfig with the redacted URL", err)
+	for name, userinfo := range map[string]string{
+		"percent":       ":PWx%zzsecret",
+		"hash":          "u:PWx#secret",
+		"question mark": "u:PWx?secret",
+		"digits, slash": "u:12/PWxsecret",
+	} {
+		cfg := validConfig()
+		cfg.URL = "redis://" + userinfo + "@cache:6379/0"
+		err := cfg.Validate()
+		if !errors.Is(err, cachekit.ErrConfig) || strings.Contains(err.Error(), "PWx") || strings.Contains(err.Error(), "secret") ||
+			!strings.Contains(err.Error(), `"redis://xxxxx@cache:6379/0"`) {
+			t.Errorf("%s: Validate() = %v, want ErrConfig with the redacted URL", name, err)
+		}
 	}
 }
 

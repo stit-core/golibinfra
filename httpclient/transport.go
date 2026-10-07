@@ -53,7 +53,7 @@ func (t *attemptTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	attrs := []attribute.KeyValue{
 		semconv.HTTPRequestMethodKey.String(req.Method),
 		semconv.ServerAddress(req.URL.Hostname()),
-		semconv.URLFull(redact.URL(req.URL.String())),
+		semconv.URLFull(redact.RequestURL(req.URL.String())),
 	}
 	if port, err := strconv.Atoi(req.URL.Port()); err == nil {
 		attrs = append(attrs, semconv.ServerPort(port))
