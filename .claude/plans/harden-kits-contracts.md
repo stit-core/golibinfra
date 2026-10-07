@@ -202,8 +202,30 @@ blocked-by: —
   не на loopback — https или `OTEL_ALLOW_INSECURE_TOKEN=true` (и при выключенном SDK); `AUDIT_RETENTION_DAYS`; Redis — 2× пул.
 
 ## Где мы сейчас
-Этапы 1–2 приняты; фиксы FAIL C этапа 3 (`M/validation-harden-kits-contracts-C.md`): B1 `aef5de2`, B2 `e7b9975`, N1
-`aa31589`, N2 `af105bf`, N4 — тесты в них (мутанты C: 14 RED, 3 — кода нет), N5 — этот; дальше перепроверка C, S14. Аннотация:
+Этапы 1–3 приняты. S14 на `c7ce901` — FAIL AC3, AC5 (копии экспериментов, логи, диагностика — `M/s14/`, сводка — `table.md`):
+
+| AC | Эксперимент | Итог на `c7ce901` |
+|---|---|---|
+| AC1 | goexp envempty, hcprefix; claims-A parseerr, claimsB; httpkit-a api | PASS: U4 91/91, U5, U6 13/13 и 11/11, U01; U02 — 33 тега |
+| AC2 | goexp literal; httpkit-a security, lifecycle; claims-C | PASS: U3 16/16; H20, H41; K2, T1 — отказ, C1 — без panic |
+| AC3 | fx-observability fx, fx-docker; httpkit-b exp; uniform | FAIL: KX50 40/40, KX61b, HX04 `httpkit.` — PASS; KX61 — старт; ✗ формы |
+| AC4 | correctness-security pg; fx-observability fx-docker | PASS: E09 (2,01 с, читатель 1,3 с); KX62, KX65 |
+| AC5 | correctness-security pg, outbox-nats; fx-observability obs; `-race` | FAIL: E10, E17, пакеты — PASS; KO11–KO14, KO21 — старт |
+| AC6 | correctness-security unit, redis; `-race` testkit, cachekit, httpkit | PASS: E07, E18 (ошибка, не «нет»); пакеты |
+| AC7 | httpkit-a contract, security, lifecycle | PASS: H04, H06, H07, H10, H16, H17, H35 |
+| AC8 | httpkit-a security; httpkit-b exp | PASS: H15 (утверждения), H18; HX07 — 1 вызов |
+| AC9 | correctness-security unit; матрица A; claims-C urlleak | PASS: E02–E04; 23 из 24 `leaked=false` (голый `code`); urlleak чист |
+| AC10 | correctness-security pg; `-race` bruteforcekit, bruteforcetest | PASS: E11 (10 и 10 с 20 адресов); пакеты |
+| AC11 | correctness-security unit, pg; `-race` authnkit, sessiontest | PASS: E12 3 × `ErrInvalidEntry`, E08 и E05 — по «Решениям»; пакеты |
+
+- **FAIL.** zzfo (KX61, obs) задаёт endpoint MinIO без схемы — после S13 это TLS, старт падает: эксперимент не адаптирован
+  (с `http://` — KX61, KO11–KO14, KO21 PASS, диагностика). ✗ формы: `httpkit.ContextWithClientIP` (S9) — test-хелпер в
+  ките вне исключений CLAUDE.md § Стиль, `testkit/README.md`, `/add-kit` (назвать исключением или в `handlertest`).
+- **Вне плана.** KX40–43, KX67a — второй план S1; KO15/16/18 — S2; подтест H15 `Security: [{}]` — S13; KX64 — FX-12;
+  claims-C B1 — S12, C2 — S4.
+- **Дальше** — решение дирижёра по FAIL, затем повтор fx-docker, obs, uniform и S14.
+
+Заготовка аннотации v1.4.0:
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
   log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`), поле
   без тега — ошибка `Load` (тег или `ignored:"true"`), тег на вложенной структуре — ошибка (был приставкой,
