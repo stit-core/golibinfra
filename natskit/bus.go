@@ -17,6 +17,7 @@ import (
 	"go.opentelemetry.io/otel/codes"
 	"golang.org/x/sync/semaphore"
 
+	"git.stit.tech/stit-core/golibinfra/internal/natsname"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -75,11 +76,31 @@ func (b *natsBus) Publish(ctx context.Context, subject string, payload []byte, o
 	msg, pubCtx, span := b.instr.startPublishSpan(ctx, subject, payload, po)
 
 	start := time.Now()
-	pubErr := b.conn.PublishMsg(msg)
+	pubErr := checkSubject(subject)
+	if pubErr == nil {
+		pubErr = b.conn.PublishMsg(msg)
+	}
 	b.instr.recordPublish(pubCtx, po, time.Since(start), pubErr, span)
 
 	if pubErr != nil {
 		return fmt.Errorf("natskit: publish: %w", pubErr)
+	}
+	return nil
+}
+
+// checkSubject: nats.go пропускает `a..b` и `a.*`, а сервер такую публикацию отбрасывает молча —
+// правило natsname отвечает ошибкой сразу (им же проверяет фейк natstest).
+func checkSubject(subject string) error {
+	if !natsname.Subject(subject) {
+		return fmt.Errorf("%w: %q", nats.ErrBadSubject, subject)
+	}
+	return nil
+}
+
+// checkFilter: `a.>.b` nats.go пропускает, сервер отвергает асинхронно — подписка молча пуста.
+func checkFilter(filter string) error {
+	if !natsname.Filter(filter) {
+		return fmt.Errorf("%w: %q", nats.ErrBadSubject, filter)
 	}
 	return nil
 }
@@ -95,6 +116,9 @@ func (b *natsBus) SubscribeQueue(ctx context.Context, subject, queue string, han
 func (b *natsBus) subscribe(ctx context.Context, subject, queue string, handler Handler) (Subscription, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if err := checkFilter(subject); err != nil {
+		return nil, fmt.Errorf("natskit: subscribe: %w", err)
 	}
 	return b.c.subscribe(func() (*subscription, error) {
 		s := &subscription{conn: b.c, subject: subject}

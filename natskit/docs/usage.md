@@ -58,7 +58,7 @@ type StreamBus interface {
 
 func NewStreamBus(cfg Config, conn *Conn, log logkit.Logger) (StreamBus, error)
 
-// Проверка стримов публикатора на старте; реализует StreamBus из New/Module, фейки — нет.
+// Проверка стримов публикатора на старте; реализуют StreamBus из New/Module и фейк natstest.
 type StreamChecker interface {
 	CheckStreams(ctx context.Context, filters ...string) error
 }
@@ -248,6 +248,11 @@ sub, err := natskit.SubscribeJSON(bus, ctx, "orders.created",
 	})
 ```
 
+Subject публикации — непустые токены без пробельных символов и wildcard'ов, фильтр подписки —
+непустые токены, `>` только последним: иначе `nats.ErrBadSubject` сразу (`a..b`, `a.*` в
+публикации и `a.>.b` в подписке сервер отбросил бы молча). Тем же правилом проверяет фейк
+`testkit/natstest`.
+
 ### Load-balanced подписка (queue-группа)
 
 Несколько инстансов с одним именем queue-группы делят нагрузку — каждое
@@ -337,7 +342,7 @@ for i, e := range results {
 Публикатор узнаёт об этом на старте, а не на первом событии:
 
 ```go
-if checker, ok := sb.(natskit.StreamChecker); ok { // фейки шины стримов не знают
+if checker, ok := sb.(natskit.StreamChecker); ok { // своя шина без проверки — пропуск
 	return checker.CheckStreams(ctx, "ORDERS.>") // ErrJetStreamDisabled или ErrNoStream
 }
 ```

@@ -166,8 +166,8 @@ Subject'ы инстанса объявляет `outboxkit.WithSubjects` — фи
 с именем инстанса (`natskit.ErrNoStream`) — без неё строки копились бы без `PubAck` при
 здоровом сервисе. `Bus` инстанса отвергает subject вне объявленных
 (`outboxkit.ErrSubjectNotDeclared`): его стрим старт не проверял. Без `WithSubjects` (и у
-`Module`) хук проверяет только JetStream. Шину-фейк без `StreamChecker`
-(`testkit/natstest`) хук пропускает: стримов она не знает.
+`Module`) хук проверяет только JetStream. Фейк `testkit/natstest` проверку проходит по
+объявленным стримам (`natstest.WithStream`); своя шина без `StreamChecker` хук пропускает.
 
 ## Предел payload
 
@@ -288,7 +288,7 @@ outbox-таблиц делят один JetStream-стрим, голый id ст
 должно писаться атомарно с доменным state одной транзакцией, а не отдельным
 коннектом из пула (иначе теряется смысл паттерна: запись факта и доменный коммит
 снова разъезжаются). В юнит-тестах потребителя гейт снимает маркер
-`pgkit.WithTestTx(ctx)` (его ставят фейки `testkit/pgtest`).
+`pgkit.WithTestTx(ctx)` (его ставит транзакция фейков `testkit/pgtest`).
 
 ## Ключевые решения (WHY)
 

@@ -1,19 +1,28 @@
 // Package natstest — in-memory natskit.Bus и natskit.StreamBus для тестов
 // потребителя: публикации записываются, подписчики получают их синхронно, без
-// NATS и Docker.
+// NATS и Docker; subject, имена, стримы и DLQ-петлю фейк проверяет как шина.
 package natstest
 
 import (
+	"cmp"
 	"context"
 	"errors"
+	"fmt"
+	"slices"
 	"sync"
 
 	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
+	"git.stit.tech/stit-core/golibinfra/internal/natsname"
 	"git.stit.tech/stit-core/golibinfra/natskit"
 )
 
-// Recorder — фейк шины: реализует natskit.Bus и natskit.StreamBus. Доставка
+// DefaultMaxPayload — предел тела публикации без WithMaxPayload: max_payload сервера NATS по
+// умолчанию.
+const DefaultMaxPayload = 1 << 20
+
+// Recorder — фейк шины: реализует natskit.Bus, natskit.StreamBus и natskit.StreamChecker. Доставка
 // синхронна — после Publish обработчики уже отработали, ждать нечего.
 type Recorder struct {
 	mu          sync.Mutex
@@ -22,6 +31,11 @@ type Recorder struct {
 	handlerErrs []error
 	publishErr  error
 	nextSubID   int
+
+	streams    map[string][]string // имя стрима → его subject'ы
+	dlq        string
+	maxDeliver int
+	maxPayload int
 }
 
 // Message — записанная публикация.
@@ -36,12 +50,55 @@ type Message struct {
 	JetStream     bool
 }
 
-// New создаёт пустой Recorder.
-func New() *Recorder { return &Recorder{} }
+// Option — настройка Recorder под конфиг шины сервиса.
+type Option func(*Recorder)
+
+// WithStream — стрим JetStream шины: subject'ы — как у стрима на сервере, без них — name.>, как у
+// стрима из NATS_JS_STREAM_NAMES (NATS_JS_STREAM_MANAGED). Без стримов PublishStream, SubscribeStream
+// и CheckStreams отвечают ошибкой, как JetStream без стримов.
+func WithStream(name string, subjects ...string) Option {
+	if len(subjects) == 0 {
+		subjects = []string{name + ".>"}
+	}
+	return func(r *Recorder) {
+		if r.streams == nil {
+			r.streams = map[string][]string{}
+		}
+		r.streams[name] = subjects
+	}
+}
+
+// WithDLQ — DLQ-subject шины (NATS_JS_DLQ_SUBJECT): stream-подписка с фильтром, который его
+// накрывает, — natskit.ErrConfig, как у шины. Мёртвые сообщения фейк в DLQ не публикует.
+func WithDLQ(subject string) Option {
+	return func(r *Recorder) { r.dlq = subject }
+}
+
+// WithMaxDeliver — доставки stream-сообщения, чей обработчик вернул ошибку, как NATS_JS_MAX_DELIVER:
+// ошибка, кроме обёрнутой natskit.ErrTerminal, — повторная доставка, всего не больше n. Без опции —
+// одна доставка.
+func WithMaxDeliver(n int) Option {
+	return func(r *Recorder) { r.maxDeliver = n }
+}
+
+// WithMaxPayload — предел тела публикации (max_payload сервера); без опции — DefaultMaxPayload.
+func WithMaxPayload(n int) Option {
+	return func(r *Recorder) { r.maxPayload = n }
+}
+
+// New создаёт пустой Recorder; нулевой Recorder — то же, что New без опций.
+func New(opts ...Option) *Recorder {
+	r := &Recorder{}
+	for _, opt := range opts {
+		opt(r)
+	}
+	return r
+}
 
 var (
-	_ natskit.Bus       = (*Recorder)(nil)
-	_ natskit.StreamBus = (*Recorder)(nil)
+	_ natskit.Bus           = (*Recorder)(nil)
+	_ natskit.StreamBus     = (*Recorder)(nil)
+	_ natskit.StreamChecker = (*Recorder)(nil)
 )
 
 // SetPublishError заставляет все публикации возвращать err (nil — снова успех):
@@ -123,6 +180,9 @@ func (r *Recorder) PublishStreamBatch(ctx context.Context, msgs []natskit.Stream
 func (r *Recorder) publish(ctx context.Context, subject string, payload []byte, jetStream bool, opts []natskit.PublishOption) error {
 	spec := natskit.NewPublishSpec(opts...)
 	header := spec.Headers()
+	if err := r.checkPublish(subject, payload, jetStream); err != nil {
+		return err
+	}
 
 	r.mu.Lock()
 	if err := r.publishErr; err != nil {
@@ -144,9 +204,51 @@ func (r *Recorder) publish(ctx context.Context, subject string, payload []byte, 
 	return nil
 }
 
+// checkPublish — проверки шины до публикации: subject — по правилу natskit, тело — не больше
+// max_payload, у stream-публикации — стрим, накрывающий subject.
+func (r *Recorder) checkPublish(subject string, payload []byte, jetStream bool) error {
+	switch {
+	case !natsname.Subject(subject):
+		return fmt.Errorf("natstest: publish: %w: %q", nats.ErrBadSubject, subject)
+	case len(payload) > cmp.Or(r.maxPayload, DefaultMaxPayload):
+		return fmt.Errorf("natstest: publish: %w: %d bytes, limit %d", nats.ErrMaxPayload, len(payload), cmp.Or(r.maxPayload, DefaultMaxPayload))
+	case jetStream && r.streamFor(subject) == "":
+		return fmt.Errorf("natstest: jetstream publish %q: %w", subject, jetstream.ErrNoStreamResponse)
+	}
+	return nil
+}
+
+// streamFor — объявленный стрим, чей subject накрывает subject (или фильтр) целиком; "" — такого нет.
+func (r *Recorder) streamFor(subject string) string {
+	for name, subjects := range r.streams {
+		if covers(subjects, subject) {
+			return name
+		}
+	}
+	return ""
+}
+
+func covers(subjects []string, subject string) bool {
+	return slices.ContainsFunc(subjects, func(s string) bool { return natskit.SubjectMatches(s, subject) })
+}
+
+// CheckStreams — как у шины (natskit.StreamChecker): каждый filter целиком накрыт объявленным
+// стримом, иначе natskit.ErrNoStream.
+func (r *Recorder) CheckStreams(_ context.Context, filters ...string) error {
+	for _, f := range filters {
+		if r.streamFor(f) == "" {
+			return fmt.Errorf("%w: %s", natskit.ErrNoStream, f)
+		}
+	}
+	return nil
+}
+
 // Deliver отдаёт сообщение подписчикам так, будто оно пришло из шины (публикация
-// при этом не записывается), и возвращает ошибки обработчиков.
+// при этом не записывается), и возвращает ошибки обработчиков; невалидный subject — ошибка.
 func (r *Recorder) Deliver(ctx context.Context, subject string, payload []byte, opts ...natskit.PublishOption) error {
+	if !natsname.Subject(subject) {
+		return fmt.Errorf("natstest: deliver: %w: %q", nats.ErrBadSubject, subject)
+	}
 	spec := natskit.NewPublishSpec(opts...)
 	return r.deliver(ctx, subject, payload, spec.Headers(), func(*subscription) bool { return true })
 }
@@ -172,11 +274,23 @@ func (r *Recorder) deliver(ctx context.Context, subject string, payload []byte, 
 
 	var errs []error
 	for _, s := range targets {
-		if err := s.handler(natskit.ContextWithMessage(ctx, subject, header), payload); err != nil {
+		deliveries := 1
+		if s.jetStream {
+			deliveries = max(r.maxDeliver, 1)
+		}
+		// Повтор — как ретрай JetStream: ошибка, кроме терминальной, — до maxDeliver доставок.
+		for range deliveries {
+			err := s.handler(natskit.ContextWithMessage(ctx, subject, header), payload)
+			if err == nil {
+				break
+			}
 			errs = append(errs, err)
 			r.mu.Lock()
 			r.handlerErrs = append(r.handlerErrs, err)
 			r.mu.Unlock()
+			if errors.Is(err, natskit.ErrTerminal) {
+				break
+			}
 		}
 	}
 	return errors.Join(errs...)
@@ -192,14 +306,34 @@ func (r *Recorder) SubscribeQueue(ctx context.Context, subject, queue string, ha
 	return r.subscribe(ctx, subject, queue, false, handler)
 }
 
-// SubscribeStream регистрирует stream-подписку; durable — её queue-группа.
-func (r *Recorder) SubscribeStream(ctx context.Context, _, subject, durable string, handler natskit.Handler) (natskit.Subscription, error) {
+// SubscribeStream регистрирует stream-подписку; durable — её queue-группа. Как у шины: стрим —
+// объявленный (WithStream) и накрывает фильтр, durable — имя JetStream, фильтр, накрывающий DLQ
+// (WithDLQ), — natskit.ErrConfig.
+func (r *Recorder) SubscribeStream(ctx context.Context, stream, subject, durable string, handler natskit.Handler) (natskit.Subscription, error) {
+	subjects, declared := r.streams[stream]
+	switch {
+	case !natsname.Name(durable):
+		return nil, fmt.Errorf("natstest: jetstream consumer: %w: %q", jetstream.ErrInvalidConsumerName, durable)
+	case !declared:
+		return nil, fmt.Errorf("natstest: jetstream consumer: stream %q: %w", stream, jetstream.ErrStreamNotFound)
+	case natsname.Filter(subject) && !covers(subjects, subject):
+		return nil, fmt.Errorf("natstest: jetstream consumer: filter %q is outside stream %s", subject, stream)
+	case r.dlq != "" && natskit.SubjectMatches(subject, r.dlq):
+		return nil, fmt.Errorf("%w: NATS_JS_DLQ_SUBJECT %q is matched by consumer filter %q: dead letters would loop back to the handler",
+			natskit.ErrConfig, r.dlq, subject)
+	}
 	return r.subscribe(ctx, subject, durable, true, handler)
 }
 
 func (r *Recorder) subscribe(ctx context.Context, subject, queue string, jetStream bool, handler natskit.Handler) (natskit.Subscription, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
+	}
+	if !natsname.Filter(subject) {
+		return nil, fmt.Errorf("natstest: subscribe: %w: %q", nats.ErrBadSubject, subject)
+	}
+	if !natsname.Queue(queue) {
+		return nil, fmt.Errorf("natstest: subscribe: %w: %q", nats.ErrBadQueueName, queue)
 	}
 	r.mu.Lock()
 	defer r.mu.Unlock()

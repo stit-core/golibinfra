@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
 	"testing"
 
@@ -12,6 +13,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/audittest"
+	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 )
 
 var _ auditkit.Logger = (*audittest.Recorder)(nil)
@@ -139,5 +141,29 @@ func mustLogCtx(t *testing.T, ctx context.Context, r *audittest.Recorder, e audi
 	t.Helper()
 	if err := r.Log(ctx, e); err != nil {
 		t.Errorf("Log(%s): %v", e.Action, err)
+	}
+}
+
+// Запись в транзакции фейка pgtest её откат выкидывает, как Postgres — строку audit_log; записи вне
+// транзакции и закоммиченные остаются.
+func TestRecorder_RollbackDropsEntries(t *testing.T) {
+	t.Parallel()
+	r := &audittest.Recorder{}
+	entry := func(action string) auditkit.Entry { return auditkit.Entry{Action: action, Resource: "user"} }
+	if err := r.Log(t.Context(), entry("outside")); err != nil {
+		t.Fatal(err)
+	}
+	if err := (pgtest.Identity{}).WithTx(t.Context(), func(ctx context.Context) error { return r.Log(ctx, entry("committed")) }); err != nil {
+		t.Fatal(err)
+	}
+	boom := errors.New("boom")
+	err := pgtest.Identity{}.WithTx(t.Context(), func(ctx context.Context) error {
+		if err := r.Log(ctx, entry("rolled-back")); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) || !slices.Equal(r.Actions(), []string{"outside", "committed"}) {
+		t.Fatalf("err = %v, actions = %v, want the rolled-back entry dropped", err, r.Actions())
 	}
 }

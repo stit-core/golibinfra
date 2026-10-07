@@ -236,3 +236,29 @@ func TestNewBus_RejectsZeroMaxInFlight(t *testing.T) {
 		t.Fatalf("NewBus(zero MaxInFlight) err = %v, want ErrConfig", err)
 	}
 }
+
+// Subject и фильтр, которые сервер отбросил бы молча (публикация с пустым токеном или wildcard'ом,
+// подписка с `>` не последним), — ошибка nats.ErrBadSubject сразу, по правилу, которым проверяет и
+// фейк natstest.
+func TestBus_RejectsSubjectsTheServerDrops(t *testing.T) {
+	conn := connect(t, natsURL(t))
+	bus := newBus(t, conn, logkit.Nop(), natskit.Config{})
+	stream := newStreamBus(t, jsConfig("BADSUBJ"))
+	ctx := context.Background()
+	h := func(context.Context, []byte) error { return nil }
+	for name, err := range map[string]error{
+		"publish empty token":       bus.Publish(ctx, "orders..created", []byte(`{}`)),
+		"publish wildcard":          bus.Publish(ctx, "orders.*", []byte(`{}`)),
+		"stream publish wildcard":   stream.PublishStream(ctx, "BADSUBJ.>", []byte(`{}`)),
+		"subscribe > not last":      func() error { _, err := bus.Subscribe(ctx, "orders.>.x", h); return err }(),
+		"stream filter empty token": func() error { _, err := stream.SubscribeStream(ctx, "BADSUBJ", "BADSUBJ..x", "d", h); return err }(),
+	} {
+		if !errors.Is(err, natsgo.ErrBadSubject) {
+			t.Errorf("%s: err = %v, want nats.ErrBadSubject", name, err)
+		}
+	}
+	results, err := stream.PublishStreamBatch(ctx, []natskit.StreamMsg{{Subject: "BADSUBJ..x"}, {Subject: "BADSUBJ.ok", Payload: []byte(`{}`)}})
+	if err != nil || !errors.Is(results[0], natsgo.ErrBadSubject) || results[1] != nil {
+		t.Errorf("batch: results = %v, err = %v; want ErrBadSubject only for the bad subject", results, err)
+	}
+}

@@ -346,7 +346,8 @@ up → down → up по версиям со сверкой схемы).
 Docker роняет. Для unit-тестов бизнес-кода подменяйте `auditkit.Logger` —
 готовый in-memory recorder есть в
 [`testkit/audittest`](../testkit/audittest/); он валидирует `Entry` так же, как
-`pgstore`, и хранит копию `Metadata`.
+`pgstore`, хранит копию `Metadata`, а запись в транзакции фейка `testkit/pgtest` её откат
+выкидывает.
 
 ## Инварианты и подводные камни
 

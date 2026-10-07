@@ -103,9 +103,10 @@ _ = snap.Find("pg_pool_total_conns", "role", pgkit.RolePrimary) // серии pg
 ## Рецепт: домен без Postgres
 
 Фейки `pgkit.Transactor` живут в `testkit/pgtest`: `pgtest.Identity` прогоняет
-`fn` без транзакции, `pgtest.Recorder` считает вызовы. Оба кладут в `ctx`
-маркер `pgkit.WithTestTx`, поэтому код, гейтящийся на `pgkit.InTx` (например
-`outboxkit/pgstore` с `WithRequireTx`), проходит и без БД:
+`fn` в транзакции фейка, `pgtest.Recorder` ещё и считает вызовы. Транзакция фейка кладёт в
+`ctx` маркер `pgkit.WithTestTx`, поэтому код, гейтящийся на `pgkit.InTx` (например
+`outboxkit/pgstore` с `WithRequireTx`), проходит и без БД; ошибка `fn` откатывает записи
+фейков `outboxtest` и `audittest`:
 
 ```go
 svc := NewService(repo, pgtest.Identity{})

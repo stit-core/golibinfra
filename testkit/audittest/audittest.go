@@ -1,4 +1,5 @@
-// Package audittest — фейк auditkit.Logger для юнит-тестов домена без Postgres.
+// Package audittest — фейк auditkit.Logger для юнит-тестов домена без Postgres: запись в транзакции
+// фейка pgtest её откат выкидывает, как Postgres — строку audit_log.
 package audittest
 
 import (
@@ -8,16 +9,18 @@ import (
 	"sync"
 
 	"git.stit.tech/stit-core/golibinfra/auditkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 )
 
 // Recorder — in-memory auditkit.Logger: копит записи и отвечает на запросы теста.
 type Recorder struct {
 	mu      sync.Mutex
-	entries []auditkit.Entry
+	entries []*auditkit.Entry
 }
 
 // Log сохраняет копию записи, как pgstore: пустые RequestID и IP — из ctx
-// (auditkit.Entry.Enrich), невалидная Entry — auditkit.ErrInvalidEntry.
+// (auditkit.Entry.Enrich), невалидная Entry — auditkit.ErrInvalidEntry. Запись в транзакции фейка
+// pgtest её откат выкидывает; вне транзакции она остаётся, как у pgstore на пуле.
 func (r *Recorder) Log(ctx context.Context, e auditkit.Entry) error {
 	e = e.Enrich(ctx)
 	if err := e.Validate(); err != nil {
@@ -27,9 +30,16 @@ func (r *Recorder) Log(ctx context.Context, e auditkit.Entry) error {
 	// pgstore к этому моменту уже смаршалил её в JSON.
 	e.Metadata = maps.Clone(e.Metadata)
 	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.entries = append(r.entries, e)
+	r.entries = append(r.entries, &e)
+	r.mu.Unlock()
+	pgtest.OnRollback(ctx, func() { r.remove(&e) })
 	return nil
+}
+
+func (r *Recorder) remove(e *auditkit.Entry) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.entries = slices.DeleteFunc(r.entries, func(x *auditkit.Entry) bool { return x == e })
 }
 
 // Entries — копия всех записей в порядке добавления.
@@ -38,7 +48,7 @@ func (r *Recorder) Entries() []auditkit.Entry {
 	defer r.mu.Unlock()
 	out := make([]auditkit.Entry, len(r.entries))
 	for i, e := range r.entries {
-		out[i] = cloneEntry(e)
+		out[i] = cloneEntry(*e)
 	}
 	return out
 }
@@ -72,7 +82,7 @@ func (r *Recorder) Last(action string) *auditkit.Entry {
 	defer r.mu.Unlock()
 	for _, v := range slices.Backward(r.entries) {
 		if v.Action == action {
-			e := cloneEntry(v)
+			e := cloneEntry(*v)
 			return &e
 		}
 	}
@@ -86,7 +96,7 @@ func (r *Recorder) ByResource(resource string) []auditkit.Entry {
 	var out []auditkit.Entry
 	for _, e := range r.entries {
 		if e.Resource == resource {
-			out = append(out, cloneEntry(e))
+			out = append(out, cloneEntry(*e))
 		}
 	}
 	return out

@@ -113,11 +113,16 @@ func TestSomething(t *testing.T) {
 ## Тесты в коде потребителя
 
 Для тестов бизнес-логики без Docker есть фейк шины
-`testkit/natstest.Recorder` — реализует и `natskit.Bus`, и `natskit.StreamBus`,
-доставляя сообщения подписчикам синхронно:
+`testkit/natstest.Recorder` — реализует `natskit.Bus`, `natskit.StreamBus` и
+`natskit.StreamChecker`, доставляя сообщения подписчикам синхронно. Отвергает он то же, что
+шина: subject, фильтр, durable и queue — правилами natskit, тело сверх `max_payload`
+(`WithMaxPayload`, по умолчанию 1 MiB), stream-публикацию и подписку без стрима — стримы
+объявляет тест (`WithStream`, как `NATS_JS_STREAM_NAMES`), фильтр, накрывающий DLQ
+(`WithDLQ`). Ошибка stream-обработчика повторяется до `WithMaxDeliver(n)` доставок (без опции —
+одна), `natskit.ErrTerminal` — без повтора; мёртвые сообщения в DLQ фейк не публикует.
 
 ```go
-r := natstest.New()
+r := natstest.New(natstest.WithStream("ORDERS", "orders.>"))
 _, err := natskit.SubscribeStreamJSON(r, ctx, "ORDERS", "orders.>", "worker", handleOrder)
 
 // «пришло сообщение из шины» — обработчик уже отработал, когда Deliver вернулся

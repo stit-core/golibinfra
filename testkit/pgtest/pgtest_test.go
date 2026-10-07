@@ -3,6 +3,7 @@ package pgtest_test
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
@@ -88,5 +89,86 @@ func TestFakes_MarkCtxAsInTx(t *testing.T) {
 				t.Fatalf("WithTxOptions: %v", err)
 			}
 		})
+	}
+}
+
+// Ошибка и panic fn откатывают записи фейков, успех — нет; откат — в обратном порядке записей.
+func TestIdentity_RollbackUndoesFakeWrites(t *testing.T) {
+	t.Parallel()
+	boom := errors.New("boom")
+	for name, c := range map[string]struct {
+		fn       func(ctx context.Context) error
+		wantUndo []int
+	}{
+		"error":   {func(context.Context) error { return boom }, []int{2, 1}},
+		"success": {func(context.Context) error { return nil }, nil},
+		"panic":   {func(context.Context) error { panic(boom) }, []int{2, 1}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			var undone []int
+			func() {
+				defer func() { _ = recover() }()
+				_ = pgtest.Identity{}.WithTx(t.Context(), func(ctx context.Context) error {
+					for i := range 2 {
+						if !pgtest.OnRollback(ctx, func() { undone = append(undone, i+1) }) {
+							t.Error("OnRollback in a fake transaction = false")
+						}
+					}
+					return c.fn(ctx)
+				})
+			}()
+			if !slices.Equal(undone, c.wantUndo) {
+				t.Fatalf("undone = %v, want %v", undone, c.wantUndo)
+			}
+		})
+	}
+}
+
+// Вложенный вызов идёт во внешней транзакции: её исход, а не ошибка вложенного, решает откат.
+func TestIdentity_NestedJoinsOuter(t *testing.T) {
+	t.Parallel()
+	undone := false
+	err := pgtest.Identity{}.WithTx(t.Context(), func(ctx context.Context) error {
+		inner := (&pgtest.Recorder{}).WithTx(ctx, func(ctx context.Context) error {
+			pgtest.OnRollback(ctx, func() { undone = true })
+			return errors.New("handled by the caller")
+		})
+		if inner == nil {
+			t.Error("nested error lost")
+		}
+		return nil
+	})
+	if err != nil || undone {
+		t.Fatalf("err = %v, undone = %v, want the outer commit to keep the write", err, undone)
+	}
+}
+
+// Транзакция фейка — не метка теста: InTx видит только её; вне неё отменять нечего.
+func TestInTx_OnlyFakeTransaction(t *testing.T) {
+	t.Parallel()
+	if pgtest.InTx(pgkit.WithTestTx(t.Context())) {
+		t.Error("InTx of a pgkit.WithTestTx marker = true")
+	}
+	if pgtest.OnRollback(pgkit.WithTestTx(t.Context()), func() {}) {
+		t.Error("OnRollback outside a fake transaction = true")
+	}
+	_ = pgtest.Identity{}.WithTx(t.Context(), func(ctx context.Context) error {
+		if !pgtest.InTx(ctx) || !pgkit.InTx(ctx) {
+			t.Error("InTx inside the fake transaction = false")
+		}
+		return nil
+	})
+}
+
+// Отменённый ctx — ошибка до fn, как BeginTx боевого Transactor.
+func TestIdentity_CancelledCtxFailsBeforeFn(t *testing.T) {
+	t.Parallel()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	called := false
+	err := pgtest.Identity{}.WithTx(ctx, func(context.Context) error { called = true; return nil })
+	if !errors.Is(err, context.Canceled) || called {
+		t.Fatalf("err = %v, fn called = %v, want context.Canceled before fn", err, called)
 	}
 }

@@ -3,11 +3,18 @@ package natstest_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 
 	"git.stit.tech/stit-core/golibinfra/natskit"
 	"git.stit.tech/stit-core/golibinfra/testkit/natstest"
 )
+
+// orders — стрим ORDERS с subject'ами orders.>, как стрим, заведённый инфраструктурой.
+var orders = natstest.WithStream("ORDERS", "orders.>")
 
 func TestRecorder_PublishRecordsAndDelivers(t *testing.T) {
 	r := natstest.New()
@@ -75,7 +82,7 @@ func TestRecorder_QueueGroupGetsOneDelivery(t *testing.T) {
 // Core-публикация не доходит до stream-подписчика и наоборот: транспорты
 // разведены, как в проде.
 func TestRecorder_TransportsAreSeparate(t *testing.T) {
-	r := natstest.New()
+	r := natstest.New(orders)
 	ctx := context.Background()
 
 	core, stream := 0, 0
@@ -110,7 +117,7 @@ func TestRecorder_TransportsAreSeparate(t *testing.T) {
 }
 
 func TestRecorder_DeliverReturnsHandlerError(t *testing.T) {
-	r := natstest.New()
+	r := natstest.New(orders)
 	ctx := context.Background()
 	boom := errors.New("boom")
 
@@ -166,7 +173,7 @@ func TestRecorder_UnsubscribeStopsDelivery(t *testing.T) {
 }
 
 func TestRecorder_PublishErrorAndBatch(t *testing.T) {
-	r := natstest.New()
+	r := natstest.New(orders)
 	ctx := context.Background()
 
 	results, err := r.PublishStreamBatch(ctx, []natskit.StreamMsg{
@@ -203,7 +210,7 @@ func TestRecorder_PublishErrorAndBatch(t *testing.T) {
 // Шаблон label'а `subject` доезжает до записи обоими путями: тест потребителя
 // иначе не заметил бы, что публикация завела серию на каждый id.
 func TestRecorder_RecordsMetricSubject(t *testing.T) {
-	r := natstest.New()
+	r := natstest.New(orders)
 	ctx := context.Background()
 
 	if err := r.PublishStream(ctx, "orders.created", []byte(`{}`),
@@ -236,5 +243,93 @@ func TestRecorder_SubscribeRejectsCancelledContext(t *testing.T) {
 
 	if _, err := r.Subscribe(ctx, "orders.created", func(context.Context, []byte) error { return nil }); err == nil {
 		t.Fatal("Subscribe with a cancelled ctx = nil, want error")
+	}
+}
+
+// Шина отвергает до сервера (и молча отбросил бы сервер) — фейк отвечает той же ошибкой: subject,
+// фильтр, queue, durable, max_payload, стрим и DLQ-петля проверяются правилами natskit.
+func TestRecorder_RejectsWhatTheBusRejects(t *testing.T) {
+	r := natstest.New(orders, natstest.WithDLQ("orders.dlq"), natstest.WithMaxPayload(8))
+	ctx := context.Background()
+	h := func(context.Context, []byte) error { return nil }
+	stream := func(stream, filter, durable string) error {
+		_, err := r.SubscribeStream(ctx, stream, filter, durable, h)
+		return err
+	}
+	for name, c := range map[string]struct {
+		err  error
+		want error
+	}{
+		"publish subject with a space":    {r.Publish(ctx, "orders created", nil), nats.ErrBadSubject},
+		"publish empty subject":           {r.Publish(ctx, "", nil), nats.ErrBadSubject},
+		"publish empty token":             {r.Publish(ctx, "orders..created", nil), nats.ErrBadSubject},
+		"publish wildcard":                {r.Publish(ctx, "orders.*", nil), nats.ErrBadSubject},
+		"publish over max_payload":        {r.Publish(ctx, "orders.created", []byte("123456789")), nats.ErrMaxPayload},
+		"stream publish without stream":   {r.PublishStream(ctx, "billing.created", nil), jetstream.ErrNoStreamResponse},
+		"subscribe empty token":           {func() error { _, err := r.Subscribe(ctx, "orders..x", h); return err }(), nats.ErrBadSubject},
+		"subscribe > not last":            {func() error { _, err := r.Subscribe(ctx, "orders.>.x", h); return err }(), nats.ErrBadSubject},
+		"queue with a space":              {func() error { _, err := r.SubscribeQueue(ctx, "orders.x", "a b", h); return err }(), nats.ErrBadQueueName},
+		"durable with a dot":              {stream("ORDERS", "orders.created", "bad.durable"), jetstream.ErrInvalidConsumerName},
+		"missing stream":                  {stream("MISSING", "orders.created", "d"), jetstream.ErrStreamNotFound},
+		"filter outside the stream":       {stream("ORDERS", "billing.created", "d"), nil},
+		"filter covers the DLQ subject":   {stream("ORDERS", "orders.>", "d"), natskit.ErrConfig},
+		"deliver with an invalid subject": {r.Deliver(ctx, "orders created", nil), nats.ErrBadSubject},
+		"stream check without stream":     {r.CheckStreams(ctx, "orders.*", "billing.>"), natskit.ErrNoStream},
+	} {
+		if c.err == nil || c.want != nil && !errors.Is(c.err, c.want) {
+			t.Errorf("%s: err = %v, want %v", name, c.err, c.want)
+		}
+	}
+	if got := r.Published(); len(got) != 0 {
+		t.Errorf("rejected publications recorded: %+v", got)
+	}
+	if err := r.CheckStreams(ctx, "orders.created", "orders.*"); err != nil {
+		t.Errorf("CheckStreams of covered filters = %v, want nil", err)
+	}
+}
+
+// Ошибка stream-обработчика — повторная доставка до WithMaxDeliver, как ретрай JetStream; ошибка с
+// natskit.ErrTerminal — без повтора; Core-подписка — одна доставка.
+func TestRecorder_RedeliversStreamHandlerErrors(t *testing.T) {
+	ctx := context.Background()
+	for name, c := range map[string]struct {
+		opts      []natstest.Option
+		err       error
+		wantCalls int
+	}{
+		"default — one delivery": {nil, errors.New("boom"), 1},
+		"up to MaxDeliver":       {[]natstest.Option{natstest.WithMaxDeliver(3)}, errors.New("boom"), 3},
+		"terminal error":         {[]natstest.Option{natstest.WithMaxDeliver(3)}, fmt.Errorf("%w: bad payload", natskit.ErrTerminal), 1},
+	} {
+		r := natstest.New(append(c.opts, orders)...)
+		calls, core := 0, 0
+		if _, err := r.SubscribeStream(ctx, "ORDERS", "orders.created", "d", func(context.Context, []byte) error { calls++; return c.err }); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.Subscribe(ctx, "orders.created", func(context.Context, []byte) error { core++; return c.err }); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.Deliver(ctx, "orders.created", []byte(`{}`)); !errors.Is(err, c.err) {
+			t.Fatalf("%s: Deliver = %v, want the handler error", name, err)
+		}
+		if calls != c.wantCalls || core != 1 || len(r.HandlerErrors()) != c.wantCalls+1 {
+			t.Errorf("%s: stream calls %d, core calls %d, handler errors %d; want %d, 1, %d", name, calls, core, len(r.HandlerErrors()), c.wantCalls, c.wantCalls+1)
+		}
+	}
+	// Успех на повторной доставке её останавливает.
+	r := natstest.New(orders, natstest.WithMaxDeliver(5))
+	calls := 0
+	if _, err := r.SubscribeStream(ctx, "ORDERS", "orders.created", "d", func(context.Context, []byte) error {
+		calls++
+		if calls < 2 {
+			return errors.New("transient")
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	_ = r.PublishStream(ctx, "orders.created", []byte(`{}`))
+	if calls != 2 {
+		t.Errorf("calls = %d, want the redelivery to stop at the first success", calls)
 	}
 }

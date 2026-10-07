@@ -207,7 +207,7 @@ type instanceIn struct {
 
 // checkStreams вешает проверку старта: JetStream включён, subject'ы WithSubjects накрыты
 // стримом — иначе строки копились бы в таблице без PubAck при «здоровом» сервисе. Шина без
-// natskit.StreamChecker (фейк natstest) стримов не знает — проверки нет.
+// natskit.StreamChecker стримов не знает — проверки нет.
 func checkStreams(lc fx.Lifecycle, sb natskit.StreamBus, name string, subjects []string) {
 	checker, ok := sb.(natskit.StreamChecker)
 	if !ok {

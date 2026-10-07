@@ -4,13 +4,14 @@
 
 Доменный код зависит от `outboxkit.Publisher`, поэтому его тесты обходятся
 `testkit/outboxtest.Recorder` — in-memory реализацией порта с `All`/`Published`/
-`Last`/`Count`/`Reset`. Ни Postgres, ни NATS не нужны. Как pgstore с
-`OUTBOX_REQUIRE_TX=true`, `Recorder` публикует только в транзакции
-(`pgkit.InTx`): вне неё `Publish` отвечает `outboxkit.ErrNoTx` и событие не
-копит, поэтому транзактор домена в тесте — фейк `testkit/pgtest`, он помечает
-`ctx` транзакцией. Сам `ctx` usecase'а тест не помечает (`pgkit.WithTestTx`):
-тогда публикация мимо `Transactor.WithTx` тоже проходит, и тест не видит
-ошибку; `pgkit.WithTestTx` — только для прямого вызова `Publish` в тесте.
+`Last`/`Count`/`Reset`. Ни Postgres, ни NATS не нужны. `Recorder` хранит JSON события
+(`json.RawMessage`), как outbox: payload без JSON-формы и то, что Postgres JSONB не хранит, —
+ошибка `Publish`; в тесте событие сравнивают через `json.Unmarshal` в его тип. Как pgstore с
+`OUTBOX_REQUIRE_TX=true`, `Recorder` публикует только в транзакции — транзакции фейка
+`testkit/pgtest`, транзактора домена в тесте; её откат событие выкидывает, как Postgres —
+строку outbox. Вне неё `Publish` отвечает `outboxkit.ErrNoTx`, и под меткой `pgkit.WithTestTx`,
+поставленной самим тестом на `ctx` usecase'а: с ней публикация мимо `Transactor.WithTx` прошла
+бы, и тест не увидел бы ошибку.
 
 ## Core: fake Repository / Transport
 

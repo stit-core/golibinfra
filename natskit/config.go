@@ -5,11 +5,11 @@ import (
 	"fmt"
 	"net/url"
 	"os"
-	"slices"
 	"strings"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/internal/natsname"
 	"git.stit.tech/stit-core/golibinfra/internal/redact"
 )
 
@@ -180,11 +180,11 @@ func (j JetStreamConfig) validate() error {
 		}
 	}
 	for _, name := range j.StreamNames {
-		if !validStreamName(name) {
+		if !natsname.Name(name) {
 			return fmt.Errorf("%w: NATS_JS_STREAM_NAMES: %q is not a valid stream name", ErrConfig, name)
 		}
 	}
-	if j.DLQSubject != "" && !validPublishSubject(j.DLQSubject) {
+	if j.DLQSubject != "" && !natsname.Subject(j.DLQSubject) {
 		return fmt.Errorf("%w: NATS_JS_DLQ_SUBJECT: %q is not a valid publish subject", ErrConfig, j.DLQSubject)
 	}
 	if !j.Enabled {
@@ -245,22 +245,6 @@ func validInstanceName(name string) bool {
 		}
 	}
 	return true
-}
-
-func validStreamName(name string) bool {
-	if name == "" {
-		return false
-	}
-	return !strings.ContainsAny(name, ". \t*>/\\")
-}
-
-// validPublishSubject — subject, в который можно опубликовать: непустые токены,
-// без пробелов и без wildcard'ов (`*`/`>` осмысленны только в подписке).
-func validPublishSubject(subject string) bool {
-	if subject == "" || strings.ContainsAny(subject, " \t\r\n*>") {
-		return false
-	}
-	return !slices.Contains(strings.Split(subject, "."), "")
 }
 
 // envPrefix — префикс переменных окружения инстанса: `hub` → `HUB_NATS_URL`.

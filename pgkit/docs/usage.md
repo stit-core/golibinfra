@@ -84,7 +84,7 @@ func (s *Service) Transfer(ctx context.Context, from, to int, amount int64) erro
 - `InTx(ctx) bool` — проверить, выполняется ли код внутри транзакции (нужно
   коду, обязанному быть атомарным с бизнес-записью, например outbox-insert). В
   тестах тот же гейт открывает `pgkit.WithTestTx(ctx)` — маркер без Postgres,
-  который кладут фейки `testkit/pgtest`.
+  который кладёт транзакция фейков `testkit/pgtest`.
 - Отмена `ctx` внутри `fn`: наружу уходит причина отмены; ошибка отката
   «мёртвого» соединения её не подменяет.
 

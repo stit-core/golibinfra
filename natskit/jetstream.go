@@ -73,8 +73,8 @@ func (m StreamMsg) spec() PublishSpec {
 	return PublishSpec{MsgID: m.MsgID, Header: m.Header, MetricSubject: m.MetricSubject, TraceParent: m.TraceParent}
 }
 
-// StreamChecker — проверка стримов публикатора на старте; её реализует StreamBus natskit
-// (natskit.New, Module), фейки шины — нет.
+// StreamChecker — проверка стримов публикатора на старте; её реализуют StreamBus natskit
+// (natskit.New, Module) и фейк testkit/natstest — по объявленным стримам.
 type StreamChecker interface {
 	// CheckStreams — JetStream включён в конфиге и на сервере (иначе ErrJetStreamDisabled) и
 	// каждый filter — subject или фильтр с `*`, `>` — целиком накрыт subject'ами одного стрима
@@ -363,7 +363,10 @@ func (b *jsBus) PublishStream(ctx context.Context, subject string, payload []byt
 	msg, pubCtx, span := b.instr.startPublishSpan(ctx, subject, payload, po)
 
 	start := time.Now()
-	_, pubErr := b.js.PublishMsg(ctx, msg, po.jetStreamOpts()...)
+	pubErr := checkSubject(subject)
+	if pubErr == nil {
+		_, pubErr = b.js.PublishMsg(ctx, msg, po.jetStreamOpts()...)
+	}
 	b.instr.recordPublish(pubCtx, po, time.Since(start), pubErr, span)
 
 	if pubErr != nil {
@@ -401,7 +404,11 @@ func (b *jsBus) PublishStreamBatch(ctx context.Context, msgs []StreamMsg) ([]err
 		spans[i], pubCtxs[i] = span, pubCtx
 		starts[i] = time.Now()
 
-		f, err := b.js.PublishMsgAsync(msg, opts[i].jetStreamOpts()...)
+		err := checkSubject(m.Subject)
+		var f jetstream.PubAckFuture
+		if err == nil {
+			f, err = b.js.PublishMsgAsync(msg, opts[i].jetStreamOpts()...)
+		}
 		if err != nil {
 			errs[i] = err
 			b.instr.recordPublish(pubCtx, opts[i], time.Since(starts[i]), err, span)
@@ -461,6 +468,9 @@ type streamConsumer struct {
 func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable string, handler Handler) (Subscription, error) {
 	if !b.enabled {
 		return nil, ErrJetStreamDisabled
+	}
+	if err := checkFilter(subject); err != nil {
+		return nil, fmt.Errorf("natskit: jetstream consumer: %w", err)
 	}
 	if b.dlqSubject != "" && SubjectMatches(subject, b.dlqSubject) {
 		return nil, fmt.Errorf("%w: NATS_JS_DLQ_SUBJECT %q is matched by consumer filter %q: dead letters would loop back to the handler",
