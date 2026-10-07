@@ -600,8 +600,11 @@ func TestStore_SubjectBudget(t *testing.T) {
 	if err := s.RecordSuccess(ctx, "victim4@example.com", "203.0.113.30"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
 	}
-	if n := failedCount(t, ctx, db, "victim4@example.com", ""); n != -1 {
-		t.Fatalf("success left the subject window: failed_count = %d", n)
+	if n := failedCount(t, ctx, db, "victim4@example.com", ""); n != 0 {
+		t.Fatalf("success left the subject window: failed_count = %d, want 0", n)
+	}
+	if n := failedCount(t, ctx, db, "victim4@example.com", "203.0.113.30"); n != -1 {
+		t.Fatalf("success left the pair row: failed_count = %d", n)
 	}
 
 	// Под блокировкой пары субъект не учитывается.
@@ -793,5 +796,203 @@ func TestStore_AttemptRecountsWhenLockVanishes(t *testing.T) {
 	}
 	if seen.Load() != 1 || failedCount(t, ctx, db, subject, ip) != 1 {
 		t.Fatalf("lock seen %d times, failed_count %d; want one recount into a new window", seen.Load(), failedCount(t, ctx, db, subject, ip))
+	}
+}
+
+// RetryAfter — остаток до срока по часам базы, а не сервиса: часы базы далеко от часов процесса.
+func TestStore_RetryAfterUsesDatabaseNow(t *testing.T) {
+	t.Parallel()
+	s := newStore(t, nil, config())
+	dbNow := time.Date(2001, 1, 1, 0, 0, 0, 0, time.UTC)
+	if got := pgstore.RetryAfter(s, dbNow.Add(90*time.Second), dbNow); got != 90*time.Second {
+		t.Fatalf("RetryAfter = %s, want 90s by the database clock", got)
+	}
+	if got := pgstore.RetryAfter(s, dbNow, dbNow.Add(time.Second)); got != 0 {
+		t.Fatalf("RetryAfter of a passed lock = %s, want 0", got)
+	}
+}
+
+// Бюджет субъекта меньше числа одновременных первых попыток: строки субъекта ещё нет, и каждая
+// попытка ждёт её блокировку, а не учитывает пару в обход бюджета (C13 валидатора C).
+func TestStore_SubjectBudgetTinyConcurrent(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	cfg.SubjectMaxFailures = 2
+	s := newStore(t, db, cfg)
+	for round := range 20 {
+		subject := fmt.Sprintf("tiny%d@example.com", round)
+		var (
+			wg      sync.WaitGroup
+			allowed atomic.Int64
+		)
+		start := make(chan struct{})
+		for i := range 4 {
+			wg.Go(func() {
+				<-start
+				st, err := s.Attempt(ctx, subject, fmt.Sprintf("192.0.2.%d", i+1))
+				if err != nil {
+					t.Errorf("Attempt: %v", err)
+				}
+				if st == nil {
+					allowed.Add(1)
+				}
+			})
+		}
+		close(start)
+		wg.Wait()
+		if got := allowed.Load(); got != int64(cfg.SubjectMaxFailures) {
+			t.Fatalf("round %d: allowed %d of 4 first attempts, want the budget %d", round, got, cfg.SubjectMaxFailures)
+		}
+	}
+}
+
+// Регрессия B2 валидатора C: Attempt, RecordSuccess и Cleanup берут строки субъекта и пары в одном
+// порядке (Cleanup занятые пропускает) — дедлоков (40P01) и других ошибок нет ни у одной операции.
+func TestStore_NoDeadlocks(t *testing.T) {
+	db, _ := startDB(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	cfg := config()
+	cfg.MaxFailures, cfg.SubjectMaxFailures = 100000, 100000
+	s := newStore(t, db, cfg)
+	var (
+		mu   sync.Mutex
+		errs []error
+	)
+	note := func(err error) {
+		if err != nil {
+			mu.Lock()
+			errs = append(errs, err)
+			mu.Unlock()
+		}
+	}
+
+	// Вход пары вперемешку с попытками той же пары.
+	var wg sync.WaitGroup
+	for w := range 4 {
+		wg.Go(func() {
+			for i := range 150 {
+				if (w+i)%2 == 0 {
+					_, err := s.Attempt(ctx, "mix@example.com", "10.1.1.1")
+					note(err)
+				} else {
+					note(s.RecordSuccess(ctx, "mix@example.com", "10.1.1.1"))
+				}
+			}
+		})
+	}
+	// Пользователь входит (попытка, затем успех), два клиента той же пары шлют попытки.
+	wg.Go(func() {
+		for range 100 {
+			_, err := s.Attempt(ctx, "user@example.com", "10.2.2.2")
+			note(err)
+			note(s.RecordSuccess(ctx, "user@example.com", "10.2.2.2"))
+		}
+	})
+	for range 2 {
+		wg.Go(func() {
+			for range 100 {
+				_, err := s.Attempt(ctx, "user@example.com", "10.2.2.2")
+				note(err)
+			}
+		})
+	}
+	wg.Wait()
+
+	// Cleanup по старым строкам (пара вставлена раньше субъекта), параллельно — попытки по ним.
+	const old = 1500
+	for range 2 {
+		if _, err := db.Exec(ctx, `INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt)
+			SELECT 'old' || g || '@example.com', v.ip, 1, NOW() - interval '3 days'
+			FROM generate_series(1, $1) g, (VALUES (1, '10.3.3.3'), (2, '')) AS v(o, ip) ORDER BY g, v.o
+			ON CONFLICT (subject, ip) DO UPDATE SET last_attempt = NOW() - interval '3 days', locked_until = NULL`, old); err != nil {
+			t.Fatal(err)
+		}
+		wg.Go(func() { note(s.Cleanup(ctx)) })
+		for w := range 3 {
+			wg.Go(func() {
+				for i := w; i < old; i += 3 {
+					_, err := s.Attempt(ctx, fmt.Sprintf("old%d@example.com", i+1), "10.3.3.3")
+					note(err)
+				}
+			})
+		}
+		wg.Wait()
+	}
+	for _, err := range errs {
+		t.Errorf("operation failed: %v", err)
+	}
+}
+
+// waitLockWaiters ждёт n сессий, стоящих на блокировке строки.
+func waitLockWaiters(t *testing.T, ctx context.Context, db *pgkit.DB, n int) {
+	t.Helper()
+	for {
+		var waiting int
+		if err := db.QueryRow(ctx, `SELECT count(*) FROM pg_stat_activity WHERE wait_event_type = 'Lock' AND datname = current_database()`).Scan(&waiting); err != nil {
+			t.Fatalf("pg_stat_activity: %v", err)
+		}
+		if waiting >= n {
+			return
+		}
+		if ctx.Err() != nil {
+			t.Fatalf("no session waits for a lock: %v", ctx.Err())
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// RecordSuccess в транзакции вызывающего держит строки до коммита — в том же порядке, что и
+// Attempt (субъект, затем пара): попытка, пришедшая между двумя операторами, ждёт, а не замыкает
+// цикл ожиданий.
+func TestStore_RecordSuccessInTxKeepsLockOrder(t *testing.T) {
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, tr := pg.DB(t), pg.Transactor(t)
+	s := newStore(t, db, config())
+	const subject, ip = "order@example.com", "10.4.4.4"
+	attempts(t, ctx, s, subject, ip, 1)
+
+	attempted := make(chan error, 1)
+	pgstore.SetSubjectReset(s, func() {
+		go func() {
+			_, err := s.Attempt(ctx, subject, ip)
+			attempted <- err
+		}()
+		waitLockWaiters(t, ctx, db, 1)
+	})
+	if err := tr.WithTx(ctx, func(txCtx context.Context) error { return s.RecordSuccess(txCtx, subject, ip) }); err != nil {
+		t.Fatalf("RecordSuccess in a transaction: %v", err)
+	}
+	if err := <-attempted; err != nil {
+		t.Fatalf("Attempt during RecordSuccess in a transaction: %v", err)
+	}
+}
+
+// Cleanup не ждёт строк, занятых попыткой: занятую строку пропускает, остальные удаляет.
+func TestStore_CleanupSkipsBusyRows(t *testing.T) {
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, tr := pg.DB(t), pg.Transactor(t)
+	s := newStore(t, db, config())
+	if _, err := db.Exec(ctx, `INSERT INTO bruteforce_attempts (subject, ip, failed_count, last_attempt)
+		VALUES ('busy@example.com', '', 1, NOW() - interval '3 days'), ('stale@example.com', '', 1, NOW() - interval '3 days')`); err != nil {
+		t.Fatal(err)
+	}
+	err := tr.WithTx(ctx, func(txCtx context.Context) error {
+		if _, err := db.Exec(txCtx, `SELECT 1 FROM bruteforce_attempts WHERE subject = 'busy@example.com' FOR UPDATE`); err != nil {
+			return err
+		}
+		cleanCtx, cancelClean := context.WithTimeout(ctx, 5*time.Second)
+		defer cancelClean()
+		return s.Cleanup(cleanCtx)
+	})
+	if err != nil {
+		t.Fatalf("Cleanup while a row is busy: %v", err)
+	}
+	if failedCount(t, ctx, db, "busy@example.com", "") != 1 || failedCount(t, ctx, db, "stale@example.com", "") != -1 {
+		t.Fatal("Cleanup must skip the busy row and delete the stale one")
 	}
 }

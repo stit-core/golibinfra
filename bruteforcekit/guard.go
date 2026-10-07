@@ -47,14 +47,14 @@ type Guard interface {
 	Attempt(ctx context.Context, subject, ip string) (*LockState, error)
 
 	// RecordSuccess снимает историю попыток пары и окно субъекта: успех сбрасывает оба. В
-	// транзакции допустим — её откат оставляет счётчики.
+	// транзакции допустим — её откат оставляет счётчики; строки он берёт в порядке Attempt.
 	RecordSuccess(ctx context.Context, subject, ip string) error
 }
 
 // Cleaner — maintenance-путь guard'а, отдельный от request-path: его реализуют
 // только хранилища, а не адаптеры и фейки вокруг Guard.
 type Cleaner interface {
-	// Cleanup удаляет разблокированные строки старше Config.CleanupRetention;
-	// идемпотентен, обычно вешается на периодический job.
+	// Cleanup удаляет разблокированные строки старше Config.CleanupRetention, занятые попыткой
+	// пропускает; идемпотентен, обычно вешается на периодический job.
 	Cleanup(ctx context.Context) error
 }
