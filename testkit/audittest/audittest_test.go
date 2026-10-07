@@ -80,6 +80,7 @@ func TestRecorder_RejectsInvalidEntry(t *testing.T) {
 		{Action: "login", Resource: "auth", ResourceID: "42\x00"},
 		{Action: "login", Resource: "auth", ActorID: "\xff"},
 		{Action: "login", Resource: "auth", Metadata: map[string]any{"name": "bob\x00"}},
+		{Action: "login", Resource: "auth", Metadata: map[string]any{"name": "bob\xff"}},
 		{Action: "login", Resource: "auth", Metadata: map[string]any{"k": strings.Repeat("v", auditkit.MaxMetadataBytes)}},
 	} {
 		if err := r.Log(context.Background(), e); !errors.Is(err, auditkit.ErrInvalidEntry) {

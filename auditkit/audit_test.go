@@ -103,8 +103,8 @@ func TestEntry_Validate(t *testing.T) {
 	}
 }
 
-// Metadata — то, что сохранит Postgres JSONB: \u0000 и сырые не-UTF-8 байты он отвергает, а
-// предел держит Metadata контекстом события, а не дампом payload'а.
+// Metadata — то, что сохранит Postgres JSONB, без молчаливых замен: NUL, не-UTF-8 (и в ключах, и
+// байтами RawMessage) и одинокий суррогат — отказ, а предел держит Metadata контекстом события.
 func TestEntry_MetadataJSON(t *testing.T) {
 	t.Parallel()
 	entry := func(m map[string]any) auditkit.Entry { return auditkit.Entry{Action: "a", Resource: "r", Metadata: m} }
@@ -116,19 +116,28 @@ func TestEntry_MetadataJSON(t *testing.T) {
 		want     string
 		wantErr  bool
 	}{
-		"empty is NULL":              {metadata: map[string]any{}},
-		"plain":                      {metadata: map[string]any{"k": "v"}, want: `{"k":"v"}`},
-		"at the limit":               {metadata: map[string]any{"k": atLimit}, want: `{"k":"` + atLimit + `"}`},
-		"over the limit":             {metadata: map[string]any{"k": atLimit + "x"}, wantErr: true},
-		"NUL in a string":            {metadata: map[string]any{"k": "a\x00b"}, wantErr: true},
-		"NUL in raw JSON":            {metadata: map[string]any{"k": json.RawMessage(`"\u0000"`)}, wantErr: true},
-		"escaped slash before NUL":   {metadata: map[string]any{"k": json.RawMessage(`"\\\u0000"`)}, wantErr: true},
-		"NUL after escaped u0000":    {metadata: map[string]any{"k": json.RawMessage(`"\\u0000\u0000"`)}, wantErr: true},
-		"escaped slash and u0000":    {metadata: map[string]any{"k": `\u0000`}, want: `{"k":"\\u0000"}`},
-		"two NUL-free escapes":       {metadata: map[string]any{"k": json.RawMessage(`"\\u0000\\\\u0000"`)}, want: `{"k":"\\u0000\\\\u0000"}`},
-		"raw bytes not UTF-8":        {metadata: map[string]any{"k": json.RawMessage("\"\xff\"")}, wantErr: true},
-		"string not UTF-8 is U+FFFD": {metadata: map[string]any{"k": "a\xffb"}, want: `{"k":"a\ufffdb"}`},
-		"nested NUL":                 {metadata: map[string]any{"k": []any{map[string]any{"n": "\x00"}}}, wantErr: true},
+		"empty is NULL":             {metadata: map[string]any{}},
+		"plain":                     {metadata: map[string]any{"k": "v"}, want: `{"k":"v"}`},
+		"at the limit":              {metadata: map[string]any{"k": atLimit}, want: `{"k":"` + atLimit + `"}`},
+		"over the limit":            {metadata: map[string]any{"k": atLimit + "x"}, wantErr: true},
+		"NUL in a string":           {metadata: map[string]any{"k": "a\x00b"}, wantErr: true},
+		"NUL in raw JSON":           {metadata: map[string]any{"k": json.RawMessage(`"\u0000"`)}, wantErr: true},
+		"escaped slash before NUL":  {metadata: map[string]any{"k": json.RawMessage(`"\\\u0000"`)}, wantErr: true},
+		"NUL after escaped u0000":   {metadata: map[string]any{"k": json.RawMessage(`"\\u0000\u0000"`)}, wantErr: true},
+		"escaped slash and u0000":   {metadata: map[string]any{"k": `\u0000`}, want: `{"k":"\\u0000"}`},
+		"two NUL-free escapes":      {metadata: map[string]any{"k": json.RawMessage(`"\\u0000\\\\u0000"`)}, want: `{"k":"\\u0000\\\\u0000"}`},
+		"raw bytes not UTF-8":       {metadata: map[string]any{"k": json.RawMessage("\"\xff\"")}, wantErr: true},
+		"string not UTF-8":          {metadata: map[string]any{"k": "a\xffb"}, wantErr: true},
+		"key not UTF-8":             {metadata: map[string]any{"k\xff": "v"}, wantErr: true},
+		"real U+FFFD stays":         {metadata: map[string]any{"k": "a\uFFFDb"}, want: "{\"k\":\"a\uFFFDb\"}"},
+		"fffd escape in raw JSON":   {metadata: map[string]any{"k": json.RawMessage(`"\ufffd"`)}, wantErr: true},
+		"lone high surrogate":       {metadata: map[string]any{"k": json.RawMessage(`"\ud800"`)}, wantErr: true},
+		"lone low surrogate":        {metadata: map[string]any{"k": json.RawMessage(`"\udc00"`)}, wantErr: true},
+		"high surrogate then text":  {metadata: map[string]any{"k": json.RawMessage(`"\ud800abcdef"`)}, wantErr: true},
+		"surrogate pair":            {metadata: map[string]any{"k": json.RawMessage(`"\ud83d\ude00"`)}, want: `{"k":"\ud83d\ude00"}`},
+		"upper-case surrogate pair": {metadata: map[string]any{"k": json.RawMessage(`"\uD83D\uDE00"`)}, want: `{"k":"\uD83D\uDE00"}`},
+		"escaped slash and ud800":   {metadata: map[string]any{"k": `\ud800`}, want: `{"k":"\\ud800"}`},
+		"nested NUL":                {metadata: map[string]any{"k": []any{map[string]any{"n": "\x00"}}}, wantErr: true},
 	} {
 		got, err := entry(c.metadata).MetadataJSON()
 		if c.wantErr {

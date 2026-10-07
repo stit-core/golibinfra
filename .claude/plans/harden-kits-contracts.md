@@ -91,7 +91,8 @@ blocked-by: —
   PASS, E08 — по «Решениям», E05 — отказ длинного пароля; `go test -race ./authnkit/... ./testkit/sessiontest/` с
   Docker → PASS
   - Подтверждено: дерево S13 (`M/hkc3e/logs/{unit,pg}-acf3865.log`) — E12 (3 × `ErrInvalidEntry`), E09–E14 PASS; E08: S3
-    `tls=true`, токен к `http://collector` — `ErrConfig`, loopback и `ALLOW` — нет; E05: > 1 KiB — отказ; test-full PASS
+    `tls=true`, токен к `http://collector` — `ErrConfig`, loopback и `ALLOW` — нет; E05: > 1 KiB — отказ; test-full PASS;
+    фикс N1: не-UTF-8 и суррогат в `Metadata` — `ErrInvalidEntry` (`M/hkc3e/logs/n1-valc-audit.log`)
 
 ## Шаги
 ### Конфиг и формы API
@@ -176,15 +177,14 @@ blocked-by: —
   `SHA256:<hex>`, NUL и не-UTF-8 — `ErrInvalidKey`. Порядок блокировок один — строка субъекта, затем пары (B2 валидатора C):
   `Attempt` без строки субъекта ничего не пишет, создаёт её (`INSERT … DO NOTHING`) и повторяет; `RecordSuccess` обнуляет
   её (не удаляет), затем удаляет пару; `Cleanup` — `SKIP LOCKED`. Хуки тестов — по указателю: `Store` сравним (apidiff).
-- **Входы и дефолты.** S3 без схемы — TLS, plaintext — `http://`; `STORAGE_S3_USE_SSL` удалён (bool-дефолт `true`
-  нарушил бы «ноль литерала — дефолт доки»). `OTEL_TOKEN`/`Authorization` к `http://` не на loopback — `ErrConfig` и у
-  выключенного, без `OTEL_ALLOW_INSECURE_TOKEN` (как grpcclient). Пароль > 1 KiB в Argon2id не идёт: `Hash` — отказ,
-  `Verify` — после `VerifyDummy`: длина не выдаёт логин таймингом (E05: гигиена). auditkit: строки — UTF-8 без NUL;
-  `Metadata` — по JSON (`MetadataJSON`, его пишет pgstore): ≤ 64 КиБ, без `\u0000`, UTF-8; не-UTF-8 строки — U+FFFD
-  от `encoding/json`, запись не теряется. Retention — opt-in `RetentionModule` (`AUDIT_RETENTION_DAYS` без дефолта, [1,
-  36500], раз в час, батч 5000). `Revoke` → `(subject, err)`: владелец — у вызова, закрывшего сессию, иначе `""`. Рядом:
+- **Входы и дефолты.** S3 без схемы — TLS, plaintext — `http://`; `USE_SSL` удалён (bool-дефолт `true` нарушил бы «ноль
+  литерала — дефолт доки»). `OTEL_TOKEN`/`Authorization` к `http://` не на loopback — `ErrConfig` и у выключенного, без
+  `OTEL_ALLOW_INSECURE_TOKEN` (как grpcclient). Пароль > 1 KiB в Argon2id не идёт: `Hash` — отказ, `Verify` — после
+  `VerifyDummy` (длина не выдаёт логин таймингом; E05: гигиена). auditkit: строки и `Metadata` (и ключи) — UTF-8 без NUL,
+  по JSON (`MetadataJSON`, его пишет pgstore): ≤ 64 КиБ, без `\u0000`, суррогата без пары и `\ufffd` (так `encoding/json`
+  метит битые байты: замена исказила бы запись — N1 C). Retention — opt-in `RetentionModule` (`AUDIT_RETENTION_DAYS` без
+  дефолта, [1, 36500], раз в час, батч 5000). `Revoke` → `(subject, err)`: владелец — у вызова, закрывшего сессию. Рядом:
   255 у auditkit и `session` — предел кита (KDOC-09); README auditkit — дедлайн миграций по S4; фикстура MinIO — `http://`.
-
 ## Handoff
 При закрытии — в Handoff `harden-tests-archkit-release`. Что меняет потребитель на bump v1.4.0:
 - **S1–S3.** `KEY=` — дефолт, пустое — `-`; App на `config.Env` — имена тегов; места — в Handoff второго плана.
@@ -206,7 +206,7 @@ blocked-by: —
   токен OTLP к `http://` не на loopback — https или `OTEL_ALLOW_INSECURE_TOKEN=true`; `AUDIT_RETENTION_DAYS`; Redis — 2× пул.
 
 ## Где мы сейчас
-Этапы 1–2 приняты; фиксы FAIL C этапа 3 (`M/validation-harden-kits-contracts-C.md`): B1, B2 готовы, дальше N1–N5. Аннотация:
+Этапы 1–2 приняты; фиксы FAIL C этапа 3 (`M/validation-harden-kits-contracts-C.md`): B1, B2, N1 готовы, дальше N2–N5. Аннотация:
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
   log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`), поле
   без тега — ошибка `Load` (тег или `ignored:"true"`), тег на вложенной структуре — ошибка (был приставкой,
@@ -287,7 +287,7 @@ blocked-by: —
   часам базы; subject длиннее 255 байт — ключ по SHA-256, с NUL или не в UTF-8 — `ErrInvalidKey`; успех обнуляет строку
   субъекта (её уберёт cleanup), cleanup пропускает строки, занятые попыткой; `bruteforce_locks_total{scope}`. Входы (S13): пароль длиннее 1024 байт — `ErrPasswordTooLong` у `Hash` и `Verify`
   (`Verify` — за время `VerifyDummy`; DTO — `maxLength`); аудит: NUL и не-UTF-8 в строках, `Metadata` > 64 КиБ JSON или с
-  `\u0000` — `ErrInvalidEntry` до базы (`result=invalid`), не-UTF-8 строки `Metadata` — U+FFFD; аудит-`Module` даёт и `*Store`.
+  `\u0000` — `ErrInvalidEntry` до базы (`result=invalid`), и не-UTF-8 и суррогат без пары в `Metadata`; `Module` даёт `*Store`.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,
   `outboxkit.WithMetricSubject`, `Message.TraceParent`, `OutMsg.MetricSubject`/`TraceParent`, миграция outbox 0003;

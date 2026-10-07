@@ -71,6 +71,7 @@ func TestStore_DeleteExpired(t *testing.T) {
 	}
 	for _, e := range []auditkit.Entry{
 		{Action: "edge", Resource: "user", At: time.Now().Add(-29 * 24 * time.Hour)},
+		{Action: "past-edge", Resource: "user", At: time.Now().Add(-(30*24 + 12) * time.Hour)},
 		{Action: "fresh", Resource: "user"},
 	} {
 		if err := s.Log(ctx, e); err != nil {
@@ -105,10 +106,10 @@ func TestStore_DeleteExpired(t *testing.T) {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("rows: %v", err)
 	}
-	if left["old"] != 0 || left["edge"] != 1 || left["fresh"] != 1 {
+	if left["old"] != 0 || left["past-edge"] != 0 || left["edge"] != 1 || left["fresh"] != 1 {
 		t.Fatalf("rows after retention = %v, want only edge and fresh", left)
 	}
-	want := float64(pgstore.RetentionBatchSize + 1)
+	want := float64(pgstore.RetentionBatchSize + 2)
 	if got := metrictest.Collect(t).Sub(before).Get(t, "audit_log_retention_deleted_total"); got.Kind != metrictest.Counter || got.Value != want {
 		t.Fatalf("audit_log_retention_deleted_total = %v (%s), want counter delta %v", got, got.Kind, want)
 	}

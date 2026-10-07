@@ -41,8 +41,9 @@ func TestStore_Log_InvalidEntry(t *testing.T) {
 	}
 }
 
-// Регрессия KCOR-06 (E12): NUL и не-UTF-8 Postgres не хранит — Log отвергает их ErrInvalidEntry до
-// INSERT, метрика пишет invalid, а не error. Граничные значения, которые база хранит, проходят.
+// Регрессия KCOR-06 (E12): NUL, не-UTF-8 и одинокий суррогат Postgres не хранит, а замена байтов
+// исказила бы запись — Log отвергает их ErrInvalidEntry до INSERT (метрика — invalid, а не error).
+// Граничные значения, которые база хранит, проходят.
 func TestStore_Log_UnstorableInput(t *testing.T) {
 	s, pg, ctx := startStore(t)
 	for name, e := range map[string]auditkit.Entry{
@@ -50,6 +51,8 @@ func TestStore_Log_UnstorableInput(t *testing.T) {
 		"NUL in Metadata":      {Action: "user.update", Resource: "user", Metadata: map[string]any{"name": "bob\x00"}},
 		"bad UTF-8 in ActorID": {Action: "user.update", Resource: "user", ActorID: "\xff\xfe"},
 		"bad UTF-8 raw JSON":   {Action: "user.update", Resource: "user", Metadata: map[string]any{"raw": json.RawMessage("\"\xff\"")}},
+		"bad UTF-8 Metadata":   {Action: "user.update", Resource: "user", Metadata: map[string]any{"name": "bob\xff"}},
+		"unpaired surrogate":   {Action: "user.update", Resource: "user", Metadata: map[string]any{"raw": json.RawMessage(`"\ud800"`)}},
 	} {
 		if err := s.Log(ctx, e); !errors.Is(err, auditkit.ErrInvalidEntry) {
 			t.Errorf("%s: Log = %v, want ErrInvalidEntry", name, err)
@@ -58,19 +61,20 @@ func TestStore_Log_UnstorableInput(t *testing.T) {
 
 	stored := map[string]any{
 		"slash":   `\u0000`,
-		"replace": "a\xffb",
-		"big":     strings.Repeat("x", auditkit.MaxMetadataBytes-64),
+		"replace": "a\uFFFDb",
+		"emoji":   json.RawMessage(`"\ud83d\ude00"`),
+		"big":     strings.Repeat("x", auditkit.MaxMetadataBytes-128),
 	}
 	if err := s.Log(ctx, auditkit.Entry{Action: "edge.metadata", Resource: "user", Metadata: stored}); err != nil {
 		t.Fatalf("Log of storable edge Metadata: %v", err)
 	}
-	var slash, replace string
-	if err := pg.DB(t).QueryRow(ctx, `SELECT metadata->>'slash', metadata->>'replace' FROM audit_log WHERE action = 'edge.metadata'`).
-		Scan(&slash, &replace); err != nil {
+	var slash, replace, emoji string
+	if err := pg.DB(t).QueryRow(ctx, `SELECT metadata->>'slash', metadata->>'replace', metadata->>'emoji' FROM audit_log WHERE action = 'edge.metadata'`).
+		Scan(&slash, &replace, &emoji); err != nil {
 		t.Fatalf("scan edge row: %v", err)
 	}
-	if slash != `\u0000` || replace != "a\uFFFDb" {
-		t.Errorf("stored slash %q, replace %q; want %q and %q", slash, replace, `\u0000`, "a\uFFFDb")
+	if slash != `\u0000` || replace != "a\uFFFDb" || emoji != "\U0001F600" {
+		t.Errorf("stored slash %q, replace %q, emoji %q; want %q, %q and the emoji", slash, replace, emoji, `\u0000`, "a\uFFFDb")
 	}
 }
 

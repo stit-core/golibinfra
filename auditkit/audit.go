@@ -6,11 +6,11 @@
 package auditkit
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -20,8 +20,8 @@ import (
 )
 
 // ErrInvalidEntry — запись не проходит Entry.Validate: пустое обязательное поле, значение
-// длиннее предела кита, строка с NUL или не в UTF-8, Metadata без JSON-представления или сверх
-// MaxMetadataBytes.
+// длиннее предела кита, строка (и в Metadata) с NUL или не в UTF-8, Metadata без JSON-представления
+// или сверх MaxMetadataBytes.
 var ErrInvalidEntry = errors.New("auditkit: invalid entry")
 
 // ErrConfig — невалидный конфиг хранилища аудита (pgstore.RetentionConfig).
@@ -91,7 +91,8 @@ func (e Entry) Validate() error {
 
 // MetadataJSON проверяет запись, как Validate, и отдаёт Metadata в JSON — то, что сохраняет
 // хранилище; пустая Metadata — nil. Metadata без JSON-представления, длиннее MaxMetadataBytes,
-// с \u0000 или не в UTF-8 (Postgres JSONB такое не хранит) — ErrInvalidEntry.
+// с NUL, не в UTF-8 (и в ключах) или с одиноким суррогатом `\ud800` в RawMessage — ErrInvalidEntry:
+// Postgres JSONB такое не хранит, а замена битых байтов на U+FFFD исказила бы запись молча.
 func (e Entry) MetadataJSON() ([]byte, error) {
 	if err := e.checkFields(); err != nil {
 		return nil, err
@@ -99,8 +100,6 @@ func (e Entry) MetadataJSON() ([]byte, error) {
 	if len(e.Metadata) == 0 {
 		return nil, nil
 	}
-	// Не-UTF-8 в строках encoding/json сам меняет на U+FFFD; сырые байты RawMessage и
-	// MarshalJSON он пропускает как есть — их ловит utf8.Valid.
 	js, err := json.Marshal(e.Metadata)
 	switch {
 	case err != nil:
@@ -109,8 +108,9 @@ func (e Entry) MetadataJSON() ([]byte, error) {
 		return nil, fmt.Errorf("%w: Metadata is longer than %d bytes of JSON", ErrInvalidEntry, MaxMetadataBytes)
 	case !utf8.Valid(js):
 		return nil, fmt.Errorf("%w: Metadata is not valid UTF-8", ErrInvalidEntry)
-	case hasNULEscape(js):
-		return nil, fmt.Errorf("%w: Metadata contains NUL", ErrInvalidEntry)
+	}
+	if problem := unstorableEscape(js); problem != "" {
+		return nil, fmt.Errorf("%w: Metadata %s", ErrInvalidEntry, problem)
 	}
 	return js, nil
 }
@@ -148,24 +148,46 @@ func (e Entry) checkFields() error {
 	return nil
 }
 
-// hasNULEscape — в JSON есть экранированный NUL: \u0000, перед которым чётное число обратных
-// слешей (нечётное — это экранированный слеш и литерал u0000).
-func hasNULEscape(js []byte) bool {
-	for off := 0; ; {
-		i := bytes.Index(js[off:], []byte(`\u0000`))
-		if i < 0 {
-			return false
+// unstorableEscape — escape JSON-строки, которую Postgres JSONB не хранит или которой
+// encoding/json заменил битые байты: `\u0000`, одинокий суррогат и `\ufffd` (сам символ U+FFFD
+// encoding/json пишет байтами, escape — только на месте не-UTF-8). Пустая строка — таких нет.
+// Обратный слеш в выводе encoding/json бывает только внутри строки.
+func unstorableEscape(js []byte) string {
+	for i := 0; i < len(js); i++ {
+		if js[i] != '\\' {
+			continue
 		}
-		i += off
-		slashes := 0
-		for j := i - 1; j >= 0 && js[j] == '\\'; j-- {
-			slashes++
+		i++ // экранированный символ: `\\` — сам слеш, `\u` — код
+		code, ok := escapedCode(js, i)
+		if !ok {
+			continue
 		}
-		if slashes%2 == 0 {
-			return true
+		switch {
+		case code == 0:
+			return "contains NUL"
+		case string(js[i+1:i+5]) == "fffd":
+			return "is not valid UTF-8"
+		case code >= 0xDC00 && code <= 0xDFFF:
+			return "has an unpaired surrogate"
+		case code >= 0xD800 && code <= 0xDBFF:
+			low, ok := escapedCode(js, i+6)
+			if !ok || js[i+5] != '\\' || low < 0xDC00 || low > 0xDFFF {
+				return "has an unpaired surrogate"
+			}
+			i += 6
 		}
-		off = i + 1
+		i += 4
 	}
+	return ""
+}
+
+// escapedCode — код escape `\uXXXX`, чей `u` стоит на позиции i.
+func escapedCode(js []byte, i int) (uint64, bool) {
+	if i+4 >= len(js) || js[i] != 'u' {
+		return 0, false
+	}
+	code, err := strconv.ParseUint(string(js[i+1:i+5]), 16, 16)
+	return code, err == nil
 }
 
 // Logger — порт записи аудита; реализация в библиотеке — auditkit/pgstore.

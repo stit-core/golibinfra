@@ -198,16 +198,17 @@ const MaxMetadataBytes = 64 << 10
 
 `Validate` отвергает то, что хранилище не сохранит или сохранит не тем: пустые `Action` и
 `Resource`, значения сверх предельных длин, NUL и не-UTF-8 в строковых полях, `Metadata`
-без JSON-представления (канал, `NaN`), длиннее `MaxMetadataBytes` в JSON или с NUL
-(`\u0000` Postgres `JSONB` не хранит). Нарушение — ошибка, обёрнутая `ErrInvalidEntry`
+без JSON-представления (канал, `NaN`), длиннее `MaxMetadataBytes` в JSON, с NUL, не-UTF-8
+(в значениях и ключах) или одиноким суррогатом (`\ud800` в `json.RawMessage`): `\u0000` и
+суррогат Postgres `JSONB` не хранит, а битые байты `encoding/json` молча заменил бы на U+FFFD
+(и два ключа слились бы в один). Нарушение — ошибка, обёрнутая `ErrInvalidEntry`
 (`errors.Is`), с именем поля, но без значения. `Log` проверяет запись до похода в базу:
 пустая или искажённая запись в audit-log хуже ошибки — её никто не заметит, а ошибка
 базы на `Log` вне транзакции теряла бы запись под видом сбоя (`result=error`).
 
 `MetadataJSON` делает те же проверки и отдаёт `Metadata` в JSON — то, что пишет
-`pgstore` (пустая `Metadata` — `nil`, в базе `NULL`). Не-UTF-8 в строках `Metadata`
-`encoding/json` сам заменяет на U+FFFD — запись сохраняется; сырые байты
-`json.RawMessage` и `MarshalJSON` не в UTF-8 — `ErrInvalidEntry`. Фейк
+`pgstore` (пустая `Metadata` — `nil`, в базе `NULL`). Сам символ U+FFFD в строке проходит;
+escape `\ufffd` в `json.RawMessage` — отказ: так `encoding/json` помечает битые байты. Фейк
 `audittest.Recorder` зовёт `Validate` и отвергает те же записи.
 
 ### `auditkit.Entry.Enrich`
