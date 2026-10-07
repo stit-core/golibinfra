@@ -316,8 +316,8 @@ func TestModule_UnmappedHandlerErrorIsNeutralAndLogged(t *testing.T) {
 	if !strings.Contains(body, `"code":"INTERNAL"`) {
 		t.Fatalf("500 body must carry a code: %s", body)
 	}
-	if !strings.Contains(buf.String(), "password=s3cret") {
-		t.Fatalf("handler error must be logged: %s", buf.String())
+	if !strings.Contains(buf.String(), "pq: dial tcp 10.0.0.5:5432 user=admin password=") || strings.Contains(buf.String(), "s3cret") {
+		t.Fatalf("handler error must be logged with its password masked: %s", buf.String())
 	}
 	if !strings.Contains(buf.String(), "req-boom") {
 		t.Fatalf("handler error log must carry request_id: %s", buf.String())

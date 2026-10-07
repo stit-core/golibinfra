@@ -40,8 +40,9 @@ golibinfra — общая lib, на которую завязаны бизнес
 - **`hubkit/sso` и `hubkit/issuer`** — верификация hub-сессии обоих контуров
   (обязательный `aud`, JWKS-кэш и grace вытесненного `kid`), выпуск ES256-сессий,
   rotating refresh с reuse-detection.
-- **`logkit`** — утечка секретов/PII в логи: redact-паттерны и дефолтный набор
-  (Bearer/Basic, JWT, API-ключи).
+- **`logkit`** — утечка секретов/PII в логи: redact-паттерны и дефолтный набор (Bearer/Basic,
+  JWT, API-ключи, токены base64url, пароль userinfo URL, пары `ключ=значение` с ключом-секретом),
+  ключи-секреты атрибутов, групп, `map` и полей структур.
 - **`storagekit`** — presigned-ссылки (TTL, область действия), экранирование
   ключей в публичных URL, лимиты памяти на `Put`.
 - **`amocrmkit`** — HMAC-подпись amoJo, OAuth-обмен, allowlist хостов аккаунта

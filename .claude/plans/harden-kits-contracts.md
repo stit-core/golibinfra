@@ -72,12 +72,13 @@ blocked-by: —
   IP клиента в ctx без middleware. Проверка: `httpkit-a/run.sh <rev> security` → H15, H18 PASS; `httpkit-b/run.sh
   <rev> exp` → HX07 PASS
   - Подтверждено: дерево S9 (`M/exc2/logs/s9-*.log`) — H15, H18 PASS, HX07 — 1 вызов (503); httpkit-a — без FAIL
-- [ ] **AC9** — Секреты: пароль и токен из URL и DSN не попадают в ошибки, логи и спаны natskit, cachekit,
+- [x] **AC9** — Секреты: пароль и токен из URL и DSN не попадают в ошибки, логи и спаны natskit, cachekit,
   storagekit, telemetry и httpclient; маски logkit по умолчанию прячут base64url-токены и ссылки с ними, пароль
   DSN, коды вне словаря, поля структур и map под указателем в `Any`, JSON в `RawMessage` и `[]byte`, `otpauth`;
   счётчики и код ошибки `code` открыты. Проверка: `correctness-security/run.sh <rev> unit` → E02, E03, E04 PASS;
   `TestVal_RedactBypassMatrix` (`M/val-kits-A/experiments/logkit_zz_val_exp_test.go`) → `leaked=false`, кроме
   ключей из «Решений»; `api-docs/scripts/claims-C/run.sh <wt>` → urlleak без секретов
+  - Подтверждено: E02–E04 PASS, urlleak чист; матрица — `leaked=false`, кроме голого `code` (`M/hkc3e/logs/s1[01]-*`)
 - [ ] **AC10** — bruteforcekit: проверок пароля одного subject за окно не больше бюджета субъекта при любом числе
   адресов; `CLEANUP_RETENTION` меньше `LOCK_DURATION` — `ErrConfig`; пауза отказа — по часам хранилища; ветка
   переучёта `Attempt` покрыта тестом; subject длиннее 255 байт учитывается. Проверка: `correctness-security/run.sh
@@ -126,8 +127,9 @@ blocked-by: —
   - Проверка: `correctness-security/run.sh <rev> unit` → E03, E04 PASS; claims-C urlleak — чисто ·
     Закрывает: AC9 · Зависит от: S1
   - Сделано: E03, E04 PASS, urlleak и claimsB redact чисты (`M/hkc3e/logs/s10-*`); мутанты `M/hkc3e/mut_s10.py` 14/14
-- [ ] **S11** — Маски logkit (бэклог `logkit-redact-gaps`, `logkit-redact-containers`, `-otpauth`)
+- [x] **S11** — Маски logkit (бэклог `logkit-redact-gaps`, `logkit-redact-containers`, `-otpauth`)
   - Проверка: AC9 → выполнен · Закрывает: AC9 · Зависит от: S10
+  - Сделано: AC9 → PASS; мутанты `M/hkc3e/mut_s11.py` 18/18; цена записи без секрета — ×1.7–2.6 (потолок ×3)
 - [ ] **S12** — bruteforcekit (KSEC-04, KSEC-07, бэклог `bruteforcekit-*`, заметка шаблона про 255 байт)
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S4
 - [ ] **S13** — Входы и дефолты: S3, OTLP, пароль, аудит, retention (KSEC-05, KCOR-06, C; N4 v1.3.0 — `Revoke`)
@@ -156,42 +158,35 @@ blocked-by: —
   (экспонента раздувает ×4): мерит хранилище, параметр `Repository.Insert(…, maxBytes)`. Строка хранит W3C
   trace-context `Publish` (колонка 0003, без baggage), producer-спан — его ребёнок со ссылкой на тик (KO13); label
   `subject` — только шаблоном `WithMetricSubject` (KO11, KO21); имя спана natskit — шаблон или `natskit.publish`.
-- **Идемпотентность и кэш.** `SetNX`, `GetDel`, `Compare*` — вторым клиентом без повторов (до 2×`REDIS_POOL_SIZE`):
-  повтор видит эффект первой попытки (E18). `IdempotencyStore.Set(…, token, …) (stored, err)` — compare-and-set по
-  токену (E07), без sentinel; `!stored` — WARN, `skipped`; набор — `testkit/idempotencytest`. Предел — отказ, не
-  вытеснение: `MemoryCache.WithMaxKeys` (100 000, `ErrMemoryFull`), `httpkit.MemoryStore` — 100 000 без опции,
-  httpclient `MaxHosts` (1024, `-1`) — реестр breaker'ов и label, сверх — `other`.
-- **Контракт HTTP.** Лимит тела — один `MaxBytesReader`, лимит фиксируется на первом чтении: huma-middleware
-  ставит `MaxBodyBytes` операции, скрытой реестр зовёт те же `OnAddOperation`; `*http.MaxBytesError` в причине
-  ошибки huma — 413 (H17). Не хранятся 408, 409, 425, 429: «не выполнено», повтор исполняет заново (H16); без
-  субъекта и credentials — без дедупликации. `WWW-Authenticate` — хук кита по `components` (http — схема,
-  oauth2/oidc — `Bearer`, прочие — имя), без хука — имена; HEAD — свой middleware, `Allow` — с HEAD. Дедлайн —
+- **Идемпотентность и кэш.** `SetNX`, `GetDel`, `Compare*` — вторым клиентом без повторов (E18); `Set` идемпотентности
+  — compare-and-set по токену (E07), `!stored` — WARN; набор — `idempotencytest`. Предел — отказ, не вытеснение:
+  `WithMaxKeys` (100 000), `httpkit.MemoryStore` — 100 000, httpclient `MaxHosts` (1024, `-1`), сверх — `other`.
+- **Контракт HTTP.** Лимит тела — один `MaxBytesReader` на первом чтении, `MaxBodyBytes` операции и скрытой — хуком
+  (H17). Не хранятся 408, 409, 425, 429 (H16) и запросы без субъекта и credentials. `WWW-Authenticate` — хук кита по
+  `components`, без хука — имена; HEAD — свой middleware, `Allow` — с HEAD. Дедлайн —
   `HTTP_REQUEST_TIMEOUT` 25s < `WriteTimeout`, `ReserveTTL` больше, `-1s` — выкл.; над `Idempotency` (H35): 503 с
   `Content-Length` и `Connection: close` (клиент дочитывает его, пока хендлер работает); ответ после дедлайна — 503 и
   в гонке с таймером, запись после 503 отбрасывается без ошибки — huma паникует на ней (B1 валидатора B); без
   дедлайна — только GET с SSE или `Upgrade` (N5: заголовок клиента не снимает дедлайн с записи, POST-поток рвётся).
   CORS — `Idempotency-Key` в дефолте. panic после заголовка — Flush и `http.ErrAbortHandler`: иначе EOF (H06).
-- **Край httpkit.** Extractor — поле `SecuritySchemeEntry.Extract`; `HumaAuth(schemes, log)`: операция открыта,
-  если прошла одна из её альтернатив целиком; `{}` — без credentials, последней (N2: личность и 503 бэкенда при
-  `{}` не теряются), `Security` из одних `{}` — `ErrRoutes` (открытая — только `Public`); отказы — 503 бэкенда, иначе
-  `APIError` extractor'а, иначе 401. Графовый `AuthExtractor`, `WithAuthExtractor`, `handlertest.WithAuth`,
-  `Idempotency(…, WithAuth)` удалены (H15); схема вне `components` — `ErrRoutes` и без схем (N8), без `Extract` —
-  `ErrAuthNotConfigured`. `Idempotency` — net/http-middleware в цепочке huma после `HumaAuth`: extractor — один
-  вызов (HX07), replay — с маршрутом (KOBS-12), только операции huma. trace-context клиента — `WithPublicEndpointFn`
-  (ссылка на новом корне), propagator без baggage, `HTTP_TRUST_TRACE_CONTEXT` выключен (H18). XFF — адрес, затем
-  `ParseAddrPort` (N9); `ContextWithClientIP` (N4). hubkit/sso — extractor своего cookie, oidckit — схема с `Extract`.
+- **Край httpkit.** Extractor — `SecuritySchemeEntry.Extract`; операция открыта, если прошла альтернатива целиком;
+  `{}` — без credentials, последней (N2: личность и 503 бэкенда при `{}` не теряются), `Security` из одних `{}` —
+  `ErrRoutes`; отказы — 503 бэкенда, иначе `APIError` extractor'а, иначе 401. Графовый `AuthExtractor` и `WithAuth`
+  удалены (H15); схема вне `components` — `ErrRoutes` (N8), без `Extract` — `ErrAuthNotConfigured`. `Idempotency` —
+  в цепочке huma после `HumaAuth` (HX07, KOBS-12). trace-context клиента — ссылкой на новом корне, без baggage (H18).
+  XFF — адрес, затем `ParseAddrPort` (N9); `ContextWithClientIP` (N4); hubkit/sso, oidckit — схемы с `Extract`.
 - **Фикс этапа 2.** Тесты на выживших мутантов B (V1, V4, V6, V8, V11); backlog-gauge инстанса без шаблона — 0 у
   пустой очереди (N8); локальный предел payload outbox — вторая мера, не берём; KDOC-11 — S12 второго плана.
 - **Секреты в URL.** `internal/redact.URL`: userinfo целиком и значения query — `xxxxx` (маркер pgx), фрагмент снят,
   путь остаётся (README: секрет — не в пути); без схемы и неразбираемый — userinfo до последнего `@`; `ParseError` —
   без цитаты ввода; keyword-DSN скрывает pgx. httpclient: свой спан попытки вместо otelhttp, `*url.Error` — с
   очищенным URL (E03, E04); `STORAGE_PUBLIC_BASE_URL` с кредами — `ErrConfig`; ошибка OTLP-заголовков — с ключом.
-- **Маски logkit.** Схема слов ключа (`classifyWords`) остаётся. Словарь секретов дополняют `pass`, `sid`,
-  `signature`, `refresh`, `tokens`; `code` — слово-код (прячет и числа) только с квалификатором (`passcode`,
-  `verification_code`, `auth_code`…); голый `code` — код ошибки httpkit (`httpkit/server.go:350`), открыт; ключ,
-  который кончается словом-счётчиком (`otp_attempts`), — не код. Значения — маски base64url-токенов (порог — без
-  ложных `TestVal_RedactHexFalsePositives`), пароля DSN, `otpauth://…secret=`; контейнеры — map под указателем,
-  поля структур, JSON из `RawMessage`/`[]byte`.
+- **Маски logkit.** Слова ключа (`classifyWords`): `signature` — суффиксом, `pass`, `sid`, `refresh`, `tokens` —
+  целым словом; код — `passcode` и `code` после квалификатора (`verification`, `auth`, `sms`…), голый `code` — код
+  ошибки httpkit, открыт; ключ на слово-счётчик (`otp_attempts`) — не код. Ключи в `Any` — по его JSON (скан
+  ключей вместо обхода reflect): поля структур, указатели, свой `MarshalJSON`, `RawMessage`/`[]byte`. Маски значений
+  дефолтного набора: base64url ≥ 20 с обоими регистрами и цифрой (ложных в `RedactHexFalsePositives` нет), пароль
+  userinfo, пара `ключ=значение` с ключом-секретом (keyword-DSN, query, `otpauth`); pre-filter знает и их.
 - **bruteforcekit.** Второй бюджет — на subject по всем адресам (E11: 100 проверок с 20 адресов при
   `MaxFailures=5`): превышение — `LockState` с областью «субъект» и коротким сроком, потребитель отвечает как на
   блокировку пары. Пара блокируется строго, субъект — коротко: держать чужой аккаунт закрытым можно лишь
@@ -214,6 +209,7 @@ blocked-by: —
   `WithSecuritySchemes`: `handler_test.go` auth и user, `scripts/new-domain.sh:662`, `rules/tests-pipeline.md:47`,
   doc `identitytest.go:47`; `make gen` (`REQUEST_TIMEOUT` в `openapi.json`); `Security` из одних `{}` — `Public`.
 - **bruteforcekit.** Бюджет субъекта, `CLEANUP_RETENTION` ≥ `LOCK_DURATION`, `Retry-After` — `LockState`; без обходов.
+- **logkit.** Маски шире (S11): тест, который ищет в логе `password=…`, base64url-токен или пароль URL, — на маркер.
 - **authnkit и auditkit.** Пароль длиннее 1 KiB — ошибка (DTO — свой `maxLength`); NUL и не-UTF-8 в аудите —
   `ErrInvalidEntry`; retention — env; владелец сессии из `Revoke` — автор аудита выхода.
 - **env для INFRA-HANDOFF:** `PG_MIGRATE_LOCK_TIMEOUT`, `HTTPCLIENT_MAX_HOSTS`, `HTTP_REQUEST_TIMEOUT` (меньше
@@ -222,7 +218,7 @@ blocked-by: —
 
 ## Где мы сейчас
 Этап 1 принят (`M/validation-harden-kits-contracts-A.md`); этап 2 (S4–S9) закрыт, B1 и N1–N10 валидатора B
-(`M/validation-harden-kits-contracts-B.md`) — `3dea79c`, перепроверка — у валидатора. S10 сделан; следующий — S11.
+(`M/validation-harden-kits-contracts-B.md`) — `3dea79c`, перепроверка — у валидатора. S10, S11 сделаны; следующий — S12.
 
 Заготовка аннотации v1.4.0 (по шагам):
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
@@ -291,7 +287,11 @@ blocked-by: —
   X-Forwarded-For — его IP. Секреты URL (S10): в ошибках, логах и спанах natskit, cachekit, storagekit, telemetry и
   httpclient userinfo и значения query — `xxxxx`, фрагмента нет, ошибка разбора URL и `OTEL_EXPORTER_OTLP_HEADERS` не
   цитирует ввод; `url.full` спанов httpclient — с именами параметров query; спан попытки httpclient — свой (`HTTP
-  <METHOD>` до заголовков ответа), не otelhttp; `STORAGE_PUBLIC_BASE_URL` с кредами — `ErrConfig`.
+  <METHOD>` до заголовков ответа), не otelhttp; `STORAGE_PUBLIC_BASE_URL` с кредами — `ErrConfig`. logkit (S11):
+  секрет по ключу — и `pass`, `sid`, `refresh`, `signature`, `tokens`, `passcode`, `code` после
+  `verification`/`auth`/`sms`…; ключ на слово-счётчик (`otp_attempts`) — не код; ключи-секреты ищутся в полях
+  структур, за указателями, в выводе `MarshalJSON` и в JSON из `RawMessage`/`[]byte`; маски значений — base64url-токен
+  ≥ 20, пароль userinfo URL, пара `ключ=значение` с ключом-секретом.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,
   `outboxkit.WithMetricSubject`, `Message.TraceParent`, `OutMsg.MetricSubject`/`TraceParent`, миграция outbox 0003;

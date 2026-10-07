@@ -3,15 +3,12 @@ package logkit
 import (
 	"bytes"
 	"context"
-	"encoding"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log/slog"
-	"reflect"
 	"regexp"
 	"strings"
-	"sync"
 	"unicode"
 )
 
@@ -36,7 +33,25 @@ var defaultRedactPatterns = Patterns{
 // него (accesstoken, newpassword); api_key и private_key ловит пара слов.
 var secretKeyWords = [...]string{
 	"apikey", "authorization", "cookie", "cookies", "credential", "credentials", "jwt",
-	"passphrase", "passwd", "password", "privatekey", "pwd", "secret", "token",
+	"passphrase", "passwd", "password", "privatekey", "pwd", "secret", "signature", "token",
+}
+
+// secretExactWords — слова-секреты только целым словом: bypass, inside и autorefresh — не они.
+var secretExactWords = [...]string{"pass", "refresh", "sid", "tokens"}
+
+// codeQualifiers — слова, после которых code — секрет (verification_code, smsCode); голый code —
+// код ошибки, как status_code и error_code.
+var codeQualifiers = [...]string{
+	"access", "auth", "authorization", "backup", "confirm", "confirmation", "device", "email", "invite",
+	"login", "magic", "mfa", "oauth", "recovery", "reset", "security", "sms", "verification", "verify",
+}
+
+// counterWords — последнее слово, с которым ключ рядом с кодом — счётчик или срок, а не код
+// (otp_attempts, pin_length, otp_ttl_seconds).
+var counterWords = [...]string{
+	"attempt", "attempts", "count", "counter", "digits", "expires", "expiry", "interval", "len",
+	"length", "limit", "max", "min", "minutes", "ms", "retries", "sec", "seconds", "size", "timeout",
+	"tries", "ttl", "window",
 }
 
 // keySecrecy — что имя ключа говорит о значении под ним.
@@ -64,8 +79,8 @@ type redactRules struct {
 // NewRedactHandler маскирует msg и строковые значения атрибутов (включая
 // With()-attrs, группы, LogValuer, error и JSON-представление Any-значений), а
 // значение под ключом-секретом (token, password, secret, authorization, cookie,
-// …), в том числе у map, — целиком; числа (кроме ключей-кодов otp и pin), bool,
-// time и duration не трогает.
+// …), в том числе у map, полей структур и в JSON из RawMessage и []byte, — целиком;
+// числа (кроме ключей-кодов otp, pin и verification_code), bool, time и duration не трогает.
 func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error) {
 	if inner == nil {
 		return nil, errors.New("logkit: NewRedactHandler: nil inner handler")
@@ -130,33 +145,67 @@ const minRedactDigits = 11
 // из 16 случайных байт, MD5, SHA-1 и SHA-256 в hex.
 const minRedactHex = 32
 
+// minRedactToken — длина токена base64url (буквы обоих регистров и цифра), который маскирует
+// дефолтный набор: ключи API, токены сброса и сессий длиннее, а UUID, SHA коммита, ULID и имена
+// хостов такого сочетания не дают.
+const minRedactToken = 20
+
+// Маски дефолтного набора, которым нужна проверка совпадения (valueMasks).
+var (
+	tokenRe    = regexp.MustCompile(`[A-Za-z0-9_-]{20,}`)
+	userinfoRe = regexp.MustCompile(`[A-Za-z][A-Za-z0-9+.-]*://[^\s/?#@:]*:([^\s/?#]+)@`)
+	pairRe     = regexp.MustCompile(`([A-Za-z0-9_.-]+)=([^\s&;,"'#=?]+)`)
+)
+
 // defaultHint — необходимое условие совпадения дефолтного набора: у каждой
 // маски есть обязательный литерал («@», «+», «bearer», «basic», «eyJ», «sk-»),
-// цепочка минимум из minRedactDigits цифр либо из minRedactHex hex-символов.
+// цепочка минимум из minRedactDigits цифр либо из minRedactHex hex-символов, токен
+// base64url от minRedactToken символов или «=» после имени со словом ключа-секрета.
 // Скан по байтам дешевле прогонки regexp'а на порядки: её цена — O(длина ×
 // размер программы), а программа объединённого набора — больше двух сотен
 // инструкций.
 func defaultHint[T string | []byte](s T) bool {
 	run, hex, sep := 0, 0, false
+	tok, seen, name := 0, uint8(0), 0
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if isHexDigit(c) {
+		class := byteClasses[c]
+		if class&classToken != 0 {
+			tok++
+			if seen |= class; tok >= minRedactToken && seen&classMixed == classMixed {
+				return true
+			}
+		} else {
+			tok, seen = 0, 0
+			if c == '=' && hasKeyTrigger(s[name:i]) {
+				return true
+			}
+			if c != '.' {
+				name = i + 1
+			}
+		}
+		if class&classHex != 0 {
 			if hex++; hex >= minRedactHex {
 				return true
 			}
 		} else {
 			hex = 0
 		}
-		switch {
-		case c == '@' || c == '+':
-			return true
-		case isDigit(c):
+		if class&classDigit != 0 {
 			run++
 			sep = false
 			if run >= minRedactDigits {
 				return true
 			}
 			continue
+		}
+		if class&classSpecial == 0 {
+			run, sep = 0, false
+			continue
+		}
+		switch {
+		case c == '@' || c == '+':
+			return true
 		case numSep(c) && run > 0 && !sep:
 			sep = true
 			continue
@@ -177,6 +226,40 @@ func defaultHint[T string | []byte](s T) bool {
 	}
 	return false
 }
+
+// Классы байта для defaultHint: один поиск в таблице вместо цепочки сравнений на каждый байт.
+const (
+	classToken uint8 = 1 << iota // алфавит base64url
+	classUpper
+	classLower
+	classDigit
+	classHex
+	classSpecial // начало литерала маски или разделитель цифр карты
+	classMixed   = classUpper | classLower | classDigit
+)
+
+var byteClasses = func() (t [256]uint8) {
+	for c := range 256 {
+		b := byte(c)
+		switch {
+		case isUpper(b):
+			t[c] = classToken | classUpper
+		case isLower(b):
+			t[c] = classToken | classLower
+		case isDigit(b):
+			t[c] = classToken | classDigit
+		case b == '-' || b == '_':
+			t[c] = classToken
+		}
+		if isHexDigit(b) {
+			t[c] |= classHex
+		}
+		if strings.IndexByte("@+bBes", b) >= 0 || numSep(b) {
+			t[c] |= classSpecial
+		}
+	}
+	return t
+}()
 
 func isHexDigit(c byte) bool {
 	return isDigit(c) || c >= 'a' && c <= 'f' || c >= 'A' && c <= 'F'
@@ -243,20 +326,79 @@ func (h *redactHandler) text(s string) string {
 	if h.rules.hint && !defaultHint(s) {
 		return s
 	}
-	if !h.rules.re.MatchString(s) {
-		return s
+	if h.rules.re.MatchString(s) {
+		s = h.rules.re.ReplaceAllLiteralString(s, h.with)
 	}
-	return h.rules.re.ReplaceAllLiteralString(s, h.with)
+	if h.rules.hint {
+		s = h.valueMasks(s)
+	}
+	return s
 }
 
 func (h *redactHandler) bytes(b []byte) []byte {
 	if h.rules.hint && !defaultHint(b) {
 		return b
 	}
-	if !h.rules.re.Match(b) {
-		return b
+	if h.rules.re.Match(b) {
+		b = h.rules.re.ReplaceAllLiteral(b, []byte(h.with))
 	}
-	return h.rules.re.ReplaceAllLiteral(b, []byte(h.with))
+	if h.rules.hint {
+		if s, masked := string(b), h.valueMasks(string(b)); masked != s {
+			return []byte(masked)
+		}
+	}
+	return b
+}
+
+// valueMasks — маски дефолтного набора с проверкой совпадения: токен base64url от
+// minRedactToken символов с буквами обоих регистров и цифрой, пароль userinfo URL
+// (`postgres://app:…@db`) и значение пары `ключ=значение`, ключ которой — секрет по словарю
+// (query, keyword-DSN `password=…`, `otpauth://…?secret=…`): число под ним прячется, только
+// если ключ — код.
+func (h *redactHandler) valueMasks(s string) string {
+	s = tokenRe.ReplaceAllStringFunc(s, func(m string) string {
+		if strings.ContainsFunc(m, func(r rune) bool { return r >= 'A' && r <= 'Z' }) &&
+			strings.ContainsFunc(m, func(r rune) bool { return r >= 'a' && r <= 'z' }) &&
+			strings.ContainsFunc(m, func(r rune) bool { return r >= '0' && r <= '9' }) {
+			return h.with
+		}
+		return m
+	})
+	s = replaceGroup(s, userinfoRe, 1, h.with, func([]string) bool { return true })
+	return replaceGroup(s, pairRe, 2, h.with, func(m []string) bool {
+		switch classifyKey(m[1]) {
+		case keyCode:
+			return true
+		case keySecret:
+			return strings.ContainsFunc(m[2], func(r rune) bool { return r < '0' || r > '9' })
+		}
+		return false
+	})
+}
+
+// replaceGroup заменяет группу group каждого совпадения re в s на with, если mask(группы) —
+// true; без замен отдаёт s.
+func replaceGroup(s string, re *regexp.Regexp, group int, with string, mask func([]string) bool) string {
+	matches := re.FindAllStringSubmatchIndex(s, -1)
+	var b strings.Builder
+	last := 0
+	for _, m := range matches {
+		groups := make([]string, len(m)/2)
+		for g := range groups {
+			groups[g] = s[m[2*g]:m[2*g+1]]
+		}
+		if !mask(groups) {
+			continue
+		}
+		b.WriteString(s[last:m[2*group]])
+		b.WriteString(with)
+		last = m[2*group+1]
+	}
+	if last == 0 {
+		return s
+	}
+	b.WriteString(s[last:])
+	return b.String()
 }
 
 func (h *redactHandler) attr(a slog.Attr) slog.Attr {
@@ -309,11 +451,12 @@ func classifyKey(key string) keySecrecy {
 	return classifyWords(key)
 }
 
-// keyTriggers — подстроки, без которых ни один ключ не секрет: слова словаря,
-// api и private (api_key, private_key), коды pin и otp.
+// keyTriggers — подстроки, без которых ни один ключ не секрет: слова словаря (pass — и
+// password, passwd, passphrase, passcode), api и private (api_key, private_key), коды pin, otp и
+// code.
 var keyTriggers = []string{
-	"api", "authorization", "cookie", "credential", "jwt", "otp", "passphrase", "passwd",
-	"password", "pin", "private", "pwd", "secret", "token",
+	"api", "authorization", "code", "cookie", "credential", "jwt", "otp", "pass", "pin", "private",
+	"pwd", "refresh", "secret", "sid", "signature", "token",
 }
 
 // keyTriggersAt — keyTriggers по первой букве в обоих регистрах: в позиции ключа
@@ -327,7 +470,7 @@ var keyTriggersAt = func() (t [256][]string) {
 }()
 
 // hasKeyTrigger — в ключе есть подстрока из keyTriggers без учёта регистра.
-func hasKeyTrigger(key string) bool {
+func hasKeyTrigger[T string | []byte](key T) bool {
 	for i := 0; i < len(key); i++ {
 		for _, w := range keyTriggersAt[key[i]] {
 			if foldPrefix(key[i:], w) {
@@ -342,7 +485,7 @@ func hasKeyTrigger(key string) bool {
 // («X-Api-Key», «accessToken», «oauth2Token»), слова сверяются со словарём.
 // По словам, а не подстрокой: «input_tokens» — счётчик, а не секрет.
 func classifyWords(key string) keySecrecy {
-	class := keyPlain
+	class, code := keyPlain, false
 	var prev string
 	for i := 0; i < len(key); {
 		w, j := nextKeyWord(key, i)
@@ -350,12 +493,15 @@ func classifyWords(key string) keySecrecy {
 			break
 		}
 		switch {
-		case codeWord(w):
-			return keyCode
+		case codeWord(w) || foldEq(w, "code") && anyFoldEq(codeQualifiers[:], prev):
+			code = true
 		case secretWord(w) || foldEq(w, "key") && (foldEq(prev, "api") || foldEq(prev, "private")):
 			class = keySecret
 		}
 		prev, i = w, j
+	}
+	if code && !anyFoldEq(counterWords[:], prev) {
+		return keyCode
 	}
 	return class
 }
@@ -366,13 +512,22 @@ func secretWord(w string) bool {
 			return true
 		}
 	}
-	return false
+	return anyFoldEq(secretExactWords[:], w)
 }
 
-// codeWord — слово-код: pin, pincode или слово на otp (otp, totp). Ключ с ним
-// где угодно прячет значение любого вида, и число тоже.
+// codeWord — слово-код: pin, pincode, passcode или слово на otp (otp, totp). Ключ с ним где
+// угодно прячет значение любого вида, и число тоже, — если ключ не кончается словом-счётчиком.
 func codeWord(w string) bool {
-	return foldEq(w, "pin") || foldEq(w, "pincode") || hasSuffixFold(w, "otp")
+	return foldEq(w, "pin") || foldEq(w, "pincode") || foldEq(w, "passcode") || hasSuffixFold(w, "otp")
+}
+
+func anyFoldEq(words []string, w string) bool {
+	for _, x := range words {
+		if foldEq(x, w) {
+			return true
+		}
+	}
+	return false
 }
 
 func foldEq(a, b string) bool { return len(a) == len(b) && strings.EqualFold(a, b) }
@@ -412,210 +567,159 @@ func isLower(c byte) bool { return c >= 'a' && c <= 'z' }
 func isUpper(c byte) bool { return c >= 'A' && c <= 'Z' }
 func isAlnum(c byte) bool { return isDigit(c) || isLower(c) || isUpper(c) }
 
-// anyAttr: error — как строка (так его рендерит и JSONHandler); прочее —
-// маршалится один раз, дальше по конвейеру идёт уже готовый JSON.
+// anyAttr: error — как строка (так его рендерит и JSONHandler); прочее — маршалится один раз,
+// дальше по конвейеру идёт готовый JSON с замаскированными ключами-секретами.
 func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 	switch t := x.(type) {
 	case nil:
 		return slog.Any(key, x)
 	case json.RawMessage:
-		return h.jsonAttr(key, t)
+		return h.jsonAttr(key, h.maskJSONKeys(t))
 	case []byte:
+		if json.Valid(t) {
+			t = h.maskJSONKeys(t)
+		}
 		return slog.Any(key, h.bytes(t))
 	case error:
 		if _, isMarshaler := x.(json.Marshaler); !isMarshaler {
 			return slog.String(key, h.text(t.Error()))
 		}
 	}
-	x = h.maskKeys(x)
 	b, err := marshalJSON(x)
 	if err != nil {
 		// Без JSON-формы text и OTel печатали бы значение через %+v целиком (заголовки
 		// *http.Request, поля структур): во все sink'и уходит только ошибка кодирования.
 		return slog.String(key, h.text("!ERROR:"+err.Error()))
 	}
-	return h.jsonAttr(key, b)
+	return h.jsonAttr(key, h.maskJSONKeys(b))
 }
 
-// maskKeys прячет значения под ключами-секретами у map со строковыми ключами
-// (http.Header, url.Values, map[string]any) — на любой глубине map, срезов и
-// массивов, в том числе за interface; без таких ключей отдаёт x как есть, не
-// копируя. Копия кодируется в тот же JSON, что оригинал, поэтому указатели не
-// разыменовываются, а типы со своим MarshalJSON или MarshalText не разбираются.
-func (h *redactHandler) maskKeys(x any) any {
-	v := container(reflect.ValueOf(x))
-	var w walk
-	if !v.IsValid() || !w.secretsIn(v) {
-		return x
-	}
-	return h.masked(v, map[visit]any{})
-}
-
-var (
-	jsonMarshalerType = reflect.TypeFor[json.Marshaler]()
-	textMarshalerType = reflect.TypeFor[encoding.TextMarshaler]()
-)
-
-// container — v (сквозь interface), если в нём могут быть ключи map: map со
-// строковыми ключами, срез или массив, в элементах которого бывают такие map;
-// иначе невалидный Value.
-func container(v reflect.Value) reflect.Value {
-	if v.Kind() == reflect.Interface {
-		v = v.Elem()
-	}
-	switch v.Kind() {
-	case reflect.Map:
-		if v.Type().Key().Kind() == reflect.String && !selfEncoding(v.Type()) {
-			return v
+// maskJSONKeys прячет значения под ключами-секретами JSON-документа b на любой глубине — у map,
+// полей структур, за указателями и в выводе своего MarshalJSON: строку, объект и массив —
+// заменой, число — под ключом-кодом. По JSON, а не по Go-значению: имена полей — как их видит
+// encoding/json. Без таких ключей и у неразбираемого b отдаёт b как есть, не копируя.
+func (h *redactHandler) maskJSONKeys(b []byte) []byte {
+	var out []byte
+	last := 0
+	for i := 0; i < len(b); i++ {
+		q := bytes.IndexByte(b[i:], '"')
+		if q < 0 {
+			break
 		}
-	case reflect.Slice, reflect.Array:
-		// Элементы среза адресуемы: MarshalJSON на указателе у них зовётся, у копии — нет.
-		if elem := v.Type().Elem(); holdsMaps(elem) && !selfEncoding(v.Type()) && !selfEncoding(elem) {
-			return v
+		i += q
+		end := jsonStringEnd(b, i)
+		if end < 0 {
+			return b
 		}
-	}
-	return reflect.Value{}
-}
-
-// holdsMaps — в значении типа t может оказаться map со строковыми ключами;
-// рекурсивный тип после нескольких уровней считается «может».
-func holdsMaps(t reflect.Type) bool {
-	for range 8 {
-		switch t.Kind() {
-		case reflect.Interface:
-			return true
-		case reflect.Map:
-			return t.Key().Kind() == reflect.String
-		case reflect.Slice, reflect.Array:
-			t = t.Elem()
-		default:
-			return false
+		colon := skipJSONSpace(b, end)
+		if colon >= len(b) || b[colon] != ':' {
+			i = end - 1
+			continue
 		}
+		class := keyPlain
+		if key := b[i+1 : end-1]; hasKeyTrigger(key) {
+			class = classifyWords(string(key))
+		}
+		if class == keyPlain {
+			i = colon
+			continue
+		}
+		start := skipJSONSpace(b, colon+1)
+		stop := jsonValueEnd(b, start)
+		if stop < 0 {
+			return b
+		}
+		if maskableJSON(b[start], class) {
+			out = append(out, b[last:start]...)
+			out = append(out, '"')
+			out = append(out, h.with...)
+			out = append(out, '"')
+			last = stop
+		}
+		i = stop - 1
 	}
-	return true
-}
-
-// selfEncodingCache — reflect.Type → bool: обход спрашивает про каждую map и срез
-// записи, а четыре Implements дороги; типов в логах немного.
-var selfEncodingCache sync.Map
-
-// selfEncoding — тип или указатель на него сам решает, как выглядеть в JSON.
-func selfEncoding(t reflect.Type) bool {
-	if self, ok := selfEncodingCache.Load(t); ok {
-		return self.(bool)
+	if out == nil {
+		return b
 	}
-	p := reflect.PointerTo(t)
-	self := t.Implements(jsonMarshalerType) || t.Implements(textMarshalerType) ||
-		p.Implements(jsonMarshalerType) || p.Implements(textMarshalerType)
-	selfEncodingCache.Store(t, self)
-	return self
+	return append(out, b[last:]...)
 }
 
-// visit — пройденный контейнер: цикл (m["self"] = m) и общее поддерево
-// обходятся один раз; у массива адреса нет, он не отмечается. typ различает
-// срез массивов map и срез из его первого массива ([][1]map и []map): адрес и
-// длина у них общие, а форма копии — нет.
-type visit struct {
-	typ reflect.Type
-	ptr uintptr
-	len int
-}
-
-func identity(v reflect.Value) (visit, bool) {
-	switch v.Kind() {
-	case reflect.Map:
-		return visit{typ: v.Type(), ptr: v.Pointer()}, true
-	case reflect.Slice:
-		return visit{typ: v.Type(), ptr: v.Pointer(), len: v.Len()}, true
-	default:
-		return visit{}, false
-	}
-}
-
-// walk — состояние поиска секрета: пройденные контейнеры.
-type walk struct {
-	seen map[visit]bool
-}
-
-// secretsIn: есть ли секрет в контейнере v или во вложенных.
-func (w *walk) secretsIn(v reflect.Value) bool {
-	v = container(v)
-	if !v.IsValid() || v.Kind() != reflect.Array && v.IsNil() {
+// maskableJSON — правило maskable для JSON-значения по его первому байту: строка, объект и
+// массив прячутся под любым ключом-секретом, число — только под кодом, true, false и null — нет.
+func maskableJSON(first byte, class keySecrecy) bool {
+	switch first {
+	case '"', '{', '[':
+		return true
+	case 't', 'f', 'n':
 		return false
+	default:
+		return class == keyCode
 	}
-	// Значения map смотрятся, только если ключ-секрет или в них может быть map;
-	// map без таких значений в цикл не входит и не отмечается.
-	nested := v.Kind() != reflect.Map || holdsMaps(v.Type().Elem())
-	if id, ok := identity(v); ok && nested {
-		if w.seen[id] {
-			return false
+}
+
+// jsonStringEnd — позиция за закрывающей кавычкой строки, открытой в b[i]; -1, если строка не
+// закрыта. Кавычка экранирована нечётным числом «\\» перед ней.
+func jsonStringEnd(b []byte, i int) int {
+	for j := i + 1; j < len(b); j++ {
+		q := bytes.IndexByte(b[j:], '"')
+		if q < 0 {
+			return -1
 		}
-		if w.seen == nil {
-			w.seen = map[visit]bool{}
+		j += q
+		escapes := 0
+		for k := j - 1; k > i && b[k] == '\\'; k-- {
+			escapes++
 		}
-		w.seen[id] = true
+		if escapes%2 == 0 {
+			return j + 1
+		}
 	}
-	if v.Kind() != reflect.Map {
-		for i := range v.Len() {
-			if w.secretsIn(v.Index(i)) {
-				return true
+	return -1
+}
+
+// jsonValueEnd — позиция за JSON-значением, начатым в b[i]; -1 у оборванного.
+func jsonValueEnd(b []byte, i int) int {
+	if i >= len(b) {
+		return -1
+	}
+	switch b[i] {
+	case '"':
+		return jsonStringEnd(b, i)
+	case '{', '[':
+		depth := 0
+		for j := i; j < len(b); j++ {
+			switch b[j] {
+			case '"':
+				end := jsonStringEnd(b, j)
+				if end < 0 {
+					return -1
+				}
+				j = end - 1
+			case '{', '[':
+				depth++
+			case '}', ']':
+				if depth--; depth == 0 {
+					return j + 1
+				}
 			}
 		}
-		return false
+		return -1
 	}
-	key, val := reflect.New(v.Type().Key()).Elem(), reflect.New(v.Type().Elem()).Elem()
-	for it := v.MapRange(); it.Next(); {
-		key.SetIterKey(it)
-		class := classifyKey(key.String())
-		if class == keyPlain && !nested {
-			continue
-		}
-		val.SetIterValue(it)
-		if class != keyPlain && maskable(slog.AnyValue(val.Interface()), class) {
-			return true
-		}
-		if nested && w.secretsIn(val) {
-			return true
-		}
+	j := i
+	for j < len(b) && b[j] != ',' && b[j] != '}' && b[j] != ']' && !isJSONSpace(b[j]) {
+		j++
 	}
-	return false
+	return j
 }
 
-// masked — копия контейнера v с заменой значений под ключами-секретами: map —
-// map[string]any, срез и массив — []any, JSON тот же. memo — копии пройденных
-// контейнеров: рекурсия по циклу конечна, а сам цикл остаётся циклом, и его,
-// как без маскирования, отвергает JSON.
-func (h *redactHandler) masked(v reflect.Value, memo map[visit]any) any {
-	c := container(v)
-	if !c.IsValid() || c.Kind() != reflect.Array && c.IsNil() {
-		return v.Interface()
+func skipJSONSpace(b []byte, i int) int {
+	for i < len(b) && isJSONSpace(b[i]) {
+		i++
 	}
-	id, tracked := identity(c)
-	if done, ok := memo[id]; tracked && ok {
-		return done
-	}
-	if c.Kind() != reflect.Map {
-		out := make([]any, c.Len())
-		if tracked {
-			memo[id] = out
-		}
-		for i := range out {
-			out[i] = h.masked(c.Index(i), memo)
-		}
-		return out
-	}
-	out := make(map[string]any, c.Len())
-	memo[id] = out
-	for it := c.MapRange(); it.Next(); {
-		k, val := it.Key().String(), it.Value()
-		if maskable(slog.AnyValue(val.Interface()), classifyKey(k)) {
-			out[k] = h.with
-			continue
-		}
-		out[k] = h.masked(val, memo)
-	}
-	return out
+	return i
 }
+
+func isJSONSpace(c byte) bool { return c == ' ' || c == '\t' || c == '\n' || c == '\r' }
 
 // jsonAttr: маска работает по JSON-байтам, поэтому паттерн или ReplaceWith с
 // кавычкой могут сделать значение невалидным — тогда оно уходит строкой, а не

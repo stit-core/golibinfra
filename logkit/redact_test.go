@@ -6,6 +6,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"math"
@@ -572,6 +573,8 @@ func TestRedact_SecretKeysMaskWholeValue(t *testing.T) {
 		"jwt", "otp", "otp_code", "otp_value", "pin", "pin_hash", "pincode", "totp_uri",
 		"accesstoken", "refreshtoken", "newpassword", "clientsecret", "setcookie",
 		"pwd", "userPwd", "db_passwd",
+		"pass", "db_pass", "sid", "refresh", "signature", "request_signature", "tokens",
+		"passcode", "verification_code", "smsCode", "auth_code", "authorization_code",
 	}
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{Patterns: Patterns{`never-matches-\d`}})
@@ -591,9 +594,10 @@ func TestRedact_SecretKeysMaskWholeValue(t *testing.T) {
 
 func TestRedact_NonSecretKeysStay(t *testing.T) {
 	kept := []string{
-		"input_tokens", "tokens", "tokenizer", "key", "cache_key", "idempotency_key",
+		"tokenizer", "key", "cache_key", "idempotency_key",
 		"author", "passage", "secretary", "keyboard", "session_id", "auth_method",
 		"spin", "pinned", "ping", "otpauth", "cwd", "zipcode", "opcode", "error_code", "status_code",
+		"bypass", "inside", "autorefresh", "code", "promo_code", "country_code",
 	}
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -612,7 +616,7 @@ func TestRedact_NonSecretKeysStay(t *testing.T) {
 }
 
 // Под ключом-секретом прячутся строка, группа и структура (включая []byte и
-// ключи внутри групп и With), но не числа, bool и nil: token_count — счётчик.
+// ключи внутри групп и With), но не числа, bool и nil: token_count и input_tokens — счётчики.
 func TestRedact_SecretKeyValueKinds(t *testing.T) {
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -632,7 +636,10 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 		"pincode", 3333,
 		"pin_number", 4444,
 		"pin1", 5555,
+		"verification_code", 6666,
 		"otp_attempts", 3,
+		"pin_length", 4,
+		"input_tokens", 17,
 		"status_code", 200,
 	)
 
@@ -649,14 +656,17 @@ func TestRedact_SecretKeyValueKinds(t *testing.T) {
 	if m["token_count"] != float64(42) || m["password_set"] != true || m["secret"] != nil {
 		t.Errorf("numbers, bool and nil must stay: %v / %v / %v", m["token_count"], m["password_set"], m["secret"])
 	}
-	// Слово-код где угодно в ключе прячет и число — счётчик рядом с кодом тоже.
-	for _, k := range []string{"otp", "pin", "totp", "totp_code", "pincode", "pin_number", "pin1", "otp_attempts"} {
+	// Слово-код где угодно в ключе прячет и число, а ключ, который кончается словом-счётчиком, —
+	// счётчик рядом с кодом.
+	for _, k := range []string{"otp", "pin", "totp", "totp_code", "pincode", "pin_number", "pin1", "verification_code"} {
 		if m[k] != "[REDACTED]" {
 			t.Errorf("%s = %v: a code is a secret even as a number", k, m[k])
 		}
 	}
-	if m["status_code"] != float64(200) {
-		t.Errorf("status_code = %v, want the number", m["status_code"])
+	for k, want := range map[string]float64{"otp_attempts": 3, "pin_length": 4, "input_tokens": 17, "status_code": 200} {
+		if m[k] != want {
+			t.Errorf("%s = %v, want the number %v", k, m[k], want)
+		}
 	}
 	user, _ := m["user"].(map[string]any)
 	if user["login"] != "u1" || user["password"] != "[REDACTED]" {
@@ -828,13 +838,10 @@ type ownJSONPtr map[string]string
 
 func (*ownJSONPtr) MarshalJSON() ([]byte, error) { return []byte(`"own-ptr"`), nil }
 
-// Регрессия R2: копия с маскированием кодируется в тот же JSON, что оригинал.
-// Указатель не разыменовывается — MarshalJSON на указателе у поля зовётся, как
-// без маскирования; типы со своим MarshalJSON не разбираются. Срез рядом с
-// ключом-секретом попадает в копию: элементы копии не адресуемы, и MarshalJSON
-// на указателе у них не позвался бы.
-// Запись логируется дважды: второй раз selfEncoding отвечает из кэша по типу, и
-// кэш обязан помнить «кодирует себя сам», а не только первый ответ.
+// Регрессия R2: ключи маскируются в JSON самого значения, поэтому типы кодируются как без
+// маскирования: MarshalJSON на указателе у адресуемого поля и элемента среза зовётся, свой
+// MarshalJSON решает, что показать. Запись логируется дважды — результат не зависит от прошлых
+// записей того же типа.
 func TestRedact_MapKeysKeepTypeEncoding(t *testing.T) {
 	for i := range 2 {
 		var buf bytes.Buffer
@@ -866,9 +873,8 @@ func TestRedact_MapKeysKeepTypeEncoding(t *testing.T) {
 	}
 }
 
-// Регрессия: срез массивов map и срез из его первого массива лежат по одному
-// адресу с одной длиной — у каждого своя копия, иначе один получил бы форму
-// другого.
+// Регрессия: срез массивов map и срез из его первого массива лежат по одному адресу с одной
+// длиной — каждый маскируется в своей форме.
 func TestRedact_MapKeysAliasedSlicesKeepShape(t *testing.T) {
 	var buf bytes.Buffer
 	l := newRedacted(t, &buf, RedactConfig{})
@@ -936,6 +942,8 @@ func TestRedact_KeyTriggerNeverMissesASecretKey(t *testing.T) {
 		"token", "Token", "TOKEN", "password", "Passwd", "pwd", "passphrase", "secret", "Secret",
 		"authorization", "cookie", "Cookies", "credential", "jwt", "otp", "TOTP", "pin", "Pin", "code",
 		"api", "API", "Api", "key", "Key", "private", "access", "new", "id", "count", "value",
+		"pass", "Pass", "sid", "SID", "refresh", "signature", "tokens", "passcode", "verification",
+		"sms", "Auth", "attempts", "length",
 		"_", "-", ".", " ", "2", "x", "s", "e", "r", "p", "o", "t", "k", "n",
 	}
 	rnd := rand.New(rand.NewPCG(3, 4))
@@ -946,6 +954,134 @@ func TestRedact_KeyTriggerNeverMissesASecretKey(t *testing.T) {
 		}
 		if key := sb.String(); classifyWords(key) != keyPlain && !hasKeyTrigger(key) {
 			t.Fatalf("case %d: key %q is a secret, but has no key trigger", i, key)
+		}
+	}
+}
+
+type innerCreds struct {
+	APIKey string `json:"api_key"`
+	Region string `json:"region"`
+}
+
+type loginForm struct {
+	innerCreds
+	User     string            `json:"user"`
+	Note     string            `json:"note"`
+	Password string            `json:"password,omitempty"`
+	Session  *string           `json:"sid"`
+	Extra    map[string]string `json:"extra"`
+	Attempt  int               `json:"attempt"`
+	Tokens   int               `json:"tokens"`
+	TokenSet bool              `json:"token_set"`
+}
+
+// ownCreds показывает в JSON ключ-секрет сам: его MarshalJSON проверяется тем же правилом.
+type ownCreds struct{ Pass string }
+
+func (c ownCreds) MarshalJSON() ([]byte, error) {
+	return json.Marshal(map[string]string{"token": c.Pass})
+}
+
+// Ключи-секреты маскируются в JSON значения: поля структур под именами encoding/json (тег,
+// встроенная структура), map и структуры за указателями, вывод своего MarshalJSON, JSON в
+// json.RawMessage и []byte; порядок полей и прочие значения — как без маскирования.
+func TestRedact_SecretKeysInStructsPointersAndJSON(t *testing.T) {
+	sid := "opaque-sid"
+	m := map[string]any{"password": "opaque-ptr"}
+	pm := &m
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{})
+	l.Info(context.Background(), "shapes",
+		"form", loginForm{
+			innerCreds: innerCreds{APIKey: "opaque-key", Region: "eu"},
+			User:       "alice", Password: "opaque-pass", Session: &sid,
+			Extra: map[string]string{"refresh": "opaque-refresh"}, Attempt: 2,
+			Tokens: 3, TokenSet: true, Note: `x","otp":123`,
+		},
+		"ptr", pm, "ptrptr", &pm, "own", ownCreds{Pass: "opaque-own"},
+		"raw", json.RawMessage(`{"client_secret":"opaque-raw","n":1}`),
+		"bytes", []byte(`{"token":"opaque-bytes"}`),
+	)
+
+	out := buf.String()
+	for _, secret := range []string{"opaque-key", "opaque-pass", "opaque-sid", "opaque-refresh", "opaque-ptr", "opaque-own", "opaque-raw", "opaque-bytes"} {
+		if strings.Contains(out, secret) {
+			t.Fatalf("secret %q leaked: %s", secret, out)
+		}
+	}
+	m2 := decodeLine(t, buf.Bytes())
+	raw, _ := json.Marshal(m2["form"])
+	if want := `{"api_key":"[REDACTED]","attempt":2,"extra":{"refresh":"[REDACTED]"},"note":"x\",\"otp\":123","password":"[REDACTED]","region":"eu","sid":"[REDACTED]","token_set":true,"tokens":3,"user":"alice"}`; string(raw) != want {
+		t.Errorf("form = %s, want %s", raw, want)
+	}
+	if !strings.Contains(out, `"form":{"api_key":"[REDACTED]","region":"eu","user":"alice","note":`) {
+		t.Errorf("field order must stay as encoding/json writes it: %s", out)
+	}
+	if rawDoc, _ := m2["raw"].(map[string]any); rawDoc["client_secret"] != "[REDACTED]" || rawDoc["n"] != float64(1) {
+		t.Errorf("raw = %v", m2["raw"])
+	}
+	// []byte JSON-sink пишет в base64: секрет проверяется в декодированных байтах.
+	if b, err := base64.StdEncoding.DecodeString(fmt.Sprint(m2["bytes"])); err != nil || string(b) != `{"token":"[REDACTED]"}` {
+		t.Errorf("bytes = %q (%v), want the token masked", b, err)
+	}
+}
+
+// Маски значений дефолтного набора: токен base64url, пароль userinfo URL и значение пары
+// ключ=значение с ключом-секретом — в msg, атрибуте и JSON структуры; UUID, SHA, ULID и пары
+// с обычным ключом — нет, число под ключом-секретом — тоже.
+func TestRedact_ValueMasks(t *testing.T) {
+	cases := map[string]struct{ in, want string }{
+		"token in msg":       {"reset token s3cr3tOpaque_AbC-12xyz", "reset token [REDACTED]"},
+		"token in a link":    {"https://app/reset?t=s3cr3tOpaque_AbC-12xyz", "https://app/reset?t=[REDACTED]"},
+		"dsn password":       {"postgres://app:s3cr3t-pw@db:5432/app", "postgres://app:[REDACTED]@db:5432/app"},
+		"password with at":   {"redis://user:p@ss@cache:6379", "redis://user:[REDACTED]@cache:6379"},
+		"keyword dsn":        {"host=db user=app password=s3cr3t dbname=app", "host=db user=app password=[REDACTED] dbname=app"},
+		"otpauth":            {"otpauth://totp/Svc:alice?secret=JBSWY3DPEHPK3PXP&issuer=Svc", "otpauth://totp/Svc:alice?secret=[REDACTED]&issuer=Svc"},
+		"query token":        {"GET /cb?access_token=abc123&page=2", "GET /cb?access_token=[REDACTED]&page=2"},
+		"nested query":       {"redirect=https://x/?token=abc", "redirect=https://x/?token=[REDACTED]"},
+		"code pair":          {"otp=123456 sent", "otp=[REDACTED] sent"},
+		"counter pair":       {"token_count=5 retries=2", "token_count=5 retries=2"},
+		"plain pairs":        {"upstream=payments status=200 page=2", "upstream=payments status=200 page=2"},
+		"uuid":               {"id 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b", "id 0199a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b"},
+		"ulid":               {"id 01ARZ3NDEKTSV4RRFFQ69G5FAV", "id 01ARZ3NDEKTSV4RRFFQ69G5FAV"},
+		"host name":          {"pod my-service-7d4b9c8f5-x2k9p ready", "pod my-service-7d4b9c8f5-x2k9p ready"},
+		"short token":        {"ref Ab1-xyz", "ref Ab1-xyz"},
+		"word without digit": {"CamelCaseIdentifierWithoutDigits", "CamelCaseIdentifierWithoutDigits"},
+	}
+	for name, c := range cases {
+		t.Run(name, func(t *testing.T) {
+			var buf bytes.Buffer
+			l := newRedacted(t, &buf, RedactConfig{})
+			l.Info(context.Background(), c.in, "attr", c.in, "doc", map[string]any{"text": c.in})
+			m := decodeLine(t, buf.Bytes())
+			doc, _ := m["doc"].(map[string]any)
+			if m["msg"] != c.want || m["attr"] != c.want || doc["text"] != c.want {
+				t.Fatalf("msg %q, attr %q, doc %q; want %q", m["msg"], m["attr"], doc["text"], c.want)
+			}
+		})
+	}
+}
+
+// Маски значений — часть дефолтного набора: свой набор их не включает, а pre-filter пропускает
+// только то, чего они бы не тронули.
+func TestRedact_ValueMasksBelongToTheDefaultSet(t *testing.T) {
+	var buf bytes.Buffer
+	l := newRedacted(t, &buf, RedactConfig{Patterns: Patterns{`never-matches-\d`}})
+	l.Info(context.Background(), "password=s3cr3t s3cr3tOpaque_AbC-12xyz")
+	if m := decodeLine(t, buf.Bytes()); m["msg"] != "password=s3cr3t s3cr3tOpaque_AbC-12xyz" {
+		t.Fatalf("custom set applied value masks: %v", m["msg"])
+	}
+
+	h := &redactHandler{with: defaultReplaceWith}
+	const alphabet = "aAbBzZ0189-_.=&?:/@ pwdtokensecr"
+	rnd := rand.New(rand.NewPCG(5, 6))
+	for i := range 200_000 {
+		var sb strings.Builder
+		for range 1 + rnd.IntN(32) {
+			sb.WriteByte(alphabet[rnd.IntN(len(alphabet))])
+		}
+		if s := sb.String(); !defaultHint(s) && h.valueMasks(s) != s {
+			t.Fatalf("case %d: hint skipped %q, but the value masks change it to %q", i, s, h.valueMasks(s))
 		}
 	}
 }
