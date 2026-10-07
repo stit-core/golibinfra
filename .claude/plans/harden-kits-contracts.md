@@ -76,8 +76,9 @@ blocked-by: —
   счётчики и код ошибки `code` открыты. Проверка: `correctness-security/run.sh <rev> unit` → E02, E03, E04 PASS;
   `TestVal_RedactBypassMatrix` (`M/val-kits-A/experiments/logkit_zz_val_exp_test.go`) → `leaked=false`, кроме
   ключей из «Решений»; `api-docs/scripts/claims-C/run.sh <wt>` → urlleak без секретов
-  - Подтверждено: E02–E04 PASS, urlleak чист; матрица — `leaked=false`, кроме голого `code` (`M/hkc3e/logs/s1[01]-*`);
-    формы URL валидатора C (`#`, `?`, `/`, `@`, `%`) — без утечек (`M/hkc3e/logs/b1-urlforms.log`, ошибки Go — до кита)
+  - Подтверждено: E02–E04 PASS, urlleak чист; матрица A — `leaked=false`, кроме голого `code` (`M/hkc3e/logs/s1[01]-*`);
+    фикс C: формы URL (`#`, `?`, `/`, `@`, `%`) — без утечек (`b1-urlforms.log`), матрица C — открыты 5 из 20: 3 по
+    «Решениям», 2 — заголовки строкой в msg (`n2-redact-matrix.log`)
 - [x] **AC10** — bruteforcekit: проверок пароля одного subject за окно не больше бюджета субъекта при любом числе
   адресов; `CLEANUP_RETENTION` меньше `LOCK_DURATION` — `ErrConfig`; пауза отказа — по часам хранилища; ветка
   переучёта `Attempt` покрыта тестом; subject длиннее 255 байт учитывается. Проверка: `correctness-security/run.sh
@@ -148,30 +149,28 @@ blocked-by: —
 
 ## Решения
 - **ENV, конфиг, формы.** `internal/envconf`: `KEY=` — как незаданная (U4), пустое — `-`, `<P>_<TAG>`, вложенная — без
-  тега (U5, B1), вторая секция — `EnvPrefixed`, целые — десятичные; `Validate` — проверка, дефолты — в тегах, ноль —
-  значение доки или `ErrConfig` («без предела» — `-1`); группа — `<Thing>Group`, `Provide<Thing>`/`Supply<Thing>`,
-  конструктор — `(cfg, зависимости…, log, opts…)`, опции httpclient — `Options` (KX50); job'ы со схемой — после `Migrated`.
+  тега (U5), вторая секция — `EnvPrefixed`; ноль — значение доки или `ErrConfig` («без предела» — `-1`); `<Thing>Group`,
+  `Provide<Thing>`/`Supply<Thing>`, конструктор `(cfg, зависимости…, log, opts…)`, опции httpclient — `Options` (KX50).
 - **pgkit и outbox.** `lock_timeout` мигратора — `PG_MIGRATE_LOCK_TIMEOUT` (5 с), дедлайн — cancel request (E09, не
   `GracefulStop`); `OnStop` пула — 2/3 остатка (KX65); `ErrNestedTxStricter`; `CheckSchemaOnStart` после `Migrated` (KX62).
   outbox: `created_at` — `clock_timestamp()` (E10), предел — JSONB тем же `INSERT`, trace-context — колонка 0003 (KO13).
 - **Идемпотентность и кэш.** `SetNX`, `GetDel`, `Compare*` — без повторов (E18); `Set` — CAS по токену (E07), набор —
   `idempotencytest`. Предел — отказ: `WithMaxKeys`, `MemoryStore` — 100 000, httpclient `MaxHosts` 1024 (`-1`), сверх — `other`.
-- **Контракт HTTP.** Один `MaxBytesReader`, лимиты — хуком (H17); не хранятся 408/409/425/429 (H16) и анонимы;
-  `WWW-Authenticate` — по `components`; HEAD — свой middleware; CORS — `Idempotency-Key`. Дедлайн `HTTP_REQUEST_TIMEOUT`
-  (25s < `WriteTimeout` < `ReserveTTL`, `-1s` — выкл.) над `Idempotency` (H35): целый 503 с `Connection: close`, запись
-  после него — `len(b), nil` (B1); без дедлайна — только GET-поток (N5); panic после заголовка — `ErrAbortHandler` (H06).
-- **Край httpkit.** Extractor — `SecuritySchemeEntry.Extract` (без него — `ErrAuthNotConfigured`); операцию открывает
-  альтернатива целиком, `{}` — последней (N2), из одних `{}` — `ErrRoutes`; отказ — 503 бэкенда, иначе `APIError`
-  extractor'а, иначе 401; `AuthExtractor`, `WithAuth` удалены (H15), схема вне `components` — `ErrRoutes` (N8);
-  `Idempotency` — после `HumaAuth` (HX07); trace-context — ссылкой, без baggage (H18); XFF — адрес, `ParseAddrPort` (N9).
+- **Контракт HTTP.** Один `MaxBytesReader`, лимиты — хуком (H17); не хранятся 408/409/425/429 (H16) и анонимы; HEAD — свой
+  middleware. Дедлайн `HTTP_REQUEST_TIMEOUT` (25s < `WriteTimeout` < `ReserveTTL`) над `Idempotency` (H35): целый 503 с
+  `Connection: close`, запись после — `len(b), nil` (B1); без дедлайна — GET-поток (N5); panic после заголовка — обрыв (H06).
+- **Край httpkit.** Extractor — у схемы (без него — `ErrAuthNotConfigured`); операцию открывает альтернатива целиком, `{}`
+  — последней (N2), из одних `{}` — `ErrRoutes`; отказ — 503 бэкенда, `APIError` extractor'а, иначе 401; `AuthExtractor`
+  удалён (H15), схема вне `components` — `ErrRoutes` (N8); `Idempotency` — после `HumaAuth` (HX07); trace-context — ссылкой (H18).
 - **Секреты в URL.** URL подключения (`redact.URL`): всё от схемы до последнего `@` — `xxxxx` без разбора (пароль с `#`,
   `?`, `/` разбор читает как фрагмент, query, порт, путь — B1 C), query — `xxxxx`; `@` в пути `NATS_URL`, публичного URL
   и OTLP — `ErrConfig`; `ParseError` без текста (go-redis цитирует путь). httpclient (`RequestURL`): путь до последнего `@`
   — `xxxxx` (`/calendars/a@b.com`), цифры пароля до `/` Go берёт портом — граница (README); свой спан попытки (E03, E04).
-- **Маски logkit.** Слова ключа: `signature` — суффиксом, `pass`, `sid`, `refresh`, `tokens` — словом; код — `passcode`
-  и `code` после квалификатора (голый `code` — код ошибки httpkit, открыт), счётчик (`otp_attempts`) — не код. Ключи в
-  `Any` — по его JSON (поля, указатели, `MarshalJSON`, `RawMessage`/`[]byte`). Маски значений: base64url ≥ 20 с обоими
-  регистрами и цифрой, пароль userinfo, `ключ=значение` с ключом-секретом (DSN, query, `otpauth`).
+- **Маски logkit.** Слова ключа: суффиксом и во множественном (`secrets`), словом — `pass`, `pw`, `creds`, `sid`, `refresh`,
+  `tokens`, парой — `api_keys`, `XAPIKey`, `code_verifier`; код — `passcode` и `code` после квалификатора (голый `code`
+  открыт), счётчик (`otp_attempts`) — не код. Ключи — по JSON `Any`, `RawMessage`/`[]byte` и JSON внутри строк (N2 C).
+  Маски значений: base64url ≥ 20, пароль userinfo до последнего `@`, пара `ключ = значение` сканером (кавычки libpq,
+  `#`/`=` внутри, `==` — не пара). Граница: заголовок строкой в msg (`Cookie: …`) — атрибутом с ключом-секретом.
 - **bruteforcekit.** Бюджет субъекта по всем адресам (E11) — строка `(subject, '')` той же таблицы, `SUBJECT_MAX_FAILURES`
   20 (`-1` — выкл.), `SUBJECT_LOCK_DURATION` 1m; `LockState.RetryAfter` по часам базы и `Scope`; > 255 байт —
   `SHA256:<hex>`, NUL и не-UTF-8 — `ErrInvalidKey`. Порядок блокировок один — строка субъекта, затем пары (B2 валидатора C):
@@ -206,7 +205,7 @@ blocked-by: —
   токен OTLP к `http://` не на loopback — https или `OTEL_ALLOW_INSECURE_TOKEN=true`; `AUDIT_RETENTION_DAYS`; Redis — 2× пул.
 
 ## Где мы сейчас
-Этапы 1–2 приняты; фиксы FAIL C этапа 3 (`M/validation-harden-kits-contracts-C.md`): B1, B2, N1 готовы, дальше N2–N5. Аннотация:
+Этапы 1–2 приняты; фиксы FAIL C этапа 3 (`M/validation-harden-kits-contracts-C.md`): B1, B2, N1, N2 готовы, дальше N4, N5. Аннотация:
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
   log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`), поле
   без тега — ошибка `Load` (тег или `ignored:"true"`), тег на вложенной структуре — ошибка (был приставкой,
@@ -281,8 +280,9 @@ blocked-by: —
   `STORAGE_PUBLIC_BASE_URL` с кредами и `@` после хоста в `NATS_URL`, публичном URL и OTLP — `ErrConfig`. logkit (S11):
   секрет по ключу — и `pass`, `sid`, `refresh`, `signature`, `tokens`, `passcode`, `code` после
   `verification`/`auth`/`sms`…; ключ на слово-счётчик (`otp_attempts`) — не код; ключи-секреты ищутся в полях
-  структур, за указателями, в выводе `MarshalJSON` и в JSON из `RawMessage`/`[]byte`; маски значений — base64url-токен
-  ≥ 20, пароль userinfo URL, пара `ключ=значение` с ключом-секретом. bruteforcekit (S12): бюджет субъекта — 20 попыток
+  структур, за указателями, в выводе `MarshalJSON`, в JSON из `RawMessage`/`[]byte` и внутри строк; слова — и `secrets`,
+  `pw`, `creds`, `api_keys`, `code_verifier`; маски значений — base64url-токен ≥ 20, пароль userinfo URL, пара `ключ =
+  значение` с ключом-секретом (и `password='…'`). bruteforcekit (S12): бюджет субъекта — 20 попыток
   со всех адресов, блокировка 1m (`LockState.Scope`), успех снимает его; `Retry-After` — `LockState.RetryAfter` по
   часам базы; subject длиннее 255 байт — ключ по SHA-256, с NUL или не в UTF-8 — `ErrInvalidKey`; успех обнуляет строку
   субъекта (её уберёт cleanup), cleanup пропускает строки, занятые попыткой; `bruteforce_locks_total{scope}`. Входы (S13): пароль длиннее 1024 байт — `ErrPasswordTooLong` у `Hash` и `Verify`
