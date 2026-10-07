@@ -78,9 +78,9 @@ description: Завести в golibinfra новый kit по конвенция
    `testkit/<name>test/`, где `<name>` — имя кита **без** суффикса `kit`
    (`cachekit` → `testkit/cachetest/`; см. `authntest`, `bruteforcetest`).
    Внутри каталога кита test-хелперов не держим; исключения — in-memory реализация
-   двойного назначения, фейки часов `clockkit` и маркер `pgkit.WithTestTx` (CLAUDE.md
-   § Стиль). Добавь строку в `testkit/README.md` и в перечень сабпакетов в корневом
-   `README.md`.
+   двойного назначения, фейки часов `clockkit`, маркер `pgkit.WithTestTx` и
+   `httpkit.ContextWithClientIP` (CLAUDE.md § Стиль). Добавь строку в `testkit/README.md`
+   и в перечень сабпакетов в корневом `README.md`.
 7. **Документация.** Заведи `<kit>/README.md` (назначение, импорт, быстрый старт,
    конфигурация, observability, API, инварианты) — единый источник правды по
    киту. Для сложного кита разнеси детали по `<kit>/docs/` (`architecture.md`,

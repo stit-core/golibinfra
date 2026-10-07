@@ -180,6 +180,8 @@ blocked-by: —
   `\u0000`, суррогата без пары и `\ufffd` (метка битых байтов `encoding/json` — N1 C). Retention — opt-in `RetentionModule`
   (`AUDIT_RETENTION_DAYS` без дефолта, [1, 36500], раз в час, батч 5000). `Revoke` → `(subject, err)` — владелец у закрывшего.
   Рядом: 255 у auditkit и `session` — предел кита (KDOC-09); README auditkit — дедлайн миграций по S4; MinIO — `http://`.
+- **Исключение test-хелпера** (решение дирижёра, S14). `httpkit.ContextWithClientIP` — как `pgkit.WithTestTx`: middleware
+  его не зовёт; ключ — в `internal/clientip`, снаружи модуля его ставит только httpkit; три списка исключений — с ним.
 
 ## Handoff
 При закрытии — в Handoff `harden-tests-archkit-release`. Что меняет потребитель на bump v1.4.0:

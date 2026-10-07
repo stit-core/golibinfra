@@ -217,7 +217,9 @@ helper'ов, ENV-переопределений образов нет тоже. 
 `storagetest.RunContract` прогоняет по нему тот же контракт, что по боевому адаптеру),
 `httpkit.NewMemoryStore()` (хранилище идемпотентности одного процесса); фейки часов
 `clockkit.NewFixed`/`NewTickable` — часть контракта `Clock`; маркер транзакции
-`pgkit.WithTestTx` — ключ ctx знает только pgkit.
+`pgkit.WithTestTx` — ключ ctx знает только pgkit; IP клиента в ctx `httpkit.ContextWithClientIP` —
+пара к `httpkit.ClientIPFrom`: ключ лежит во внутреннем пакете модуля, снаружи его ставит только
+httpkit.
 
 ## Сабпакеты
 

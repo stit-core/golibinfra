@@ -148,7 +148,9 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   логгер — параметр, не опция. Test-хелперы — `testkit/<name>test`; в ките —
   только in-memory реализации двойного назначения (`cachekit.MemoryCache`,
   `storagekit.MemoryStorage`, `httpkit.MemoryStore`), фейки часов `clockkit` (часть контракта
-  `Clock`) и маркер транзакции `pgkit.WithTestTx`. Исключения формы — названные: опции харнесса
+  `Clock`), маркер транзакции `pgkit.WithTestTx` и IP клиента в ctx `httpkit.ContextWithClientIP`
+  (ключ — во внутреннем `internal/clientip`, снаружи модуля его ставит только httpkit, пара к
+  `ClientIPFrom`). Исключения формы — названные: опции харнесса
   `handlertest` (логгер — `WithLogger`), `telemetry.WithErrorLogger(slog.Handler)` (handler ошибок
   SDK, а не логгер кита), `outboxkit/pgstore.NewStoreFor(db, table, …)`; киты вне объёма аудита
   (hubkit, oidckit, amocrmkit, anthropickit) правятся только под API.
