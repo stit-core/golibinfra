@@ -162,50 +162,48 @@ blocked-by: —
 - **Край httpkit.** Extractor — у схемы (без него — `ErrAuthNotConfigured`); операцию открывает альтернатива целиком, `{}`
   — последней (N2), из одних `{}` — `ErrRoutes`; отказ — 503 бэкенда, `APIError` extractor'а, иначе 401; `AuthExtractor`
   удалён (H15), схема вне `components` — `ErrRoutes` (N8); `Idempotency` — после `HumaAuth` (HX07); trace-context — ссылкой (H18).
-- **Секреты в URL.** URL подключения (`redact.URL`): всё от схемы до последнего `@` — `xxxxx` без разбора (пароль с `#`,
-  `?`, `/` разбор читает как фрагмент, query, порт, путь — B1 C), query — `xxxxx`; `@` в пути `NATS_URL`, публичного URL
-  и OTLP — `ErrConfig`; `ParseError` без текста (go-redis цитирует путь). httpclient (`RequestURL`): путь до последнего `@`
-  — `xxxxx` (`/calendars/a@b.com`), цифры пароля до `/` Go берёт портом — граница (README); свой спан попытки (E03, E04).
+- **Секреты в URL.** URL подключения (`redact.URL`): всё от схемы до последнего `@` — `xxxxx` без разбора (`#`, `?`, `/` в
+  пароле — B1 C), query — `xxxxx`; `@` в пути `NATS_URL`, публичного URL и OTLP — `ErrConfig`; `ParseError` без текста.
+  httpclient (`RequestURL`): путь до последнего `@` — `xxxxx`, цифры пароля до `/` — порт для Go, граница (README); E03, E04.
 - **Маски logkit.** Слова ключа: суффиксом и во множественном (`secrets`), словом — `pass`, `pw`, `creds`, `sid`, `refresh`,
-  `tokens`, парой — `api_keys`, `XAPIKey`, `code_verifier`; код — `passcode` и `code` после квалификатора (голый `code`
-  открыт), счётчик (`otp_attempts`) — не код. Ключи — по JSON `Any`, `RawMessage`/`[]byte` и JSON внутри строк (N2 C).
-  Маски значений: base64url ≥ 20, пароль userinfo до последнего `@`, пара `ключ = значение` сканером (кавычки libpq,
-  `#`/`=` внутри, `==` — не пара). Граница: заголовок строкой в msg (`Cookie: …`) — атрибутом с ключом-секретом.
-- **bruteforcekit.** Бюджет субъекта по всем адресам (E11) — строка `(subject, '')` той же таблицы, `SUBJECT_MAX_FAILURES`
-  20 (`-1` — выкл.), `SUBJECT_LOCK_DURATION` 1m; `LockState.RetryAfter` по часам базы и `Scope`; > 255 байт —
-  `SHA256:<hex>`, NUL и не-UTF-8 — `ErrInvalidKey`. Порядок блокировок один — строка субъекта, затем пары (B2 валидатора C):
-  `Attempt` без строки субъекта ничего не пишет, создаёт её (`INSERT … DO NOTHING`) и повторяет; `RecordSuccess` обнуляет
-  её (не удаляет), затем удаляет пару; `Cleanup` — `SKIP LOCKED`. Хуки тестов — по указателю: `Store` сравним (apidiff).
+  `tokens`, парой — `api_keys`, `XAPIKey`, `code_verifier`; код — `passcode`, `code` после квалификатора, не счётчик. Ключи —
+  и в JSON внутри строк (N2 C). Маски значений: base64url ≥ 20, пароль userinfo до последнего `@`, пара `ключ = значение`
+  сканером (кавычки libpq, `#`/`=` внутри, `==` — не пара). Граница: заголовок строкой в msg (`Cookie: …`) — атрибутом.
+- **bruteforcekit.** Бюджет субъекта по всем адресам (E11) — строка `(subject, '')`, `SUBJECT_MAX_FAILURES` 20 (`-1` —
+  выкл.), `SUBJECT_LOCK_DURATION` 1m; `RetryAfter` по часам базы; > 255 байт — `SHA256:<hex>`, NUL — `ErrInvalidKey`. Порядок
+  блокировок один — субъект, затем пара (B2 C): `Attempt` без строки субъекта создаёт её (`INSERT … DO NOTHING`) и повторяет;
+  `RecordSuccess` обнуляет её, затем удаляет пару; `Cleanup` — `SKIP LOCKED`. Хуки тестов — указателем: `Store` сравним.
 - **Входы и дефолты.** S3 без схемы — TLS, plaintext — `http://`; `USE_SSL` удалён (bool-дефолт `true` нарушил бы «ноль
   литерала — дефолт доки»). `OTEL_TOKEN`/`Authorization` к `http://` не на loopback — `ErrConfig` и у выключенного, без
-  `OTEL_ALLOW_INSECURE_TOKEN` (как grpcclient). Пароль > 1 KiB в Argon2id не идёт: `Hash` — отказ, `Verify` — после
-  `VerifyDummy` (длина не выдаёт логин таймингом; E05: гигиена). auditkit: строки и `Metadata` (и ключи) — UTF-8 без NUL,
-  по JSON (`MetadataJSON`, его пишет pgstore): ≤ 64 КиБ, без `\u0000`, суррогата без пары и `\ufffd` (так `encoding/json`
-  метит битые байты: замена исказила бы запись — N1 C). Retention — opt-in `RetentionModule` (`AUDIT_RETENTION_DAYS` без
-  дефолта, [1, 36500], раз в час, батч 5000). `Revoke` → `(subject, err)`: владелец — у вызова, закрывшего сессию. Рядом:
-  255 у auditkit и `session` — предел кита (KDOC-09); README auditkit — дедлайн миграций по S4; фикстура MinIO — `http://`.
+  `OTEL_ALLOW_INSECURE_TOKEN`. Пароль > 1 KiB в Argon2id не идёт: `Hash` — отказ, `Verify` — после `VerifyDummy` (тайминг).
+  auditkit: строки и `Metadata` (и ключи) — UTF-8 без NUL по JSON (`MetadataJSON`, его пишет pgstore): ≤ 64 КиБ, без
+  `\u0000`, суррогата без пары и `\ufffd` (метка битых байтов `encoding/json` — N1 C). Retention — opt-in `RetentionModule`
+  (`AUDIT_RETENTION_DAYS` без дефолта, [1, 36500], раз в час, батч 5000). `Revoke` → `(subject, err)` — владелец у закрывшего.
+  Рядом: 255 у auditkit и `session` — предел кита (KDOC-09); README auditkit — дедлайн миграций по S4; MinIO — `http://`.
+
 ## Handoff
 При закрытии — в Handoff `harden-tests-archkit-release`. Что меняет потребитель на bump v1.4.0:
 - **S1–S3.** `KEY=` — дефолт, пустое — `-`; App на `config.Env` — имена тегов; места — в Handoff второго плана.
-- **pgkit.** `cmd/migrate`: `MigrateUpAll`/`MigrateDown(ctx, dsn, cfg.LockTimeout, …)`; хранилища без миграций —
-  ошибка старта (`cmd/migrate` шаблона их накатывает); `PG_MIGRATE_LOCK_TIMEOUT` (5 с).
-- **outbox.** Миграция 0003 (своя `SchemaSQL` — `trace_context JSONB`), метрики без `subject`, предел тела — JSONB.
-- **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate/module.go`); `handlertest.WithAuth` →
-  `WithSecuritySchemes`: `handler_test.go` auth и user, `scripts/new-domain.sh:662`, `rules/tests-pipeline.md:47`,
-  doc `identitytest.go:47`; `make gen` (`REQUEST_TIMEOUT` в `openapi.json`); `Security` из одних `{}` — `Public`.
+- **pgkit.** `cmd/migrate`: `MigrateUpAll`/`MigrateDown(ctx, dsn, cfg.LockTimeout, …)`; хранилища без миграций — ошибка старта.
+- **outbox.** Миграция 0003 (`trace_context JSONB` своей `SchemaSQL`), метрики без `subject`, предел — JSONB; `events/
+  outbox_test.go:22` — `Insert(…, maxBytes)`, `:49` — `outboxkit.NewConfig`; `authgate/module_test.go:46` — `Argon2idConfig`.
+- **httpkit.** `IdempotencyStore.Set` с токеном; extractor — у схемы (`authgate/module.go`); `WithAuth` → `WithSecuritySchemes`
+  (`handler_test.go` auth и user, `new-domain.sh:662`, `tests-pipeline.md:47`, `identitytest.go:47`); `make gen`; `{}` — `Public`.
 - **bruteforcekit.** `limiter_test.go`: литерал `Config` — `Subject*`, `CleanupRetention` ≥ `LockDuration`; Retry-After
-  — `lock.RetryAfter`; обход длинного subject в адаптере не нужен, NUL — `ErrInvalidKey` (его маппинг — уже есть).
+  — `lock.RetryAfter`; длинный subject — ключ SHA-256, NUL — `ErrInvalidKey`: `guard_test.go:40` — случай с NUL вместо 255.
 - **logkit.** Маски шире (S11): тест, который ищет в логе `password=…`, base64url-токен или пароль URL, — на маркер.
 - **S13.** `Revoke` → `(subject, err)`: `internal/domain/auth/usecase.go:199,213` (Logout — аудит `logout` с `ActorID:
-  subject`, если не `""`), обёртки `usecase_test.go:235,240`; DTO пароля — `maxLength:"1024"`: `auth/delivery/http/dto.go:8,
-  38,39`, `user/delivery/http/dto.go:11`, `verification/delivery/http/dto.go:12`; ввод в поля аудита — UTF-8 без NUL.
-- **env для INFRA-HANDOFF:** `PG_MIGRATE_LOCK_TIMEOUT`, `HTTPCLIENT_MAX_HOSTS`, `HTTP_REQUEST_TIMEOUT` (меньше
-  `HTTP_WRITE_TIMEOUT` и `HTTP_IDEMPOTENCY_RESERVE_TTL`, иначе старт падает), `HTTP_TRUST_TRACE_CONTEXT`, S12, S13;
-  `HTTP_CORS_HEADERS` + `Idempotency-Key` (свой список — дописать); `STORAGE_S3_USE_SSL` удалён (plaintext — `http://`);
-  токен OTLP к `http://` не на loopback — https или `OTEL_ALLOW_INSECURE_TOKEN=true`; `AUDIT_RETENTION_DAYS`; Redis — 2× пул.
+  subject`, если не `""`), обёртки `usecase_test.go:235,240`, `TestLogout` (`:674`) — одна запись аудита с автором; DTO
+  пароля — `maxLength:"1024"`: `auth/delivery/http/dto.go:8,38,39`, `user/…/dto.go:11`, `verification/…/dto.go:12`.
+- **env для INFRA-HANDOFF:** `PG_MIGRATE_LOCK_TIMEOUT` (5 с), `HTTPCLIENT_MAX_HOSTS`, `HTTP_REQUEST_TIMEOUT`,
+  `HTTP_TRUST_TRACE_CONTEXT`, `BRUTEFORCE_SUBJECT_MAX_FAILURES` (20), `BRUTEFORCE_SUBJECT_LOCK_DURATION` (1m); старт падает,
+  если `HTTP_REQUEST_TIMEOUT` ≥ `HTTP_WRITE_TIMEOUT` или `RESERVE_TTL`, а `BRUTEFORCE_CLEANUP_RETENTION` < `LOCK_DURATION`
+  или `SUBJECT_LOCK_DURATION`; `HTTP_CORS_HEADERS` + `Idempotency-Key`; `STORAGE_S3_USE_SSL` удалён; токен OTLP к `http://`
+  не на loopback — https или `OTEL_ALLOW_INSECURE_TOKEN=true` (и при выключенном SDK); `AUDIT_RETENTION_DAYS`; Redis — 2× пул.
 
 ## Где мы сейчас
-Этапы 1–2 приняты; фиксы FAIL C этапа 3 (`M/validation-harden-kits-contracts-C.md`): B1, B2, N1, N2 готовы, дальше N4, N5. Аннотация:
+Этапы 1–2 приняты; фиксы FAIL C этапа 3 (`M/validation-harden-kits-contracts-C.md`): B1 `aef5de2`, B2 `e7b9975`, N1
+`aa31589`, N2 `af105bf`, N4 — тесты в них (мутанты C: 14 RED, 3 — кода нет), N5 — этот; дальше перепроверка C, S14. Аннотация:
 - **Breaking.** natskit: `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn,
   log) (Bus, error)`, `NewStreamBus(cfg, conn, log)`. config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`), поле
   без тега — ошибка `Load` (тег или `ignored:"true"`), тег на вложенной структуре — ошибка (был приставкой,
@@ -244,6 +242,9 @@ blocked-by: —
   TLS, plaintext — `http://host:port`. telemetry: `OTEL_TOKEN` или `Authorization` к `http://` не на loopback — `ErrConfig`
   (https или `OTEL_ALLOW_INSECURE_TOKEN=true`). authnkit/session: `Store.Revoke(ctx, refresh) (subject string, err error)`
   — свой `Store` и обёртки отдают владельца закрытой этим вызовом сессии (`""` — токен неизвестен или закрыт раньше).
+  Проверка токена OTLP — и при `OTEL_SDK_DISABLED=true`. authnkit: пароль длиннее 1024 байт — `ErrPasswordTooLong` у
+  `Hash` и `Verify` (DTO — `maxLength:"1024"`). auditkit: NUL и не-UTF-8 в строках и `Metadata` (и ключах), суррогат без
+  пары, `Metadata` > 64 КиБ JSON — `ErrInvalidEntry` до базы (`result=invalid`): ввод пользователя — проверить до `Log`.
 - **Поведение.** `KEY=` во всех китах и `config.Env` — дефолт; пустую строку или список задаёт `-`
   (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`, `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён
   нет; списки — без пустых, из одних разделителей (`JWT_AUDIENCE=,`) — `ErrConfig`, целые — десятичные; ошибка ENV —
@@ -285,9 +286,8 @@ blocked-by: —
   значение` с ключом-секретом (и `password='…'`). bruteforcekit (S12): бюджет субъекта — 20 попыток
   со всех адресов, блокировка 1m (`LockState.Scope`), успех снимает его; `Retry-After` — `LockState.RetryAfter` по
   часам базы; subject длиннее 255 байт — ключ по SHA-256, с NUL или не в UTF-8 — `ErrInvalidKey`; успех обнуляет строку
-  субъекта (её уберёт cleanup), cleanup пропускает строки, занятые попыткой; `bruteforce_locks_total{scope}`. Входы (S13): пароль длиннее 1024 байт — `ErrPasswordTooLong` у `Hash` и `Verify`
-  (`Verify` — за время `VerifyDummy`; DTO — `maxLength`); аудит: NUL и не-UTF-8 в строках, `Metadata` > 64 КиБ JSON или с
-  `\u0000` — `ErrInvalidEntry` до базы (`result=invalid`), и не-UTF-8 и суррогат без пары в `Metadata`; `Module` даёт `*Store`.
+  субъекта (её уберёт cleanup), cleanup пропускает занятые попыткой строки; `bruteforce_locks_total{scope}`. Входы (S13):
+  `Verify` с паролем длиннее 1024 байт — за время `VerifyDummy`; `auditkit/pgstore.Module` даёт и `*Store`.
 - **Изменения.** `httpkit.ProvideSecurityScheme`, `grpckit.ProvideService`, `httpclient.Options`; без envconfig;
   `pgkit.CheckSchema`, `CheckSchemaOnStart`, `ErrSchema`, `ErrNestedTxStricter`, `outboxkit.SchemaChecker`,
   `outboxkit.WithMetricSubject`, `Message.TraceParent`, `OutMsg.MetricSubject`/`TraceParent`, миграция outbox 0003;
