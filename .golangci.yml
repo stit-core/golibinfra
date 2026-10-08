@@ -1,6 +1,9 @@
 version: "2"
 run:
   go: "1.26"
+  # Параллельные прогоны на одной машине (агенты в worktree, pre-push) ждут общий lock, а не
+  # падают с «parallel golangci-lint is running».
+  allow-serial-runners: true
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
