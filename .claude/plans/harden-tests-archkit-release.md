@@ -120,9 +120,9 @@ blocked-by: —
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
 
 ## Решения
-- **Фиксы валидатора A** (причины — в телах коммитов). `LOG_SILENT`: ERROR логгеров без OTel-sink (события fx, ошибки telemetry) —
-  в stderr (`logkit.WithStderrFallback`), общий `Silent` не трогали; спан otelpgx — имя sqlc или операция, оно же
-  `db.operation.name`; `Stop` telemetry — ⅔ бюджета; storagekit — `fx.Invoke`, authnkit ленив: три примитива, три конфига.
+- **Фиксы валидатора A** (причины — в телах коммитов). `LOG_SILENT`: ERROR логгеров без OTel-sink — в stderr, общий `Silent` не
+  трогали; спан otelpgx — имя sqlc или операция; `Stop` telemetry — ⅔ бюджета; storagekit — `fx.Invoke`, authnkit ленив: три
+  примитива, три конфига; сигналы httpkit — и статикой по коду (инструменты, атрибуты, поля), вне сверки — проза.
 - **archkit.** Кит без `Module`, конфига и сигналов: `archkit.Check(t, opts…)`, корень и module path — из `go.mod` (stdlib);
   правила — семь проверок archtest шаблона (`TestInternalLayout`, `TestImportBoundaries`, `TestDomainRootIsTransportAgnostic`,
   `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`, `TestNoCrossDomainIdentityClosure`, `TestQueriesUseOwnTables`), настройки

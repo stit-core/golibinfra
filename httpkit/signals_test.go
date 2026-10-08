@@ -36,9 +36,10 @@ import (
 
 // signalDoc — таблицы docs/observability.md: контракт сигналов кита, который читает оператор.
 type signalDoc struct {
-	metrics map[string]docMetric
-	values  map[string][]string
-	logs    map[string]docLog
+	metrics   map[string]docMetric
+	values    map[string][]string
+	spanAttrs []string
+	logs      map[string]docLog
 }
 
 type docMetric struct {
@@ -66,8 +67,8 @@ func tokens(cell string) []string {
 	return out
 }
 
-// readSignalDoc разбирает три таблицы доки по первой ячейке заголовка: «Метрика», «Label»,
-// «Сообщение».
+// readSignalDoc разбирает таблицы доки по первой ячейке заголовка: «Метрика», «Label», «Атрибут
+// спана», «Сообщение».
 func readSignalDoc(t *testing.T) signalDoc {
 	t.Helper()
 	raw, err := os.ReadFile("docs/observability.md")
@@ -102,6 +103,8 @@ func readSignalDoc(t *testing.T) signalDoc {
 			doc.metrics[name] = docMetric{kind: kind, labels: tokens(cells[2])}
 		case "Label":
 			doc.values[name] = tokens(cells[1])
+		case "Атрибут спана":
+			doc.spanAttrs = append(doc.spanAttrs, name)
 		case "Сообщение":
 			var l docLog
 			for _, word := range strings.Split(cells[1], ",") {
@@ -116,8 +119,9 @@ func readSignalDoc(t *testing.T) signalDoc {
 			doc.logs[name] = l
 		}
 	}
-	if len(doc.metrics) == 0 || len(doc.values) == 0 || len(doc.logs) == 0 {
-		t.Fatalf("docs/observability.md: tables not found: %d metrics, %d labels, %d log lines", len(doc.metrics), len(doc.values), len(doc.logs))
+	if len(doc.metrics) == 0 || len(doc.values) == 0 || len(doc.spanAttrs) == 0 || len(doc.logs) == 0 {
+		t.Fatalf("docs/observability.md: tables not found: %d metrics, %d labels, %d span attributes, %d log lines",
+			len(doc.metrics), len(doc.values), len(doc.spanAttrs), len(doc.logs))
 	}
 	return doc
 }
@@ -378,20 +382,22 @@ func (s *signals) run(c signalCase) metrictest.Snapshot {
 	return d
 }
 
+// checkSpan: имя, kind и атрибуты кита из таблицы доки — те, что ждёт сценарий; http.route — только
+// у запроса на путь с маршрутом.
 func (s *signals) checkSpan(c signalCase, sp sdktrace.ReadOnlySpan) {
 	s.t.Helper()
-	attrs := map[string]string{}
-	for _, a := range sp.Attributes() {
-		attrs[string(a.Key)] = a.Value.String()
-	}
-	name, route, routed := c.label, "", false
+	name, want := c.label, map[string]string{"request_id": "sig-" + c.id, "client.address": "127.0.0.1"}
 	if c.route != "unmatched" {
-		name, route, routed = c.label+" "+c.route, c.route, true
+		name, want["http.route"] = c.label+" "+c.route, c.route
 	}
-	got, has := attrs["http.route"]
-	if sp.Name() != name || sp.SpanKind() != trace.SpanKindServer || got != route || has != routed || attrs["client.address"] != "127.0.0.1" {
-		s.t.Errorf("%s: span %q (%s) with http.route %q (set: %v) and client.address %q; want server span %q with route %q (set: %v) and the peer address",
-			c.id, sp.Name(), sp.SpanKind(), got, has, attrs["client.address"], name, route, routed)
+	got := map[string]string{}
+	for _, a := range sp.Attributes() {
+		if slices.Contains(s.doc.spanAttrs, string(a.Key)) {
+			got[string(a.Key)] = a.Value.String()
+		}
+	}
+	if sp.Name() != name || sp.SpanKind() != trace.SpanKindServer || !maps.Equal(got, want) {
+		s.t.Errorf("%s: span %q (%s) with the documented attributes %v; want server span %q with %v", c.id, sp.Name(), sp.SpanKind(), got, name, want)
 	}
 }
 
@@ -558,18 +564,37 @@ func TestSignals_MatchObservabilityDoc(t *testing.T) {
 		log: []string{"request deadline exceeded", "timeout", "50ms"},
 	})
 
+	if got := slices.Sorted(slices.Values(doc.spanAttrs)); !slices.Equal(got, []string{"client.address", "http.route", "request_id"}) {
+		t.Errorf("docs/observability.md lists span attributes %v, the scenario checks client.address, http.route and request_id", got)
+	}
+	seen := map[string]map[string]bool{}
 	for _, app := range []*signals{s, limiter, deadline} {
-		app.checkRecords(t)
+		app.checkRecords(t, seen)
+	}
+	// Поля строки с kv... статика не видит: необязательное поле доки обязано встретиться в сценарии.
+	code := scanKit(t).logs
+	for msg, fields := range seen {
+		for _, k := range doc.logs[msg].optional {
+			if code[msg] != nil && code[msg].open && !fields[k] {
+				t.Errorf("log line %q: optional field %q from the doc never appeared in the scenario", msg, k)
+			}
+		}
 	}
 	s.checkInventory(t, metrictest.Collect(t).Sub(started))
 }
 
 // checkRecords: каждая строка лога приложения описана в доке — сообщение, уровень, поля; поля
-// сверх описанных — только те, что logkit берёт из ctx.
-func (s *signals) checkRecords(t *testing.T) {
+// сверх описанных — только те, что logkit берёт из ctx. Встреченные поля копятся в seen.
+func (s *signals) checkRecords(t *testing.T, seen map[string]map[string]bool) {
 	t.Helper()
 	fromCtx := []string{"request_id", "trace_id", "span_id"}
 	for _, e := range s.log.Entries() {
+		if seen[e.Msg] == nil {
+			seen[e.Msg] = map[string]bool{}
+		}
+		for k := range e.KV {
+			seen[e.Msg][k] = true
+		}
 		line, documented := s.doc.logs[e.Msg]
 		if !documented {
 			t.Errorf("log line %q (%v) is not in docs/observability.md", e.Msg, e.Level)
@@ -657,56 +682,154 @@ func (s *signals) checkInventory(t *testing.T, d metrictest.Snapshot) {
 	}
 }
 
-// Каждая строка лога в коде кита описана в доке со своим уровнем, и наоборот: строку, которую
-// сценарий выше не вызывает (падение Serve, дедлайн остановки), держит эта сверка.
-func TestSignals_LogLinesMatchObservabilityDoc(t *testing.T) {
-	doc := readSignalDoc(t)
+// codeLog — строка лога в коде кита: уровни вызовов, поля, названные литералом, и open — есть
+// вызов с kv..., чьи поля статике не видны.
+type codeLog struct {
+	levels []slog.Level
+	keys   []string
+	open   bool
+}
+
+// kitCode — что код кита пишет в сигналы: строки лога, имена инструментов метрик и ключи атрибутов
+// (labels метрик и атрибуты спана).
+type kitCode struct {
+	logs        map[string]*codeLog
+	instruments []string
+	attrs       []string
+}
+
+var (
+	instrumentCtor = regexp.MustCompile(`^(Int64|Float64)(Observable)?(Counter|UpDownCounter|Histogram|Gauge)$`)
+	semconvKeys    = map[string]string{"HTTPRoute": "http.route", "ClientAddress": "client.address"}
+)
+
+func stringLit(e ast.Expr) (string, bool) {
+	lit, ok := e.(*ast.BasicLit)
+	if !ok || lit.Kind != token.STRING {
+		return "", false
+	}
+	text, err := strconv.Unquote(lit.Value)
+	return text, err == nil
+}
+
+// scanKit разбирает код кита: строки лога (вызовы Debug, Info, Warn, Error с сообщением вторым
+// аргументом), имена инструментов метрик и ключи атрибутов (attribute.X("ключ", …), semconv.X).
+// Сообщение, имя и ключ — только литералы: иначе сверка с докой их не увидит.
+func scanKit(t *testing.T) kitCode {
+	t.Helper()
 	files, err := os.ReadDir(".")
 	if err != nil {
 		t.Fatal(err)
 	}
-	code := map[string][]slog.Level{}
+	code := kitCode{logs: map[string]*codeLog{}}
+	fset := token.NewFileSet()
 	for _, f := range files {
 		if !strings.HasSuffix(f.Name(), ".go") || strings.HasSuffix(f.Name(), "_test.go") {
 			continue
 		}
-		file, err := parser.ParseFile(token.NewFileSet(), f.Name(), nil, 0)
+		file, err := parser.ParseFile(fset, f.Name(), nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
 		ast.Inspect(file, func(n ast.Node) bool {
 			call, ok := n.(*ast.CallExpr)
-			if !ok || len(call.Args) < 2 {
+			if !ok {
 				return true
 			}
 			sel, ok := call.Fun.(*ast.SelectorExpr)
 			if !ok {
 				return true
 			}
-			level, ok := docLevels[sel.Sel.Name]
-			msg, isLit := call.Args[1].(*ast.BasicLit)
-			if !ok || !isLit || msg.Kind != token.STRING {
-				return true
-			}
-			text, err := strconv.Unquote(msg.Value)
-			if err != nil {
-				t.Fatalf("unquote %s: %v", msg.Value, err)
-			}
-			if !slices.Contains(code[text], level) {
-				code[text] = append(code[text], level)
+			level, isLog := docLevels[sel.Sel.Name]
+			pkg, _ := sel.X.(*ast.Ident)
+			switch {
+			case instrumentCtor.MatchString(sel.Sel.Name) && len(call.Args) > 0:
+				name, ok := stringLit(call.Args[0])
+				if !ok {
+					t.Errorf("%s: the instrument name is not a string literal", fset.Position(call.Pos()))
+				}
+				code.instruments = append(code.instruments, name)
+			case pkg != nil && pkg.Name == "attribute" && len(call.Args) > 0:
+				key, ok := stringLit(call.Args[0])
+				if !ok {
+					t.Errorf("%s: the attribute key is not a string literal", fset.Position(call.Pos()))
+				}
+				code.attrs = append(code.attrs, key)
+			case pkg != nil && pkg.Name == "semconv":
+				key, ok := semconvKeys[sel.Sel.Name]
+				if !ok {
+					t.Errorf("%s: semconv.%s is unknown to the signals test: document the attribute and add it to semconvKeys",
+						fset.Position(call.Pos()), sel.Sel.Name)
+				}
+				code.attrs = append(code.attrs, key)
+			case isLog && len(call.Args) >= 2:
+				msg, ok := stringLit(call.Args[1])
+				if !ok {
+					t.Errorf("%s: the log message is not a string literal", fset.Position(call.Pos()))
+					return true
+				}
+				l := code.logs[msg]
+				if l == nil {
+					l = &codeLog{}
+					code.logs[msg] = l
+				}
+				if !slices.Contains(l.levels, level) {
+					l.levels = append(l.levels, level)
+				}
+				for i := 2; i < len(call.Args); i += 2 {
+					key, ok := stringLit(call.Args[i])
+					if !ok {
+						l.open = true
+						break
+					}
+					if !slices.Contains(l.keys, key) {
+						l.keys = append(l.keys, key)
+					}
+				}
 			}
 			return true
 		})
 	}
-	for msg, levels := range code {
-		slices.Sort(levels)
-		documented := slices.Sorted(slices.Values(doc.logs[msg].levels))
-		if !slices.Equal(levels, documented) {
-			t.Errorf("log line %q: the code writes it at %v, docs/observability.md says %v", msg, levels, documented)
+	return code
+}
+
+// Код кита против доки без запуска: инструменты метрик — ровно таблица, ключи атрибутов — labels и
+// атрибуты спана из таблиц, каждая строка лога описана со своим уровнем и полями, и наоборот. Так
+// сверка держит то, чего сценарий выше не вызывает: метрику, атрибут и строку редкой ветки
+// (падение Serve, дедлайн остановки).
+func TestSignals_CodeMatchesObservabilityDoc(t *testing.T) {
+	doc := readSignalDoc(t)
+	code := scanKit(t)
+	slices.Sort(code.instruments)
+	if documented := slices.Sorted(maps.Keys(doc.metrics)); !slices.Equal(code.instruments, documented) {
+		t.Errorf("the kit creates instruments %v, docs/observability.md lists %v", code.instruments, documented)
+	}
+	labels := slices.Sorted(maps.Keys(doc.values))
+	for _, k := range code.attrs {
+		if !slices.Contains(labels, k) && !slices.Contains(doc.spanAttrs, k) {
+			t.Errorf("attribute %q is neither a label (%v) nor a span attribute (%v) of docs/observability.md", k, labels, doc.spanAttrs)
+		}
+	}
+	for msg, l := range code.logs {
+		line := doc.logs[msg]
+		slices.Sort(l.levels)
+		if documented := slices.Sorted(slices.Values(line.levels)); !slices.Equal(l.levels, documented) {
+			t.Errorf("log line %q: the code writes it at %v, docs/observability.md says %v", msg, l.levels, documented)
+		}
+		fields := slices.Concat(line.required, line.optional)
+		for _, k := range l.keys {
+			if !slices.Contains(fields, k) {
+				t.Errorf("log line %q: field %q is not in docs/observability.md (%v)", msg, k, fields)
+			}
+		}
+		for _, k := range fields {
+			if !l.open && !slices.Contains(l.keys, k) {
+				t.Errorf("log line %q: field %q from docs/observability.md is not written by the kit (%v)", msg, k, l.keys)
+			}
 		}
 	}
 	for msg := range doc.logs {
-		if _, ok := code[msg]; !ok {
+		if code.logs[msg] == nil {
 			t.Errorf("log line %q from docs/observability.md is not written by the kit", msg)
 		}
 	}
