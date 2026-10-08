@@ -24,16 +24,17 @@ generic-примитив, которого нет в ките, `go-backend-templ
 операционного флоу — `docs/reference/ecosystem.md` репо `project-infra-template-compose`
 (в workspace — `../project-infra-template-compose/docs/reference/ecosystem.md`).
 
-## Точка входа
+## Маршрут задачи
 
-- **Добавить новый kit** — skill `/add-kit` (scaffold пакета по конвенциям:
-  `Module`/fx, observability-by-default, envconfig, README кита (+ `docs/` у
-  сложного), строка-индекс в корневом README, testkit-сабпакет).
-- **Выпустить версию** — skill `/release` (`make gate-clean` → аннотированный тег
-  `vX.Y.Z` с release notes → push → гайд апдейта консьюмера).
-- **Содержательное изменение** (breaking в ките, миграция, работа на несколько коммитов) —
-  через план: skill `/plan` (`.claude/plans/<slug>.md`, бэклог — `.claude/plans/backlog.md`).
-- Точечная правка существующего kit'а — прямой Edit; scaffold не нужен.
+Маршрут — первая подходящая строка сверху.
+
+| Задача | Маршрут | Пример |
+|---|---|---|
+| Упало или баг | регрессионный тест, воспроизводящий дефект → фикс, одним коммитом | красный `make check`, гонка в ките, дефолт не по доке |
+| Больше одного коммита; breaking для потребителя (сигнатуры, дефолты, имена метрик, envconfig-теги); миграция кита; вход, сессии, токены, маски логов; фаза программы из хаба | `/plan` — план в `.claude/plans/` (бэклог — `backlog.md`), его шаги идут по этой же таблице | `Revoke` отдаёт владельца сессии; колонка в схеме outbox |
+| Новый кит | `/add-kit` — scaffold по конвенциям: `Module`/fx, observability, envconfig, README кита, строка в корневом README, testkit-сабпакет | «нужен переиспользуемый кит для X» |
+| Выпуск версии | `/release` — `make gate-clean` → `make release-diff` → аннотированный тег с release notes → push → гайд консьюмеру | «релизим vX.Y.Z» |
+| Правка существующего кита в один коммит | напрямую; меняется поведение — сначала тест | опция конструктора, текст README кита |
 
 ## Команды (gate перед claim «готово»)
 
