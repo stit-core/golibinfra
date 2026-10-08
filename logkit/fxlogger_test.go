@@ -23,16 +23,23 @@ func withFxLogger(level string) fx.Option {
 }
 
 // captureStdout подменяет os.Stdout до сборки графа: FxLogger, как в проде, пишет туда, и снаружи
-// его writer не задать. Чтение — параллельно записи, чтобы pipe не встал на заполненном буфере.
+// его writer не задать.
 func captureStdout(t *testing.T) func() *bytes.Buffer {
+	t.Helper()
+	return captureStream(t, &os.Stdout)
+}
+
+// captureStream подменяет поток процесса (os.Stdout, os.Stderr). Чтение — параллельно записи,
+// чтобы pipe не встал на заполненном буфере.
+func captureStream(t *testing.T, stream **os.File) func() *bytes.Buffer {
 	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
-	old := os.Stdout
-	os.Stdout = w
-	t.Cleanup(func() { os.Stdout = old })
+	old := *stream
+	*stream = w
+	t.Cleanup(func() { *stream = old })
 	done := make(chan *bytes.Buffer)
 	go func() {
 		var buf bytes.Buffer
@@ -40,7 +47,7 @@ func captureStdout(t *testing.T) func() *bytes.Buffer {
 		done <- &buf
 	}()
 	return func() *bytes.Buffer {
-		os.Stdout = old
+		*stream = old
 		_ = w.Close()
 		return <-done
 	}
@@ -125,6 +132,61 @@ func TestFxLogger_LoggerProviderFailureIsErrorJSON(t *testing.T) {
 	}
 	if buf := stdout(); !errorLineWith(t, buf, "OTEL_SERVICE_NAME is required") {
 		t.Fatalf("no ERROR line with the provider failure:\n%s", buf.String())
+	}
+}
+
+// Регрессия: при LOG_SILENT=true у логгера событий нет ни stdout, ни OTel-sink — причина отказа
+// старта идёт в stderr JSON-строкой ERROR с масками, рутина fx — никуда.
+func TestFxLogger_SilentStartFailureGoesToStderr(t *testing.T) {
+	stdout, stderr := captureStdout(t), captureStream(t, &os.Stderr)
+	app := fx.New(
+		fx.Supply(logkit.Config{Level: "debug", Silent: true}), logkit.FxLogger,
+		fx.Invoke(func() error { return errors.New("boom: db of john@example.com is unreachable") }),
+	)
+	if app.Err() == nil {
+		t.Fatal("fx.New must fail")
+	}
+	out, errOut := stdout(), stderr()
+	if out.Len() != 0 {
+		t.Fatalf("LOG_SILENT=true must keep stdout empty:\n%s", out)
+	}
+	if !errorLineWith(t, errOut, "is unreachable") || strings.Contains(errOut.String(), "john@example.com") {
+		t.Fatalf("stderr must carry the masked cause of the failed start:\n%s", errOut)
+	}
+	for _, m := range jsonLines(t, errOut) {
+		if m["level"] != "ERROR" {
+			t.Fatalf("only ERROR events go to stderr under LOG_SILENT, got %v", m)
+		}
+	}
+}
+
+// WithStderrFallback действует только при Silent и только на записи ERROR; явный writer
+// приоритетнее, без Silent логгер пишет в stdout как обычно.
+func TestWithStderrFallback(t *testing.T) {
+	ctx := context.Background()
+	write := func(cfg logkit.Config, opts ...logkit.Option) (stdout, stderr string) {
+		out, errOut := captureStdout(t), captureStream(t, &os.Stderr)
+		l, err := logkit.New(cfg, append(opts, logkit.WithStderrFallback())...)
+		if err != nil {
+			t.Fatalf("New: %v", err)
+		}
+		l.Warn(ctx, "degraded")
+		l.Error(ctx, "failed")
+		return out().String(), errOut().String()
+	}
+
+	stdout, stderr := write(logkit.Config{Level: "debug", Silent: true})
+	if stdout != "" || !strings.Contains(stderr, `"msg":"failed"`) || strings.Contains(stderr, "degraded") {
+		t.Errorf("Silent: stdout %q, stderr %q; want only the ERROR record in stderr", stdout, stderr)
+	}
+	stdout, stderr = write(logkit.Config{Level: "debug"})
+	if stderr != "" || !strings.Contains(stdout, "degraded") || !strings.Contains(stdout, "failed") {
+		t.Errorf("not Silent: stdout %q, stderr %q; want both records in stdout", stdout, stderr)
+	}
+	var buf bytes.Buffer
+	stdout, stderr = write(logkit.Config{Level: "debug", Silent: true}, logkit.WithWriter(&buf))
+	if stdout != "" || stderr != "" || !strings.Contains(buf.String(), "degraded") {
+		t.Errorf("WithWriter: stdout %q, stderr %q, writer %q; want both records in the writer", stdout, stderr, buf.String())
 	}
 }
 

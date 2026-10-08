@@ -120,8 +120,8 @@ blocked-by: —
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
 
 ## Решения
-- **Сигналы httpkit в гейте.** `signals_test.go` читает таблицы доки, как `envdoc`. Пустой `RoutePattern` — `Routes.Match` по пути
-  и `RoutePattern()` найденного (вид как у роутера); 404/405 под `Mount` — паттерн монтирования: точный — поиск на каждом запросе.
+- **Фиксы валидатора A.** `LOG_SILENT`: логгеры без OTel-sink (события fx, ошибки telemetry) пишут ERROR в stderr —
+  `logkit.WithStderrFallback`; общий `Silent` не трогали: им глушат тесты.
 - **archkit.** Кит без `Module`, конфига и сигналов: `archkit.Check(t, opts…)`, корень и module path — из `go.mod` (stdlib);
   правила — семь проверок archtest шаблона (`TestInternalLayout`, `TestImportBoundaries`, `TestDomainRootIsTransportAgnostic`,
   `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`, `TestNoCrossDomainIdentityClosure`, `TestQueriesUseOwnTables`), настройки
@@ -243,6 +243,7 @@ S1–S8 закрыты: S1–S6 — у валидатора; archkit (S7–S8) �
   `json.RawMessage` (сравнение — `json.Unmarshal`), `Publish` — в транзакции фейка pgtest (метка `pgkit.WithTestTx` — `ErrNoTx`);
   natstest: стримы объявляет тест (`WithStream`), без них stream-операции — ошибка. oidckit, hubkit/sso: `Module` не кладёт
   `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie своего контура). authntest: хэшер — `&DeterministicHasher{}`.
+  logkit: `FxLogger` — логгер из `logkit.Config` графа, не из `*slog.Logger` (тест с логгером графа — свой `fx.WithLogger`).
 - **Поведение.** ENV: `KEY=` — дефолт (киты и `config.Env`), пустое — `-` (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`,
   `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён нет; список из одних разделителей (`JWT_AUDIENCE=,`) —
   `ErrConfig`; целые — десятичные; ошибка — `<kit>.ErrConfig` с переменной (и у `tzkit.NewZone`). Литерал с нулями — `ErrConfig`
@@ -281,13 +282,14 @@ S1–S8 закрыты: S1–S6 — у валидатора; archkit (S7–S8) �
   `ErrInvalidKey`; `bruteforce_locks_total{scope}`. Входы: `Verify` пароля длиннее 1024 байт — за время `VerifyDummy`;
   `auditkit/pgstore.Module` даёт и `*Store`. Старт: flagkit, natskit, cachekit, tzkit строят тип и без потребителя (мусор
   `FEATURE_FLAGS`, пустая `APP_TZ`, нет NATS, Redis — отказ); `Stop` telemetry без коллектора — ERROR `telemetry: shutdown`;
-  `FxLogger` без OTel; go-redis — WARN `redis`, текст мостов — `detail`. Сигналы: ключ ошибки логов — `error` (запросы по `err` —
-  переписать); cachekit — `db.system.name`, `db.operation.name`; спан otelpgx — `query <операция>`; нет ключа у `Get`/`Stat` —
-  `result="not_found"`; TOTP — запись на вызов; otelhttp у anthropickit без метрик. natskit: пустой токен, wildcard в публикации и
-  `>` не последним в фильтре — `nats.ErrBadSubject` сразу; фейки testkit — правила шины, JSONB и откат транзакции pgtest. `logtest`
-  — логгер `logkit.New` в память (маски, типы JSON); authntest: хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге
-  переживает ключ (до `InvalidateByTag` или конца набора); таймер фейка clockkit: `Stop`/`Reset` забирают неполученный момент.
-  httpkit: у 429, preflight и 405 `path`, `route`, `http.route` — маршрут; `unmatched` — только путь без него, без `http.route`.
+  `FxLogger` без OTel (`LOG_SILENT` — ERROR его и логгера ошибок telemetry в stderr); go-redis — WARN `redis`, текст мостов —
+  `detail`. Сигналы: ключ ошибки логов — `error` (запросы по `err` — переписать); cachekit — `db.system.name`, `db.operation.name`;
+  спан otelpgx — `query <операция>`; нет ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов; otelhttp у
+  anthropickit без метрик. natskit: пустой токен, wildcard в публикации и `>` не последним в фильтре — `nats.ErrBadSubject` сразу;
+  фейки testkit — правила шины, JSONB и откат транзакции pgtest. `logtest` — логгер `logkit.New` в память (маски, типы JSON);
+  authntest: хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге переживает ключ (до `InvalidateByTag` или конца
+  набора); таймер фейка clockkit: `Stop`/`Reset` забирают неполученный момент. httpkit: у 429, preflight и 405 `path`, `route`,
+  `http.route` — маршрут; `unmatched` — только путь без него, без `http.route`.
 - **Изменения.** Новое API, env и метрики — по `make release-diff PREV=v1.3.0` (apidiff, env, метрики); сверх них — ридер ENV без
   envconfig, миграция outbox 0003, `testkit/idempotencytest`, срок хранения аудита (opt-in: `auditkit/pgstore.RetentionModule`,
   `AUDIT_RETENTION_DAYS`, `audit_log_retention_deleted_total`). `archkit` — правила раскладки сервиса из его теста

@@ -10,7 +10,9 @@ import (
 // FxLogger — опция fx.New: события fx пишутся логгером из Config и RedactConfig графа (маски — как
 // у Module) в локальный sink, без OTel — ошибки сборки и старта уровнем ERROR, рутина — DEBUG.
 // Отказ провайдера, который тянет граф logkit (telemetry), доходит до лога: логгер событий от него
-// не зависит. Ставится на верхний уровень fx.New: внутри fx.Module она ловит только события модуля.
+// не зависит. При Config.Silent события ERROR идут в stderr: причина отказа старта не теряется ни
+// при каком конфиге логов. Ставится на верхний уровень fx.New: внутри fx.Module она ловит только
+// события модуля.
 var FxLogger = fx.WithLogger(newFxLogger)
 
 type fxLoggerParams struct {
@@ -20,7 +22,7 @@ type fxLoggerParams struct {
 }
 
 func newFxLogger(p fxLoggerParams) (fxevent.Logger, error) {
-	l, err := NewSlog(p.Config, WithRedact(p.Redact))
+	l, err := NewSlog(p.Config, WithRedact(p.Redact), WithStderrFallback())
 	if err != nil {
 		return nil, err
 	}

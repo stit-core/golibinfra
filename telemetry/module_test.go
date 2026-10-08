@@ -141,8 +141,6 @@ func TestModule_RedactsErrorLogger(t *testing.T) {
 // Регрессия KFX-05: недоступный коллектор на остановке — запись ERROR логгера ошибок, а Stop — без
 // ошибки: телеметрия best-effort, код выхода сервиса и Job от коллектора не зависит.
 func TestModule_StopWithCollectorDownIsBestEffort(t *testing.T) {
-	restoreGlobals(t)
-
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("listen: %v", err)
@@ -159,19 +157,31 @@ func TestModule_StopWithCollectorDownIsBestEffort(t *testing.T) {
 		LogBatchDelay:   time.Hour,
 	}
 
-	stdout := captureStdout(t)
-	app := fx.New(fx.NopLogger, fx.Supply(cfg, logkit.Config{Level: "info"}), Module)
-	if err := app.Start(t.Context()); err != nil {
-		t.Fatalf("Start: %v", err)
-	}
-	_, span := otel.Tracer("test").Start(context.Background(), "job")
-	span.End()
-	if err := app.Stop(t.Context()); err != nil {
-		t.Fatalf("Stop with the collector down = %v, want nil", err)
-	}
-	got := stdout()
-	if !strings.Contains(got, `"level":"ERROR","msg":"telemetry: shutdown"`) || !strings.Contains(got, "connection refused") {
-		t.Fatalf("no ERROR record of the failed final export:\n%s", got)
+	// При LOG_SILENT=true второго канала у логгера ошибок нет: запись идёт в stderr, а не теряется.
+	for name, c := range map[string]struct {
+		silent bool
+		stream **os.File
+	}{
+		"stdout":                 {false, &os.Stdout},
+		"LOG_SILENT=true stderr": {true, &os.Stderr},
+	} {
+		t.Run(name, func(t *testing.T) {
+			restoreGlobals(t)
+			logged := captureStream(t, c.stream)
+			app := fx.New(fx.NopLogger, fx.Supply(cfg, logkit.Config{Level: "info", Silent: c.silent}), Module)
+			if err := app.Start(t.Context()); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			_, span := otel.Tracer("test").Start(context.Background(), "job")
+			span.End()
+			if err := app.Stop(t.Context()); err != nil {
+				t.Fatalf("Stop with the collector down = %v, want nil", err)
+			}
+			got := logged()
+			if !strings.Contains(got, `"level":"ERROR","msg":"telemetry: shutdown"`) || !strings.Contains(got, "connection refused") {
+				t.Fatalf("no ERROR record of the failed final export:\n%s", got)
+			}
+		})
 	}
 }
 
@@ -179,19 +189,24 @@ func TestModule_StopWithCollectorDownIsBestEffort(t *testing.T) {
 // снаружи его writer не задать.
 func captureStdout(t *testing.T) func() string {
 	t.Helper()
+	return captureStream(t, &os.Stdout)
+}
+
+func captureStream(t *testing.T, stream **os.File) func() string {
+	t.Helper()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatalf("pipe: %v", err)
 	}
-	old := os.Stdout
-	os.Stdout = w
-	t.Cleanup(func() { os.Stdout = old })
+	old := *stream
+	*stream = w
+	t.Cleanup(func() { *stream = old })
 	return func() string {
-		os.Stdout = old
+		*stream = old
 		_ = w.Close()
 		b, err := io.ReadAll(r)
 		if err != nil {
-			t.Fatalf("read stdout: %v", err)
+			t.Fatalf("read stream: %v", err)
 		}
 		return string(b)
 	}

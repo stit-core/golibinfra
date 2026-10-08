@@ -15,10 +15,11 @@ import (
 type Option func(*options)
 
 type options struct {
-	redact  RedactConfig
-	otel    log.LoggerProvider
-	service *ServiceConfig
-	writer  io.Writer
+	redact         RedactConfig
+	otel           log.LoggerProvider
+	service        *ServiceConfig
+	writer         io.Writer
+	stderrFallback bool
 }
 
 // WithRedact настраивает маскирование: свои маски, замена или выключение
@@ -48,6 +49,13 @@ func WithService(cfg ServiceConfig) Option {
 // Config.Silent.
 func WithWriter(w io.Writer) Option {
 	return func(o *options) { o.writer = w }
+}
+
+// WithStderrFallback оставляет канал логгеру без OTel-sink при Config.Silent: записи уровня ERROR
+// идут в stderr, а не отбрасываются. Для служебных логгеров — событий fx (FxLogger) и ошибок
+// экспорта telemetry: Silent рассчитан на OTel-sink, а у них его нет.
+func WithStderrFallback() Option {
+	return func(o *options) { o.stderrFallback = true }
 }
 
 // New собирает Logger по cfg и опциям.
@@ -94,14 +102,17 @@ func buildHandler(cfg Config, opts []Option) (slog.Handler, error) {
 		return nil, err
 	}
 
-	w := o.writer
+	w, localLvl := o.writer, lvl
 	if w == nil {
 		w = os.Stdout
-		if cfg.Silent {
+		switch {
+		case cfg.Silent && o.stderrFallback:
+			w, localLvl = os.Stderr, max(lvl, slog.LevelError)
+		case cfg.Silent:
 			w = io.Discard
 		}
 	}
-	ho := &slog.HandlerOptions{Level: lvl, AddSource: cfg.Source}
+	ho := &slog.HandlerOptions{Level: localLvl, AddSource: cfg.Source}
 	var local slog.Handler = slog.NewJSONHandler(w, ho)
 	if format == formatText {
 		local = slog.NewTextHandler(w, ho)

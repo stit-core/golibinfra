@@ -50,8 +50,9 @@ func newProvidersWithLifecycle(p providerParams) (*Providers, error) {
 	// Логгер строится из конфига, а не берётся из графа: logkit.Logger несёт
 	// OTel-sink, и ошибка экспорта логов породила бы новую запись и новую ошибку.
 	// Redact при этом сохраняется: в текст ошибки экспорта попадает URL
-	// коллектора и произвольные атрибуты сообщений SDK.
-	l, err := logkit.NewSlog(p.LogCfg, logkit.WithRedact(p.Redact))
+	// коллектора и произвольные атрибуты сообщений SDK. Второго канала у него нет, поэтому при
+	// LOG_SILENT его ERROR идут в stderr.
+	l, err := logkit.NewSlog(p.LogCfg, logkit.WithRedact(p.Redact), logkit.WithStderrFallback())
 	if err != nil {
 		return nil, fmt.Errorf("telemetry: error logger: %w", err)
 	}
