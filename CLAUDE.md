@@ -42,19 +42,22 @@ make check        # hooks-check + fmt-check + vet + lint + test-full + build + t
 make test-full    # unit + integration (testcontainers: Postgres/NATS/Redis/MinIO) -race; без Docker — FAIL
 make test         # быстрый цикл: unit -short -race, без контейнеров
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
-make tools        # golangci-lint + govulncheck пиненных версий
-make hooks        # один раз: core.hooksPath=scripts/git-hooks — pre-push гоняет make check
+make release-diff PREV=vX.Y.Z  # что изменилось с тега: API (apidiff), env-теги и дефолты, имена метрик
+make tools        # golangci-lint, govulncheck и apidiff пиненных версий
+make hooks        # один раз: core.hooksPath=scripts/git-hooks — commit-msg и pre-push
 make coverage     # покрытие -short + сводка; ещё есть bench, fuzz и test-timing (вне гейта)
 ```
 
 Зелёный `make check` = можно claim «готово»: он гоняет и integration, поэтому нужны
 Docker и сеть (govulncheck). Гейт всегда проверяет `./...` (последняя строка —
-`✓ check clean (./...)`): `PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-n`/`-q`/`-t`,
-`--eval`, вторым makefile (`-f`; переопределивший рецепты гейта — уже его правка), `GOFLAGS`
-(env или `go env -w`) и подменой `MAKE`/`SHELL`/`.SHELLFLAGS`/`MAKEFILES` он не запускается.
-Кеш golangci-lint — в `.cache/` checkout'а. Без активного pre-push `make check` красный
-(`hooks-check`). Перед тегом — `make gate-clean`: он ловит файлы, которые есть локально,
-но не в git, и гоняет гейт без make-окружения вызывающего и с холодным кешем lint.
+`✓ check clean (./...)`): `PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-k`/`-n`/`-p`/`-q`/`-t`,
+`--eval`, лишним makefile в обычных формах (`-f`, `MAKEFILES`), `GOFLAGS` (env или `go env -w`) и
+подменой `MAKE`/`SHELL`/`.SHELLFLAGS` он не запускается. Makefile, написанный под подделку
+(переприсваивает `MAKEFILE_LIST`), сверку внутри make обходит — это правка гейта (§ Границы);
+вердикт для remote — pre-push. Кеш golangci-lint — в `.cache/` checkout'а. Без активных хуков
+`make check` красный (`hooks-check`). Перед тегом — `make gate-clean`: тот же прогон, что pre-push
+делает на пушимом коммите, — он ловит файлы, которые есть локально, но не в git, и гоняет гейт без
+make-окружения вызывающего и с холодным кешем lint.
 
 `fmt-check`, `lint` и `vuln` отказывают, если `golangci-lint` или `govulncheck` в PATH — не версии
 пина `Makefile` (ставит `make tools`). `make lint` до прогона проверяет схему `.golangci.yml` и
@@ -196,7 +199,9 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 ## Git workflow
 
 - **Conventional Commits**: `feat|fix|refactor|docs|test|chore` + `<type>(<scope>)?: <subject>`;
-  breaking — `!` и футер `BREAKING CHANGE:`.
+  breaking — `!` и футер `BREAKING CHANGE:`. Формат держит хук `commit-msg` (`scripts/git-hooks`):
+  subject ≤72 символов, `!` и футер — только вместе; сообщения самого git (`Revert "…"`,
+  `fixup!`/`squash!`) проходят, merge-коммит — нет.
 - Линейная история; версия — тег `vX.Y.Z`. Совместимость между minor-версиями
   `v1` не гарантируется: breaking идёт **minor**'ом с `!` в коммите и строкой
   миграции в аннотации тега; patch — только фиксы без смены сигнатур, дефолтов,
@@ -204,9 +209,9 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   Аннотация тега — release notes: `Breaking` по китам (что изменилось → как
   мигрировать), `Поведение`, `Изменения`, `Гейт`.
 - Коммит/пуш — гейт человека (без явной просьбы не коммитить).
-- Push проходит гейт: pre-push (`scripts/git-hooks`) гоняет весь `make check` на каждом
-  пушимом коммите в свежем worktree (как `make gate-clean`). Обход — только руками человека
-  (`git push --no-verify`).
+- Push проходит гейт: pre-push (`scripts/git-hooks`) гоняет весь `make check` на верхнем коммите
+  каждого пушимого ref'а в свежем worktree (как `make gate-clean`): незакоммиченное в рабочем дереве
+  на вердикт не влияет. Обход — только руками человека (`git push --no-verify`).
 
 ## Границы
 
@@ -247,9 +252,11 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   доступен контекст запроса: первый вешает вызов без предела, второй теряет отмену,
   дедлайн и трейс запроса. Первое ловит forbidigo (и `http.Get`/`Head`/`Post`/`PostForm`), второе
   держит ревью.
-- Обходить хуки и гейт: `--no-verify`, `git commit -n`, смена `core.hooksPath`, запись в хук
-  (`scripts/git-hooks` — только чтение) — из сессии Claude их блокируют `permissions.deny` и хук
-  `.claude/hooks/guard-bash.sh` (`.claude/settings.json`); красный гейт чинят, а не обходят.
+- Обходить хуки и гейт: `--no-verify`, `git commit -n`, смена `core.hooksPath`, порча хука —
+  красный гейт чинят, а не обходят. Удобные формы из сессии Claude блокируют `permissions.deny`
+  (`.claude/settings.json`) и хук `.claude/hooks/guard-bash.sh`: это барьер от случайного обхода, а
+  не песочница (чего он не видит — `README.md § Гейт`); правка хуков инструментами Edit и Write —
+  правка гейта (§ Сначала спросить).
 
 ## Forward-only
 

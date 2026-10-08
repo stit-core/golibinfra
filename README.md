@@ -312,11 +312,12 @@ ENV читает один ридер — у `New*Config` всех китов и 
 - **major** — смена module path (`/vN`); резервируется на случай, когда
   потребители перестанут обновляться синхронно с библиотекой.
 
-Релиз — skill `/release`: `make gate-clean` → аннотированный тег с release notes
-(`Breaking` / `Поведение` / `Изменения` / `Гейт`) → push. `Breaking` — всё, что
-требует правки кода или тестов потребителя; `Поведение` — меняется рантайм без
-правок (дефолт, исход); `Изменения` — новое, которое можно не трогать. В проектах
-после релиза:
+Релиз — skill `/release`: `make gate-clean` → `make release-diff PREV=<прошлый тег>` →
+аннотированный тег с release notes (`Breaking` / `Поведение` / `Изменения` / `Гейт`) → push.
+`Breaking` — всё, что требует правки кода, тестов или окружения потребителя: каждая несовместимая
+строка API, снятая переменная и снятое имя метрики из `release-diff` и breaking-коммиты;
+`Поведение` — меняется рантайм без правок (дефолт, исход); `Изменения` — новое, которое можно не
+трогать. В проектах после релиза:
 ```bash
 go get git.stit.tech/stit-core/golibinfra@vX.Y.Z && go mod tidy
 ```
@@ -324,22 +325,24 @@ go get git.stit.tech/stit-core/golibinfra@vX.Y.Z && go mod tidy
 ## Гейт
 
 ```bash
-make tools        # golangci-lint + govulncheck пиненных версий
-make hooks        # один раз: core.hooksPath=scripts/git-hooks — pre-push гоняет make check
+make tools        # golangci-lint, govulncheck и apidiff пиненных версий
+make hooks        # один раз: core.hooksPath=scripts/git-hooks — commit-msg и pre-push
 make check        # hooks-check + fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
 make test-full    # unit + integration (testcontainers: Postgres/NATS/Redis/MinIO) -race; без Docker — FAIL
 make test         # быстрый цикл: unit -short -race, без контейнеров
 make gate-clean   # make check в чистом worktree от HEAD — перед тегом
+make release-diff PREV=vX.Y.Z  # что изменилось с тега: API (apidiff), env-теги и дефолты, имена метрик
 ```
 
 `make check` требует Docker (integration на testcontainers: без Docker тест
 падает, а не пропускается) и сети (`govulncheck` тянет базу уязвимостей). Он
 всегда проверяет всё дерево и заканчивается строкой `✓ check clean (./...)`:
-`PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-n`/`-q`/`-t`, `--eval`, вторым
-makefile (`-f`, в том числе `Makefile` другого каталога), `GOFLAGS` (env или `go env -w`) и
-подменой `MAKE`/`SHELL`/`.SHELLFLAGS`/`MAKEFILES` гейт не запускается; makefile, который
-переопределяет рецепты самого гейта, — уже его правка. Кеш golangci-lint —
-свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
+`PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-k`/`-n`/`-p`/`-q`/`-t`, `--eval`, лишним
+makefile в обычных формах (`-f`, в том числе `Makefile` другого каталога, и `MAKEFILES`), `GOFLAGS`
+(env или `go env -w`) и подменой `MAKE`/`SHELL`/`.SHELLFLAGS` гейт не запускается. Makefile,
+написанный под подделку (переприсваивает `MAKEFILE_LIST`), обходит любую сверку внутри make: свой
+makefile — правка гейта, а вердикт для remote — pre-push. Кеш golangci-lint — свой у каждого
+checkout'а (`.cache/`), у `gate-clean` — холодный.
 
 Версии `golangci-lint` и `govulncheck` — пины `Makefile`: шаги `fmt-check`, `lint` и `vuln`
 сверяют с ними бинарь из PATH и на другой версии отказывают (ставит `make tools`). `make lint` до
@@ -349,14 +352,25 @@ forbidigo не пускает `fmt.Print*`, `print`/`println`, пакет `log`,
 умолчанию, `http.DefaultClient` и `http.Get`/`Head`/`Post`/`PostForm`; образ с тегом `:latest` в
 Go-коде ловит тест `testkit` (`TestImageTagsArePinned`).
 
-Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь
-`make check` на каждом пушимом коммите в свежем worktree, как `make gate-clean`, — без
-make-окружения вызывающего, незакоммиченных правок и gitignored-файлов; без активного
-pre-push `make check` красный (`hooks-check`, подсказка — `make hooks`). Обход — только
-руками человека (`git push --no-verify`). Из сессии Claude Code удобные обходы блокируют
-deny `.claude/settings.json` (`--no-veri…` где угодно в команде, в том числе в кавычках и
-алиасе) и `.claude/hooks/guard-bash.sh` (`git commit -n`, смена `core.hooksPath`, по
-`scripts/git-hooks` — всё, кроме чтения) — страховка от удобного обхода, а не от обфускации.
+Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь `make check` на
+верхнем коммите каждого пушимого ref'а в свежем worktree — по дереву и `Makefile` самого коммита,
+без make-окружения вызывающего, незакоммиченных правок и gitignored-файлов; `make gate-clean` —
+тот же прогон на HEAD. Формат сообщения коммита держит `commit-msg`: Conventional Commit, subject
+до 72 символов, `!` и футер `BREAKING CHANGE:` — только вместе. Без активных хуков `make check`
+красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
+(`git push --no-verify`).
+
+Из сессии Claude Code удобные обходы блокируют deny `.claude/settings.json` (подстрока
+`--no-veri` где угодно в команде) и `.claude/hooks/guard-bash.sh`: `git commit -n` и `--no-veri…`
+(и флаг в кавычках), `core.hooksPath` в команде с git, по путям `scripts/git-hooks`, `pre-push` и
+`commit-msg` — всё, кроме чтения. Это барьер от случайного обхода, а не песочница. Guard не
+видит, в том числе: имя команды в кавычках и флаг, разорванный кавычками; код для интерпретатора
+(`bash -c`, `eval`, `| bash`, heredoc, `python3 -c`) и скрипт из файла; подстановки оболочки
+(`$G`, `$(…)`), glob и `xargs`; `chmod -R` и `find … -exec` с каталога выше хуков; алиасы и
+`include` конфига git, правку `.git/config` и снятие секции `core`; `git send-pack`; push из
+клона или worktree, где хуков нет; правку инструментами Edit и Write. Такой обход — правка гейта
+(`CLAUDE.md § Границы`). Поведение хуков, guard и самозащиты `make check` держит
+`scripts/gate_test.go`.
 
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),

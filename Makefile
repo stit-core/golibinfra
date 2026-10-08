@@ -3,10 +3,11 @@ PKGS    ?= ./...
 COVERPROFILE          ?= coverage.out
 FUZZTIME              ?= 10s
 
-# Версии тулов гейта — константы: окружение и командная строка их не меняют. Чужая версия молча
-# меняет вердикт, поэтому шаг сверяет с пином бинарь из PATH — по его build info, не запуская.
+# Версии тулов — константы: окружение и командная строка их не меняют. Чужая версия молча меняет
+# вердикт, поэтому шаг сверяет с пином бинарь из PATH — по его build info, не запуская.
 override GOLANGCI_LINT_VERSION := v2.12.2
 override GOVULNCHECK_VERSION   := v1.8.0
+override APIDIFF_VERSION       := v0.0.0-20260908205506-85c1c2202aba
 override pinned = @go version -m "$$(command -v $(1))" 2>/dev/null | \
 	awk -v mod=$(2) -v ver=$(3) '$$1 == "mod" && $$2 == mod && $$3 == ver { ok = 1 } END { exit !ok }' || \
 	{ echo "FAIL: $(1) ($$(command -v $(1) || echo 'нет в PATH')) — не $(3): пиненную версию ставит make tools"; exit 1; }
@@ -21,7 +22,7 @@ unexport GOLANGCI_DIFF_PROCESSOR_PATCH GOLANGCI_LINT_CACHEPROG
 
 .DEFAULT_GOAL := help
 
-.PHONY: help check gate-makefiles hooks-check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean hooks tools
+.PHONY: help check hooks-check plan-check fmt fmt-check vet lint test test-full test-timing build tidy-check vuln envdoc-check coverage bench fuzz gate-clean release-diff hooks tools
 
 help: ## Список целей
 	@grep -E '^[a-zA-Z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-14s %s\n", $$1, $$2}'
@@ -32,12 +33,14 @@ override GATE_PKGS  := ./...
 override GATE_STEPS := hooks-check fmt-check vet lint test-full build tidy-check vuln envdoc-check plan-check
 override GATE       := $(MAKE) --no-print-directory PKGS=$(GATE_PKGS) GO=go A=
 
-# check и gate-clean не запускаются там, где сказали бы «clean», не проверив всё: -i глушит
-# ошибки шагов, -n/-q/-t их не выполняют, подмена MAKE, SHELL, .SHELLFLAGS и MAKEFILES (и --eval
-# до чтения Makefile) меняет шаги, GOFLAGS (из env или go env -w) — go test, vet и govulncheck.
+# check и gate-clean не запускаются там, где сказали бы «clean», не проверив всё: -i и -k глушат
+# ошибки шагов, -n/-q/-t их не выполняют, -p печатает рецепты, подмена MAKE, SHELL, .SHELLFLAGS и
+# MAKEFILES (и --eval до чтения Makefile) меняет шаги, makefile, прочитанный раньше этого, подменяет
+# рецепт, GOFLAGS (из env или go env -w) — go test, vet и govulncheck.
 ifneq (,$(filter check gate-clean,$(MAKECMDGOALS)))
-override gate_bad := $(foreach f,i n q t,$(if $(findstring $f,$(firstword -$(MAKEFLAGS))),-$f)) \
+override gate_bad := $(foreach f,i k n p q t,$(if $(findstring $f,$(firstword -$(MAKEFLAGS))),-$f)) \
 	$(if $(filter --eval=%,$(MAKEFLAGS)),--eval) \
+	$(filter-out $(abspath Makefile),$(abspath $(MAKEFILE_LIST))) \
 	$(foreach v,MAKE SHELL .SHELLFLAGS MAKEFILES,$(if $(filter command% environment%,$(origin $v)),$v=…)) \
 	$(if $(shell go env GOFLAGS),GOFLAGS=$(shell go env GOFLAGS))
 ifneq (,$(strip $(gate_bad)))
@@ -45,30 +48,33 @@ $(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускает�
 endif
 endif
 
-# Makefile, прочитанный после этого (make -f Makefile -f extra.mk), подменил бы рецепт check;
-# пререквизиты правил одной цели складываются, поэтому список makefile'ов сверяет пререквизит —
-# по полному пути: Makefile другого каталога тоже чужой. Makefile, который переопределяет и этот
-# рецепт, — уже правка гейта.
-check gate-clean: gate-makefiles
-gate-makefiles:
-	$(if $(filter-out $(abspath Makefile),$(abspath $(MAKEFILE_LIST))),$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с makefile'ами $(strip $(MAKEFILE_LIST)) — только Makefile этого каталога))
+# Makefile, прочитанный после этого (make -f Makefile -f extra.mk), подменил бы рецепт. Рецепты check
+# и gate-clean — правила «::»: чужое «check:» — ошибка разбора, чужое «check::» идёт после этого, а
+# его первая строка сверяет состав makefile'ов, когда прочитаны все, — до первого шага и при любых
+# флагах make. Makefile, написанный под подделку (переприсваивает MAKEFILE_LIST), обходит любую
+# сверку внутри make — это правка гейта; вердикт для remote — pre-push.
+override gate_makefiles = $(if $(filter-out $(abspath Makefile),$(abspath $(MAKEFILE_LIST))),$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с makefile'ами $(strip $(MAKEFILE_LIST)) — только Makefile этого каталога))
 
-check: ## Канонический gate: хуки, fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
+check:: ## Канонический gate: хуки, fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
+	$(gate_makefiles)
 	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(GATE) $$step; done
 	@echo "✓ check clean ($(GATE_PKGS))"
 
-# Пуш без гейта никто не видит, поэтому неактивный pre-push — красный check, а не предупреждение.
-hooks-check: ## pre-push активен: git берёт хуки из scripts/git-hooks (иначе — make hooks)
+# Коммит и пуш без хуков никто не видит, поэтому неактивный хук — красный check, а не предупреждение.
+override HOOKS := commit-msg pre-push
+hooks-check: ## Хуки git активны: путь хуков — scripts/git-hooks, файлы исполняемые (иначе — make hooks)
 	@active=$$(cd "$$(git rev-parse --git-path hooks)" 2>/dev/null && pwd -P); \
 	if [ "$$active" != "$$(cd scripts/git-hooks && pwd -P)" ]; then \
-		echo "FAIL: pre-push не активен — git берёт хуки из $$(git rev-parse --git-path hooks); запусти make hooks"; \
+		echo "FAIL: хуки не активны — git берёт их из $$(git rev-parse --git-path hooks); запусти make hooks"; \
 		exit 1; \
 	fi; \
-	if [ ! -x scripts/git-hooks/pre-push ]; then \
-		echo "FAIL: scripts/git-hooks/pre-push не исполняемый — git его пропустит (chmod +x)"; \
-		exit 1; \
-	fi; \
-	echo "OK: pre-push активен (scripts/git-hooks)"
+	for hook in $(HOOKS); do \
+		if [ ! -x scripts/git-hooks/$$hook ]; then \
+			echo "FAIL: scripts/git-hooks/$$hook не исполняемый — git его пропустит; запусти make hooks"; \
+			exit 1; \
+		fi; \
+	done; \
+	echo "OK: хуки активны (scripts/git-hooks: $(HOOKS))"
 
 fmt: ## Форматирование (gofumpt через golangci-lint)
 	$(golangci_pinned)
@@ -127,12 +133,20 @@ fuzz: ## Короткий прогон каждого Fuzz-таргета (FUZZT
 		done; \
 	done
 
-gate-clean: ## `make check` в чистом worktree HEAD: без make-окружения вызывающего, с холодным кешем lint
-	scripts/gate-clean.sh
+# Реализация одна — хук: gate-clean отдаёт ему HEAD так же, как git отдаёт пушимый коммит.
+gate-clean:: ## `make check` HEAD в свежем worktree, как pre-push на пушимом коммите: без make-окружения вызывающего, с холодным кешем lint
+	$(gate_makefiles)
+	@echo "HEAD $$(git rev-parse HEAD) - -" | scripts/git-hooks/pre-push
 
-hooks: ## Включить хуки scripts/git-hooks: pre-push гоняет make check на пушимом коммите в свежем worktree
+release-diff: ## release-diff PREV=vX.Y.Z — что изменилось для потребителя с тега: API (apidiff), env-теги с дефолтами, имена метрик
+	$(call pinned,apidiff,golang.org/x/exp,$(APIDIFF_VERSION))
+	@scripts/release-diff.sh "$(PREV)"
+
+hooks: ## Включить хуки scripts/git-hooks (commit-msg, pre-push): путь хуков git и право на запуск
 	git config core.hooksPath scripts/git-hooks
+	chmod +x $(addprefix scripts/git-hooks/,$(HOOKS))
 
-tools: ## Установить golangci-lint и govulncheck пиненных версий
+tools: ## Установить golangci-lint, govulncheck и apidiff пиненных версий
 	$(GO) install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@$(GOLANGCI_LINT_VERSION)
 	$(GO) install golang.org/x/vuln/cmd/govulncheck@$(GOVULNCHECK_VERSION)
+	$(GO) install golang.org/x/exp/cmd/apidiff@$(APIDIFF_VERSION)

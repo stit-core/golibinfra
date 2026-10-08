@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -168,5 +169,39 @@ func TestCheck(t *testing.T) {
 				t.Fatalf("want a problem with %q, got:\n%s", tt.want, got)
 			}
 		})
+	}
+}
+
+// Вход make release-diff: смена дефолта и снятый тег видны как пропавшая и новая строка, а дерево
+// с проблемами (поле без тега) читается — так читается и прошлая версия.
+func TestCodeVars(t *testing.T) {
+	base, err := repo()
+	if err != nil {
+		t.Fatalf("read repo: %v", err)
+	}
+	files := maps.Clone(base)
+	before, err := codeVars(files)
+	if err != nil {
+		t.Fatalf("codeVars: %v", err)
+	}
+	if !slices.IsSorted(before) || len(slices.Compact(slices.Clone(before))) != len(before) {
+		t.Fatalf("lines are not sorted and unique:\n%s", strings.Join(before, "\n"))
+	}
+	for _, want := range []string{"OUTBOX_BATCH_SIZE=100", "FEATURE_FLAGS="} {
+		if !slices.Contains(before, want) {
+			t.Fatalf("no line %q in:\n%s", want, strings.Join(before, "\n"))
+		}
+	}
+
+	edit(t, files, "outboxkit/config.go", `(envconfig:"OUTBOX_BATCH_SIZE"\s+default:)"100"`, `${1}"50"`)
+	edit(t, files, "flagkit/flag.go", "(Definitions string) `envconfig:\"FEATURE_FLAGS\"`", "${1}")
+	after, err := codeVars(files)
+	if err != nil {
+		t.Fatalf("codeVars of a tree with problems: %v", err)
+	}
+	gone := slices.DeleteFunc(slices.Clone(before), func(v string) bool { return slices.Contains(after, v) })
+	added := slices.DeleteFunc(slices.Clone(after), func(v string) bool { return slices.Contains(before, v) })
+	if !slices.Equal(gone, []string{"FEATURE_FLAGS=", "OUTBOX_BATCH_SIZE=100"}) || !slices.Equal(added, []string{"OUTBOX_BATCH_SIZE=50"}) {
+		t.Fatalf("gone %q, added %q", gone, added)
 	}
 }

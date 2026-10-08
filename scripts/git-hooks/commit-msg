@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# commit-msg: первая строка сообщения — Conventional Commit, breaking — и `!`, и футер
+# `BREAKING CHANGE:`: по ним /release собирает заметки версии. Формат и список типов — CLAUDE.md
+# § Git workflow; список правится там и здесь одним коммитом. Сообщения, которые пишет сам git
+# (git revert, commit --fixup/--squash), проходят; merge-коммит — нет: история линейная.
+set -euo pipefail
+
+# Под LC_ALL=C символ — байт: длину subject считаем без байтов-продолжений UTF-8, и предел в 72
+# символа не зависит от локали того, кто коммитит.
+export LC_ALL=C
+head=$(head -n 1 "$1" | sed 's/[[:space:]]*$//')
+conventional='^(feat|fix|refactor|docs|test|chore)(\([a-z0-9_/,.-]+\))?(!)?: (.+)$'
+by_git='^((Revert|Reapply) ".+"|(fixup|squash|amend)! .+)$'
+
+[[ $head =~ $by_git ]] && exit 0
+why="первая строка не в формате"
+if [[ $head =~ $conventional ]]; then
+	bang=${BASH_REMATCH[3]}
+	subject=${BASH_REMATCH[4]}
+	chars=${subject//[$'\x80'-$'\xbf']/}
+	footer=$(grep -c '^BREAKING[ -]CHANGE: ' "$1" || true)
+	if [ ${#chars} -gt 72 ]; then
+		why="subject длиннее 72 символов (${#chars})"
+	elif [ -n "$bang" ] && [ "$footer" = 0 ]; then
+		why="«!» без футера BREAKING CHANGE:"
+	elif [ -z "$bang" ] && [ "$footer" != 0 ]; then
+		why="футер BREAKING CHANGE: без «!» в первой строке"
+	else
+		exit 0
+	fi
+fi
+
+cat >&2 <<EOF
+commit-msg: коммит не по Conventional Commits — $why
+  формат:   <type>(<scope>)?!?: <subject>, subject — до 72 символов
+  типы:     feat, fix, refactor, docs, test, chore
+  breaking: «!» перед двоеточием и футер «BREAKING CHANGE: <что изменилось и как мигрировать>»
+  пример:   fix(pgkit): дедлайн миграций прерывает идущий оператор
+  строка:   $head
+EOF
+exit 1

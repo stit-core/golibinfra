@@ -1,6 +1,7 @@
 // Command envdoc (make envdoc-check) сверяет env-переменные кода с доками китов:
 // строка таблицы и дефолт у каждой переменной, нет переменных-призраков в доках,
 // нет полей конфига без тега, которые ридер ENV отверг бы. Правила — check.
+// С флагом -vars печатает переменные кода с дефолтами — вход make release-diff.
 package main
 
 import (
@@ -35,6 +36,17 @@ var (
 )
 
 func main() {
+	if len(os.Args) == 2 && os.Args[1] == "-vars" {
+		vars, err := codeVars(os.DirFS("."))
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "envdoc:", err)
+			os.Exit(2)
+		}
+		for _, v := range vars {
+			fmt.Println(v)
+		}
+		return
+	}
 	problems, checked, err := check(os.DirFS("."))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "envdoc:", err)
@@ -72,12 +84,7 @@ func check(fsys fs.FS) (problems []string, checked int, err error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	allow := map[string]bool{}
-	for line := range strings.Lines(allowList) {
-		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
-			allow[line] = true
-		}
-	}
+	allow := allowed()
 	var vars []envVar
 	for _, dir := range slices.Sorted(maps.Keys(pkgs)) {
 		v, p := pkgs[dir].envVars(pkgs, allow)
@@ -92,6 +99,34 @@ func check(fsys fs.FS) (problems []string, checked int, err error) {
 	problems = append(problems, checkTokens(vars, docs, allow)...)
 	problems = append(problems, checkRootTable(vars, docs, allow)...)
 	return problems, len(vars), nil
+}
+
+func allowed() map[string]bool {
+	allow := map[string]bool{}
+	for line := range strings.Lines(allowList) {
+		if line = strings.TrimSpace(line); line != "" && !strings.HasPrefix(line, "#") {
+			allow[line] = true
+		}
+	}
+	return allow
+}
+
+// codeVars — переменные кода дерева строками «имя=default», отсортированные и без повторов.
+// Проблемы дерева не ошибка: make release-diff читает так и прошлую версию.
+func codeVars(fsys fs.FS) ([]string, error) {
+	pkgs, err := parsePackages(fsys)
+	if err != nil {
+		return nil, err
+	}
+	allow := allowed()
+	set := map[string]bool{}
+	for _, p := range pkgs {
+		vars, _ := p.envVars(pkgs, allow)
+		for _, v := range vars {
+			set[v.name+"="+v.def] = true
+		}
+	}
+	return slices.Sorted(maps.Keys(set)), nil
 }
 
 // pkg — не-тестовые Go-файлы одного каталога.

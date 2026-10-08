@@ -1,23 +1,41 @@
 #!/usr/bin/env bash
 # pre-push: гейт перед отправкой в remote — `make check` каждого пушимого коммита в свежем
-# worktree (scripts/gate-clean.sh); CI нет, это последняя проверка. Вердикт — про то, что
-# уходит в remote: незакоммиченные правки и gitignored-файлы рабочего дерева на него не
-# влияют. Включается `make hooks`; без него make check красный.
+# worktree; CI нет, это последняя проверка. Вердикт — про то, что уходит в remote: гейт идёт по
+# дереву и Makefile самого коммита, без make-окружения вызывающего и с холодным кешем lint (Makefile
+# кладёт его в checkout) — незакоммиченные правки и gitignored-файлы рабочего дерева на него не
+# влияют. Тот же прогон на HEAD — `make gate-clean`. Включается `make hooks`; без него make check
+# красный.
 #
 # Обход — только руками человека: git push --no-verify. Из сессии Claude его и смену
 # core.hooksPath блокируют .claude/settings.json и хук .claude/hooks/guard-bash.sh.
 set -euo pipefail
 
-cd "$(git rev-parse --show-toplevel)"
+root=$(git rev-parse --show-toplevel)
+# Хук git экспортирует GIT_DIR и соседей: в другом worktree они указали бы не туда.
+# shellcheck disable=SC2046 # имена переменных — отдельными словами
+unset $(git rev-parse --local-env-vars)
+
+tmp=""
+cleanup() {
+	[ -n "$tmp" ] || return 0
+	git -C "$root" worktree remove --force "$tmp" >/dev/null 2>&1 || true
+	rm -rf "$tmp"
+	tmp=""
+}
+trap cleanup EXIT
 
 # stdin: <local ref> <local sha> <remote ref> <remote sha> на каждый пушимый ref.
 checked=" "
 while read -r local_ref local_sha _ _; do
 	[[ $local_sha =~ ^0+$ ]] && continue # удаление ref: проверять нечего
-	commit=$(git rev-parse "$local_sha^{commit}")
+	commit=$(git -C "$root" rev-parse --verify "$local_sha^{commit}")
 	[[ $checked == *" $commit "* ]] && continue # main и тег на одном коммите — один прогон
 	checked+="$commit "
-	echo "pre-push: $local_ref — make check в свежем worktree"
-	# stdin гейта — не список ref'ов: его дочитывает цикл.
-	scripts/gate-clean.sh "$commit" </dev/null
+	tmp=$(mktemp -d "${TMPDIR:-/tmp}/golibinfra-gate.XXXXXX")
+	git -C "$root" worktree add --detach --quiet "$tmp" "$commit"
+	echo "pre-push: $local_ref — make check в свежем worktree $tmp @ $(git -C "$root" rev-parse --short "$commit")"
+	# Флаги и makefile'ы вызывающего make (MAKEFLAGS=i, -n…) до гейта не доходят; stdin гейта — не
+	# список ref'ов: его дочитывает цикл.
+	env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS -u MAKEFILES make -C "$tmp" check </dev/null
+	cleanup
 done

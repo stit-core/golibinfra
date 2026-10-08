@@ -50,8 +50,8 @@
 ## Перед PR
 
 ```bash
-make tools        # один раз: golangci-lint + govulncheck пиненных версий
-make hooks        # один раз: core.hooksPath=scripts/git-hooks, pre-push гоняет make check
+make tools        # один раз: golangci-lint, govulncheck и apidiff пиненных версий
+make hooks        # один раз: core.hooksPath=scripts/git-hooks — commit-msg и pre-push
 make check        # hooks-check + fmt-check + vet + lint + test-full + build + tidy-check + govulncheck + envdoc-check + plan-check
 make test         # быстрый цикл: unit -short -race, без контейнеров
 ```
@@ -59,7 +59,7 @@ make test         # быстрый цикл: unit -short -race, без конт�
 Зелёный `make check` — gate пройден. Он гоняет и integration-тесты
 (testcontainers), поэтому нужен Docker: без него integration-тест падает, а не
 пропускается; без `make hooks` он красный — push идёт через тот же гейт (pre-push
-гоняет его на пушимом коммите в свежем worktree). Что именно он запускает — в `Makefile` (цели можно
+гоняет его на верхнем коммите каждого пушимого ref'а в свежем worktree). Что именно он запускает — в `Makefile` (цели можно
 вызывать по отдельности: `make lint`, `make test-full`, …; подмножество пакетов
 для них — `PKGS=./<kit>/...`, `check` его не видит); есть ещё `make coverage`,
 `make bench`, `make fuzz` и `make test-timing` (timing-тест logkit, вне гейта).
@@ -79,6 +79,7 @@ make test         # быстрый цикл: unit -short -race, без конт�
 - **Conventional Commits** — `<type>(<scope>)?: <subject>`, subject ≤72. Типы:
   `feat`, `fix`, `refactor`, `docs`, `test`, `chore`; breaking — `!` и футер
   `BREAKING CHANGE:`. Пример: `feat(httpkit)!: NewServer принимает ServerOption`.
+  Формат проверяет хук `commit-msg`.
 
 ## Стиль
 
