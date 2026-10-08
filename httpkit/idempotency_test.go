@@ -589,6 +589,26 @@ func TestIdempotency_OversizedResponseNotStored(t *testing.T) {
 	}
 }
 
+// Регрессия KTST-11: резерв ключа достаётся ровно одному из параллельных запросов — остальные
+// получают 409, а не исполняют хендлер второй раз.
+func TestMemoryStore_ConcurrentReserve(t *testing.T) {
+	s := NewMemoryStore()
+	const requests = 64
+	var won atomic.Int64
+	var wg sync.WaitGroup
+	for range requests {
+		wg.Go(func() {
+			if _, ok, err := s.Reserve(context.Background(), "k", time.Minute); err == nil && ok {
+				won.Add(1)
+			}
+		})
+	}
+	wg.Wait()
+	if got := won.Load(); got != 1 {
+		t.Fatalf("%d of %d parallel requests reserved the key, want exactly one", got, requests)
+	}
+}
+
 // Регрессия (NF4): резерв, переживший ReserveTTL, своим отложенным Release не
 // снимает резерв следующего запроса — иначе третий запрос идёт параллельно второму.
 func TestMemoryStore_ReleaseIsScopedToOwner(t *testing.T) {

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/go-chi/chi/v5"
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/metric"
@@ -393,10 +394,11 @@ func OTel(trustTraceContext bool, quietPaths ...string) func(http.Handler) http.
 }
 
 // spanName вызывается otelhttp дважды: до роутинга (паттерн неизвестен) и
-// после, когда chi выставил r.Pattern — тогда имя становится «METHOD /route».
+// после, когда chi выставил r.Pattern — тогда имя становится «METHOD /route». Без поиска
+// маршрута по пути: до роутинга он шёл бы на каждом запросе, а имя всё равно ставит Metrics.
 func spanName(_ string, r *http.Request) string {
 	method := methodLabel(r.Method)
-	if route := routeLabel(r); route != "unmatched" {
+	if route := chi.RouteContext(r.Context()).RoutePattern(); route != "" {
 		return method + " " + route
 	}
 	return method

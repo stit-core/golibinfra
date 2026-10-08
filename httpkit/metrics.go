@@ -46,15 +46,30 @@ func newInstruments() *instruments {
 	}
 }
 
-// routeLabel — chi-паттерн маршрута после роутинга; для неизвестного пути
-// «unmatched», чтобы сканы 404 не раздували кардинальность.
+// unmatched — маршрут запроса на путь, которого у сервера нет: сканы 404 не раздувают
+// кардинальность.
+const unmatched = "unmatched"
+
+// routeLabel — chi-паттерн маршрута запроса. Ответ до роутера (429, preflight) и 405 паттерна не
+// знают: он ищется по пути — с методом запроса, затем с остальными; unmatched — путь без маршрута.
 func routeLabel(r *http.Request) string {
-	if rc := chi.RouteContext(r.Context()); rc != nil {
-		if p := rc.RoutePattern(); p != "" {
-			return p
-		}
+	rc := chi.RouteContext(r.Context())
+	if p := rc.RoutePattern(); p != "" {
+		return p
 	}
-	return "unmatched"
+	if rc == nil || rc.Routes == nil {
+		return unmatched
+	}
+	path, found := routePath(r), chi.NewRouteContext()
+	match := func(method string) bool {
+		found.Reset()
+		return rc.Routes.Match(found, method, path)
+	}
+	if match(r.Method) || slices.ContainsFunc(knownMethods, match) {
+		// RoutePattern, а не паттерн из Find: вид тот же, что роутер даёт хендлеру.
+		return found.RoutePattern()
+	}
+	return unmatched
 }
 
 var knownMethods = []string{
@@ -72,8 +87,8 @@ func methodLabel(m string) string {
 }
 
 // Metrics эмитит http_requests_total и http_request_duration_seconds через
-// глобальный otel.Meter и дополняет server-спан: имя «METHOD /route», http.route,
-// request_id и client.address из ClientIP.
+// глобальный otel.Meter и дополняет server-спан: имя «METHOD /route» и http.route — у запроса на
+// путь с маршрутом, request_id и client.address из ClientIP.
 func Metrics() func(http.Handler) http.Handler {
 	instr := newInstruments()
 	return func(next http.Handler) http.Handler {
@@ -84,12 +99,13 @@ func Metrics() func(http.Handler) http.Handler {
 			defer func() {
 				route := routeLabel(r)
 				if span := trace.SpanFromContext(r.Context()); span.IsRecording() {
+					var attrs []attribute.KeyValue
 					// Имя — здесь, а не форматтером otelhttp: тот видит маршрут, только если до
 					// роутера дошёл его объект запроса, а middleware с r.WithContext его заменяет.
-					if route != "unmatched" {
+					if route != unmatched {
 						span.SetName(methodLabel(r.Method) + " " + route)
+						attrs = append(attrs, semconv.HTTPRoute(route))
 					}
-					attrs := []attribute.KeyValue{semconv.HTTPRoute(route)}
 					if id := RequestIDFrom(r.Context()); id != "" {
 						attrs = append(attrs, attribute.String("request_id", id))
 					}

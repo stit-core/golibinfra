@@ -13,6 +13,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -240,6 +241,33 @@ func TestModule_ReadyProbeTimeout(t *testing.T) {
 	}
 	if body := bodyString(t, resp); !strings.Contains(body, `"natskit"`) || !strings.Contains(body, `"pgkit"`) {
 		t.Fatalf("/ready must list every probe: %s", body)
+	}
+}
+
+// Регрессия KTST-11: пробы /ready идут параллельно — латентность равна самой медленной пробе, а
+// не сумме. Каждая из двух проб ждёт старта другой: запущенная в одиночку она не дождалась бы и
+// упала по таймауту пробы.
+func TestModule_ReadyRunsProbesInParallel(t *testing.T) {
+	var arrived atomic.Int32
+	both := make(chan struct{})
+	meet := func(ctx context.Context) error {
+		if arrived.Add(1) == 2 {
+			close(both)
+		}
+		select {
+		case <-both:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+	srv := startApp(t,
+		healthkit.ProvideProbe(func() healthkit.Probe { return healthkit.New("pgkit", meet) }),
+		healthkit.ProvideProbe(func() healthkit.Probe { return healthkit.New("natskit", meet) }),
+	)
+
+	if resp := get(t, srv, "/ready"); resp.StatusCode != http.StatusOK {
+		t.Fatalf("/ready = %d (%s), want 200: each probe waits for the other to start", resp.StatusCode, bodyString(t, resp))
 	}
 }
 

@@ -211,7 +211,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability) и, если
   переменная — endpoint, строку в `README.md § Per-concern endpoints`:
   `make envdoc-check` требует строку таблицы с тем же дефолтом на каждую переменную
-  кода, не пускает в доки переменные-призраки и поля конфига без тега.
+  кода, не пускает в доки переменные-призраки и поля конфига без тега; таблицы сигналов
+  httpkit (`httpkit/docs/observability.md`) сверяет с живым `Module` `httpkit/signals_test.go`.
 - Каждый багфикс — с регрессионным тестом; у `Module` кита — fx-тест
   (`fx.ValidateApp` с минимальным набором провайдеров); у каждого источника миграций
   кита (`pgkit.Source`) — лесенка `testkit.MigrationLadder` (`TestMigrations_Ladder`) и

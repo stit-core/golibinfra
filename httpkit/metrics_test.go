@@ -4,6 +4,8 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
+	"strconv"
 	"testing"
 	"time"
 
@@ -13,6 +15,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
@@ -204,44 +207,133 @@ func TestMetrics_SpanCarriesRequestID(t *testing.T) {
 	t.Fatalf("span must carry request_id: %v", spans[0].Attributes())
 }
 
-// Регрессия: RateLimit и CORS стоят ниже Metrics, поэтому 429 и preflight
-// попадают в RED-метрики. Роутинг до них не дошёл — label path у обоих
-// `unmatched`.
-func TestMetrics_RateLimitedAndPreflightCounted(t *testing.T) {
+// Регрессия KOBS-12: RateLimit и CORS стоят ниже Metrics, поэтому 429 и preflight попадают в
+// RED-метрики — под маршрутом своего пути, как и 405: роутер паттерн им не выставил, он ищется
+// по пути и совпадает с тем, что роутер дал бы хендлеру (свой метод раньше чужих, подроутер,
+// слэш на конце паттерна, закодированный сегмент пути). unmatched остаётся только пути без
+// маршрута; 405 подроутера идёт под паттерном монтирования.
+func TestMetrics_ResponseBeforeRoutingKeepsRoute(t *testing.T) {
 	before := metrictest.Collect(t)
 	now := time.Unix(1_700_000_000, 0)
+	rec := logtest.Capture()
 
 	r := chi.NewRouter()
-	r.Use(Metrics())
+	r.Use(AccessLog(rec), Metrics())
 	r.Use(CORS(CORSConfig{Origins: []string{"https://app.example"}, Methods: []string{"GET"}, Headers: []string{"Content-Type"}}))
-	r.Use(rateLimitWith(newRateLimiter(RateLimitConfig{RPS: 1, Burst: 1}, func() time.Time { return now }), newInstruments()))
+	r.Use(rateLimitWith(newRateLimiter(RateLimitConfig{RPS: 1, Burst: 6}, func() time.Time { return now }), newInstruments()))
+	r.MethodNotAllowed(methodNotAllowed(r))
 	r.Get("/api/ping", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.Get("/docs/", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.Get("/files/*", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+	r.Put("/files/{name}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })
+	r.Route("/v1", func(r chi.Router) {
+		r.Post("/users/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusCreated) })
+	})
 
-	preflight := httptest.NewRequest(http.MethodOptions, "/api/ping", nil)
-	preflight.Header.Set("Origin", "https://app.example")
-	preflight.Header.Set("Access-Control-Request-Method", http.MethodGet)
-	rec := httptest.NewRecorder()
-	r.ServeHTTP(rec, preflight)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("preflight: %d", rec.Code)
+	serve := func(method, path string, headers ...string) int {
+		req := httptest.NewRequest(method, path, nil)
+		for i := 0; i+1 < len(headers); i += 2 {
+			req.Header.Set(headers[i], headers[i+1])
+		}
+		w := httptest.NewRecorder()
+		r.ServeHTTP(w, req)
+		return w.Code
 	}
-
-	var last *httptest.ResponseRecorder
-	for range 2 {
-		last = httptest.NewRecorder()
-		r.ServeHTTP(last, httptest.NewRequest(http.MethodGet, "/api/ping", nil))
+	want := []struct {
+		method, path          string
+		headers               []string
+		status                int
+		labelMethod, labelFor string
+	}{
+		{http.MethodOptions, "/api/ping", []string{"Origin", "https://app.example", "Access-Control-Request-Method", "GET"}, 204, "OPTIONS", "/api/ping"},
+		{http.MethodGet, "/api/ping", nil, 200, "GET", "/api/ping"},
+		{http.MethodDelete, "/api/ping", nil, 405, "DELETE", "/api/ping"},
+		{"PROPFIND", "/api/ping", nil, 405, "other", "/api/ping"},
+		{http.MethodPost, "/v1/users/7", nil, 201, "POST", "/v1/users/{id}"},
+		{http.MethodDelete, "/v1/users/7", nil, 405, "DELETE", "/v1/*"},
+		{http.MethodGet, "/docs/", nil, 200, "GET", "/docs"},
+		{http.MethodDelete, "/v1/users/a%2Fb", nil, 429, "DELETE", "/v1/users/{id}"},
+		{http.MethodGet, "/docs/", nil, 429, "GET", "/docs"},
+		{http.MethodPut, "/files/logo", nil, 429, "PUT", "/files/{name}"},
+		{http.MethodGet, "/scan/wp-login", nil, 429, "GET", unmatched},
 	}
-	if last.Code != http.StatusTooManyRequests {
-		t.Fatalf("second request must be rate limited, got %d", last.Code)
+	for _, c := range want {
+		if got := serve(c.method, c.path, c.headers...); got != c.status {
+			t.Fatalf("%s %s = %d, want %d", c.method, c.path, got, c.status)
+		}
 	}
 
 	d := metrictest.Collect(t).Sub(before)
-	for _, want := range [][2]string{{"/api/ping", "200"}, {"unmatched", "204"}, {"unmatched", "429"}} {
-		if got := d.Value("http_requests_total", "path", want[0], "status", want[1]); got != 1 {
-			t.Errorf("http_requests_total{path=%s,status=%s} = %v, want 1: %v", want[0], want[1], got, d.Find("http_requests_total"))
+	access := rec.Entries()
+	if len(access) != len(want) {
+		t.Fatalf("access log: %d lines for %d requests: %+v", len(access), len(want), access)
+	}
+	for i, c := range want {
+		labels := []string{"method", c.labelMethod, "path", c.labelFor, "status", strconv.Itoa(c.status)}
+		if got := d.Get(t, "http_requests_total", labels...); got.Value != 1 {
+			t.Errorf("http_requests_total%v = %v, want 1: %v", labels, got.Value, d.Find("http_requests_total"))
+		}
+		if got := access[i].Str("route"); got != c.labelFor {
+			t.Errorf("access log of %s %s (%d): route %q, want %q", c.method, c.path, c.status, got, c.labelFor)
 		}
 	}
-	if got := d.Get(t, "http_rate_limited_total"); got.Kind != metrictest.Counter || got.Value != 1 {
-		t.Errorf("http_rate_limited_total: %v (%s), want counter delta 1", got, got.Kind)
+	if got := d.Find("http_requests_total"); len(got) != len(want) {
+		t.Errorf("series: %v, want one per request class", got)
+	}
+	if got := d.Get(t, "http_rate_limited_total"); got.Kind != metrictest.Counter || got.Value != 4 {
+		t.Errorf("http_rate_limited_total: %v (%s), want counter delta 4", got, got.Kind)
+	}
+}
+
+// Route-контекст chi без роутера кладёт в запрос тест хендлера: маршрут искать негде.
+func TestRouteLabel_RouteContextWithoutRouter(t *testing.T) {
+	req := httptest.NewRequest(http.MethodGet, "/items/1", nil)
+	req = req.WithContext(context.WithValue(req.Context(), chi.RouteCtxKey, chi.NewRouteContext()))
+	if got := routeLabel(req); got != unmatched {
+		t.Fatalf("routeLabel = %q, want %q", got, unmatched)
+	}
+}
+
+// Регрессия KOBS-12: у спана запроса на путь без маршрута нет http.route (semconv: атрибут — только
+// известному маршруту) и имя — метод; ответ до роутера на известный путь — с маршрутом в имени.
+func TestMetrics_SpanRouteOnlyForKnownPath(t *testing.T) {
+	recorder := tracetest.NewSpanRecorder()
+	provider := sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(recorder))
+	prev := otel.GetTracerProvider()
+	otel.SetTracerProvider(provider)
+	t.Cleanup(func() { otel.SetTracerProvider(prev) })
+	now := time.Unix(1_700_000_000, 0)
+
+	r := chi.NewRouter()
+	r.Use(RequestID(), OTel(false), Metrics())
+	r.Use(rateLimitWith(newRateLimiter(RateLimitConfig{RPS: 1, Burst: 1}, func() time.Time { return now }), newInstruments()))
+	r.Get("/items/{id}", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
+
+	for _, path := range []string{"/items/1", "/items/2", "/scan/admin.php"} {
+		r.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, path, nil))
+	}
+
+	type span struct {
+		name, route string
+		hasRoute    bool
+	}
+	ended := recorder.Ended()
+	got := make([]span, 0, len(ended))
+	for _, s := range ended {
+		sp := span{name: s.Name()}
+		for _, a := range s.Attributes() {
+			if a.Key == "http.route" {
+				sp.route, sp.hasRoute = a.Value.AsString(), true
+			}
+		}
+		got = append(got, sp)
+	}
+	want := []span{
+		{"GET /items/{id}", "/items/{id}", true},
+		{"GET /items/{id}", "/items/{id}", true},
+		{"GET", "", false},
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("spans (name, http.route) = %+v, want %+v", got, want)
 	}
 }

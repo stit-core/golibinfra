@@ -111,25 +111,41 @@ func TestAssertAPIError(t *testing.T) {
 	handlertest.AssertAPIError(t, resp, http.StatusNotFound, "USER_NOT_FOUND")
 }
 
-func TestAssertStatus_Success(t *testing.T) {
+// Регрессия KTST-11: AssertStatus падает на чужом статусе — иначе handler-тесты потребителя
+// зелёные при любом ответе.
+func TestAssertStatus(t *testing.T) {
 	resp := newAPI(t).Post("/users", map[string]any{"name": "alice"})
 	handlertest.AssertStatus(t, resp, http.StatusNoContent)
+
+	tb := &recordTB{}
+	handlertest.AssertStatus(tb, resp, http.StatusOK)
+	if tb.fatals != 1 {
+		t.Fatalf("fatals = %d, want 1: the response is 204, the test expects 200", tb.fatals)
+	}
 }
 
-// AssertAPIError держит контракт: ответ не problem+json или без request_id — провал.
+// AssertAPIError держит контракт: чужой статус или code (регрессия KTST-11), ответ не problem+json
+// или с чужим request_id — провал, и ровно на своей проверке.
 func TestAssertAPIError_Contract(t *testing.T) {
-	cases := map[string]func(*httptest.ResponseRecorder){
-		"не problem+json":  func(r *httptest.ResponseRecorder) { r.Header().Set("Content-Type", "application/json") },
-		"чужой request_id": func(r *httptest.ResponseRecorder) { r.Header().Set(httpkit.HeaderRequestID, "other") },
+	keep := func(*httptest.ResponseRecorder) {}
+	cases := map[string]struct {
+		spoil  func(*httptest.ResponseRecorder)
+		status int
+		code   string
+	}{
+		"чужой статус":     {keep, http.StatusBadRequest, "USER_NOT_FOUND"},
+		"чужой code":       {keep, http.StatusNotFound, "ORDER_NOT_FOUND"},
+		"не problem+json":  {func(r *httptest.ResponseRecorder) { r.Header().Set("Content-Type", "application/json") }, http.StatusNotFound, "USER_NOT_FOUND"},
+		"чужой request_id": {func(r *httptest.ResponseRecorder) { r.Header().Set(httpkit.HeaderRequestID, "other") }, http.StatusNotFound, "USER_NOT_FOUND"},
 	}
-	for name, spoil := range cases {
+	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
 			tb := &recordTB{}
 			resp := newAPI(t).Get("/users/42")
-			spoil(resp)
-			handlertest.AssertAPIError(tb, resp, http.StatusNotFound, "USER_NOT_FOUND")
-			if tb.fatals == 0 {
-				t.Fatal("AssertAPIError must fail")
+			c.spoil(resp)
+			handlertest.AssertAPIError(tb, resp, c.status, c.code)
+			if tb.fatals != 1 {
+				t.Fatalf("fatals = %d, want 1: the response is 404 USER_NOT_FOUND", tb.fatals)
 			}
 		})
 	}

@@ -231,6 +231,27 @@ func TestModule_AuthRequiresExtractor(t *testing.T) {
 	}
 }
 
+// Регрессия KTST-11: проверка старта видит защищённую операцию любого метода — и единственную
+// в графе PUT, PATCH или DELETE.
+func TestModule_AuthRequiresExtractorForEveryMethod(t *testing.T) {
+	for _, method := range []string{http.MethodPut, http.MethodPatch, http.MethodDelete} {
+		err := startErr(t, httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry { return bearerEntry(nil) }), fx.Invoke(func(api huma.API) {
+			huma.Register(api, huma.Operation{
+				OperationID: "change-item", Method: method, Path: "/items/{id}",
+				Security: []map[string][]string{{"Bearer": {}}},
+			}, func(context.Context, *struct {
+				ID string `path:"id"`
+			},
+			) (*struct{}, error) {
+				return nil, nil //nolint:nilnil // тело ответа не нужно
+			})
+		}))
+		if !errors.Is(err, httpkit.ErrAuthNotConfigured) || !strings.Contains(err.Error(), "change-item") {
+			t.Errorf("%s: secured operation without an extractor must fail the start: %v", method, err)
+		}
+	}
+}
+
 // Скрытую операцию OpenAPI не видит, а старт видит: без extractor'а она — тоже ошибка старта.
 func TestModule_AuthHiddenOperationNeedsExtractor(t *testing.T) {
 	err := startErr(t, httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry { return bearerEntry(nil) }), fx.Invoke(func(api huma.API) {

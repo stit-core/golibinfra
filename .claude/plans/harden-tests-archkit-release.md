@@ -50,9 +50,10 @@ blocked-by: —
   что обещает `CLAUDE.md`. Проверка: `tests-gate/run-all.sh <rev> mutants`, `summarize.py` → выжили только эквивалентные; мутанты
   V-G2, V-J1b и зонды P-G4, P-G5 (`M/val-rel130/mut/`) → красные
   - Подтверждено: дерево S5 — 139 мутантов: гейт 109, integration 30, выживших 0; V-G2, V-J1b, P-G4, P-G5, N11a — красные
-- [ ] **AC5** — Контракт сигналов httpkit и паритет handlertest держит `make check`; ответ известного маршрута до роутинга — с его
+- [x] **AC5** — Контракт сигналов httpkit и паритет handlertest держит `make check`; ответ известного маршрута до роутинга — с его
   маршрутом, `unmatched` — только неизвестному. Проверка: `httpkit-b/run.sh <rev> exp mut gate` → HO01 PASS, `compare.py` и
   `compare_logs.py` — 0, выжили только эквивалентные мутанты (hk-ctr-05 убит), GH01, GH03, GH04, GH06, GH08 пойманы
+  - Подтверждено: дерево S6 — HO01, HT01 PASS, `compare.py`, `compare_logs.py` — 0; мутанты 63: убиты все; GH01–GH08 пойманы
 - [ ] **AC6** — `archkit.Check` одной точкой входа держит раскладку любого сервиса на golibinfra: импорты между доменами и слоями
   (моки, sqlc-типы, свои подпакеты корня), каталоги `internal/`, чистые слои, корень домена без транспорта и I/O (и через `pkg/`,
   `internal/platform/`), часы, identity-closure между доменами, свои таблицы; module path — из `go.mod`; настройки и известные
@@ -105,9 +106,10 @@ blocked-by: —
   параметрами; первое значение `JWT_AUDIENCE`)
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Зависит от: S4
   - Сделано: AC4 → PASS; выживший healthkit-01 — не эквивалент: тест усилен, повтор убит; `M/tsa/mut_s5.py` 30/30; якоря — `*.p2s5`
-- [ ] **S6** — Сигналы httpkit в гейте: контракт сигналов `Module` против доки, `unmatched`, мутанты httpkit и handlertest
+- [x] **S6** — Сигналы httpkit в гейте: контракт сигналов `Module` против доки, `unmatched`, мутанты httpkit и handlertest
   (KGATE-13, KTST-11, KOBS-12)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Зависит от: S2
+  - Сделано: AC5 → PASS; под решение и API — HO01, 22 якоря мутантов, контракт из таблиц доки (`*.p2s6`); локальные мутанты 9/9
 ### archkit
 - [ ] **S7** — `archkit` через `/add-kit`: правила, настройки потребителя, фикстуры, README, строки в корневом README и CLAUDE.md
   - Проверка: AC6 → выполнен · Закрывает: AC6 · Зависит от: закрытый `fix-reference-code` шаблона
@@ -136,8 +138,8 @@ blocked-by: —
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
 
 ## Решения
-- **Сигналы httpkit в гейте.** Тест на живом `Module` без Docker сверяет метрики, спаны и access-log с таблицами
-  `httpkit/docs/observability.md` (читает доку, как `envdoc`); пустой `RoutePattern` — `Routes.Find` (HO01).
+- **Сигналы httpkit в гейте.** `signals_test.go` читает таблицы доки, как `envdoc`. Пустой `RoutePattern` — `Routes.Match` по пути
+  и `RoutePattern()` найденного (вид как у роутера); 404/405 под `Mount` — паттерн монтирования: точный — поиск на каждом запросе.
 - **archkit.** Кит без `Module`, конфига и сигналов, как ptrkit: `archkit.Check(t, opts…)`; корень и module path — из ближайшего
   `go.mod` (stdlib, без `golang.org/x/mod`). Правила — семь проверок archtest шаблона: `TestInternalLayout`,
   `TestImportBoundaries`, `TestDomainRootIsTransportAgnostic`, `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`,
@@ -194,20 +196,19 @@ blocked-by: —
   нынешний `rootLibs`, чистым слоям — `internal/platform/identity` и `pkg/policy`, каталоги `internal/` — `testkit` и `archtest`,
   известных нарушений нет; правила обвязки остаются в archtest («Не входит»), пометка archtest у перенесённых инвариантов в
   правилах и package-doc — на archkit, «корень домена не дотягивается до I/O через `internal/platform/*`» — правило archkit.
-- **Логи, тесты, telemetry.** Ключ ошибки — `error` в каноне и коде; `Stop` telemetry без коллектора — без ошибки;
-  `cmd/api/boot_test.go`: хуки — `fx.WithLogger` теста с `hookLog`, не `teeLog`. testkit: `logtest` — с масками
-  (`logmail_test.go:39-42` — проверять поля, не подстроку); `natstest.New(natstest.WithStream("user"))` —
-  `verification/delivery/nats/contract_test.go:52`, `handler_test.go:90`; `outboxtest.Last`/`Published` — `json.RawMessage`
-  (`json.Unmarshal` в тип события): `user/usecase_test.go:145,383,510`, `verification/usecase_test.go:193,301`; хэшер —
-  `&authntest.DeterministicHasher{}`: `user/trusted_test.go:25,83`, `usecase_test.go` (user `:64`, verification `:87`, auth
-  `:108`), `module/adapters_test.go` (verification `:29`, auth `:26`), `verification/delivery/nats/contract_test.go:39`; свои
-  `brokenHasher`, `countingHasher`, `failingAudit` снять (`testkit-failing-fakes`): `HashErr`, `VerifyCalls()`,
-  `VerifyDummyCalls()`, `audittest.Recorder{LogErr: …}`.
+- **Логи, тесты, telemetry.** Ключ ошибки — `error` в каноне и коде; `cmd/api/boot_test.go`: хуки — `fx.WithLogger` теста с
+  `hookLog`, не `teeLog`. testkit: `logtest` — с масками (`logmail_test.go:39-42` — проверять поля, не подстроку);
+  `natstest.New(natstest.WithStream("user"))` — `verification/delivery/nats/contract_test.go:52`, `handler_test.go:90`;
+  `outboxtest.Last`/`Published` — `json.RawMessage` (`json.Unmarshal` в тип события): `user/usecase_test.go:145,383,510`,
+  `verification/usecase_test.go:193,301`; хэшер — `&authntest.DeterministicHasher{}`: `user/trusted_test.go:25,83`,
+  `usecase_test.go` (user `:64`, verification `:87`, auth `:108`), `module/adapters_test.go` (verification `:29`, auth `:26`),
+  `verification/delivery/nats/contract_test.go:39`; свои `brokenHasher`, `countingHasher`, `failingAudit` снять
+  (`testkit-failing-fakes`): `HashErr`, `VerifyCalls()`, `VerifyDummyCalls()`, `audittest.Recorder{LogErr: …}`.
 - **`/plan`.** Строка «Формат проверяет …» SKILL.md — из golibinfra, pre-commit — в `references/repo.md` шаблона: копии совпадают.
 
 ## Где мы сейчас
-S1–S5 закрыты, дальше — S6; перед S7 — `git log -- internal/archtest` шаблона. S13: эксперименты под API (`M/exs8/orig/*.v130`,
-`*.s12`, `*.p2s1`…`*.p2s5`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках.
+S1–S6 закрыты, этап — валидатору, затем `p3-archkit`; перед S7 — `git log -- internal/archtest` шаблона. S13: эксперименты под API
+(`M/exs8/orig/*.v130`, `*.s12`, `*.p2s*`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках.
 
 Заготовка аннотации v1.4.0 (первая половина — `harden-kits-contracts`; вторая — по шагам):
 - **Breaking.** config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`); ошибка `Load`: поле без тега (тег или
@@ -293,6 +294,7 @@ S1–S5 закрыты, дальше — S6; перед S7 — `git log -- inter
   `>` не последним в фильтре — `nats.ErrBadSubject` сразу; фейки testkit — правила шины, JSONB и откат транзакции pgtest. `logtest`
   — логгер `logkit.New` в память (маски, типы JSON); authntest: хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге
   переживает ключ (до `InvalidateByTag` или конца набора); таймер фейка clockkit: `Stop`/`Reset` забирают неполученный момент.
+  httpkit: у 429, preflight и 405 `path`, `route`, `http.route` — маршрут; `unmatched` — только путь без него, без `http.route`.
 - **Изменения.** Новое API, env и метрики — по `make release-diff PREV=v1.3.0` (apidiff, env, метрики); сверх них — ридер ENV без
   envconfig, миграция outbox 0003, `testkit/idempotencytest`, срок хранения аудита (opt-in: `auditkit/pgstore.RetentionModule`,
   `AUDIT_RETENTION_DAYS`, `audit_log_retention_deleted_total`).

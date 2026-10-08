@@ -441,14 +441,19 @@ func responseHeader(hc huma.Context) http.Header {
 	return nil
 }
 
+// routePath — путь, по которому chi ищет маршрут запроса.
+func routePath(r *http.Request) string {
+	if r.URL.RawPath != "" {
+		return r.URL.RawPath
+	}
+	return r.URL.Path
+}
+
 // methodNotAllowed — 405 маршрутизатора с problem+json и Allow: свой обработчик
 // chi не выставляет Allow сам, поэтому методы маршрута ищутся заново; у GET — и HEAD (headAsGet).
 func methodNotAllowed(router chi.Routes) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		path := r.URL.RawPath
-		if path == "" {
-			path = r.URL.Path
-		}
+		path := routePath(r)
 		for _, m := range knownMethods {
 			if router.Match(chi.NewRouteContext(), m, path) {
 				w.Header().Add("Allow", m)
@@ -466,11 +471,7 @@ func methodNotAllowed(router chi.Routes) http.HandlerFunc {
 func headAsGet(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if rctx := chi.RouteContext(r.Context()); r.Method == http.MethodHead && rctx != nil {
-			path := r.URL.RawPath
-			if path == "" {
-				path = r.URL.Path
-			}
-			if !rctx.Routes.Match(chi.NewRouteContext(), http.MethodHead, path) {
+			if !rctx.Routes.Match(chi.NewRouteContext(), http.MethodHead, routePath(r)) {
 				rctx.RouteMethod = http.MethodGet
 			}
 		}

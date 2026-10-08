@@ -5,6 +5,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/netip"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -40,6 +42,30 @@ func TestRateLimiter_BurstDefaultsToRPS(t *testing.T) {
 	}
 	if allowed != 3 {
 		t.Fatalf("Burst=0 must fall back to RPS: allowed %d", allowed)
+	}
+}
+
+// Регрессия KTST-11: лимитер один на все запросы сервера. Параллельные клиенты пишут в общую map
+// bucket'ов: без мьютекса -race гейта видит гонку, а пропущенных запросов больше бюджета.
+func TestRateLimiter_ConcurrentClients(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	l := newRateLimiter(RateLimitConfig{RPS: 1, Burst: 3}, func() time.Time { return now })
+	const clients, perClient = 32, 10
+	var allowed atomic.Int64
+	var wg sync.WaitGroup
+	for c := range clients {
+		wg.Go(func() {
+			addr := netip.AddrFrom4([4]byte{10, 0, 0, byte(c)})
+			for range perClient {
+				if l.allow(addr) {
+					allowed.Add(1)
+				}
+			}
+		})
+	}
+	wg.Wait()
+	if got := allowed.Load(); got != clients*3 {
+		t.Fatalf("allowed %d requests, want the burst of 3 for each of %d clients", got, clients)
 	}
 }
 

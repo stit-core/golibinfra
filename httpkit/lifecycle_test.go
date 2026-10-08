@@ -321,6 +321,53 @@ func TestModule_StopRequestGetsShutdownTimeoutAfterPause(t *testing.T) {
 	}
 }
 
+// Регрессия KTST-11: HTTP_SHUTDOWN_TIMEOUT — свой предел остановки HTTP. Запрос, который не
+// завершается, обрывается через него, а не держит остановку весь бюджет fx.
+func TestModule_StopIsBoundedByShutdownTimeout(t *testing.T) {
+	t.Setenv("HTTP_SHUTDOWN_TIMEOUT", "200ms")
+	log := logtest.Capture()
+	entered, release := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	routes := fx.Invoke(func(api huma.API) {
+		huma.Get(api, "/stuck", func(context.Context, *struct{}) (*struct{}, error) {
+			close(entered)
+			<-release
+			return nil, nil //nolint:nilnil // тело не нужно
+		})
+	})
+	var srv *httpkit.Server
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")),
+		fx.Provide(func() logkit.Logger { return log }), routes, httpkit.Module, fx.Populate(&srv))
+	startCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	if err := app.Start(startCtx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	go func() {
+		req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+srv.Addr().String()+"/stuck", nil)
+		if err != nil {
+			return
+		}
+		if resp, err := http.DefaultClient.Do(req); err == nil {
+			_ = resp.Body.Close()
+		}
+	}()
+	<-entered
+
+	stopCtx, stopCancel := context.WithTimeout(context.Background(), 6*time.Second) // ⅔ бюджета — 4 с
+	defer stopCancel()
+	start := time.Now()
+	if err := app.Stop(stopCtx); err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("stop took %s: a stuck request is cut at HTTP_SHUTDOWN_TIMEOUT (200ms), not at the fx budget", took)
+	}
+	if w, ok := log.Find(slog.LevelWarn, "http server stop deadline: requests cancelled, connections closed"); !ok || w.Str("requests") != "1" {
+		t.Fatalf("stop deadline WARN with the cancelled request: %+v %v", w, log.Entries())
+	}
+}
+
 // Запрос дольше остановки не съедает бюджет fx: на дедлайне HTTP — две трети остатка — ctx
 // хендлеров отменяется (и у захваченного соединения, которое Close не закрывает: WebSocket),
 // соединения закрываются (и у хендлера, который ctx не слушает), а хук после HTTP получает
