@@ -97,6 +97,34 @@ func TestCheck_Violations(t *testing.T) {
 	})
 }
 
+// Сборка читает Go-файл-ссылку как файл и берёт пакет по импорту из любого каталога — правила тоже.
+func TestCheck_ReadsWhatTheBuildReads(t *testing.T) {
+	outside := filepath.Join(t.TempDir(), "crossref.go.txt")
+	if err := os.WriteFile(outside, []byte("package order\n\nimport \"example.org/shop/internal/domain/customer\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	root := service(t, map[string]string{
+		"internal/domain/order/testdata/bridge/bridge.go": "package bridge\n\nimport \"example.org/shop/internal/domain/customer\"\n",
+		"internal/domain/order/infra/postgres/bridge.go":  "package postgres\n\nimport \"example.org/shop/internal/domain/order/testdata/bridge\"\n",
+		"cmd/api/broken.go": "package main\n\nimport \"example.org/shop/../escape\"\n",
+	})
+	if err := os.Symlink(outside, filepath.Join(root, "internal", "domain", "order", "crossref.go")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(root, "nowhere.go"), filepath.Join(root, "internal", "domain", "order", "gone.go")); err != nil {
+		t.Fatal(err)
+	}
+	const why = ": another domain is reached through a port and an adapter in module/"
+	want := []string{
+		"archkit: internal/domain/order/crossref.go imports internal/domain/customer" + why,
+		"archkit: internal/domain/order/testdata/bridge/bridge.go imports internal/domain/customer" + why,
+	}
+	rec := check(t, root)
+	if rec.fatal != "" || !slices.Equal(rec.errors, want) {
+		t.Fatalf("fatal %q, errors:\n%q\nwant:\n%q", rec.fatal, rec.errors, want)
+	}
+}
+
 func TestCheck_TreeTheRulesDoNotSee(t *testing.T) {
 	t.Run("no domains", func(t *testing.T) {
 		root := t.TempDir()

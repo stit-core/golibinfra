@@ -23,13 +23,13 @@ const (
 	whyPure = "pure layers (entity.go, policy.go, dto.go, errors.go, events.go) see side-effect-free stdlib and the WithPurePackages packages only"
 )
 
-// internalLayout: пакет internal/ вне своих каталогов не видит ни одно правило слоёв — бизнес-код
+// internalLayout: код internal/ вне своих каталогов не видит ни одно правило слоёв — бизнес-код
 // в нём обошёл бы границы доменов.
 func (t *tree) internalLayout() {
 	roots := append([]string{domainDir, platformDir}, t.opts.internalDirs...)
-	for _, f := range t.files {
-		if under(f.pkg, "internal") && !slices.ContainsFunc(roots, func(root string) bool { return under(f.pkg, root) }) {
-			t.add(f.pkg, whyLayout)
+	for _, dir := range t.codeDirs {
+		if !slices.ContainsFunc(roots, func(root string) bool { return under(dir, root) }) {
+			t.add(dir, whyLayout)
 		}
 	}
 }

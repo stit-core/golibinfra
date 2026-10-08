@@ -184,39 +184,165 @@ func TestModulePath(t *testing.T) {
 	})
 }
 
-// Правила видят те же каталоги, что go build: без testdata, vendor, имён на "." и "_" и вложенных
-// модулей.
-func TestSkippedDirectories(t *testing.T) {
+// Правила читают пакеты шаблона ./... и пакеты модуля, которые этот код импортирует: сборка берёт
+// пакет по импорту, как бы ни назывался его каталог, а Go-файл-ссылку читает как файл.
+func TestFileSet(t *testing.T) {
 	t.Parallel()
-	const clock = "package tool\n\nimport \"time\"\n\nvar started = time.Now()\n"
-	e := edits{
-		"internal/_draft/draft.go":                  goSrc("draft"),
-		"internal/.cache/cache.go":                  goSrc("cache"),
-		"internal/testdata/data.go":                 goSrc("data"),
-		"vendor/example.org/dep/dep.go":             goSrc("dep", domains+"/customer/mocks"),
-		"internal/domain/order/testdata/clock.go":   clock,
-		"internal/domain/order/_tool/clock.go":      clock,
-		"internal/domain/order/.tool/clock.go":      clock,
-		"internal/domain/order/tool/go.mod":         "module example.org/tool\n",
-		"internal/domain/order/tool/clock.go":       clock,
-		"internal/domain/order/tool/broken/x.go":    "package {",
-		"internal/domain/order/testdata/broken.go":  "package {",
-		"internal/domain/order/infra/notes/note.md": "time.Now()",
+	const (
+		importer = "internal/domain/order/infra/postgres/bridge.go"
+		clock    = "package tool\n\nimport \"time\"\n\nvar started = time.Now()\n"
+	)
+	bridge := goSrc("bridge", domains+"/customer")
+
+	for name, tc := range map[string]struct{ dir, why string }{
+		"testdata of a domain":        {"internal/domain/order/testdata/bridge", whyCrossDomain},
+		"underscore name in a domain": {"internal/domain/order/_bridge", whyCrossDomain},
+		"dot name in a domain":        {"internal/domain/order/.bridge", whyCrossDomain},
+		"testdata of pkg":             {"pkg/testdata/bridge", whyLowLayer},
+	} {
+		t.Run("imported "+name, func(t *testing.T) {
+			t.Parallel()
+			got := failures(t, edits{tc.dir + "/bridge.go": bridge, importer: goSrc("postgres", mod+"/"+tc.dir)})
+			requireFailures(t, got, []string{tc.dir + "/bridge.go imports internal/domain/customer: " + tc.why})
+		})
 	}
-	requireFailures(t, failures(t, e), nil)
 
-	e["internal/domain/order/tool/go.mod"] = ""
-	e["internal/domain/order/tool/broken/x.go"] = ""
-	requireFailures(t, failures(t, e), []string{"internal/domain/order/tool/clock.go uses time.Now: " + whyClock})
+	runCases(t, []ruleCase{
+		{
+			name: "imported nested module",
+			edits: edits{
+				"pkg/bridge/go.mod":    "module " + mod + "/pkg/bridge\n",
+				"pkg/bridge/bridge.go": bridge,
+				importer:               goSrc("postgres", mod+"/pkg/bridge"),
+			},
+			want: []string{"pkg/bridge/bridge.go imports internal/domain/customer: " + whyLowLayer},
+		},
+		{
+			name: "client in testdata under the domain root",
+			edits: edits{
+				"pkg/testdata/client/client.go":  goSrc("client", "net/http"),
+				"internal/domain/order/probe.go": goSrc("order", mod+"/pkg/testdata/client"),
+			},
+			want: []string{"internal/domain/order/probe.go imports pkg/testdata/client: " + whyRoot + " (pkg/testdata/client → net/http)"},
+		},
+		{
+			name: "package imported by an imported package",
+			edits: edits{
+				"pkg/testdata/a/a.go": goSrc("a", mod+"/pkg/_b"),
+				"pkg/_b/b.go":         goSrc("b", domains+"/customer"),
+				importer:              goSrc("postgres", mod+"/pkg/testdata/a"),
+			},
+			want: []string{"pkg/_b/b.go imports internal/domain/customer: " + whyLowLayer},
+		},
+		{
+			name: "package imported by a test",
+			edits: edits{
+				"internal/domain/order/order_test.go":         goSrc("order_test", domains+"/order/testdata/fake"),
+				"internal/domain/order/testdata/fake/fake.go": "package fake\n\nimport \"time\"\n\nvar started = time.Now()\n",
+			},
+			want: []string{"internal/domain/order/testdata/fake/fake.go uses time.Now: " + whyClock},
+		},
+		{
+			name: "not imported",
+			edits: edits{
+				"vendor/example.org/dep/dep.go":                    goSrc("dep", domains+"/customer/mocks"),
+				"pkg/testdata/bridge/bridge.go":                    bridge,
+				"internal/domain/order/testdata/bridge/bridge.go":  bridge,
+				"internal/domain/order/testdata/clock.go":          clock,
+				"internal/domain/order/testdata/broken.go":         "package {",
+				"internal/domain/order/_tool/clock.go":             clock,
+				"internal/domain/order/.tool/clock.go":             clock,
+				"internal/domain/order/tool/go.mod":                "module example.org/tool\n",
+				"internal/domain/order/tool/clock.go":              clock,
+				"internal/domain/order/tool/broken/x.go":           "package {",
+				"internal/domain/order/infra/notes/note.md":        "time.Now()",
+				"internal/domain/order/infra/notes/clock.go.txt":   "package {",
+				"internal/domain/order/infra/postgres/missing.go":  goSrc("postgres", mod+"/pkg/ghost"),
+				"cmd/api/outside.go":                               goSrc("main", mod+"/../escape", mod+"/"),
+				"internal/domain/order/infra/postgres/latest.go":   goSrc("postgres", domains+"/order"),
+				"internal/domain/order/infra/postgres/doc_test.go": goSrc("postgres", "os"),
+			},
+		},
+		{
+			name: "file of the tree next to a module of its own",
+			edits: edits{
+				"internal/domain/order/tool/clock.go": clock,
+			},
+			want: []string{"internal/domain/order/tool/clock.go uses time.Now: " + whyClock},
+		},
+		{
+			name: "file named like a test",
+			edits: edits{
+				"internal/domain/order/clock_tests.go": "package order\n\nimport \"time\"\n\nvar started = time.Now()\n",
+			},
+			want: []string{"internal/domain/order/clock_tests.go uses time.Now: " + whyClock},
+		},
+		// Правило каталогов смотрит, где лежит код, а не что из него собирается.
+		{
+			name: "Go files of internal in any directory",
+			edits: edits{
+				"internal/_draft/draft.go":       goSrc("draft"),
+				"internal/.cache/cache.go":       goSrc("cache"),
+				"internal/testdata/data/data.go": "package {",
+				"internal/tools/go.mod":          "module example.org/tools\n",
+				"internal/tools/tools.go":        goSrc("tools"),
+				"internal/notes/readme.go.txt":   "not a Go file",
+			},
+			want: []string{
+				"internal/.cache: " + whyLayout,
+				"internal/_draft: " + whyLayout,
+				"internal/testdata/data: " + whyLayout,
+				"internal/tools: " + whyLayout,
+			},
+		},
+	})
 
-	t.Run("symlink", func(t *testing.T) {
-		t.Parallel()
+	// Ссылки — в памяти: содержимое записи fstest.MapFS с ModeSymlink — цель ссылки.
+	link := func(target string) *fstest.MapFile {
+		return &fstest.MapFile{Data: []byte(target), Mode: fs.ModeSymlink}
+	}
+	inspectLinks := func(t *testing.T, files map[string]*fstest.MapFile) []string {
+		t.Helper()
 		fsys := fixture(t, nil)
-		fsys["internal/domain/order/link.go"] = &fstest.MapFile{Data: []byte("package {"), Mode: fs.ModeSymlink}
+		for name, f := range files {
+			fsys[name] = f
+		}
 		got, err := inspect(fsys, configure(consumer()...))
 		if err != nil {
 			t.Fatal(err)
 		}
+		return got
+	}
+	t.Run("linked file", func(t *testing.T) {
+		t.Parallel()
+		got := inspectLinks(t, map[string]*fstest.MapFile{
+			"tools/crossref.go.txt":             {Data: []byte(goSrc("order", domains+"/customer"))},
+			"tools/clock.go.txt":                {Data: []byte("package order\n\nimport \"time\"\n\nvar started = time.Now()\n")},
+			"internal/domain/order/crossref.go": link("../../../tools/crossref.go.txt"),
+			"internal/domain/order/clock.go":    link("../../../tools/clock.go.txt"),
+		})
+		requireFailures(t, got, []string{
+			crossrefWhat + ": " + whyCrossDomain,
+			"internal/domain/order/clock.go uses time.Now: " + whyClock,
+		})
+	})
+	t.Run("linked directory imported by its path", func(t *testing.T) {
+		t.Parallel()
+		got := inspectLinks(t, map[string]*fstest.MapFile{
+			"tools/bridge/bridge.go":       {Data: []byte(bridge)},
+			"internal/domain/order/bridge": link("../../../tools/bridge"),
+			importer:                       {Data: []byte(goSrc("postgres", domains+"/order/bridge"))},
+		})
+		requireFailures(t, got, []string{"internal/domain/order/bridge/bridge.go imports internal/domain/customer: " + whyCrossDomain})
+	})
+	t.Run("link that leads nowhere or to a directory", func(t *testing.T) {
+		t.Parallel()
+		got := inspectLinks(t, map[string]*fstest.MapFile{
+			"tools/dir.go/clock.go":          {Data: []byte(clock)},
+			"internal/domain/order/gone.go":  link("../nowhere.go"),
+			"internal/domain/order/dir.go":   link("../../../tools/dir.go"),
+			"internal/domain/order/notes.md": link("../../../tools/dir.go/clock.go"),
+		})
 		requireFailures(t, got, nil)
 	})
 }
