@@ -134,18 +134,36 @@ func TestBrokenTree(t *testing.T) {
 	})
 }
 
-// Запись WithUncheckedPackages — исключение из правила корня: лишняя запись и запись мимо pkg/ и
-// internal/platform/ — отказ.
+// Запись WithUncheckedPackages — исключение из правила корня: запись про запас (пакет чист и без
+// неё; корень домена его не импортирует) и запись мимо pkg/ и internal/platform/ — отказ.
 func TestUncheckedPackages(t *testing.T) {
 	t.Parallel()
+	const (
+		clientPkg = "pkg/client"
+		client    = clientPkg + "/client.go"
+		wrap      = "pkg/wrap/wrap.go"
+		root      = "internal/domain/order/remote.go"
+	)
 	stale := func(pkg string) []string {
 		return []string{`unchecked package "` + pkg + `" sees nothing the domain root does not: remove it from WithUncheckedPackages`}
+	}
+	unseen := func(pkg string) []string {
+		return []string{`unchecked package "` + pkg + `" is imported by no domain root, directly or through pkg/ and internal/platform/: remove it from WithUncheckedPackages`}
 	}
 	runCases(t, []ruleCase{
 		{
 			name:  "package with I/O under the domain root",
-			edits: edits{"pkg/client/client.go": goSrc("client", "net/http"), "internal/domain/order/remote.go": goSrc("order", mod+"/pkg/client")},
-			opts:  []Option{WithUncheckedPackages("pkg/client")},
+			edits: edits{client: goSrc("client", "net/http"), root: goSrc("order", mod+"/"+clientPkg)},
+			opts:  []Option{WithUncheckedPackages(clientPkg)},
+		},
+		{
+			name: "package with I/O under a wrapper in pkg",
+			edits: edits{
+				client: goSrc("client", "net/http"),
+				wrap:   goSrc("wrap", mod+"/"+clientPkg),
+				root:   goSrc("order", mod+"/pkg/wrap"),
+			},
+			opts: []Option{WithUncheckedPackages(clientPkg)},
 		},
 		{
 			name: "package without I/O",
@@ -162,6 +180,63 @@ func TestUncheckedPackages(t *testing.T) {
 			edits: edits{"pkg/caller/caller.go": goSrc("caller", "context", mod+"/internal/platform/identity")},
 			opts:  []Option{WithUncheckedPackages("pkg/caller")},
 			want:  stale("pkg/caller"),
+		},
+		// Из двух записей по одной цепочке лишняя — верхняя: без неё дерево по-прежнему зелёное.
+		{
+			name: "two entries along one chain",
+			edits: edits{
+				client: goSrc("client", "net/http"),
+				wrap:   goSrc("wrap", mod+"/"+clientPkg),
+				root:   goSrc("order", mod+"/pkg/wrap"),
+			},
+			opts: []Option{WithUncheckedPackages("pkg/wrap", clientPkg)},
+			want: stale("pkg/wrap"),
+		},
+		{
+			name: "package with I/O that no domain root imports",
+			opts: []Option{WithUncheckedPackages("internal/platform/events")},
+			want: unseen("internal/platform/events"),
+		},
+		{
+			name: "package with I/O that only a test of the domain root imports",
+			edits: edits{
+				client:                                 goSrc("client", "net/http"),
+				"internal/domain/order/remote_test.go": goSrc("order", mod+"/"+clientPkg),
+			},
+			opts: []Option{WithUncheckedPackages(clientPkg)},
+			want: unseen(clientPkg),
+		},
+		{
+			name: "package with I/O that only the layers of a domain import",
+			edits: edits{
+				client: goSrc("client", "net/http"),
+				"internal/domain/order/infra/postgres/remote.go": goSrc("postgres", mod+"/"+clientPkg),
+				"internal/domain/order/module/remote.go":         goSrc("module", mod+"/"+clientPkg),
+			},
+			opts: []Option{WithUncheckedPackages(clientPkg)},
+			want: unseen(clientPkg),
+		},
+		{
+			name: "package whose subpackage the domain root imports",
+			edits: edits{
+				client:                  goSrc("client", "net/http"),
+				"pkg/client/sub/sub.go": goSrc("sub"),
+				root:                    goSrc("order", mod+"/"+clientPkg+"/sub"),
+			},
+			opts: []Option{WithUncheckedPackages(clientPkg)},
+			want: unseen(clientPkg),
+		},
+		// Цепочку до I/O правило корня ведёт только по pkg/ и internal/platform/: пакет за каталогом
+		// WithInternalDirs оно не видит, и запись о нём ничего не меняет.
+		{
+			name: "package with I/O behind a package that the domain root may not import",
+			edits: edits{
+				client:                                goSrc("client", "net/http"),
+				"internal/testkit/orderfix/remote.go": goSrc("orderfix", mod+"/"+clientPkg),
+				root:                                  goSrc("order", mod+"/internal/testkit/orderfix"),
+			},
+			opts: []Option{WithUncheckedPackages(clientPkg)},
+			want: append([]string{root + " imports internal/testkit/orderfix: " + whyBridge}, unseen(clientPkg)...),
 		},
 		{
 			name:  "violations and the entry of no use together",

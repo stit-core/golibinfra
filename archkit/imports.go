@@ -164,6 +164,25 @@ func (t *tree) packageIOChain(pkg string) []string {
 	return t.ioChains[pkg]
 }
 
+// importedByDomainRoots — пакеты pkg/ и internal/platform/, которые берёт корень какого-либо домена:
+// сам или по импортам не-тестовых файлов таких же пакетов. Только до них доходит правило корня.
+func (t *tree) importedByDomainRoots() map[string]bool {
+	reached := map[string]bool{}
+	var walk func(imports []string)
+	walk = func(imports []string) {
+		for _, imp := range imports {
+			if rel, ok := t.inModule(imp); ok && lowLayer(rel) && !reached[rel] {
+				reached[rel] = true
+				walk(t.pkgImports[rel])
+			}
+		}
+	}
+	for _, f := range t.domainRootFiles() {
+		walk(f.imports)
+	}
+	return reached
+}
+
 func (t *tree) domainRootFiles() []goFile {
 	var root []goFile
 	for _, f := range t.files {

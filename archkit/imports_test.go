@@ -359,6 +359,15 @@ func TestDomainRoot(t *testing.T) {
 			name:  "client in an unchecked package",
 			edits: edits{"internal/platform/identity/client.go": goSrc("identity", "net/http", "os")},
 		},
+		// Запись называет пакет, а не каталог: подпакет доверенного пакета корень проверяет.
+		{
+			name: "client in a subpackage of an unchecked package",
+			edits: edits{
+				"internal/platform/identity/remote/remote.go": goSrc("remote", "net/http"),
+				root: goSrc("order", mod+"/internal/platform/identity/remote"),
+			},
+			want: []string{root + " imports internal/platform/identity/remote: " + whyRoot + " (internal/platform/identity/remote → net/http)"},
+		},
 		{
 			name:  "platform package over a kit with I/O",
 			edits: importing(mod + "/internal/platform/events"),

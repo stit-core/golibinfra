@@ -36,6 +36,7 @@ func TestLayout(t *testing.T) {
 		t,
 		archkit.WithInternalDirs("internal/archtest", "internal/testkit"),
 		archkit.WithPurePackages("internal/platform/identity", "pkg/policy"),
+		archkit.WithUncheckedPackages("internal/platform/identity"),
 		archkit.WithRootLibs(
 			"git.stit.tech/stit-core/golibinfra/clockkit",
 			"git.stit.tech/stit-core/golibinfra/logkit",
@@ -73,16 +74,18 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 ## Правила
 
 Правила читают пакеты шаблона `./...` — без каталогов `testdata`, `vendor`, имён на `.` и `_` и
-вложенных модулей — и пакеты модуля, которые этот код импортирует, где бы они ни лежали: сборка
-берёт пакет по импорту. Go-файл-ссылка читается как файл. `*_test.go` проверяет только правило
-каталогов. Пути в отказах — от корня модуля; одно нарушение — одна строка.
+вложенных модулей — и пакеты модуля, которые этот код и его тесты импортируют, где бы они ни
+лежали (и в каталоге-ссылке): сборка берёт пакет по импорту. Код таких каталогов, который никто не
+импортирует, правила слоёв не читают — в сборке его нет. Go-файл-ссылка читается как файл.
+`*_test.go` проверяет только правило каталогов. Пути в отказах — от корня модуля; одно нарушение —
+одна строка.
 
 | Правило | Что держит |
 |---|---|
 | Каталоги `internal/` | Go-файл под `internal/` лежит в `internal/domain`, `internal/platform` или каталоге `WithInternalDirs`: вне них код не видят правила слоёв. Правило смотрит, где лежит код, а не что из него собрано, — и в `testdata`, каталоге на `.` или `_`, вложенном модуле |
 | Границы импортов | Не-тестовый код модуля импортирует пакеты модуля по таблице ниже |
 | Чистые слои | `entity.go`, `policy.go`, `dto.go`, `errors.go`, `events.go` корня домена видят stdlib без побочных эффектов и потоков (без `database/sql`, `net`, `os`, `syscall`, `io`, `bufio` и пакетов под ними; парсеры `net/mail`, `net/netip`, `net/url` — можно) и пакеты `WithPurePackages` |
-| Корень домена | Файлы корня видят stdlib без I/O (без `database/sql`, `net`, `os`, `syscall` и пакетов под ними, кроме тех же парсеров), пакеты `WithRootLibs`, а из `pkg/` и `internal/platform/` — пакеты, которые сами видят только это, и пакеты `WithPurePackages` — на том же условии; путь до I/O — в скобках отказа: `(pkg/wrap → internal/platform/probeio → net/http)` |
+| Корень домена | Файлы корня видят stdlib без I/O (без `database/sql`, `net`, `os`, `syscall` и пакетов под ними, кроме тех же парсеров), пакеты `WithRootLibs`, а из `pkg/` и `internal/platform/` — пакеты, которые сами видят только это (пакеты `WithPurePackages` — на том же условии), и пакеты `WithUncheckedPackages`; путь до I/O — в скобках отказа: `(pkg/wrap → internal/platform/probeio → net/http)` |
 | Часы | Не-тестовый код домена не трогает `time.Now`, `Since`, `Until`, `After`, `AfterFunc`, `Tick`, `NewTimer`, `NewTicker`, `Sleep` (и под алиасом) и не dot-импортирует `time`: время — `clockkit.Clock` |
 | Порты между доменами | В `module/` нет функции, которая отдаёт значение чужого домена как порт без адаптера: `func(uc *user.Usecase) auth.Port { return uc }`, и в форме `(auth.Port, error)`, и с другими параметрами рядом |
 | Свои таблицы | Таблицу из `migrations/*.up.sql` запрашивает один домен (`infra/postgres/queries/*.sql`): `FROM`, `JOIN`, список через запятую, подзапрос, `INSERT`, `UPDATE`, `DELETE … USING` |
@@ -110,7 +113,7 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 |---|---|
 | `WithRootLibs(pkgs…)` | Внешние пакеты, которые видит корень домена: порты и значения китов, DI. Путь импорта целиком — подпакет (`auditkit/pgstore` при `auditkit`) под запись не попадает |
 | `WithPurePackages(pkgs…)` | Пакеты модуля (путь от корня: `pkg/policy`), которые видят чистые слои. Корень домена проверяет их импорты наравне с остальными пакетами `pkg/` и `internal/platform/` |
-| `WithUncheckedPackages(pkgs…)` | Исключение из правила корня: пакеты `pkg/` и `internal/platform/` (путь от корня: `internal/platform/identity`), в импорты которых правило не заглядывает. За чистоту такого пакета отвечает потребитель, машина её не держит. Запись о пакете, который чист и без неё, и запись мимо этих каталогов — отказ |
+| `WithUncheckedPackages(pkgs…)` | Исключение из правила корня: пакеты `pkg/` и `internal/platform/` (путь от корня: `internal/platform/identity`), в импорты которых правило не заглядывает. За чистоту такого пакета отвечает потребитель, машина её не держит. Подпакет под запись не попадает. Запись про запас — отказ: о пакете, который чист и без неё, о пакете, которого корень домена не импортирует ни сам, ни через пакеты этих каталогов, и мимо этих каталогов |
 | `WithInternalDirs(dirs…)` | Каталоги `internal/` сверх `domain` и `platform` (путь от корня: `internal/testkit`). Другая форма (`internal`, `testkit`, `internal/a/b`) — отказ |
 | `WithKnownViolations(map)` | Известные нарушения — см. ниже |
 

@@ -41,7 +41,9 @@ func WithPurePackages(pkgs ...string) Option {
 
 // WithUncheckedPackages называет пакеты pkg/ и internal/platform/ (путь от корня модуля), в импорты
 // которых правило корня домена не заглядывает: за их чистоту отвечает потребитель, машина её не
-// держит. Запись о пакете, который чист и без неё, и запись мимо этих каталогов — отказ.
+// держит. Подпакет названного пакета под запись не попадает. Запись про запас — отказ: о пакете,
+// который чист и без неё, о пакете, которого корень домена не импортирует ни сам, ни через пакеты
+// этих каталогов, и мимо этих каталогов.
 func WithUncheckedPackages(pkgs ...string) Option {
 	return func(o *options) { o.unchecked = append(o.unchecked, pkgs...) }
 }
@@ -117,8 +119,8 @@ var rules = []func(*tree){
 	(*tree).ownTables,
 }
 
-// inspect — строки отказа по модулю в fsys: нарушения правил вне известных и записи известных
-// нарушений без ID находки или без нарушения.
+// inspect — строки отказа по модулю в fsys: нарушения правил вне известных, записи
+// WithUncheckedPackages про запас и записи известных нарушений без ID находки или без нарушения.
 func inspect(fsys fs.FS, o options) ([]string, error) {
 	for _, dir := range o.internalDirs {
 		// Каталог выше или мимо internal/<имя> («internal») выключил бы правило каталогов целиком.
@@ -144,9 +146,13 @@ func inspect(fsys fs.FS, o options) ([]string, error) {
 			failures = append(failures, v.what+": "+v.why)
 		}
 	}
+	reached := t.importedByDomainRoots()
 	for _, pkg := range o.unchecked {
-		if t.packageIOChain(pkg) == nil {
+		switch {
+		case t.packageIOChain(pkg) == nil:
 			failures = append(failures, fmt.Sprintf("unchecked package %q sees nothing the domain root does not: remove it from WithUncheckedPackages", pkg))
+		case !reached[pkg]:
+			failures = append(failures, fmt.Sprintf("unchecked package %q is imported by no domain root, directly or through pkg/ and internal/platform/: remove it from WithUncheckedPackages", pkg))
 		}
 	}
 	for _, what := range slices.Sorted(maps.Keys(o.known)) {
