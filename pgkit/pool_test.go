@@ -150,9 +150,10 @@ func TestNewPool_WithoutOTelTracer(t *testing.T) {
 	}
 }
 
-// Регрессия KOBS-06: спан запроса otelpgx — `query <операция>` с db.system.name=postgresql, текст SQL
-// (и литералы в нём) — только в db.query.text, не в имени спана.
-func TestNewPool_QuerySpanNameIsOperation(t *testing.T) {
+// Регрессия KOBS-06: спан запроса otelpgx — `query <имя>` с db.system.name=postgresql: имя — операция
+// или имя запроса sqlc из ведущего комментария (без него у каждого запроса sqlc имя — `--`), текст
+// SQL (и литералы в нём) — только в db.query.text.
+func TestNewPool_QuerySpanNameIsQueryName(t *testing.T) {
 	rec := tracetest.NewSpanRecorder()
 	prev := otel.GetTracerProvider()
 	otel.SetTracerProvider(sdktrace.NewTracerProvider(sdktrace.WithSpanProcessor(rec)))
@@ -166,13 +167,18 @@ func TestNewPool_QuerySpanNameIsOperation(t *testing.T) {
 	t.Cleanup(pool.Close)
 	// otelpgx пишет спан запроса только внутри записываемого спана вызова.
 	ctx, parent := otel.Tracer("test").Start(context.Background(), "request")
-	const query = "select 'zzspan-literal'::text"
-	if _, err := pool.Exec(ctx, query); err != nil {
-		t.Fatalf("exec: %v", err)
+	queries := map[string]string{
+		"select 'zzspan-literal'::text":                               "SELECT",
+		"-- name: CountLiterals :one\nselect 'zzspan-literal'::bytea": "CountLiterals",
+	}
+	for query := range queries {
+		if _, err := pool.Exec(ctx, query); err != nil {
+			t.Fatalf("exec %q: %v", query, err)
+		}
 	}
 	parent.End()
 
-	var found bool
+	found := 0
 	for _, s := range rec.Ended() {
 		if strings.Contains(s.Name(), "zzspan-literal") {
 			t.Errorf("span name %q carries the SQL text", s.Name())
@@ -181,15 +187,39 @@ func TestNewPool_QuerySpanNameIsOperation(t *testing.T) {
 		for _, a := range s.Attributes() {
 			attrs[string(a.Key)] = a.Value.String()
 		}
-		if attrs["db.query.text"] != query {
+		name, ok := queries[attrs["db.query.text"]]
+		if !ok {
 			continue
 		}
-		found = true
-		if s.Name() != "query SELECT" || attrs["db.system.name"] != "postgresql" || attrs["db.operation.name"] != "SELECT" {
-			t.Errorf("span %q attrs %v, want query SELECT with db.system.name=postgresql and db.operation.name=SELECT", s.Name(), attrs)
+		found++
+		if s.Name() != "query "+name || attrs["db.system.name"] != "postgresql" || attrs["db.operation.name"] != name {
+			t.Errorf("span %q attrs %v, want query %s with db.system.name=postgresql and db.operation.name=%s", s.Name(), attrs, name, name)
 		}
 	}
-	if !found {
-		t.Fatal("no otelpgx span with db.query.text of the query")
+	if found != len(queries) {
+		t.Fatalf("%d otelpgx spans with db.query.text of the queries, want %d", found, len(queries))
+	}
+}
+
+// Имя запроса — из конечного множества: имя sqlc или первое слово SQL после ведущих комментариев,
+// а не `--`, `/*` или обрывок текста.
+func TestQueryName(t *testing.T) {
+	for sql, want := range map[string]string{
+		"SELECT 1":      "SELECT",
+		"select*from t": "SELECT",
+		"-- name: CountUsers :one\nSELECT COUNT(*) FROM users":      "CountUsers",
+		"/* name: GetUser :one */ SELECT 1":                         "GetUser",
+		"-- get one\nSELECT 2":                                      "SELECT",
+		"/* get one */ update t set a = 1":                          "UPDATE",
+		" \n\t-- a\n/* b */\n with x as (select 1) select * from x": "WITH",
+		"(select 1) union (select 2)":                               "SELECT",
+		"-- name:\ninsert into t values (1)":                        "INSERT",
+		"":                                                          "UNKNOWN",
+		"-- only a comment":                                         "UNKNOWN",
+		"/* not closed":                                             "UNKNOWN",
+	} {
+		if got := pgkit.QueryName(sql); got != want {
+			t.Errorf("QueryName(%q) = %q, want %q", sql, got, want)
+		}
 	}
 }

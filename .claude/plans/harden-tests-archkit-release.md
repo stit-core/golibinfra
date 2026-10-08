@@ -121,7 +121,8 @@ blocked-by: —
 
 ## Решения
 - **Фиксы валидатора A.** `LOG_SILENT`: логгеры без OTel-sink (события fx, ошибки telemetry) пишут ERROR в stderr —
-  `logkit.WithStderrFallback`; общий `Silent` не трогали: им глушат тесты.
+  `logkit.WithStderrFallback`; общий `Silent` не трогали: им глушат тесты. Спан otelpgx: имя — запрос sqlc (`-- name:`) или
+  операция после ведущих комментариев; оно же — `db.operation.name`: функция имени у otelpgx одна, множество конечно.
 - **archkit.** Кит без `Module`, конфига и сигналов: `archkit.Check(t, opts…)`, корень и module path — из `go.mod` (stdlib);
   правила — семь проверок archtest шаблона (`TestInternalLayout`, `TestImportBoundaries`, `TestDomainRootIsTransportAgnostic`,
   `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`, `TestNoCrossDomainIdentityClosure`, `TestQueriesUseOwnTables`), настройки
@@ -192,10 +193,9 @@ blocked-by: —
   `hookLog`, не `teeLog`. testkit: `logtest` — с масками (`logmail_test.go:39-42` — проверять поля, не подстроку);
   `natstest.New(natstest.WithStream("user"))` — `verification/delivery/nats/contract_test.go:52`, `handler_test.go:90`;
   `outboxtest.Last`/`Published` — `json.RawMessage` (`json.Unmarshal` в тип события): `user/usecase_test.go:145,383,510`,
-  `verification/usecase_test.go:193,301`; хэшер — `&authntest.DeterministicHasher{}`: `user/trusted_test.go:25,83`,
-  `usecase_test.go` (user `:64`, verification `:87`, auth `:108`), `module/adapters_test.go` (verification `:29`, auth `:26`),
-  `verification/delivery/nats/contract_test.go:39`; свои `brokenHasher`, `countingHasher`, `failingAudit` снять
-  (`testkit-failing-fakes`): `HashErr`, `VerifyCalls()`, `VerifyDummyCalls()`, `audittest.Recorder{LogErr: …}`.
+  `verification/usecase_test.go:193,301`; хэшер — `&authntest.DeterministicHasher{}` (значением не собирается: 6 пакетов тестов
+  user, verification, auth); свои `brokenHasher`, `countingHasher`, `failingAudit` снять (`testkit-failing-fakes`): `HashErr`,
+  `VerifyCalls()`, `VerifyDummyCalls()`, `audittest.Recorder{LogErr: …}`.
 - **`/plan`.** Строка «Формат проверяет …» SKILL.md — из golibinfra, pre-commit — в `references/repo.md` шаблона: копии совпадают.
 
 ## Где мы сейчас
@@ -284,12 +284,12 @@ S1–S8 закрыты: S1–S6 — у валидатора; archkit (S7–S8) �
   `FEATURE_FLAGS`, пустая `APP_TZ`, нет NATS, Redis — отказ); `Stop` telemetry без коллектора — ERROR `telemetry: shutdown`;
   `FxLogger` без OTel (`LOG_SILENT` — ERROR его и логгера ошибок telemetry в stderr); go-redis — WARN `redis`, текст мостов —
   `detail`. Сигналы: ключ ошибки логов — `error` (запросы по `err` — переписать); cachekit — `db.system.name`, `db.operation.name`;
-  спан otelpgx — `query <операция>`; нет ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов; otelhttp у
-  anthropickit без метрик. natskit: пустой токен, wildcard в публикации и `>` не последним в фильтре — `nats.ErrBadSubject` сразу;
-  фейки testkit — правила шины, JSONB и откат транзакции pgtest. `logtest` — логгер `logkit.New` в память (маски, типы JSON);
-  authntest: хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге переживает ключ (до `InvalidateByTag` или конца
-  набора); таймер фейка clockkit: `Stop`/`Reset` забирают неполученный момент. httpkit: у 429, preflight и 405 `path`, `route`,
-  `http.route` — маршрут; `unmatched` — только путь без него, без `http.route`.
+  спан otelpgx — `query <имя>`: запрос sqlc или операция; нет ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов;
+  otelhttp у anthropickit без метрик. natskit: пустой токен, wildcard в публикации и `>` не последним в фильтре —
+  `nats.ErrBadSubject` сразу; фейки testkit — правила шины, JSONB и откат транзакции pgtest. `logtest` — логгер `logkit.New` в
+  память (маски, типы JSON); authntest: хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге переживает ключ (до
+  `InvalidateByTag` или конца набора); таймер фейка clockkit: `Stop`/`Reset` забирают неполученный момент. httpkit: у 429,
+  preflight и 405 `path`, `route`, `http.route` — маршрут; `unmatched` — только путь без него, без `http.route`.
 - **Изменения.** Новое API, env и метрики — по `make release-diff PREV=v1.3.0` (apidiff, env, метрики); сверх них — ридер ENV без
   envconfig, миграция outbox 0003, `testkit/idempotencytest`, срок хранения аудита (opt-in: `auditkit/pgstore.RetentionModule`,
   `AUDIT_RETENTION_DAYS`, `audit_log_retention_deleted_total`). `archkit` — правила раскладки сервиса из его теста

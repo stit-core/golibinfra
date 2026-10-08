@@ -56,25 +56,27 @@ pgxpool.
 
 ## Спаны и метрики `otelpgx`
 
-При `PG_OTEL_TRACE=true` (default) на `ConnConfig.Tracer` ставится
-`otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())`; pgxpool дополнительно распознаёт его как
+При `PG_OTEL_TRACE=true` (default) на `ConnConfig.Tracer` ставится `otelpgx.NewTracer` с именем
+запроса вместо текста SQL в имени спана; pgxpool дополнительно распознаёт его как
 `AcquireTracer`. Все спаны — `SpanKind=client`, scope `github.com/exaring/otelpgx`, атрибуты
 semconv БД (`db.system.name=postgresql`, `db.namespace`, `server.address`, `server.port`,
-`user.name`); у спанов запроса — ещё `db.operation.name` (первое слово SQL в верхнем регистре) и
+`user.name`); у спанов запроса — ещё `db.operation.name` (имя запроса, то же, что в имени спана) и
 `db.query.text`. Спаны otelpgx пишутся только внутри записываемого спана вызова (запрос HTTP,
 job, обработка сообщения) и встраиваются в его трассу: запрос вне трассы спана не даёт.
 
 | Спан | Когда |
 |---|---|
-| `query <операция>` (`query SELECT`) | `Exec`/`Query`/`QueryRow` и каждый запрос внутри батча |
+| `query <имя>` (`query GetUser`, `query SELECT`) | `Exec`/`Query`/`QueryRow` и каждый запрос внутри батча |
 | `batch start` | начало `SendBatch` |
-| `prepare <операция>` | подготовка statement'а (кэш prepared statements pgx) |
+| `prepare <имя>` | подготовка statement'а (кэш prepared statements pgx) |
 | `copy_from <table>` | `CopyFrom` |
 | `connect` | установка физического соединения |
 | `pool.acquire` | получение соединения из пула |
 
-Имя спана — операция, а не текст SQL: у имени конечное множество значений, литералы SQL в него не
-попадают.
+Имя запроса — имя запроса sqlc из ведущего комментария (`-- name: GetUser :one` → `GetUser`),
+иначе первое слово SQL после ведущих комментариев в верхнем регистре (`SELECT`); запрос без
+слова — `UNKNOWN`. Текста SQL в имени нет: у него конечное множество значений, литералы запроса
+в него не попадают — они в `db.query.text`.
 
 Тот же tracer эмитит две метрики в глобальный Meter (scope
 `github.com/exaring/otelpgx`, не `pgkit`): `db.client.operation.duration`

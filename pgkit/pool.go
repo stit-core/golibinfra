@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 	"time"
+	"unicode"
 
 	"github.com/exaring/otelpgx"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -92,8 +94,8 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 		pcfg.ConnConfig.ConnectTimeout = cfg.ConnectTimeout
 	}
 	if cfg.OTelTrace {
-		// Имя спана — операция (`query SELECT`), а не текст SQL: текст — в db.query.text.
-		pcfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName())
+		// Имя спана — имя запроса (`query GetUser`, `query SELECT`), а не текст SQL: текст — в db.query.text.
+		pcfg.ConnConfig.Tracer = otelpgx.NewTracer(otelpgx.WithTrimSQLInSpanName(), otelpgx.WithSpanNameFunc(queryName))
 	}
 	applySessionTimeouts(pcfg, cfg)
 
@@ -109,6 +111,41 @@ func NewPool(ctx context.Context, cfg PoolConfig) (*pgxpool.Pool, error) {
 		return nil, fmt.Errorf("pgkit: ping: %w", err)
 	}
 	return pool, nil
+}
+
+// queryName — имя запроса для спана otelpgx и db.operation.name: имя запроса sqlc из ведущего
+// комментария (`-- name: GetUser :one`), иначе первое слово SQL после ведущих комментариев в
+// верхнем регистре (`SELECT`). Первое слово как есть у запроса sqlc — `--`.
+func queryName(sql string) string {
+	for {
+		sql = strings.TrimSpace(sql)
+		var comment string
+		switch {
+		case strings.HasPrefix(sql, "--"):
+			comment, sql, _ = strings.Cut(sql[2:], "\n")
+		case strings.HasPrefix(sql, "/*"):
+			comment, sql, _ = strings.Cut(sql[2:], "*/")
+		default:
+			if op := leadingWord(strings.TrimLeft(sql, "( \t\r\n")); op != "" {
+				return strings.ToUpper(op)
+			}
+			return "UNKNOWN"
+		}
+		if name, ok := strings.CutPrefix(strings.TrimSpace(comment), "name:"); ok {
+			if name = leadingWord(strings.TrimSpace(name)); name != "" {
+				return name
+			}
+		}
+	}
+}
+
+// leadingWord — ведущий идентификатор строки: буквы, цифры и `_`.
+func leadingWord(s string) string {
+	end := strings.IndexFunc(s, func(r rune) bool { return r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) })
+	if end < 0 {
+		return s
+	}
+	return s[:end]
 }
 
 func withOptionalTimeout(ctx context.Context, d time.Duration) (context.Context, context.CancelFunc) {
