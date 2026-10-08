@@ -2,8 +2,10 @@ package cachekit
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"net"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -49,6 +51,29 @@ func TestRedisLog_GoRedisLinesGoToLogkit(t *testing.T) {
 		}
 	}
 	t.Fatalf("no WARN record of the go-redis dial failure: %+v", rec.Entries())
+}
+
+// Пока логгера у моста нет, строка go-redis не теряется: она идёт в stderr, как без моста.
+func TestRedisLog_WithoutLoggerWritesToStderr(t *testing.T) {
+	useRedisLog(t)
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("pipe: %v", err)
+	}
+	old := os.Stderr
+	os.Stderr = w
+	t.Cleanup(func() { os.Stderr = old })
+
+	redisLog.Printf(context.Background(), "pool: %s", "exhausted")
+	os.Stderr = old
+	_ = w.Close()
+	got, err := io.ReadAll(r)
+	if err != nil {
+		t.Fatalf("read stderr: %v", err)
+	}
+	if string(got) != "redis: pool: exhausted\n" {
+		t.Fatalf("stderr = %q, want the go-redis line", got)
+	}
 }
 
 // nil и Nop мост не занимают: кэш без логгера не глушит лог go-redis другого кэша процесса.

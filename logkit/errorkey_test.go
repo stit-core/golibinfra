@@ -6,13 +6,15 @@ import (
 	"go/token"
 	"io/fs"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
 
 // Ключ ошибки в логах китов — `error` (его же пишет FxLogger): запросы и алерты по одному ключу
-// видят все киты. Ловит литерал "err" аргументом вызова (Warn, slog.String, append) или элементом
-// составного литерала ([]any{…}) в коде модуля вне тестов.
+// видят все киты. Ловит литерал "err" (и сырой) аргументом вызова (Warn, slog.String, append),
+// элементом составного литерала ([]any{…}) или значением его поля (slog.Attr{Key: …}) в коде
+// модуля вне тестов.
 func TestLogErrorKeyIsError(t *testing.T) {
 	root, err := filepath.Abs("..")
 	if err != nil {
@@ -45,7 +47,14 @@ func TestLogErrorKeyIsError(t *testing.T) {
 				elems = n.Elts
 			}
 			for _, e := range elems {
-				if lit, ok := e.(*ast.BasicLit); ok && lit.Kind == token.STRING && lit.Value == `"err"` {
+				if kv, ok := e.(*ast.KeyValueExpr); ok {
+					e = kv.Value
+				}
+				lit, ok := e.(*ast.BasicLit)
+				if !ok || lit.Kind != token.STRING {
+					continue
+				}
+				if key, err := strconv.Unquote(lit.Value); err == nil && key == "err" {
 					t.Errorf("%s: ключ ошибки лога — \"error\", не \"err\"", fset.Position(lit.Pos()))
 				}
 			}

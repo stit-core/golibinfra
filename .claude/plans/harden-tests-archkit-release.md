@@ -30,11 +30,11 @@ blocked-by: —
 - [x] **AC1** — Жизненный цикл: flagkit, natskit, cachekit, tzkit проверяют конфиг и связь на старте и без потребителя; `Stop` при
   недоступном коллекторе — без ошибки и кода 1; ошибка конфига telemetry и строки go-redis — JSON-записи logkit. Проверка:
   `fx-observability/run.sh <rev> fx` → KX40, KX67 (a, d) PASS, KX66 — `Stop` без ошибки
-  - Подтверждено: дерево S1 — KX40–43, KX67a, d PASS (stderr 0 байт), KX66 `err=<nil>`, KX67f exit 0; fx-docker — как в S14
+  - Подтверждено: фиксы A — KX40–44, KX67a, d (stdout) и g, h (`LOG_SILENT`: stderr) PASS, KX66 `err=<nil>`, blackhole 10 с из 15
 - [x] **AC2** — Одна конвенция сигналов, как в доках (semconv БД, спан otelpgx без SQL, ключ `error`, `not_found`, TOTP `replay`,
   anthropickit без метрик otelhttp). Проверка: `fx-observability/run.sh <rev> obs-unit obs` → KO15, KO16, KO18 PASS, `compare.py`
   — 0 расхождений с доками, `promname` — 0 коллизий; `api-docs/claims-A-exp/run.sh <wt>` (`authn`) → `ok:1 replay:1`
-  - Подтверждено: дерево S2 — KO01–08, KO11–21 PASS (KO15: 67 спанов `query <операция>`), compare 0, promname 0; `ok:1 replay:1`
+  - Подтверждено: фиксы A — KO01–08, KO11–21 PASS (KO15: sqlc — `query CountOrders`), compare 0, promname 0; `ok:1 replay:1`
 - [x] **AC3** — Фейки testkit ведут себя как боевые: расхождения зонда — только задокументированные (база — 26 из 50);
   `pgkit.WithTestTx` на ctx usecase'а не пропускает `Publish` мимо транзакции. Проверка: `tests-gate/run-all.sh <rev> probes` →
   расхождений вне доков нет; `api-docs/claims-A-exp/run.sh <wt>` (`fakes`, `logtest`, `clock`) → по докам
@@ -46,7 +46,7 @@ blocked-by: —
 - [x] **AC5** — Контракт сигналов httpkit и паритет handlertest держит `make check`; ответ известного маршрута до роутинга — с его
   маршрутом, `unmatched` — только неизвестному. Проверка: `httpkit-b/run.sh <rev> exp mut gate` → HO01 PASS, `compare.py` и
   `compare_logs.py` — 0, выжили только эквивалентные мутанты (hk-ctr-05 убит), GH01, GH03, GH04, GH06, GH08 пойманы
-  - Подтверждено: дерево S6 — HO01, HT01 PASS, `compare.py`, `compare_logs.py` — 0; мутанты 63: убиты все; GH01–GH08 пойманы
+  - Подтверждено: S6 — 63 мутанта, GH01–08; фиксы A — HO01, оба compare 0; 21 мутант сигналов, GH01/03/06, D2/D4/D6/D28 — красные
 - [x] **AC6** — `archkit.Check` одной точкой входа держит раскладку любого сервиса на golibinfra — семь правил («Решения»);
   module path — из `go.mod`; настройки и известные нарушения (с ID находки, устаревшая запись — FAIL) — у потребителя. Проверка:
   `go test -race ./archkit/...` → PASS: нарушение и мутант «правило снято» у каждого правила — красные, чистая фикстура — зелёная
@@ -87,8 +87,7 @@ blocked-by: —
   - Проверка: зонд фейков — 0 DIVERGE вне доков · Закрывает: AC3 · Сделано: `fakes` — по докам; `mut_s3.py` 24/24; `*.p2s3`
 - [x] **S4** — Фейки логов, хешей, кэша, часов: logtest, authntest, `MemoryCache` и контракт `Cache`, clockkit (KTST-05, KDOC-08)
   - Проверка: AC3 → выполнен · Закрывает: AC3 · Сделано: `mut_s4.py` 41/41; зонд — под указатель хэшера (`*.p2s4`)
-- [x] **S5** — Мутанты базового аудита убиты, таймаут healthkit с дедлайном, тип метрик amocrmkit, страж пакетных инструментов,
-  первое значение `JWT_AUDIENCE` (KTST-02, R4 валидатора A `harden-authn-release`, N1 и N2 валидатора v1.3.0)
+- [x] **S5** — Мутанты аудита, таймаут healthkit, тип метрик amocrmkit, страж инструментов, `JWT_AUDIENCE` (KTST-02, R4, N1, N2)
   - Проверка: AC4 → выполнен · Закрывает: AC4 · Сделано: healthkit-01 — не эквивалент: тест усилен; `mut_s5.py` 30/30; `*.p2s5`
 - [x] **S6** — Сигналы httpkit в гейте: контракт `Module` по доке, `unmatched`, мутанты, handlertest (KGATE-13, KTST-11, KOBS-12)
   - Проверка: AC5 → выполнен · Закрывает: AC5 · Сделано: HO01 и 22 якоря мутантов под API (`*.p2s6`); локальные мутанты 9/9
@@ -120,9 +119,8 @@ blocked-by: —
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
 
 ## Решения
-- **Фиксы валидатора A** (причины — в телах коммитов). `LOG_SILENT`: ERROR логгеров без OTel-sink — в stderr, общий `Silent` не
-  трогали; спан otelpgx — имя sqlc или операция; `Stop` telemetry — ⅔ бюджета; storagekit — `fx.Invoke`, authnkit ленив: три
-  примитива, три конфига; сигналы httpkit — и статикой по коду (инструменты, атрибуты, поля), вне сверки — проза.
+- **Фиксы валидатора A** (с `94cb178`) — причины в телах коммитов: при `LOG_SILENT` ERROR логгеров без OTel-sink — в stderr; спан
+  otelpgx — имя sqlc или операция; `Stop` telemetry — ⅔ бюджета; authnkit ленив; вне сверки сигналов httpkit — проза.
 - **archkit.** Кит без `Module`, конфига и сигналов: `archkit.Check(t, opts…)`, корень и module path — из `go.mod` (stdlib);
   правила — семь проверок archtest шаблона (`TestInternalLayout`, `TestImportBoundaries`, `TestDomainRootIsTransportAgnostic`,
   `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`, `TestNoCrossDomainIdentityClosure`, `TestQueriesUseOwnTables`), настройки
@@ -190,18 +188,18 @@ blocked-by: —
   `scaffold/references/port.md:157`, package-doc; новое в правилах — «строже» из аннотации. Сборка через `replace`: `go build
   ./...` — `M/archkit/template-bump-compile.patch` (5 файлов), тесты 12 пакетов (11 без `integration`) — по пунктам выше.
 - **Логи, тесты, telemetry.** Ключ ошибки — `error` в каноне и коде; `cmd/api/boot_test.go`: хуки — `fx.WithLogger` теста с
-  `hookLog`, не `teeLog`. testkit: `logtest` — с масками (`logmail_test.go:39-42` — проверять поля, не подстроку);
-  `natstest.New(natstest.WithStream("user"))` — `verification/delivery/nats/contract_test.go:52`, `handler_test.go:90`;
-  `outboxtest.Last`/`Published` — `json.RawMessage` (`json.Unmarshal` в тип события): `user/usecase_test.go:145,383,510`,
-  `verification/usecase_test.go:193,301`; хэшер — `&authntest.DeterministicHasher{}` (значением не собирается: 6 пакетов тестов
-  user, verification, auth); свои `brokenHasher`, `countingHasher`, `failingAudit` снять (`testkit-failing-fakes`): `HashErr`,
-  `VerifyCalls()`, `VerifyDummyCalls()`, `audittest.Recorder{LogErr: …}`.
+  `hookLog`, не `teeLog`; опцию `logkit.FxLogger` в `service` он подменяет — её держит отдельная проверка. testkit: `logtest` — с
+  масками (`logmail_test.go:39-42` — проверять поля, не подстроку); `natstest.New(natstest.WithStream("user"))` —
+  `verification/delivery/nats/contract_test.go:52`, `handler_test.go:90`; `outboxtest.Last`/`Published` — `json.RawMessage`
+  (`json.Unmarshal` в тип события): `user/usecase_test.go:145,383,510`, `verification/usecase_test.go:193,301`; хэшер —
+  `&authntest.DeterministicHasher{}` (значением не собирается — 6 пакетов); свои `brokenHasher`, `countingHasher`, `failingAudit`
+  снять (`testkit-failing-fakes`): `HashErr`, `VerifyCalls()`, `VerifyDummyCalls()`, `audittest.Recorder{LogErr: …}`.
 - **`/plan`.** Строка «Формат проверяет …» SKILL.md — из golibinfra, pre-commit — в `references/repo.md` шаблона: копии совпадают.
 
 ## Где мы сейчас
-S1–S8 закрыты: S1–S6 — у валидатора; archkit (S7–S8) принят валидатором B, перебазирован на первый этап и перепроверен на
+S1–S8 закрыты: S1–S6 — фиксы по валидатору A; archkit (S7–S8) принят валидатором B, перебазирован на первый этап и перепроверен на
 шаблоне. S9–S11 — в ветке `p3-gate` (план — при слиянии); дальше S12, S13, S14. S13: эксперименты под API (`M/exs8/orig/*.v130`,
-`*.s12`, `*.p2s*`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках.
+`*.s12`, `*.p2*`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках.
 
 Заготовка аннотации v1.4.0 (первая половина — `harden-kits-contracts`; вторая — по шагам):
 - **Breaking.** config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`); ошибка `Load`: поле без тега (тег или
@@ -244,6 +242,8 @@ S1–S8 закрыты: S1–S6 — у валидатора; archkit (S7–S8) �
   natstest: стримы объявляет тест (`WithStream`), без них stream-операции — ошибка. oidckit, hubkit/sso: `Module` не кладёт
   `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie своего контура). authntest: хэшер — `&DeterministicHasher{}`.
   logkit: `FxLogger` — логгер из `logkit.Config` графа, не из `*slog.Logger` (тест с логгером графа — свой `fx.WithLogger`).
+  logtest — боевой логгер в память: типы JSON, маски (сверять поля, не подстроку); ошибка или panic `fn` у pgtest откатывает записи
+  outboxtest и audittest; фейк таймера clockkit — как `time.Timer` Go 1.23: дренаж `if !t.Stop() { <-t.C() }` виснет — убрать.
 - **Поведение.** ENV: `KEY=` — дефолт (киты и `config.Env`), пустое — `-` (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`,
   `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён нет; список из одних разделителей (`JWT_AUDIENCE=,`) —
   `ErrConfig`; целые — десятичные; ошибка — `<kit>.ErrConfig` с переменной (и у `tzkit.NewZone`). Литерал с нулями — `ErrConfig`
@@ -281,15 +281,15 @@ S1–S8 закрыты: S1–S6 — у валидатора; archkit (S7–S8) �
   `Retry-After` — `LockState.RetryAfter` по часам базы; subject длиннее 255 байт — ключ SHA-256, с NUL или не в UTF-8 —
   `ErrInvalidKey`; `bruteforce_locks_total{scope}`. Входы: `Verify` пароля длиннее 1024 байт — за время `VerifyDummy`;
   `auditkit/pgstore.Module` даёт и `*Store`. Старт: flagkit, natskit, cachekit, tzkit, storagekit проверяют конфиг и связь и без
-  потребителя; `Stop` telemetry — в ⅔ бюджета остановки, сбой экспорта — ERROR `telemetry: shutdown`, не ошибка; `FxLogger` без
-  OTel (`LOG_SILENT` — ERROR его и логгера ошибок telemetry в stderr); go-redis — WARN `redis`, текст мостов — `detail`. Сигналы:
-  ключ ошибки логов — `error` (запросы по `err` — переписать); cachekit — `db.system.name`, `db.operation.name`; спан otelpgx —
-  `query <имя>`: запрос sqlc или операция; нет ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов; otelhttp у
-  anthropickit без метрик. natskit: пустой токен, wildcard в публикации и `>` не последним в фильтре — `nats.ErrBadSubject` сразу;
-  фейки testkit — правила шины, JSONB и откат транзакции pgtest. `logtest` — логгер `logkit.New` в память (маски, типы JSON);
-  authntest: хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге переживает ключ (до `InvalidateByTag` или конца
-  набора); таймер фейка clockkit: `Stop`/`Reset` забирают неполученный момент. httpkit: у 429, preflight и 405 `path`, `route`,
-  `http.route` — маршрут; `unmatched` — только путь без него, без `http.route`.
+  потребителя; `Stop` telemetry — в ⅔ бюджета остановки, сбой экспорта — ERROR `telemetry: shutdown`; `FxLogger` без OTel, при
+  `LOG_SILENT` ERROR его и логгера ошибок telemetry — в stderr; go-redis — WARN `redis`, текст мостов — `detail`; WARN grpcclient —
+  `grpcclient: token over plaintext transport`. Сигналы (панели и алерты — переписать): ключ ошибки логов — `error` вместо `err`;
+  cachekit — `db.system.name`, `db.operation.name`, `db.operation.batch.size` вместо `db.system`, `db.operation`,
+  `db.redis.batch_size`; спан otelpgx — `query <имя sqlc или операция>` вместо текста SQL (он — в `db.query.text`); httpkit — 429,
+  preflight и 405 под маршрутом (`path`, `route`, `http.route`), `unmatched` — только путь без маршрута, без `http.route`; нет
+  ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов; otelhttp у anthropickit без метрик. natskit: пустой токен,
+  wildcard в публикации и `>` не последним в фильтре — `nats.ErrBadSubject` сразу; фейки testkit — правила шины и JSONB; authntest:
+  хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге переживает ключ (до `InvalidateByTag` или конца набора).
 - **Изменения.** Новое API, env и метрики — по `make release-diff PREV=v1.3.0` (apidiff, env, метрики); сверх них — ридер ENV без
   envconfig, миграция outbox 0003, `testkit/idempotencytest`, срок хранения аудита (opt-in: `auditkit/pgstore.RetentionModule`,
   `AUDIT_RETENTION_DAYS`, `audit_log_retention_deleted_total`). `archkit` — правила раскладки сервиса из его теста

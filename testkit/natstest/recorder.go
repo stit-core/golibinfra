@@ -307,8 +307,8 @@ func (r *Recorder) SubscribeQueue(ctx context.Context, subject, queue string, ha
 }
 
 // SubscribeStream регистрирует stream-подписку; durable — её queue-группа. Как у шины: стрим —
-// объявленный (WithStream) и накрывает фильтр, durable — имя JetStream, фильтр, накрывающий DLQ
-// (WithDLQ), — natskit.ErrConfig.
+// объявленный (WithStream), фильтр, накрывающий DLQ (WithDLQ), — natskit.ErrConfig. Строже шины:
+// фильтр вне subject'ов стрима и пустой durable она принимает, а подписка молчит.
 func (r *Recorder) SubscribeStream(ctx context.Context, stream, subject, durable string, handler natskit.Handler) (natskit.Subscription, error) {
 	subjects, declared := r.streams[stream]
 	switch {

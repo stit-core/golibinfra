@@ -40,6 +40,16 @@ func TestRedactURL(t *testing.T) {
 	}
 }
 
+// Фильтр stream-подписки проверяется до обращения к серверу: `>` не последним тот отверг бы
+// асинхронно, и подписка молча осталась бы пустой.
+func TestSubscribeStream_ChecksFilterBeforeTheServer(t *testing.T) {
+	b := &jsBus{enabled: true}
+	_, err := b.SubscribeStream(context.Background(), "ORDERS", "orders.>.x", "d", func(context.Context, []byte) error { return nil })
+	if !errors.Is(err, nats.ErrBadSubject) {
+		t.Fatalf("SubscribeStream with `>` not last = %v, want nats.ErrBadSubject", err)
+	}
+}
+
 func TestSubjectMatches(t *testing.T) {
 	tests := []struct {
 		filter, subject string

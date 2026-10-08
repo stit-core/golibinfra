@@ -286,6 +286,22 @@ func TestRecorder_RejectsWhatTheBusRejects(t *testing.T) {
 	if err := r.CheckStreams(ctx, "orders.created", "orders.*"); err != nil {
 		t.Errorf("CheckStreams of covered filters = %v, want nil", err)
 	}
+	if err := r.Publish(ctx, "orders.created", []byte("12345678")); err != nil {
+		t.Errorf("publish of a body exactly at max_payload = %v, want nil: the limit is inclusive", err)
+	}
+}
+
+// WithStream без subject'ов — стрим `name.>`, как у NATS_JS_STREAM_NAMES: subject любой глубины под
+// именем — его, сосед по префиксу — нет.
+func TestRecorder_StreamWithoutSubjectsCoversItsName(t *testing.T) {
+	r := natstest.New(natstest.WithStream("user"))
+	ctx := context.Background()
+	if err := r.PublishStream(ctx, "user.profile.updated", nil); err != nil {
+		t.Errorf("stream publish under the stream name = %v, want nil", err)
+	}
+	if err := r.PublishStream(ctx, "users.created", nil); !errors.Is(err, jetstream.ErrNoStreamResponse) {
+		t.Errorf("stream publish outside the stream = %v, want ErrNoStreamResponse", err)
+	}
 }
 
 // Ошибка stream-обработчика — повторная доставка до WithMaxDeliver, как ретрай JetStream; ошибка с
