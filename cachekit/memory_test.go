@@ -86,19 +86,136 @@ func TestMemoryCache_ValueIsolated(t *testing.T) {
 	}
 }
 
-func TestMemoryCache_DeleteDropsTagMembership(t *testing.T) {
+// Регрессия KTST-05: членство в теге переживает ключ, как в Redis-наборе tag:<tag>. Ключ, который
+// удалён или истёк и записан заново без тега, InvalidateByTag всё равно сносит.
+func TestMemoryCache_TagMembershipOutlivesKey(t *testing.T) {
 	ctx := context.Background()
-	m := NewMemoryCache()
-	_ = m.SetWithTags(ctx, "a", []byte("1"), 0, "t")
+	clk := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+	gone := map[string]func(m *MemoryCache){
+		"Delete":           func(m *MemoryCache) { _ = m.Delete(ctx, "k") },
+		"GetDel":           func(m *MemoryCache) { _, _, _ = m.GetDel(ctx, "k") },
+		"CompareAndDelete": func(m *MemoryCache) { _, _ = m.CompareAndDelete(ctx, "k", []byte("v1")) },
+		"expiry":           func(*MemoryCache) { clk.Advance(2 * time.Minute) },
+		"overwrite":        func(*MemoryCache) {},
+	}
+	for name, remove := range gone {
+		m := NewMemoryCache(WithClock(clk))
+		_ = m.SetWithTags(ctx, "k", []byte("v1"), time.Minute, "t")
+		_ = m.SetWithTags(ctx, "keeper", []byte("v"), time.Hour, "t")
+		remove(m)
+		if err := m.Set(ctx, "k", []byte("v2"), 0); err != nil {
+			t.Fatal(err)
+		}
+		if err := m.InvalidateByTag(ctx, "t"); err != nil {
+			t.Fatal(err)
+		}
+		if v, found, _ := m.Get(ctx, "k"); found {
+			t.Errorf("%s: the key written again without the tag survived InvalidateByTag: %q", name, v)
+		}
+	}
+}
 
-	if err := m.Delete(ctx, "a"); err != nil {
+// Набор тега живёт не меньше самого долгоживущего члена, как Redis-набор под PEXPIRE … GT: с
+// концом набора уходит и членство — запись без TTL делает его бессрочным.
+func TestMemoryCache_TagSetLifetime(t *testing.T) {
+	ctx := context.Background()
+	cases := []struct {
+		name    string
+		members []time.Duration // TTL записей SetWithTags по порядку
+		wait    time.Duration
+		alive   bool // набор жив: InvalidateByTag сносит ключ, записанный заново
+	}{
+		{"expires with its only member", []time.Duration{time.Minute}, time.Minute, false},
+		{"alive just before the member expires", []time.Duration{time.Minute}, time.Minute - time.Nanosecond, true},
+		{"a longer member extends the set", []time.Duration{time.Minute, time.Hour}, 2 * time.Minute, true},
+		{"a shorter member does not shorten it", []time.Duration{time.Hour, time.Minute}, 2 * time.Minute, true},
+		{"extended set still expires", []time.Duration{time.Minute, time.Hour}, time.Hour, false},
+		{"a member without ttl makes it persistent", []time.Duration{time.Minute, 0}, 1000 * time.Hour, true},
+		{"a persistent set stays persistent", []time.Duration{0, time.Minute}, 1000 * time.Hour, true},
+		{"persistent from the first write", []time.Duration{0}, 1000 * time.Hour, true},
+	}
+	for _, tc := range cases {
+		clk := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+		m := NewMemoryCache(WithClock(clk))
+		for i, ttl := range tc.members {
+			if err := m.SetWithTags(ctx, "k"+strconv.Itoa(i), []byte("v"), ttl, "t"); err != nil {
+				t.Fatal(err)
+			}
+		}
+		clk.Advance(tc.wait)
+		_ = m.Set(ctx, "k0", []byte("again"), 0)
+		if err := m.InvalidateByTag(ctx, "t"); err != nil {
+			t.Fatal(err)
+		}
+		if _, found, _ := m.Get(ctx, "k0"); found == tc.alive {
+			t.Errorf("%s: key found = %v after InvalidateByTag, want the tag set alive = %v", tc.name, found, tc.alive)
+		}
+	}
+}
+
+// Истёкший набор новая запись начинает заново: прежнего членства в нём нет.
+func TestMemoryCache_ExpiredTagSetStartsFresh(t *testing.T) {
+	ctx := context.Background()
+	clk := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+	m := NewMemoryCache(WithClock(clk))
+	_ = m.SetWithTags(ctx, "old", []byte("v"), time.Minute, "t")
+	clk.Advance(time.Hour)
+	_ = m.Set(ctx, "old", []byte("again"), 0)
+	_ = m.SetWithTags(ctx, "new", []byte("v"), time.Minute, "t")
+
+	if err := m.InvalidateByTag(ctx, "t"); err != nil {
 		t.Fatal(err)
 	}
-	m.mu.Lock()
-	tags := len(m.tags)
-	m.mu.Unlock()
-	if tags != 0 {
-		t.Fatalf("tag sets after Delete: %d, want 0", tags)
+	if _, found, _ := m.Get(ctx, "old"); !found {
+		t.Error("a member of the expired tag set was invalidated through the new one")
+	}
+	if _, found, _ := m.Get(ctx, "new"); found {
+		t.Error("the member of the new tag set survived InvalidateByTag")
+	}
+}
+
+// Членство ключей, которых уже нет, копится только до WithMaxKeys: дальше проход его вычищает —
+// тег, который никто не инвалидирует, не растёт без предела (KSEC-06).
+func TestMemoryCache_DeadTagMembershipIsBounded(t *testing.T) {
+	ctx := context.Background()
+	const maxKeys = 200
+	m := NewMemoryCache(WithMaxKeys(maxKeys))
+	members := func() int {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+		if set := m.tags["t"]; set != nil {
+			return len(set.keys)
+		}
+		return 0
+	}
+	write := func(n int) {
+		for i := range n {
+			key := strconv.Itoa(i)
+			if err := m.SetWithTags(ctx, key, []byte("v"), 0, "t"); err != nil {
+				t.Fatal(err)
+			}
+			_ = m.Delete(ctx, key)
+		}
+	}
+
+	write(maxKeys)
+	if got := members(); got != maxKeys {
+		t.Fatalf("members under the limit: %d, want every deleted key kept (%d)", got, maxKeys)
+	}
+	write(20 * maxKeys)
+	if got := members(); got > maxKeys+memorySweepMin {
+		t.Fatalf("members after %d deleted keys: %d, want <= %d", 21*maxKeys, got, maxKeys+memorySweepMin)
+	}
+	_ = m.SetWithTags(ctx, "live", []byte("v"), 0, "t")
+	write(2 * maxKeys)
+	if _, found, _ := m.Get(ctx, "live"); !found {
+		t.Fatal("the sweep dropped a live key")
+	}
+	if err := m.InvalidateByTag(ctx, "t"); err != nil {
+		t.Fatal(err)
+	}
+	if _, found, _ := m.Get(ctx, "live"); found {
+		t.Fatal("the sweep dropped the membership of a live key")
 	}
 }
 
@@ -124,13 +241,13 @@ func TestMemoryCache_SweepsExpired(t *testing.T) {
 	}
 
 	m.mu.Lock()
-	entries, tagged := len(m.data), len(m.tags["t"])
+	entries, tagSets := len(m.data), len(m.tags)
 	m.mu.Unlock()
 	if entries > written+memorySweepMin {
 		t.Fatalf("entries after sweep: %d, want <= %d", entries, written+memorySweepMin)
 	}
-	if tagged > memorySweepMin {
-		t.Fatalf("tag members after sweep: %d, want <= %d", tagged, memorySweepMin)
+	if tagSets != 0 {
+		t.Fatalf("tag sets after sweep: %d, want the expired set gone", tagSets)
 	}
 }
 

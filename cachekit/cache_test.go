@@ -12,6 +12,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/cachetest"
 	"git.stit.tech/stit-core/golibinfra/testkit/idempotencytest"
 )
 
@@ -364,6 +365,17 @@ func TestRedisCache_KeyPrefix(t *testing.T) {
 	if n, _ := raw.Exists(ctx, "svc-a:idempotency:req-1").Result(); n != 1 {
 		t.Error("idempotency keys must be prefixed too")
 	}
+}
+
+// Redis и MemoryCache проходят один контракт Cache (KTST-05): фейк кэша в тесте потребителя ведёт
+// себя как боевой. У кейса на Redis — свой префикс ключей на общем сервере.
+func TestRedisCache_Contract(t *testing.T) {
+	url := testkit.StartRedis(t).URL
+	cachetest.RunContract(t, func(t *testing.T) cachekit.Cache { return newCache(t, url, t.Name()+":") })
+}
+
+func TestMemoryCache_Contract(t *testing.T) {
+	cachetest.RunContract(t, func(*testing.T) cachekit.Cache { return cachekit.NewMemoryCache() })
 }
 
 // Redis-реализация проходит тот же контракт, что память и httpkit.MemoryStore (KTST-10): у кейса

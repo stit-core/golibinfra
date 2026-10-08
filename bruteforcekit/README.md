@@ -266,7 +266,8 @@ type Cleaner interface {
 }
 ```
 
-Maintenance-путь, отдельный от `Guard`: его реализуют только хранилища, а фейки
+Maintenance-путь, отдельный от `Guard`: его реализуют хранилища — `pgstore.Store` и
+фейк с той же политикой в памяти `bruteforcetest.Counting`; остальные фейки
 и адаптеры вокруг `Guard` — нет. `Cleanup` удаляет строки, которые
 разблокированы (`locked_until IS NULL` или уже в прошлом) **и** старше
 `CleanupRetention` по `last_attempt`, батчами по 5000 строк до исчерпания. Строку,

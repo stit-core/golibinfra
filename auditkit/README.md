@@ -347,7 +347,7 @@ Docker роняет. Для unit-тестов бизнес-кода подмен
 готовый in-memory recorder есть в
 [`testkit/audittest`](../testkit/audittest/); он валидирует `Entry` так же, как
 `pgstore`, хранит копию `Metadata`, а запись в транзакции фейка `testkit/pgtest` её откат
-выкидывает.
+выкидывает. Сбой журнала — поле `LogErr`: `&audittest.Recorder{LogErr: err}`.
 
 ## Инварианты и подводные камни
 

@@ -200,10 +200,10 @@ Access-log идёт отдельно, через интерсепторы и `lo
 Стрим логируется одной записью в момент завершения (EOF, ошибка или отмена,
 замеченные на Recv/Send) — до этого исхода у вызова ещё нет. `trace_id`/`span_id`
 и `request_id` в строки лога инжектит `logkit`. `Dial` с токеном при `TLS=false`
-пишет `Warn` `grpcclient: bearer token over plaintext transport` (`target`).
+пишет `Warn` `grpcclient: token over plaintext transport` (`target`).
 
 Внутренние сообщения grpc-go (GOAWAY, keepalive, резолвер) уходят в `logkit`
-записью `grpc` с полем `msg`: info и verbose → `Debug`, warning → `Warn`, error →
+записью `grpc` с текстом в поле `detail`: info и verbose → `Debug`, warning → `Warn`, error →
 `Error`. Мост ставится при импорте кита (до первого обращения к grpc), а `Dial`
 привязывает к нему логгер графа; действует последний привязанный — логгер у
 процесса один. Пока логгер не привязан (в том числе после `Dial(cfg, nil)`, где
@@ -266,7 +266,7 @@ conn, err := grpcclient.Dial(
 ```
 
 Уровни access-log проверяются `testkit/logtest` (`logtest.Capture()` —
-`logkit.Logger`, копящий записи в памяти).
+логгер `logkit.New` с записью в память).
 
 ## Инварианты и подводные камни
 

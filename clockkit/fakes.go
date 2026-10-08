@@ -150,27 +150,31 @@ func (t *fakeTimer) C() <-chan time.Time { return t.ch }
 func (t *fakeTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
-	was := t.active
-	t.active = false
-	t.clock.removeLocked(t)
-	return was
+	return t.stopLocked()
 }
 
-// Reset очищает канал: сработавший ранее момент не прилетит после перезапуска.
 func (t *fakeTimer) Reset(d time.Duration) bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
-	was := t.active
-	select {
-	case <-t.ch:
-	default:
-	}
-	if !was {
-		t.clock.timers = append(t.clock.timers, t)
-		t.clock.added.Broadcast()
-	}
+	was := t.stopLocked()
 	t.active = true
 	t.deadline = t.clock.now.Add(d)
+	t.clock.timers = append(t.clock.timers, t)
+	t.clock.added.Broadcast()
 	t.clock.fireDueLocked()
+	return was
+}
+
+// stopLocked снимает таймер и забирает неполученный момент, как time.Timer с Go 1.23: прежнее
+// срабатывание после Stop и Reset не придёт, а таймер с неполученным моментом — ещё активен.
+func (t *fakeTimer) stopLocked() bool {
+	was := t.active
+	t.active = false
+	t.clock.removeLocked(t)
+	select {
+	case <-t.ch:
+		was = true
+	default:
+	}
 	return was
 }

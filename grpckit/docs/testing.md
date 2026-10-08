@@ -51,8 +51,8 @@ ctx := metadata.NewOutgoingContext(ctx, metadata.Pairs("authorization", "Bearer 
 
 ## Проверка логов
 
-Уровни и поля access-log проверяются `testkit/logtest` — `logkit.Logger`,
-копящий записи в памяти:
+Уровни и поля access-log проверяются `testkit/logtest` — боевой логгер
+`logkit.New`, который пишет записи в память:
 
 ```go
 rec := logtest.Capture()
@@ -63,9 +63,8 @@ if e, ok := rec.Find(slog.LevelWarn, "grpc call failed"); !ok || e.Str("code") !
 }
 ```
 
-`request_id` и `trace_id` в записи добавляет handler боевого логгера, а не
-`Logger`, — их проверяют на `logkit.New(cfg, logkit.WithWriter(&buf))` с разбором
-JSON-строк.
+`request_id` и `trace_id` лежат в `Entry.KV`, как в строке лога: их добавляет
+цепочка handler'ов logkit, через которую идёт и запись `logtest`.
 
 ## Health в тестах
 

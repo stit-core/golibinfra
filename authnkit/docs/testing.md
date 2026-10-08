@@ -14,35 +14,50 @@ import "git.stit.tech/stit-core/golibinfra/testkit/authntest"
 и были детерминированными.
 
 ```go
-type DeterministicHasher struct{}
+type DeterministicHasher struct {
+	HashErr error // сбой хэширования: Hash отдаёт его вместо хеша
+}
 
 const HashPrefix = "hash:"
 
-func (DeterministicHasher) Hash(ctx context.Context, plain string) (string, error)          // → "hash:" + plain
-func (DeterministicHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) // encoded == "hash:"+plain
-func (DeterministicHasher) NeedsRehash(encoded string) bool                                 // всегда false
-func (DeterministicHasher) VerifyDummy(ctx context.Context)                                 // no-op
-func StripHashPrefix(encoded string) string                                                 // убирает префикс "hash:"
+func (*DeterministicHasher) Hash(ctx context.Context, plain string) (string, error)          // → "hash:" + plain
+func (*DeterministicHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) // encoded == "hash:"+plain
+func (*DeterministicHasher) NeedsRehash(encoded string) bool                                 // true — строка без "hash:"
+func (*DeterministicHasher) VerifyDummy(ctx context.Context)                                 // только счёт вызова
+func (*DeterministicHasher) VerifyCalls() int                                                // сколько раз звали Verify
+func (*DeterministicHasher) VerifyDummyCalls() int                                           // сколько раз звали VerifyDummy
+func StripHashPrefix(encoded string) string                                                  // убирает префикс "hash:"
 ```
 
 `Hash` возвращает `"hash:" + plain` (детерминированно, без соли), `Verify`
 сравнивает строкой, `StripHashPrefix` достаёт исходный plain из закодированной
-строки — удобно для ассертов в тестах фикстур. Пароль длиннее
-`authnkit.MaxPasswordLen` оба метода отвергают `authnkit.ErrPasswordTooLong`, как
-боевой хэшер.
+строки — удобно для ассертов в тестах фикстур. Отказы — как у боевого хэшера:
+пароль длиннее `authnkit.MaxPasswordLen` `Hash` и `Verify` отвергают
+`authnkit.ErrPasswordTooLong`, строку без `HashPrefix` `Verify` —
+`authnkit.ErrInvalidHash`, а `NeedsRehash` считает её устаревшей.
 
 ```go
-var _ authnkit.Hasher = authntest.DeterministicHasher{} // удовлетворяет интерфейсу
-
-h := authntest.DeterministicHasher{}
+h := &authntest.DeterministicHasher{}   // нулевое значение готово; Hasher — указатель
 enc, _ := h.Hash(ctx, "secret")         // "hash:secret"
 ok, _ := h.Verify(ctx, "secret", enc)   // true
 plain := authntest.StripHashPrefix(enc) // "secret"
 ```
 
+Сбой хэширования и число проверок пароля — поведение самого фейка, своя обёртка
+в тесте не нужна:
+
+```go
+uc := NewUsecase(&authntest.DeterministicHasher{HashErr: errHashing}) // Hash отдаёт errHashing
+
+h := &authntest.DeterministicHasher{}
+_ = NewUsecase(h).Login(ctx, "nobody@example.com", "pw")
+// вход по неизвестному адресу — ровно одна холостая проверка: время ответа не выдаёт учётную запись
+if h.VerifyCalls() != 0 || h.VerifyDummyCalls() != 1 { … }
+```
+
 Хэш предсказуем и не секретен — только для тестов. Предохранитель на случай
-ошибки проводки fx: вне `go test` (`testing.Testing() == false`) `Hash` и
-`Verify` паникуют, а не кладут пароли в базу открытым текстом.
+ошибки проводки fx: вне `go test` (`testing.Testing() == false`) любой вызов
+хэшера паникует, а не кладёт пароли в базу открытым текстом.
 
 ## JWT и TOTP: управляемые часы
 

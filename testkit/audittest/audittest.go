@@ -14,17 +14,24 @@ import (
 
 // Recorder — in-memory auditkit.Logger: копит записи и отвечает на запросы теста.
 type Recorder struct {
+	// LogErr — сбой записи: не nil — Log отдаёт его и валидную запись не сохраняет.
+	LogErr error
+
 	mu      sync.Mutex
 	entries []*auditkit.Entry
 }
 
 // Log сохраняет копию записи, как pgstore: пустые RequestID и IP — из ctx
-// (auditkit.Entry.Enrich), невалидная Entry — auditkit.ErrInvalidEntry. Запись в транзакции фейка
-// pgtest её откат выкидывает; вне транзакции она остаётся, как у pgstore на пуле.
+// (auditkit.Entry.Enrich), невалидная Entry — auditkit.ErrInvalidEntry, затем LogErr, если он
+// задан. Запись в транзакции фейка pgtest её откат выкидывает; вне транзакции она остаётся, как
+// у pgstore на пуле.
 func (r *Recorder) Log(ctx context.Context, e auditkit.Entry) error {
 	e = e.Enrich(ctx)
 	if err := e.Validate(); err != nil {
 		return err
+	}
+	if r.LogErr != nil {
+		return r.LogErr
 	}
 	// Копия Metadata: caller волен переиспользовать свою map после Log,
 	// pgstore к этому моменту уже смаршалил её в JSON.

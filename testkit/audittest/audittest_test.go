@@ -94,6 +94,23 @@ func TestRecorder_RejectsInvalidEntry(t *testing.T) {
 	}
 }
 
+// Сбой записи — поведение фейка: usecase, который теряет ошибку аудита, тест ловит без своей
+// обёртки. Невалидную запись сбойный журнал отвергает валидацией: pgstore проверяет её до базы.
+func TestRecorder_LogErr(t *testing.T) {
+	t.Parallel()
+	down := errors.New("audit_log: connection refused")
+	r := &audittest.Recorder{LogErr: down}
+	if err := r.Log(t.Context(), auditkit.Entry{Action: "login", Resource: "auth"}); !errors.Is(err, down) {
+		t.Fatalf("Log = %v, want LogErr", err)
+	}
+	if err := r.Log(t.Context(), auditkit.Entry{Action: "login"}); !errors.Is(err, auditkit.ErrInvalidEntry) {
+		t.Fatalf("Log of an invalid entry = %v, want ErrInvalidEntry before LogErr", err)
+	}
+	if got := r.Entries(); len(got) != 0 {
+		t.Fatalf("a failed Log recorded entries: %+v", got)
+	}
+}
+
 // Метаданные копируются на входе и на выходе: мутация чужой map не переписывает
 // историю, как не переписывает её pgstore (он маршалит map сразу).
 func TestRecorder_ClonesMetadata(t *testing.T) {

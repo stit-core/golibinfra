@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"log/slog"
 	"slices"
 	"strings"
@@ -109,7 +110,15 @@ func callStream(ctx context.Context, conn *grpc.ClientConn) error {
 	if err := st.SendMsg(&healthpb.HealthCheckRequest{}); err != nil {
 		return err
 	}
-	return st.RecvMsg(&healthpb.HealthCheckResponse{})
+	// До io.EOF: access-log сервер пишет после возврата хендлера, статус уходит клиенту следом.
+	for {
+		if err := st.RecvMsg(&healthpb.HealthCheckResponse{}); err != nil {
+			if errors.Is(err, io.EOF) {
+				return nil
+			}
+			return err
+		}
+	}
 }
 
 func testCtx(t *testing.T) context.Context {

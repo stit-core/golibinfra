@@ -152,7 +152,6 @@ func TestTickable_TimerStopAndReset(t *testing.T) {
 	default:
 	}
 
-	// Reset поднимает остановленный таймер и очищает канал от старого срабатывания.
 	if stopped.Reset(time.Minute) {
 		t.Fatal("Reset of a stopped timer must report it was not active")
 	}
@@ -178,6 +177,75 @@ func TestTickable_TimerStopAndReset(t *testing.T) {
 	case <-live.C():
 	default:
 		t.Fatal("timer did not fire at the new deadline")
+	}
+}
+
+// Таймер фейка — time.Timer Go 1.23, те же сценарии идут по Real: момент сработавшего таймера,
+// который ещё не получили, Stop и Reset забирают и считают таймер активным; полученный — false.
+func TestTimer_StopAndResetLikeTimeTimer(t *testing.T) {
+	t.Parallel()
+	const d = 5 * time.Millisecond
+	tickable := clockkit.NewTickable(time.Unix(0, 0))
+	clocks := map[string]struct {
+		clock clockkit.Clock
+		pass  func() // дедлайн таймера на d наступает
+	}{
+		"real":     {clockkit.Real{}, func() { time.Sleep(4 * d) }},
+		"tickable": {tickable, func() { tickable.Advance(d) }},
+	}
+	for name, c := range clocks {
+		t.Run(name, func(t *testing.T) {
+			idle := func(timer clockkit.Timer, when string) {
+				t.Helper()
+				select {
+				case v := <-timer.C():
+					t.Fatalf("%s: stale moment %v", when, v)
+				default:
+				}
+			}
+			fired := func(timer clockkit.Timer, when string) {
+				t.Helper()
+				select {
+				case <-timer.C():
+				case <-time.After(5 * time.Second):
+					t.Fatalf("%s: the timer did not fire", when)
+				}
+			}
+
+			stopped := c.clock.NewTimer(d)
+			c.pass()
+			if !stopped.Stop() {
+				t.Fatal("Stop of a fired timer nobody received from must report it was active")
+			}
+			idle(stopped, "after Stop")
+			if stopped.Stop() {
+				t.Fatal("second Stop must report the timer was not active")
+			}
+
+			reset := c.clock.NewTimer(d)
+			c.pass()
+			if !reset.Reset(time.Hour) {
+				t.Fatal("Reset of a fired timer nobody received from must report it was active")
+			}
+			idle(reset, "after Reset")
+			if !reset.Reset(d) {
+				t.Fatal("Reset of a pending timer must report it was active")
+			}
+			c.pass()
+			fired(reset, "after the second Reset")
+
+			received := c.clock.NewTimer(d)
+			c.pass()
+			fired(received, "at the deadline")
+			if received.Stop() {
+				t.Fatal("Stop after the moment was received must report the timer was not active")
+			}
+			if received.Reset(d) {
+				t.Fatal("Reset after the moment was received must report the timer was not active")
+			}
+			c.pass()
+			fired(received, "after Reset of a received timer")
+		})
 	}
 }
 

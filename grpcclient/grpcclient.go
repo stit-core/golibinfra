@@ -81,7 +81,7 @@ func Dial(cfg Config, log logkit.Logger, opts ...Option) (*grpc.ClientConn, erro
 	}
 	if cfg.Token != "" {
 		if !cfg.TLS {
-			log.Warn(context.Background(), "grpcclient: bearer token over plaintext transport", "target", cfg.Target)
+			log.Warn(context.Background(), "grpcclient: token over plaintext transport", "target", cfg.Target)
 		}
 		dialOpts = append(dialOpts, grpc.WithPerRPCCredentials(bearerPerRPC{token: cfg.Token, secure: cfg.TLS}))
 	}

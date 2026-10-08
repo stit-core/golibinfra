@@ -113,7 +113,7 @@ Health-вызовы оркестратора идут в access-log наравн
 Логгер grpc-go подменяется мостом при импорте кита (до первого обращения к grpc —
 `grpclog.SetLoggerV2` не потокобезопасен), а `New`/`Dial` привязывают к мосту
 `logkit.Logger` из графа. Сообщения транспорта (GOAWAY, keepalive, резолвер)
-идут записью `grpc` с полем `msg`, а не plain-text в stderr. Уровни: info и
+идут записью `grpc` с текстом в поле `detail`, а не plain-text в stderr. Уровни: info и
 verbose → `Debug`, warning → `Warn`, error → `Error`.
 
 Пока логгер не привязан, мост пишет дефолтным логгером grpc-go (ERROR в stderr;

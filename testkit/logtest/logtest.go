@@ -1,9 +1,11 @@
-// Package logtest — реализация logkit.Logger, которая копит записи в памяти:
-// тест кита проверяет уровень, сообщение и поля лога, не разбирая stdout.
+// Package logtest — боевой логгер logkit, который пишет записи в память вместо stdout: тест
+// проверяет уровень, сообщение и поля лога такими, какими их получит оператор.
 package logtest
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -12,9 +14,10 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Entry — одна перехваченная запись лога. KV содержит kv-пары вызова плюс
-// накопленные через With; ctx-атрибуты logkit (trace_id, request_id) сюда не
-// попадают — их добавляет handler боевого логгера, а не Logger.
+// Entry — одна запись лога: JSON-строка боевого логгера, разобранная обратно. KV — её поля, кроме
+// time, level и msg: атрибуты вызова и With, ctx-атрибуты logkit (trace_id, request_id) — после
+// масок. Типы — JSON: строка, json.Number, bool, nil, группа и структура — map[string]any,
+// срез — []any.
 type Entry struct {
 	Level slog.Level
 	Msg   string
@@ -39,17 +42,12 @@ func (e Entry) Str(key string) string {
 	return fmt.Sprint(v)
 }
 
-// Recorder — logkit.Logger, пишущий записи в память. Безопасен для
-// параллельных вызовов; With отдаёт логгер поверх того же хранилища.
+// Recorder — logkit.Logger с цепочкой logkit.New (разбор kv, маски, ctx-атрибуты), записи
+// которого копятся в памяти. Безопасен для параллельных вызовов; With отдаёт логгер поверх того
+// же хранилища.
 type Recorder struct {
+	log   logkit.Logger
 	store *store
-	attrs []any
-	min   slog.Level
-}
-
-type store struct {
-	mu      sync.Mutex
-	entries []Entry
 }
 
 // Capture возвращает Recorder, принимающий записи всех уровней.
@@ -59,32 +57,34 @@ func Capture() *Recorder { return CaptureAt(slog.LevelDebug) }
 // отвечает Enabled(min-1) = false — для тестов кита, пропускающего дорогую
 // подготовку атрибутов по Enabled.
 func CaptureAt(min slog.Level) *Recorder {
-	return &Recorder{store: &store{}, min: min}
+	s := &store{}
+	log, err := logkit.New(logkit.Config{Level: min.String()}, logkit.WithWriter(s))
+	if err != nil {
+		panic("logtest: " + err.Error())
+	}
+	return &Recorder{log: log, store: s}
 }
 
 // Debug записывает запись уровня Debug.
-func (r *Recorder) Debug(_ context.Context, msg string, kv ...any) { r.add(slog.LevelDebug, msg, kv) }
+func (r *Recorder) Debug(ctx context.Context, msg string, kv ...any) { r.log.Debug(ctx, msg, kv...) }
 
 // Info записывает запись уровня Info.
-func (r *Recorder) Info(_ context.Context, msg string, kv ...any) { r.add(slog.LevelInfo, msg, kv) }
+func (r *Recorder) Info(ctx context.Context, msg string, kv ...any) { r.log.Info(ctx, msg, kv...) }
 
 // Warn записывает запись уровня Warn.
-func (r *Recorder) Warn(_ context.Context, msg string, kv ...any) { r.add(slog.LevelWarn, msg, kv) }
+func (r *Recorder) Warn(ctx context.Context, msg string, kv ...any) { r.log.Warn(ctx, msg, kv...) }
 
 // Error записывает запись уровня Error.
-func (r *Recorder) Error(_ context.Context, msg string, kv ...any) { r.add(slog.LevelError, msg, kv) }
+func (r *Recorder) Error(ctx context.Context, msg string, kv ...any) { r.log.Error(ctx, msg, kv...) }
 
 // With возвращает логгер с постоянными kv-парами поверх того же хранилища:
 // записи дочернего логгера видны в Entries родителя.
-func (r *Recorder) With(kv ...any) logkit.Logger {
-	attrs := make([]any, 0, len(r.attrs)+len(kv))
-	attrs = append(attrs, r.attrs...)
-	attrs = append(attrs, kv...)
-	return &Recorder{store: r.store, attrs: attrs, min: r.min}
-}
+func (r *Recorder) With(kv ...any) logkit.Logger { return r.log.With(kv...) }
 
 // Enabled сообщает, принимает ли Recorder записи уровня level.
-func (r *Recorder) Enabled(_ context.Context, level slog.Level) bool { return level >= r.min }
+func (r *Recorder) Enabled(ctx context.Context, level slog.Level) bool {
+	return r.log.Enabled(ctx, level)
+}
 
 // Entries возвращает копию перехваченных записей в порядке появления.
 func (r *Recorder) Entries() []Entry {
@@ -123,27 +123,59 @@ func (r *Recorder) Reset() {
 	r.store.entries = nil
 }
 
-func (r *Recorder) add(level slog.Level, msg string, kv []any) {
-	if level < r.min {
-		return
-	}
-	e := Entry{Level: level, Msg: msg, KV: map[string]any{}}
-	putKV(e.KV, r.attrs)
-	putKV(e.KV, kv)
-
-	r.store.mu.Lock()
-	defer r.store.mu.Unlock()
-	r.store.entries = append(r.store.entries, e)
+// store — локальный sink логгера: slog.JSONHandler отдаёт запись одним вызовом Write.
+type store struct {
+	mu      sync.Mutex
+	entries []Entry
 }
 
-// putKV раскладывает slog-стиль kv-пар в map; нечётный хвост и не-строковый
-// ключ отбрасываются так же, как их отбросил бы боевой handler.
-func putKV(dst map[string]any, kv []any) {
-	for i := 0; i+1 < len(kv); i += 2 {
-		if k, ok := kv[i].(string); ok {
-			dst[k] = kv[i+1]
+func (s *store) Write(line []byte) (int, error) {
+	e, err := parse(line)
+	if err != nil {
+		panic(fmt.Sprintf("logtest: logkit wrote a record that is not a JSON object: %v: %q", err, line))
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entries = append(s.entries, e)
+	return len(line), nil
+}
+
+// parse разбирает строку slog.JSONHandler: первые time, level и msg — поля самой записи,
+// одноимённый атрибут вызова идёт в KV.
+func parse(line []byte) (Entry, error) {
+	dec := json.NewDecoder(bytes.NewReader(line))
+	dec.UseNumber()
+	e := Entry{KV: map[string]any{}}
+	if _, err := dec.Token(); err != nil {
+		return e, err
+	}
+	own := map[string]bool{slog.TimeKey: true, slog.LevelKey: true, slog.MessageKey: true}
+	for dec.More() {
+		key, err := dec.Token()
+		if err != nil {
+			return e, err
+		}
+		var v any
+		if err := dec.Decode(&v); err != nil {
+			return e, err
+		}
+		name, _ := key.(string)
+		if !own[name] {
+			e.KV[name] = v
+			continue
+		}
+		delete(own, name)
+		text, _ := v.(string)
+		switch name {
+		case slog.LevelKey:
+			if err := e.Level.UnmarshalText([]byte(text)); err != nil {
+				return e, err
+			}
+		case slog.MessageKey:
+			e.Msg = text
 		}
 	}
+	return e, nil
 }
 
 // Recorder реализует logkit.Logger целиком, включая Enabled.

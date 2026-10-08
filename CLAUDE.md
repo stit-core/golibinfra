@@ -84,7 +84,7 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   (клиент Anthropic с `Usage`+`Cost`), `amocrmkit` (транспорт к amoCRM).
 - **Тесты:** `testkit` (testcontainers, лесенка миграций `MigrationLadder`) + сабпакеты
   `testkit/<name>test`
-  (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `grpctest`,
+  (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `cachetest`, `grpctest`,
   `handlertest`, `hubtest`, `idempotencytest`, `logtest`, `metrictest`, `natstest`,
   `oidctest`, `outboxtest`, `pgtest`, `sessiontest`, `storagetest`); в самих китах — только исключения
   § Стиль «Одна форма API».

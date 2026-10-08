@@ -178,7 +178,7 @@ func TestBearerReachesServerAndPlaintextIsWarned(t *testing.T) {
 	if got := strings.Join(seen().Get("authorization"), ","); got != "Bearer tok" {
 		t.Fatalf("server saw authorization = %q, want %q", got, "Bearer tok")
 	}
-	e, ok := rec.Find(slog.LevelWarn, "grpcclient: bearer token over plaintext transport")
+	e, ok := rec.Find(slog.LevelWarn, "grpcclient: token over plaintext transport")
 	if !ok || e.Str("target") != "passthrough:///bufnet" {
 		t.Fatalf("plaintext bearer must be warned at Dial, got %+v ok=%v", e, ok)
 	}
@@ -206,7 +206,7 @@ func TestTLSTokenIsNotWarned(t *testing.T) {
 		t.Fatalf("Dial: %v", err)
 	}
 	defer conn.Close()
-	if rec.Has(slog.LevelWarn, "grpcclient: bearer token over plaintext transport") {
+	if rec.Has(slog.LevelWarn, "grpcclient: token over plaintext transport") {
 		t.Fatal("bearer over TLS must not be warned")
 	}
 }

@@ -27,15 +27,15 @@ const memoryFullSweepEvery = time.Second
 var ErrMemoryFull = errors.New("cachekit: memory cache is full")
 
 // MemoryCache — in-memory реализация Cache: та же семантика TTL, SetNX, GetDel и
-// тегов без Redis. Пригодна и для single-replica развёртывания (истёкшие ключи
-// и членство в тегах вычищаются амортизированным проходом на записи); число ключей
-// ограничено (WithMaxKeys).
+// тегов без Redis (контракт — testkit/cachetest); ctx не читает, Close — no-op. Пригодна и для
+// single-replica развёртывания: истёкшие ключи и наборы тегов вычищает амортизированный проход на
+// записи, число ключей ограничено (WithMaxKeys).
 type MemoryCache struct {
 	mu               sync.Mutex
 	clock            clockkit.Clock
 	maxKeys          int
 	data             map[string]memEntry
-	tags             map[string]map[string]struct{}
+	tags             map[string]*memTag
 	writesSinceSweep int
 	sizeAtSweep      int
 	lastFullSweep    time.Time
@@ -44,6 +44,17 @@ type MemoryCache struct {
 type memEntry struct {
 	value     []byte
 	expiresAt time.Time
+}
+
+// memTag — набор тега, как Redis-набор tag:<tag>: членство переживает удаление и истечение ключа
+// и уходит с InvalidateByTag или вместе с набором.
+type memTag struct {
+	keys      map[string]struct{}
+	expiresAt time.Time
+}
+
+func (t *memTag) expired(now time.Time) bool {
+	return !t.expiresAt.IsZero() && !now.Before(t.expiresAt)
 }
 
 // MemoryOption — опция NewMemoryCache.
@@ -76,7 +87,7 @@ func NewMemoryCache(opts ...MemoryOption) *MemoryCache {
 		clock:   clockkit.Real{},
 		maxKeys: memoryMaxKeys,
 		data:    map[string]memEntry{},
-		tags:    map[string]map[string]struct{}{},
+		tags:    map[string]*memTag{},
 	}
 	for _, opt := range opts {
 		opt(m)
@@ -90,7 +101,7 @@ func (m *MemoryCache) live(key string) ([]byte, bool) {
 		return nil, false
 	}
 	if !e.expiresAt.IsZero() && !m.clock.Now().Before(e.expiresAt) {
-		m.drop(key)
+		delete(m.data, key)
 		return nil, false
 	}
 	return e.value, true
@@ -116,19 +127,9 @@ func (m *MemoryCache) put(key string, value []byte, ttl time.Duration) error {
 	return nil
 }
 
-func (m *MemoryCache) drop(key string) {
-	delete(m.data, key)
-	for tag, set := range m.tags {
-		delete(set, key)
-		if len(set) == 0 {
-			delete(m.tags, tag)
-		}
-	}
-}
-
 // sweepIfDue амортизирует полный проход: он идёт, когда с прошлого прохода
 // сделано не меньше записей, чем было ключей, — O(1) на запись, а мёртвых
-// ключей и членства в тегах не накапливается больше, чем живых.
+// ключей не накапливается больше, чем живых.
 func (m *MemoryCache) sweepIfDue() {
 	m.writesSinceSweep++
 	threshold := max(m.sizeAtSweep, memorySweepMin)
@@ -138,7 +139,9 @@ func (m *MemoryCache) sweepIfDue() {
 	m.sweep()
 }
 
-// sweep — полный проход: удаляет истёкшие ключи и их членство в тегах.
+// sweep — полный проход: удаляет истёкшие ключи и истёкшие наборы тегов. Членство ключа, которого
+// уже нет, Redis держит до конца набора; здесь оно уходит раньше, только когда членств больше
+// maxKeys, — иначе тег, который не инвалидируют, рос бы без предела.
 func (m *MemoryCache) sweep() {
 	m.writesSinceSweep = 0
 	now := m.clock.Now()
@@ -147,14 +150,24 @@ func (m *MemoryCache) sweep() {
 			delete(m.data, k)
 		}
 	}
+	members := 0
 	for tag, set := range m.tags {
-		for k := range set {
-			if _, ok := m.data[k]; !ok {
-				delete(set, k)
-			}
-		}
-		if len(set) == 0 {
+		if set.expired(now) {
 			delete(m.tags, tag)
+			continue
+		}
+		members += len(set.keys)
+	}
+	if members > m.maxKeys {
+		for tag, set := range m.tags {
+			for k := range set.keys {
+				if _, ok := m.data[k]; !ok {
+					delete(set.keys, k)
+				}
+			}
+			if len(set.keys) == 0 {
+				delete(m.tags, tag)
+			}
 		}
 	}
 	m.sizeAtSweep = len(m.data)
@@ -200,7 +213,7 @@ func (m *MemoryCache) GetDel(_ context.Context, key string) ([]byte, bool, error
 		return nil, false, nil
 	}
 	v = bytes.Clone(v)
-	m.drop(key)
+	delete(m.data, key)
 	return v, true, nil
 }
 
@@ -212,7 +225,7 @@ func (m *MemoryCache) CompareAndDelete(_ context.Context, key string, expected [
 	if !ok || !bytes.Equal(v, expected) {
 		return false, nil
 	}
-	m.drop(key)
+	delete(m.data, key)
 	return true, nil
 }
 
@@ -227,40 +240,54 @@ func (m *MemoryCache) CompareAndSet(_ context.Context, key string, expected, val
 	return true, m.put(key, value, ttl)
 }
 
-// Delete удаляет ключи вместе с их членством в тегах.
+// Delete удаляет ключи; их членство в тегах остаётся, как в Redis: ключ, записанный заново и без
+// тега, InvalidateByTag удалит.
 func (m *MemoryCache) Delete(_ context.Context, keys ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	for _, k := range keys {
-		m.drop(k)
+		delete(m.data, k)
 	}
 	return nil
 }
 
-// SetWithTags пишет значение и добавляет ключ в наборы тегов.
+// SetWithTags пишет значение и добавляет ключ в наборы тегов. Набор живёт не меньше самого
+// долгоживущего члена: запись с большим TTL его продлевает, запись без TTL делает бессрочным.
 func (m *MemoryCache) SetWithTags(_ context.Context, key string, value []byte, ttl time.Duration, tags ...string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	if err := m.put(key, value, ttl); err != nil {
 		return err
 	}
+	now := m.clock.Now()
+	until := now.Add(ttl)
 	for _, tag := range tags {
-		set, ok := m.tags[tag]
-		if !ok {
-			set = map[string]struct{}{}
+		set := m.tags[tag]
+		switch {
+		case set == nil || set.expired(now):
+			set = &memTag{keys: map[string]struct{}{}}
+			if ttl > 0 {
+				set.expiresAt = until
+			}
 			m.tags[tag] = set
+		case ttl <= 0:
+			set.expiresAt = time.Time{}
+		case !set.expiresAt.IsZero() && until.After(set.expiresAt):
+			set.expiresAt = until
 		}
-		set[key] = struct{}{}
+		set.keys[key] = struct{}{}
 	}
 	return nil
 }
 
-// InvalidateByTag удаляет все ключи тега и сам набор; отсутствующий тег — не ошибка.
+// InvalidateByTag удаляет все ключи тега и сам набор; отсутствующий и истёкший тег — не ошибка.
 func (m *MemoryCache) InvalidateByTag(_ context.Context, tag string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	for k := range m.tags[tag] {
-		delete(m.data, k)
+	if set := m.tags[tag]; set != nil && !set.expired(m.clock.Now()) {
+		for k := range set.keys {
+			delete(m.data, k)
+		}
 	}
 	delete(m.tags, tag)
 	return nil
