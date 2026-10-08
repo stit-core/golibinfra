@@ -1,0 +1,375 @@
+# Случаи TestGuardBash: команда — как её получает guard сессии (.claude/hooks/guard-bash.sh).
+# «B » — отказ, «A » — пропуск; ⏎ — перевод строки, ⇥ — табуляция. Ничего из этого не исполняется.
+
+# --- отказ: флаги обхода хуков и путь хуков git
+B git commit -n -m x
+B git commit -an -m x
+B git commit -m x -n
+B git commit "-n" -m x
+B git commit '-an' -m x
+B git add -A⏎git commit -n -m x
+B git push --no-verify
+B git push --no-veri origin main
+B git push "--no-veri" origin main
+B git -c core.hooksPath=/dev/null push
+B git config core.hooksPath /dev/null
+B git config --unset core.hooksPath
+B git commit -nm x
+B git commit -sn -m x
+B git commit --no-verify -m x
+B git commit -m x --no-veri
+B git -C . commit -n -m x
+B git -c user.name=x commit -q -n -m y
+B /usr/bin/git commit -n -m x
+B git push origin main --no-verify
+B true && git commit -n -m x
+B git stash; git commit -n -m x
+B git push '--no-verify' origin main
+B git commit -m "x\|y" -n
+B git commit -n -m "x"
+B git commit --no-veri -m x
+B git commit -anm "x"
+B git -C /tmp commit -n -m x
+B GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=core.hooksPath GIT_CONFIG_VALUE_0=/dev/null git push
+B git push --no-veri
+B git push origin main --no-verif
+B git add . && git commit -n -m x
+B git status; git commit -n -m x
+B (git commit -n -m x)
+B git commit --amend --no-edit -n
+B git commit -qn -m x
+B git   commit   -n  -m x
+B for i in 1; do git commit -n -m x; done
+B git -c user.name=x commit -n -m y
+B git commit -F- -n <<EOF⏎feat: x⏎EOF
+B git add -A⏎git commit -n -m "fix: x"
+B cd /repo⏎git commit -n -m "fix: x"
+B git status⏎git push --no-veri
+B git --git-dir .git commit -n -m x
+B git --git-dir .git push --no-veri
+B git --work-tree . commit -n -m x
+B git merge --no-veri feature
+B git commit -m x -n; echo "it's done"
+B git -c core.hookspath=/dev/null push origin main
+B git push --no-verify origin v1.3.0
+B git config --get core.hooksPath
+
+# --- отказ: запись в хук: команды-писатели и перенаправления
+B chmod -x scripts/git-hooks/pre-push
+B chmod -x scripts/git-hooks/commit-msg
+B cd scripts/git-hooks && chmod -x commit-msg
+B rm scripts/git-hooks/pre-push
+B mv scripts/git-hooks/pre-push /tmp/
+B echo 'exit 0' > scripts/git-hooks/commit-msg
+B git checkout HEAD~1 -- scripts/git-hooks/commit-msg
+B echo "a\|b" ; chmod -x scripts/git-hooks/pre-push
+B echo x >& scripts/git-hooks/pre-push
+B echo x>scripts/git-hooks/pre-push
+B echo x >|scripts/git-hooks/pre-push
+B cat /dev/null 1>scripts/git-hooks/commit-msg
+B tee scripts/git-hooks/pre-push </dev/null
+B dd if=/dev/null of=scripts/git-hooks/pre-push
+B truncate -s 0 scripts/git-hooks/commit-msg
+B ln -sf /bin/true scripts/git-hooks/pre-push
+B install -m 644 /dev/null scripts/git-hooks/pre-push
+B git rm -q scripts/git-hooks/commit-msg
+B git mv scripts/git-hooks/commit-msg scripts/git-hooks/commit-msg.off
+B git restore --source=20a5b14 scripts/git-hooks/pre-push
+B git apply /tmp/x.patch --include=scripts/git-hooks/pre-push
+B echo 'exit 0' >scripts/git-hooks/pre-push
+B echo x &> scripts/git-hooks/pre-push
+B : > scripts/git-hooks/commit-msg
+B true >| scripts/git-hooks/commit-msg
+B cat /dev/null >> scripts/git-hooks/commit-msg
+B chmod a-x scripts/git-hooks/pre-push scripts/git-hooks/commit-msg
+B chmod 644 scripts/git-hooks/commit-msg
+B mv scripts/git-hooks/pre-push scripts/git-hooks/pre-push.off
+B rm -f scripts/git-hooks/commit-msg
+B perl -pi -e 's/make check/true/' scripts/git-hooks/pre-push
+B grep -rl x . | xargs -I{} cp {} scripts/git-hooks/pre-push
+B echo "a" 'b' ; chmod -x scripts/git-hooks/pre-push
+B rm scripts/git-hooks/commit-msg
+B mv scripts/git-hooks/pre-push /tmp/x
+B git rm scripts/git-hooks/pre-push
+B cd scripts/git-hooks && chmod -x pre-push
+B truncate -s 0 scripts/git-hooks/pre-push
+B : > scripts/git-hooks/pre-push
+B echo 'exit 0' > scripts/git-hooks/pre-push
+B install -m 755 /bin/true scripts/git-hooks/pre-push
+B git checkout HEAD~5 -- scripts/git-hooks/pre-push
+B git restore scripts/git-hooks/pre-push
+B printf 'exit 0' | tee scripts/git-hooks/pre-push
+B python3 -c "open('scripts/git-hooks/pre-push','w').write('')"
+B perl -pi -e 's/make/true/' scripts/git-hooks/pre-push
+B chmod 644 scripts/git-hooks/pre-push && git push
+B rm -f 'scripts/git-hooks/pre-push'
+B git mv scripts/git-hooks/pre-push scripts/x
+B env FOO=1 chmod -x scripts/git-hooks/pre-push
+B sudo chmod -x scripts/git-hooks/pre-push
+B cd scripts && chmod -x git-hooks/pre-push
+B git commit \⏎  -n -m x
+B git commit -m "$(cat <<'EOF'⏎feat: x⏎EOF⏎)" -n
+
+# --- отказ: запись и запуск через «читателей»: cp, sort, find, awk, sed, git, rg, bash -n
+B sed -i 's/make check/true/' scripts/git-hooks/pre-push
+B cp /bin/true scripts/git-hooks/pre-push
+B cp -t scripts/git-hooks /tmp/pre-push
+B sort -o scripts/git-hooks/pre-push /dev/null
+B find scripts -name pre-push -exec chmod -x {} +
+B find scripts/git-hooks -name pre-push -delete
+B find /dev/null -fprint scripts/git-hooks/pre-push
+B awk -i inplace '{print}' scripts/git-hooks/pre-push
+B awk 'BEGIN{system("chmod -x scripts/git-hooks/pre-push")}'
+B cp /bin/true scripts/git-hooks/pre-push 2>/dev/null
+B cp /bin/true scripts/git-hooks/pre-push 2>&1
+B cp /bin/true scripts/git-hooks/pre-push >/dev/null
+B cp /bin/true scripts/git-hooks/pre-push>/dev/null
+B cp /bin/true scripts/git-hooks/pre-push 2> /dev/null
+B cp /bin/true scripts/git-hooks/pre-push </dev/null
+B cp /bin/true scripts/git-hooks/pre-push 2>&1 | tail -1
+B cp -f /bin/true scripts/git-hooks/pre-push 2>/dev/null; echo done
+B cp /bin/true scripts/git-hooks/pre-push -f
+B cp /bin/true scripts/git-hooks/pre-push -v
+B cp /bin/true scripts/git-hooks/pre-push --
+B cp /tmp/fixed scripts/git-hooks/commit-msg # вернуть хук
+B cp /tmp/pre-push scripts/git-hooks/ 2>&1
+B cp -f /bin/true scripts/git-hooks/commit-msg || true
+B cp /tmp/fixed scripts/git-hooks/commit-msg && git add -A
+B cp /bin/true scripts/git-hooks/pre-push $EMPTY
+B cp /bin/true scripts/git-hooks/pre-push "$@"
+B cp /bin/true scripts/git-hooks/pre-push -S x
+B cp /bin/true scripts/git-hooks/pre-push --suffix x
+B cp /bin/true scripts/git-hooks/pre-push --no-preserve mode
+B cp /bin/true scripts/git-hooks/pre-push --sparse always
+B cp --target-directory=scripts/git-hooks /tmp/pre-push
+B cp --targ scripts/git-hooks /tmp/pre-push
+B cp {/bin/true,scripts/git-hooks/pre-push}
+B "cp" /bin/true scripts/git-hooks/pre-push
+B \cp /bin/true scripts/git-hooks/pre-push
+B command cp /bin/true scripts/git-hooks/pre-push
+B cp /bin/true scripts/git-hooks/*
+B sort --output=scripts/git-hooks/pre-push /dev/null
+B sort --out=scripts/git-hooks/pre-push /dev/null
+B sort --outp scripts/git-hooks/pre-push /dev/null
+B sort "-o" scripts/git-hooks/pre-push /dev/null
+B sort '-o' scripts/git-hooks/pre-push /dev/null
+B sort \-o scripts/git-hooks/pre-push /dev/null
+B sort $'-o' scripts/git-hooks/pre-push /dev/null
+B sort -uo scripts/git-hooks/pre-push /dev/null
+B sort -oscripts/git-hooks/pre-push /dev/null
+B sort /dev/null -o scripts/git-hooks/pre-push
+B sort {-o,scripts/git-hooks/pre-push} /dev/null
+B sort $OPT scripts/git-hooks/pre-push
+B sort --co=/tmp/evil.sh scripts/git-hooks/pre-push
+B find scripts/git-hooks -name pre-push "-delete"
+B find scripts/git-hooks -name pre-push '-delete'
+B find scripts/git-hooks -name pre-push -del''ete
+B find scripts/git-hooks -name pre-push \-delete
+B find scripts/git-hooks -name pre-push $'\x2ddelete'
+B find scripts/git-hooks -type f -exec⇥chmod -x {} +
+B find scripts/git-hooks -type f "-exec" chmod -x {} +
+B find scripts/git-hooks -type f -execdir chmod -x {} +
+B find scripts/git-hooks -type f -ok rm {} \;
+B find /dev/null -fprintf scripts/git-hooks/pre-push x
+B find /dev/null -fls scripts/git-hooks/pre-push
+B find scripts/git-hooks $ACTION
+B awk 'BEGIN{print "exit 0" | "tee scripts/git-hooks/pre-push"}'
+B awk 'BEGIN{"chmod -x scripts/git-hooks/pre-push" | getline}'
+B awk 'BEGIN{printf "" > "scripts/git-hooks/commit-msg"}'
+B awk -v f=scripts/git-hooks/pre-push 'BEGIN{printf "" > f}'
+B awk 'BEGIN{close("scripts/git-hooks/pre-push"); printf "" | "cat > scripts/git-hooks/pre-push"}'
+B awk '{system("chmod -x " FILENAME)}' scripts/git-hooks/pre-push
+B awk '{print > FILENAME}' scripts/git-hooks/pre-push
+B awk '{print "chmod -x " FILENAME | "sh"}' scripts/git-hooks/pre-push
+B awk -v c=sh '{print "chmod -x " FILENAME | c}' scripts/git-hooks/pre-push
+B awk -f /tmp/p.awk scripts/git-hooks/pre-push
+B gawk --dump-variables=scripts/git-hooks/pre-push 'BEGIN{}'
+B gawk -oscripts/git-hooks/pre-push 'BEGIN{}'
+B gawk -e 'BEGIN{x=1}' scripts/git-hooks/pre-push
+B awk '@load "filefuncs"' scripts/git-hooks/pre-push
+B awk "BEGIN{system(\"chmod -x $H\")}" scripts/git-hooks/pre-push
+B awk {print\>FILENAME} scripts/git-hooks/pre-push
+B sed -n 'w scripts/git-hooks/pre-push' /dev/null
+B sed -n 'wscripts/git-hooks/pre-push' /dev/null
+B sed -n '1e chmod -x scripts/git-hooks/pre-push' /etc/hostname
+B sed 's/make check/true/w scripts/git-hooks/pre-push' scripts/git-hooks/pre-push
+B sed --expression='w scripts/git-hooks/pre-push' /dev/null
+B sed --expr 'w scripts/git-hooks/pre-push' /dev/null
+B sed -ne 'w scripts/git-hooks/pre-push' /dev/null
+B sed -l 5 'w scripts/git-hooks/pre-push' /dev/null
+B sed -n '1s/.*/chmod -x scripts\/git-hooks\/pre-push/ep' /etc/hostname
+B sed -i.bak 's/x/y/' scripts/git-hooks/pre-push
+B sed -ni 's/x/y/' scripts/git-hooks/pre-push
+B sed --in 's/make check/true/' scripts/git-hooks/pre-push
+B sed --in-pl 's/x/y/' scripts/git-hooks/pre-push
+B sed "-i" 's/x/y/' scripts/git-hooks/pre-push
+B git diff --output=scripts/git-hooks/pre-push
+B git log -1 --output=scripts/git-hooks/commit-msg
+B git show --output=scripts/git-hooks/commit-msg HEAD
+B git show HEAD:Makefile --output=scripts/git-hooks/pre-push
+B git diff "--output=scripts/git-hooks/pre-push"
+B git diff --outp=scripts/git-hooks/pre-push
+B git add --chmod=-x scripts/git-hooks/pre-push
+B git grep -O'chmod -x' -e . -- scripts/git-hooks/pre-push
+B git grep --open-files-in-pager=rm -e . -- scripts/git-hooks/pre-push
+B rg --pre /tmp/evil.sh x scripts/git-hooks/pre-push
+B rg --pre=/tmp/evil.sh x scripts/git-hooks/pre-push
+B bash -n +n -c 'chmod -x scripts/git-hooks/pre-push'
+B cp /tmp/pre-push scripts/git-hooks/
+B git update-index --chmod=-x scripts/git-hooks/pre-push
+B cp /bin/true scripts/git-hooks/commit-msg </dev/null
+B sed -i 's/exit 1/exit 0/' scripts/git-hooks/commit-msg
+B cp /bin/true scripts/git-hooks/commit-msg
+B awk 'BEGIN{print "exit 0" > "scripts/git-hooks/pre-push"}'
+B git update-index --chmod=-x scripts/git-hooks/commit-msg
+B sed -i '2i exit 0' scripts/git-hooks/pre-push
+
+# --- отказ: экранированная кавычка не прячет следующую команду
+B echo don\'t; chmod -x scripts/git-hooks/pre-push
+B echo \" ; chmod -x scripts/git-hooks/pre-push
+B echo don\'t && rm scripts/git-hooks/commit-msg
+B echo 'it'\''s' ; chmod -x scripts/git-hooks/pre-push
+B echo $'a\'b' ; chmod -x scripts/git-hooks/pre-push
+B echo "x\\" ; chmod -x scripts/git-hooks/pre-push
+B echo don\'t; git commit -n -m x
+B echo \" ; git commit -n -m x
+
+# --- пропуск: чтение хуков, текст о них и обычная работа
+A git push origin main
+A git log -n 5
+A make hooks
+A git commit -m "fix: -n в сообщении"
+A git commit -m "fix(gate): commit-msg и pre-push"
+A git commit -q -F - <<'EOF'⏎fix: x⏎⏎git commit -n и core.hooksPath в теле⏎EOF
+A grep -rn core.hooksPath scripts/
+A cat scripts/git-hooks/pre-push
+A bash -n scripts/git-hooks/commit-msg
+A scripts/git-hooks/commit-msg /tmp/msg.txt
+A git diff scripts/git-hooks
+A git add scripts/git-hooks/commit-msg
+A find . -name pre-push
+A awk 'NR<5' scripts/git-hooks/pre-push
+A sort scripts/git-hooks/commit-msg
+A cp scripts/git-hooks/pre-push /tmp/pre-push.copy
+A grep -n "push\|pre-push" README.md
+A grep -n "a\;pre-push" README.md
+A make check 2>&1 | tee /tmp/pre-push.log
+A find . -name commit-msg -not -path './.git/*' -print
+A find scripts/git-hooks -type f -perm -u+x
+A awk '/^while/,/^done/' scripts/git-hooks/pre-push
+A awk -F: '{print $1}' scripts/git-hooks/commit-msg
+A sort -u scripts/git-hooks/commit-msg | wc -l
+A cp scripts/git-hooks/pre-push scripts/git-hooks/commit-msg /tmp/hooks-copy/
+A cp -r scripts/git-hooks /tmp/hooks-copy
+A cp -a scripts/git-hooks/pre-push /tmp/x 2>/dev/null
+A sed -n '1,20p' scripts/git-hooks/pre-push
+A sed -n '/^set -euo pipefail/,$p' scripts/git-hooks/pre-push
+A sed -n -e '1,5p' scripts/git-hooks/pre-push
+A sed -n '/pre-push/p' README.md
+A git log --oneline -- scripts/git-hooks
+A git show HEAD:scripts/git-hooks/pre-push
+A git add scripts/git-hooks/commit-msg scripts/gate_test.go
+A rg -n "pre-push|commit-msg" -g "*.md"
+A bash -n scripts/git-hooks/pre-push && bash -n scripts/git-hooks/commit-msg
+A bash scripts/git-hooks/commit-msg /tmp/msg.txt
+A "cat" scripts/git-hooks/pre-push
+A wc -l scripts/git-hooks/*
+A echo don\'t; git status
+A git commit -uno -m 'fix: x'
+A cat -n scripts/git-hooks/commit-msg | head -40
+A head -20 scripts/git-hooks/pre-push; tail -5 scripts/git-hooks/commit-msg
+A ls -la scripts/git-hooks/
+A stat -c '%a %n' scripts/git-hooks/pre-push scripts/git-hooks/commit-msg
+A shellcheck scripts/git-hooks/pre-push scripts/git-hooks/commit-msg
+A grep -n 'make check' scripts/git-hooks/pre-push
+A grep -rn 'pre-push' README.md CLAUDE.md CONTRIBUTING.md
+A grep -rn "commit-msg" --include='*.md' .
+A git log --oneline --grep 'pre-push' -n 20
+A git log --grep "commit-msg" --format=%s
+A git log -p --follow -- scripts/git-hooks/pre-push
+A git show f4af223:scripts/git-hooks/commit-msg | head -30
+A git blame scripts/git-hooks/commit-msg
+A git diff main p3-gate -- scripts/git-hooks/
+A git --no-pager diff --stat 20a5b14..f4af223 -- scripts/git-hooks
+A GIT_PAGER=cat git log -3 -- scripts/git-hooks
+A git -C /tmp/wt status --short scripts/git-hooks
+A git ls-files -s scripts/git-hooks
+A git ls-tree HEAD scripts/git-hooks/
+A git commit -m "chore(gate): pre-push по дереву коммита, commit-msg, release-diff"
+A git commit -q -m "fix(gate): guard — чтение pre-push (find, awk, sort) не отклоняется"
+A git tag -a v1.4.0 -F - <<'EOF'⏎v1.4.0⏎⏎Гейт: commit-msg и pre-push, git commit -n не нужен⏎EOF
+A git push origin v1.4.0
+A git push origin HEAD:refs/heads/p3-gate
+A git log -n 5 --oneline
+A git commit --amend --no-edit
+A git commit --fixup=HEAD
+A git rebase -i --autosquash main
+A git cherry-pick 64a0834
+A git revert --no-edit HEAD
+A git commit -m 'fix: x' --no-status
+A git config --list --show-origin
+A make -j4 lint
+A make -j8 test PKGS=./scripts/
+A make check 2>&1 | tail -20
+A make gate-clean
+A make release-diff PREV=v1.3.0 | grep -c pre-push
+A go test ./scripts/ -run 'TestGuardBash|TestCommitMsgHook|TestPrePushGatesPushedCommit' -v
+A LC_ALL=C scripts/git-hooks/commit-msg /tmp/msg.txt
+A env LC_ALL=C bash scripts/git-hooks/commit-msg /tmp/msg.txt
+A echo 'refs/heads/main abc refs/heads/main 000' | scripts/git-hooks/pre-push
+A diff <(git show main:scripts/git-hooks/pre-push) scripts/git-hooks/pre-push
+A cmp scripts/git-hooks/pre-push /tmp/pre-push.copy && echo same
+A sha256sum scripts/git-hooks/*
+A test -x scripts/git-hooks/commit-msg && echo ok
+A [ -x scripts/git-hooks/pre-push ] || echo 'не исполняемый'
+A gh issue create --title "commit-msg: длина subject под LC_ALL=C" --body "x"
+A find . -name pre-push -not -path './.git/*'
+A wc -l scripts/git-hooks/pre-push && sort scripts/git-hooks/commit-msg | head
+A cp scripts/git-hooks/commit-msg /tmp/copy
+A grep -nE "commit-msg\|pre-push" CLAUDE.md
+A rg "push|pre-push" README.md
+A cat scripts/git-hooks/commit-msg
+A git log -p -- scripts/git-hooks/commit-msg
+A ls -la scripts/git-hooks
+A git commit -m "fix(gate): commit-msg и pre-push из пушимого коммита"
+A git commit -q -F - <<'EOF'⏎fix(gate): x⏎⏎chmod -x scripts/git-hooks/pre-push — пример обхода⏎EOF
+A make check 2>&1 | tee /tmp/commit-msg.log
+A go test ./scripts/ -run TestGuardBash
+A git commit -m "fix(gate): pre-push проверяет пушимый коммит"
+A git add scripts/git-hooks/pre-push
+A git log -p -- scripts/git-hooks/pre-push
+A git diff HEAD~1 -- scripts/git-hooks
+A grep -rn pre-push .
+A bash -n scripts/git-hooks/pre-push
+A shellcheck scripts/git-hooks/pre-push
+A scripts/git-hooks/pre-push </dev/null
+A git rev-parse --git-path hooks
+A echo "pre-push hook ran" >> /tmp/log.txt
+A rm -f /tmp/val-git-hooks-scratch.log
+A diff scripts/git-hooks/pre-push <(git show HEAD:scripts/git-hooks/pre-push)
+A git push origin v1.3.0
+A cp scripts/git-hooks/pre-push /tmp/copy
+A sort scripts/git-hooks/pre-push
+A git diff scripts/git-hooks/pre-push
+A bash scripts/git-hooks/pre-push </dev/null
+A git commit -m "feat: x -n something"
+A git commit -F - <<'EOF'⏎feat(x): y⏎⏎mentions SKIP_PREPUSH=1 and core.hooksPath and git commit -n⏎EOF
+A git commit -m "$(cat <<'EOF'⏎feat(gate): x⏎⏎SKIP_PREPUSH=1 core.hooksPath GOFLAGS=-n⏎EOF⏎)"
+A git push -n
+A git -C /path log -n 3
+A git config --list | grep -i hook
+A make check
+A git commit -m "fix: x"
+A git status && git diff
+A git clean -n
+A git stash push -m wip
+A echo "git commit -n"
+A git commit -S -m x
+A git commit -s -m x
+A git commit --dry-run
+A git commit -m "feat: x" && git push
+A find . -name "*.go" | xargs grep -n "fmt.Print"
+A git show --stat HEAD -n 1
+A git commit -m x -- file-n.go
+A git rev-list -n 1 HEAD
+A sed -n 1,20p scripts/git-hooks/pre-push

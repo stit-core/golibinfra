@@ -28,7 +28,11 @@ changes() { comm -3 "$1" "$2" | sed -e $'s/^\t/+ /' -e t -e 's/^/- /'; }
 
 (cd "$work/prev" && apidiff -m -w "$work/prev.api" "$module")
 apidiff -m "$work/prev.api" "$module" >"$work/api" 2>"$work/api.err" || { cat "$work/api.err" >&2; exit 1; }
-api() { awk -v want="$1" '/ changes:$/ { on = ($0 == want); next } on && NF' "$work/api" | sort; }
+# Не API: инструменты гейта (scripts/) и internal/ потребитель не импортирует.
+api() {
+	awk -v want="$1" '/ changes:$/ { on = ($0 == want); next } on && NF' "$work/api" |
+		grep -vE "^- (package $module/|\./)(scripts|internal)([/.:]|$)" | sort || [ $? = 1 ]
+}
 echo "== API: несовместимо с $1 — каждой строке строка Breaking"
 api "Incompatible changes:"
 echo "== API: новое — раздел «Изменения»"

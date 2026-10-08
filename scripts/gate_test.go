@@ -58,121 +58,148 @@ func write(t *testing.T, dir string, files map[string]string) {
 }
 
 // Guard сессии Claude не пускает удобные обходы хуков и не мешает их читать: ложный отказ на
-// чтении приучает обходить сам guard.
+// чтении приучает обходить сам guard. Случаи — testdata/guard-cases.txt: guard получает команду
+// как JSON и ничего не исполняет.
 func TestGuardBash(t *testing.T) {
 	guard := filepath.Join(repoRoot(t), ".claude", "hooks", "guard-bash.sh")
-	for _, tc := range []struct {
-		cmd     string
-		blocked bool
-	}{
-		{"git commit -n -m x", true},
-		{"git commit -an -m x", true},
-		{"git commit -m x -n", true},
-		{`git commit "-n" -m x`, true},
-		{"git commit '-an' -m x", true},
-		{"git add -A\ngit commit -n -m x", true},
-		{"git push --no-verify", true},
-		{"git push --no-veri origin main", true},
-		{`git push "--no-veri" origin main`, true},
-		{"git -c core.hooksPath=/dev/null push", true},
-		{"git config core.hooksPath /dev/null", true},
-		{"git config --unset core.hooksPath", true},
-		{"chmod -x scripts/git-hooks/pre-push", true},
-		{"chmod -x scripts/git-hooks/commit-msg", true},
-		{"cd scripts/git-hooks && chmod -x commit-msg", true},
-		{"rm scripts/git-hooks/pre-push", true},
-		{"mv scripts/git-hooks/pre-push /tmp/", true},
-		{"echo 'exit 0' > scripts/git-hooks/commit-msg", true},
-		{"sed -i 's/make check/true/' scripts/git-hooks/pre-push", true},
-		{"cp /bin/true scripts/git-hooks/pre-push", true},
-		{"cp -t scripts/git-hooks /tmp/pre-push", true},
-		{"sort -o scripts/git-hooks/pre-push /dev/null", true},
-		{"find scripts -name pre-push -exec chmod -x {} +", true},
-		{"find scripts/git-hooks -name pre-push -delete", true},
-		{"find /dev/null -fprint scripts/git-hooks/pre-push", true},
-		{"awk -i inplace '{print}' scripts/git-hooks/pre-push", true},
-		{`awk 'BEGIN{system("chmod -x scripts/git-hooks/pre-push")}'`, true},
-		{"git checkout HEAD~1 -- scripts/git-hooks/commit-msg", true},
-		{`echo "a\|b" ; chmod -x scripts/git-hooks/pre-push`, true},
-		{"git push origin main", false},
-		{"git log -n 5", false},
-		{"make hooks", false},
-		{`git commit -m "fix: -n в сообщении"`, false},
-		{`git commit -m "fix(gate): commit-msg и pre-push"`, false},
-		{"git commit -q -F - <<'EOF'\nfix: x\n\ngit commit -n и core.hooksPath в теле\nEOF", false},
-		{"grep -rn core.hooksPath scripts/", false},
-		{"cat scripts/git-hooks/pre-push", false},
-		{"bash -n scripts/git-hooks/commit-msg", false},
-		{"scripts/git-hooks/commit-msg /tmp/msg.txt", false},
-		{"git diff scripts/git-hooks", false},
-		{"git add scripts/git-hooks/commit-msg", false},
-		{"find . -name pre-push", false},
-		{"awk 'NR<5' scripts/git-hooks/pre-push", false},
-		{"sort scripts/git-hooks/commit-msg", false},
-		{"cp scripts/git-hooks/pre-push /tmp/pre-push.copy", false},
-		{`grep -n "push\|pre-push" README.md`, false},
-		{`grep -n "a\;pre-push" README.md`, false},
-		{"make check 2>&1 | tee /tmp/pre-push.log", false},
-	} {
-		t.Run(tc.cmd, func(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "guard-cases.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases := 0
+	for n, line := range strings.Split(string(data), "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		verdict, cmd, ok := strings.Cut(line, " ")
+		if !ok || (verdict != "A" && verdict != "B") {
+			t.Fatalf("guard-cases.txt:%d: want \"A <command>\" or \"B <command>\", got %q", n+1, line)
+		}
+		cases++
+		blocked := verdict == "B"
+		cmd = strings.NewReplacer("⏎", "\n", "⇥", "\t").Replace(cmd)
+		t.Run(line, func(t *testing.T) {
+			t.Parallel()
 			var input bytes.Buffer
 			enc := json.NewEncoder(&input)
 			enc.SetEscapeHTML(false)
-			if err := enc.Encode(map[string]any{"tool_name": "Bash", "tool_input": map[string]string{"command": tc.cmd}}); err != nil {
+			if err := enc.Encode(map[string]any{"tool_name": "Bash", "tool_input": map[string]string{"command": cmd}}); err != nil {
 				t.Fatal(err)
 			}
 			out, err := run(t, "", input.String(), nil, "bash", guard)
 			var exit *exec.ExitError
 			switch {
-			case tc.blocked && (!errors.As(err, &exit) || exit.ExitCode() != 2):
-				t.Fatalf("the guard lets a bypass of the git hooks through (err %v): %s", err, out)
-			case !tc.blocked && err != nil:
-				t.Fatalf("the guard blocks ordinary work: %s", out)
+			case blocked && (!errors.As(err, &exit) || exit.ExitCode() != 2):
+				t.Fatalf("guard-cases.txt:%d: the guard lets a bypass of the git hooks through (err %v): %s", n+1, err, out)
+			case !blocked && err != nil:
+				t.Fatalf("guard-cases.txt:%d: the guard blocks ordinary work: %s", n+1, out)
 			}
 		})
+	}
+	if cases < 300 {
+		t.Fatalf("guard-cases.txt: %d cases — the list is cut", cases)
 	}
 }
 
 // По первой строке /release собирает заметки версии; длина subject — в символах при любой локали.
+// Сообщение — файл целиком, как его получает хук: с комментариями редактора и пустыми строками.
 func TestCommitMsgHook(t *testing.T) {
 	hook := filepath.Join(repoRoot(t), "scripts", "git-hooks", "commit-msg")
 	long := strings.Repeat("я", 72)
-	const footer = "BREAKING CHANGE: NewServer возвращает ошибку — обработать её"
+	const footer = "\n\nBREAKING CHANGE: NewServer возвращает ошибку — обработать её\n"
 	for _, tc := range []struct {
-		head, body string
-		ok         bool
+		msg string
+		ok  bool
 	}{
-		{"feat(httpkit): дедлайн запроса", "", true},
-		{"fix: ключ ошибки логов — error", "", true},
-		{"chore(plan): план закрыт", "", true},
-		{"refactor(cachekit,natskit): общий хелпер", "", true},
-		{"fix(authnkit/session): ротация", "", true},
-		{"fix(gate): " + long, "", true},
-		{"feat(httpkit)!: NewServer с ошибкой", footer, true},
-		{"fix(pgkit): слова BREAKING CHANGE: не с начала строки", "в теле: BREAKING CHANGE: x", true},
-		{`Revert "fix(gate): pre-push проверяет пушимый коммит"`, "", true},
-		{"fixup! fix(gate): pre-push проверяет пушимый коммит", "", true},
-		{"squash! fix(gate): pre-push проверяет пушимый коммит", "", true},
-		{"update stuff", "", false},
-		{"meta(plan): план закрыт", "", false},
-		{"Fix(gate): тип с заглавной", "", false},
-		{"fix(gate):без пробела", "", false},
-		{"fix(gate): " + long + "я", "", false},
-		{"feat(httpkit)!: NewServer с ошибкой", "", false},
-		{"feat(httpkit): NewServer с ошибкой", footer, false},
-		{"Merge branch 'main' into feature", "", false},
-		{"", "", false},
+		{"feat(httpkit): дедлайн запроса\n", true},
+		{"fix: ключ ошибки логов — error\n\nтело\n", true},
+		{"chore(plan): план закрыт\n", true},
+		{"refactor(cachekit,natskit): общий хелпер\n", true},
+		{"fix(authnkit/session): ротация\n", true},
+		{"fix(gate): " + long + "\n", true},
+		{"fix(gate): " + long + "  \r\n", true},
+		{"feat(httpkit)!: NewServer с ошибкой" + footer, true},
+		{"fix(pgkit): слова BREAKING CHANGE: не с начала строки\n\nв теле: BREAKING CHANGE: x\n", true},
+		{"fix(gate): x\n\n# BREAKING CHANGE: в комментарии редактора\n", true},
+		{"\nfix(gate): subject после пустой строки\n", true},
+		{"# This is a combination of 2 commits.\n# This is the 1st commit message:\n\nfeat(x): первый\n\n# This is the commit message #2:\n\nfix(x): второй\n", true},
+		{"Revert \"fix(gate): pre-push проверяет пушимый коммит\"\n\nThis reverts commit abc.\n", true},
+		{"fixup! fix(gate): pre-push проверяет пушимый коммит\n", true},
+		{"squash! fix(gate): pre-push проверяет пушимый коммит\n", true},
+		{"update stuff\n", false},
+		{"meta(plan): план закрыт\n", false},
+		{"Fix(gate): тип с заглавной\n", false},
+		{"docs(README): scope с заглавной\n", false},
+		{"fix(gate):без пробела\n", false},
+		{"fix(gate):  subject с пробела\n", false},
+		{"fix(gate): " + long + "я\n", false},
+		{"feat(httpkit)!: NewServer с ошибкой\n\nтело без футера\n", false},
+		{"feat(httpkit): NewServer с ошибкой" + footer, false},
+		{"Merge branch 'main' into feature\n", false},
+		{"# только комментарии редактора\n", false},
+		{"\n", false},
 	} {
 		for _, locale := range []string{"C", "en_US.UTF-8"} {
-			t.Run(locale+"/"+tc.head, func(t *testing.T) {
-				msg := filepath.Join(t.TempDir(), "COMMIT_EDITMSG")
-				write(t, filepath.Dir(msg), map[string]string{"COMMIT_EDITMSG": tc.head + "\n\n" + tc.body + "\n"})
-				out, err := run(t, "", "", []string{"LC_ALL=" + locale}, hook, msg)
+			t.Run(locale+"/"+tc.msg, func(t *testing.T) {
+				dir := t.TempDir() // вне репо: идущий в нём rebase на исход не влияет
+				write(t, dir, map[string]string{"COMMIT_EDITMSG": tc.msg})
+				out, err := run(t, dir, "", []string{"LC_ALL=" + locale}, hook, filepath.Join(dir, "COMMIT_EDITMSG"))
 				if tc.ok != (err == nil) {
 					t.Fatalf("commit-msg accepted = %v, want %v: %s", err == nil, tc.ok, out)
 				}
 			})
 		}
+	}
+}
+
+// Перенос давнего коммита не по форме после конфликта (cherry-pick --continue зовёт хук с его
+// сообщением) проходит; новое сообщение не по форме — нет, и при идущем переносе тоже.
+func TestCommitMsgHookOnCherryPick(t *testing.T) {
+	hooks := filepath.Join(repoRoot(t), "scripts", "git-hooks")
+	repo := t.TempDir()
+	git := func(args ...string) (string, error) {
+		t.Helper()
+		args = append([]string{"-c", "user.name=t", "-c", "user.email=t@t", "-c", "core.editor=true", "-c", "core.hooksPath=" + hooks}, args...)
+		return run(t, repo, "", nil, "git", args...)
+	}
+	must := func(args ...string) {
+		t.Helper()
+		if out, err := git(args...); err != nil {
+			t.Fatalf("git %v: %v\n%s", args, err, out)
+		}
+	}
+	commit := func(file, content, msg string) {
+		t.Helper()
+		write(t, repo, map[string]string{file: content})
+		must("add", file)
+		// Давние коммиты сделаны до хука: здесь — мимо него.
+		if out, err := run(t, repo, "", nil, "git", "-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", msg); err != nil {
+			t.Fatalf("git commit: %v\n%s", err, out)
+		}
+	}
+	must("init", "-q", "-b", "main")
+	commit("f", "base\n", "first commit")
+	must("checkout", "-q", "-b", "old")
+	commit("f", "old\n", "wip давний коммит не по форме")
+	must("checkout", "-q", "main")
+	commit("f", "new\n", "fix(x): правка того же файла")
+
+	if out, err := git("cherry-pick", "old"); err == nil {
+		t.Fatalf("cherry-pick must stop at the conflict:\n%s", out)
+	}
+	write(t, repo, map[string]string{"f": "merged\n"})
+	must("add", "f")
+	if out, err := git("commit", "-q", "-m", "update stuff"); err == nil {
+		t.Fatalf("a new message that is not a Conventional Commit passes during cherry-pick:\n%s", out)
+	}
+	if out, err := git("cherry-pick", "--continue"); err != nil {
+		t.Fatalf("cherry-pick --continue of an old commit with its own message is refused: %v\n%s", err, out)
+	}
+
+	write(t, repo, map[string]string{"g": "x\n"})
+	must("add", "g")
+	if out, err := git("commit", "-q", "-m", "update stuff"); err == nil {
+		t.Fatalf("a new commit that is not a Conventional Commit passes:\n%s", out)
 	}
 }
 

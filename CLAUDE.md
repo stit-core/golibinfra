@@ -201,8 +201,9 @@ make-окружения вызывающего и с холодным кешем
 
 - **Conventional Commits**: `feat|fix|refactor|docs|test|chore` + `<type>(<scope>)?: <subject>`;
   breaking — `!` и футер `BREAKING CHANGE:`. Формат держит хук `commit-msg` (`scripts/git-hooks`):
-  subject ≤72 символов, `!` и футер — только вместе; сообщения самого git (`Revert "…"`,
-  `fixup!`/`squash!`) проходят, merge-коммит — нет.
+  scope — строчными, subject ≤72 символов, `!` и футер — только вместе; сообщения самого git
+  (`Revert "…"`, `fixup!`/`squash!`) и перенос коммита с его же сообщением (`cherry-pick --continue`)
+  проходят, merge-коммит — нет.
 - Линейная история; версия — тег `vX.Y.Z`. Совместимость между minor-версиями
   `v1` не гарантируется: breaking идёт **minor**'ом с `!` в коммите и строкой
   миграции в аннотации тега; patch — только фиксы без смены сигнатур, дефолтов,

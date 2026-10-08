@@ -361,16 +361,26 @@ Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-pus
 (`git push --no-verify`).
 
 Из сессии Claude Code удобные обходы блокируют deny `.claude/settings.json` (подстрока
-`--no-veri` где угодно в команде) и `.claude/hooks/guard-bash.sh`: `git commit -n` и `--no-veri…`
-(и флаг в кавычках), `core.hooksPath` в команде с git, по путям `scripts/git-hooks`, `pre-push` и
-`commit-msg` — всё, кроме чтения. Это барьер от случайного обхода, а не песочница. Guard не
-видит, в том числе: имя команды в кавычках и флаг, разорванный кавычками; код для интерпретатора
-(`bash -c`, `eval`, `| bash`, heredoc, `python3 -c`) и скрипт из файла; подстановки оболочки
-(`$G`, `$(…)`), glob и `xargs`; `chmod -R` и `find … -exec` с каталога выше хуков; алиасы и
-`include` конфига git, правку `.git/config` и снятие секции `core`; `git send-pack`; push из
-клона или worktree, где хуков нет; правку инструментами Edit и Write. Такой обход — правка гейта
-(`CLAUDE.md § Границы`). Поведение хуков, guard и самозащиты `make check` держит
-`scripts/gate_test.go`.
+`--no-veri` где угодно в команде) и `.claude/hooks/guard-bash.sh`. Guard отклоняет `git commit -n`
+и `--no-veri…` (и флаг в кавычках), `core.hooksPath` в команде с git и команду с путём
+`scripts/git-hooks`, `pre-push` или `commit-msg`, в которой не узнал чтение: запись
+перенаправлением, команды-писатели (`chmod`, `rm`, `mv`, `tee`, `cp` в хук) и «читатели» с опцией
+или программой, которая пишет или запускает (`sed -i` и скрипт с каталогом хуков, программа `awk`
+с `>`, `|` или `system`, `sort -o`, действия `find`, `git … --output`, `rg --pre`); `cp`, `sort`,
+`find` и `awk` со словом, которое раскроет оболочка (`$X`, `{a,b}`, glob), — тоже отказ. Формы,
+которые guard держит, — `scripts/testdata/guard-cases.txt` (`TestGuardBash`); цена — отказ на
+чтении командой вне его списка (`nl`, `od`, цикл `for`) и на `chmod +x` хука: читают `cat` и
+`sed -n`, право на запуск ставит `make hooks`.
+
+Это барьер от случайного обхода, а не песочница. Guard не видит, в том числе: имя `git` в кавычках
+и флаг, разорванный кавычками; код для интерпретатора (`bash -c`, `eval`, `| bash`, heredoc,
+`python3 -c`), скрипт из файла и команду, которую «читатель» исполняет из своих данных (`sed … e`);
+подстановки оболочки (`$G`, `$(…)`, и в двойных кавычках), glob и `xargs`; `chmod -R` и
+`find … -exec` с каталога выше хуков; алиасы, `include` и команды в конфиге git (`core.pager`),
+правку `.git/config` и снятие секции `core`; `git send-pack`; push из клона или worktree, где
+хуков нет; кавычку, открытую строкой выше, и маркер heredoc внутри кавычек; правку инструментами
+Edit и Write. Такой обход — правка гейта (`CLAUDE.md § Границы`). Поведение хуков, guard и
+самозащиты `make check` держит `scripts/gate_test.go`.
 
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),

@@ -8,11 +8,19 @@ set -euo pipefail
 # Под LC_ALL=C символ — байт: длину subject считаем без байтов-продолжений UTF-8, и предел в 72
 # символа не зависит от локали того, кто коммитит.
 export LC_ALL=C
-head=$(head -n 1 "$1" | sed 's/[[:space:]]*$//')
-conventional='^(feat|fix|refactor|docs|test|chore)(\([a-z0-9_/,.-]+\))?(!)?: (.+)$'
+# Первая строка — как её запишет git: без комментариев редактора и пустых строк сверху.
+head=$(git stripspace --strip-comments <"$1")
+head=${head%%$'\n'*}
+conventional='^(feat|fix|refactor|docs|test|chore)(\([a-z0-9_/,.-]+\))?(!)?: ([^[:space:]].*)$'
 by_git='^((Revert|Reapply) ".+"|(fixup|squash|amend)! .+)$'
 
 [[ $head =~ $by_git ]] && exit 0
+# Перенос коммита после конфликта (cherry-pick --continue, rebase --continue) зовёт хук с его же
+# сообщением: давний коммит не по форме переносится как есть, новое сообщение — проверяется.
+for picked in CHERRY_PICK_HEAD REBASE_HEAD; do
+	moved=$(git log -1 --format=%B "$picked" 2>/dev/null) || continue
+	[ -n "$head" ] && [ "${moved%%$'\n'*}" = "$head" ] && exit 0
+done
 why="первая строка не в формате"
 if [[ $head =~ $conventional ]]; then
 	bang=${BASH_REMATCH[3]}
@@ -24,7 +32,7 @@ if [[ $head =~ $conventional ]]; then
 	elif [ -n "$bang" ] && [ "$footer" = 0 ]; then
 		why="«!» без футера BREAKING CHANGE:"
 	elif [ -z "$bang" ] && [ "$footer" != 0 ]; then
-		why="футер BREAKING CHANGE: без «!» в первой строке"
+		why="строка с BREAKING CHANGE: в начале — футер, а «!» в первой строке нет"
 	else
 		exit 0
 	fi
@@ -33,7 +41,7 @@ fi
 cat >&2 <<EOF
 commit-msg: коммит не по Conventional Commits — $why
   формат:   <type>(<scope>)?!?: <subject>, subject — до 72 символов
-  типы:     feat, fix, refactor, docs, test, chore
+  типы:     feat, fix, refactor, docs, test, chore; scope — строчными: a-z, 0-9 и _ / , . -
   breaking: «!» перед двоеточием и футер «BREAKING CHANGE: <что изменилось и как мигрировать>»
   пример:   fix(pgkit): дедлайн миграций прерывает идущий оператор
   строка:   $head
