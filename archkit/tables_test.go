@@ -29,6 +29,7 @@ func TestOwnTables(t *testing.T) {
 		"only":               "SELECT id FROM ONLY customers;",
 		"cte":                "WITH c AS (SELECT id FROM customers) SELECT o.id FROM orders o JOIN c ON c.id = o.customer_id;",
 		"after another":      "SELECT id FROM orders WHERE id = $1;\n\n-- name: Owner :one\nSELECT email FROM customers WHERE id = $1;",
+		"alias named set":    "SELECT c.email FROM orders AS set, customers c WHERE c.id = set.customer_id;",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -151,6 +152,8 @@ func TestQueriedTables(t *testing.T) {
 		{"SELECT TRIM(LEADING 'x' FROM a), SUBSTRING(a FROM 2), EXTRACT(day FROM b) FROM t1", []string{"t1"}},
 		{"SELECT a FROM t1 WHERE a IS DISTINCT FROM b AND c IS NOT DISTINCT FROM d", []string{"t1"}},
 		{"SELECT a FROM t1; SELECT a, b FROM t2", []string{"t1", "t2"}},
+		{"SELECT a FROM t1 AS set, t2 WHERE set.id = t2.id", []string{"t1", "t2"}},
+		{"INSERT INTO t1 (a) SELECT a FROM t2 ON CONFLICT DO NOTHING RETURNING a, b", []string{"t1", "t2"}},
 		{"INSERT INTO t1 (a, b) SELECT a, b FROM t2 ON CONFLICT (a) DO UPDATE SET b = EXCLUDED.b, c = 1", []string{"t1", "t2"}},
 		{"SELECT 1", nil},
 	} {

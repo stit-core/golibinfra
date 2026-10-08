@@ -15,8 +15,9 @@ var (
 	// sqlToken — слово (с кавычками и схемой) или скобка, запятая, точка с запятой: остальное для
 	// поиска таблиц не нужно.
 	sqlToken = regexp.MustCompile(`"?\w+"?(?:\."?\w+"?)?|[(),;]`)
-	// fromEnds — предложения, которыми кончается список FROM.
-	fromEnds = []string{"where", "group", "having", "order", "limit", "offset", "returning", "union", "intersect", "except", "window", "for", "set"}
+	// fromEnds — слова, которыми кончается список FROM; все зарезервированы — псевдонимом таблицы
+	// такое слово не встанет. DO закрывает список перед ON CONFLICT … DO UPDATE SET a = 1, b = 2.
+	fromEnds = []string{"where", "group", "having", "order", "limit", "offset", "returning", "union", "intersect", "except", "window", "for", "do"}
 	// lockClauses — слова, после которых UPDATE — не оператор: FOR UPDATE, FOR NO KEY UPDATE, DO UPDATE.
 	lockClauses = []string{"for", "key", "do"}
 	sqlNoise    = regexp.MustCompile(`--[^\n]*|/\*[\s\S]*?\*/|'(?:[^']|'')*'`)
