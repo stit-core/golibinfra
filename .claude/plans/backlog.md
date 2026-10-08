@@ -18,3 +18,6 @@
 - **testkit-reaper-test-logger** — фикстуры testkit отдают жнецу testcontainers `tclog.TestLogger(t)` (`testkit/postgres.go:49`,
   nats, redis, minio): под `-count>1` контейнер прошлого прогона снимается логгером завершённого теста, `tzkit` `TestPgxInterop`
   паникует «Log in goroutine after … has completed». Триггер: прогоны с `-count>1` (stress, flaky) или падение в pre-push.
+- **guard-template-parity** — guard сессии (`.claude/hooks/guard-bash.sh`) не видит формы, которые закрыл guard шаблона: код для
+  интерпретатора (`bash -c`, `eval`, heredoc), имя `git` в кавычках, алиасы и `include` конфига git, запись в `.git/config`,
+  `git send-pack`; README § Гейт называет их. Триггер: повторный аудит угла 8 или общий guard двух репо.

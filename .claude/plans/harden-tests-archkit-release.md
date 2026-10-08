@@ -15,9 +15,8 @@ blocked-by: —
 - **Порядок.** После `harden-kits-contracts` (его Handoff и аннотация — здесь); программа — `audit-program.md` шаблона; находки и
   «Как повторить аудит» — `M/kits-audit/summary.md` (`M` = `/home/mm/.cache/stit-audit-program/`).
 - **archkit.** Источник — archtest шаблона `e2f3dd2`, потребитель — `repair-harness` S7 и AC9; материалы — `M/archkit/README.md`.
-- **Обвязка.** `/plan` шаблона после `repair-harness` S1 разошёлся с копией здесь (маршрут, накопитель handoff, pre-commit).
-- **Гейт сейчас:** матрица `M/kits-audit/tests-gate/gate_inject.py` — не пойман G04 (KGATE-08); pre-push зовёт
-  `scripts/gate-clean.sh` рабочего дерева; `commit-msg` нет; `/release` ищет breaking `grep '!:'`; версии тулов не сверяются.
+- **Гейт сейчас:** запреты, конфиг, хуки и guard держит `make check` (`scripts/gate_test.go`, `scripts/testdata/guard-cases.txt`);
+  матрица — `M/kits-audit/tests-gate/gate_inject.py` (G31 — с чистого ref, `run-all.sh` — с `ONLY=`), по одной — `M/gate/`.
 - **Правила шага:** доки кита — тем же коммитом; breaking — `!`, `BREAKING CHANGE:`, строка аннотации; без новых зависимостей.
 
 ## Не входит
@@ -54,21 +53,22 @@ blocked-by: —
 - [x] **AC7** — Шаблон берёт archkit без потерь: в его worktree через `replace` чистое дерево зелёное, инъекции 1b, 3b, 13, M,
   ADP b, c, g, h, i, k — FAIL из archkit, копия с module path форка — правила действуют. Проверка: кейсы `M/s12/inj.py`,
   `M/valb2/inj.py` в worktree шаблона → как сказано, протокол — `M/archkit/README.md`
-  - Подтверждено: шаблон с проводкой — сборка и `internal/archtest` зелёные, 10 инъекций → FAIL `TestLayout`; 144 кейса
-    валидатора B: 8 строже источника, «красный → зелёный» — одно его ложное срабатывание; форк и форк после prune зелёные
-- [ ] **AC8** — Гейт держит запреты и свой конфиг: `fmt.Print*`, `slog.Default`, `http.DefaultClient` и `:latest` в Go-коде
+  - Подтверждено: шаблон и форки зелёные, 10 инъекций → FAIL `TestLayout`; 144 кейса валидатора B — без потерь, 8 строже источника
+- [x] **AC8** — Гейт держит запреты и свой конфиг: `fmt.Print*`, `slog.Default`, `http.DefaultClient` и `:latest` в Go-коде
   краснят `make check` (G01); линтер, снятый из `enable` (G04), и чужая версия golangci-lint или govulncheck — отказ; коммит не по
   Conventional Commits не создаётся; `/release` берёт несовместимое из apidiff, env- и metric-diff. Проверка:
   `tests-gate/run-all.sh <rev> gate` → обязательные отказы пойманы, контроли зелёные; `git commit -m "update stuff"` → отказ хука
-- [ ] **AC9** — Push проверяет то, что пушит: правка `scripts/gate-clean.sh` в рабочем дереве гейт push не выключает; guard не
+  - Подтверждено: валидатор C (`1198e17`): матрица — 31 отказ, G00 и G23 зелёные; по одной — 14 из 14; `update stuff` → отказ
+- [x] **AC9** — Push проверяет то, что пушит: правка `scripts/gate-clean.sh` в рабочем дереве гейт push не выключает; guard не
   отказывает на чтении хуков. Проверка: `printf 'exit 0' > scripts/gate-clean.sh` без коммита, push HEAD с падающим тестом в bare
   → отказ; `M/hgd/guard_cases.py`, `M/val-hgd-B/guard_b.py` и `find -name pre-push`, `awk`/`sort`/`cp` из хука → 0 расхождений
+  - Подтверждено: валидатор C (`1198e17`): push красного HEAD → отказ; guard: чтение — 0 расхождений, запись — 0 из 56 форм
 - [ ] **AC10** — Доки совпадают с кодом: статика — 0 расхождений; ✗ ручной сверки закрыты; P7 HX01 назван в доке порядка хуков.
   Проверка: `api-docs/scripts/run-static.sh <rev>` → D3, D4, D6, D10 — 0, D7 — ERR только от заглушек; `httpkit-a/static.sh <rev>`
   → 0; пересчёт `api-docs/claims-*.md` и `httpkit-a/claims.md` → ✗ нет
-- [ ] **AC11** — Скилл `/plan` — одна копия с шаблоном. Проверка: `diff` `.claude/skills/plan/SKILL.md` и
-  `references/plan-template.md` с копиями шаблона → только строка про pre-commit, которую шаблон снимает по Handoff;
-  `make plan-check` → OK
+- [x] **AC11** — Скилл `/plan` — одна копия с шаблоном. Проверка: `diff` его `SKILL.md` и `references/plan-template.md` с копиями
+  шаблона, на который наложен `M/gate/template-plan-skill.patch` (`git apply --check`), → пусто; `make plan-check` → OK
+  - Подтверждено: `e2f3dd2` с патчем — пусто (без него — два фрагмента `SKILL.md`), его `internal/archtest` зелёный; plan-check OK
 - [ ] **AC12** — Все эксперименты «Как повторить аудит» на кандидате тега — «чисто» по критериям `M/kits-audit/summary.md`;
   открытых находок «п3» выше minor нет. Проверка: прогоны всех групп шести каталогов → таблица исходов в «Где мы сейчас»
 - [ ] **AC13** — Тег `v1.4.0` готов: аннотированный, с разделами Breaking, Поведение, Изменения, Гейт; каждая строка apidiff
@@ -97,15 +97,12 @@ blocked-by: —
 - [x] **S8** — archkit на шаблоне: проводка и инъекции в его worktree, правки archkit по итогу, Handoff — по проверенной проводке
   - Проверка: AC7 → выполнен · Закрывает: AC7 · Сделано: `850f9c3`; проводка — `M/archkit/template-wiring.patch` (`wire.py`)
 ### Гейт, обвязка, доки
-- [ ] **S9** — Запреты и конфиг гейта машиной: forbidigo, contextcheck после пробы, `:latest`, эталон линтеров, версии тулов, пути
-  гейта в «Сначала спросить» (KGATE-07, KGATE-08, KGATE-10)
-  - Проверка: `tests-gate/run-all.sh <rev> gate` → G01, G04 пойманы · Закрывает: AC8 · Зависит от: —
-- [ ] **S10** — Хуки и релиз: pre-push из пушимого коммита, `commit-msg`, `make release-diff` для `/release`, guard без ложных
-  отказов (KGATE-08, KGATE-09, бэклог `gate-hook-paths`)
-  - Проверка: AC8, AC9 → выполнены · Закрывает: AC8, AC9 · Зависит от: S9
-- [ ] **S11** — Скилл `/plan` и маршрут: одна копия с шаблоном, «Точка входа» CLAUDE.md — таблица «Маршрут задачи», специфика репо
-  — в `references/repo.md`
-  - Проверка: AC11 → выполнен · Закрывает: AC11 · Зависит от: —
+- [x] **S9** — Запреты и конфиг гейта машиной: forbidigo, `:latest`, эталон линтеров, версии тулов, пути гейта (KGATE-07/08/10)
+  - Проверка: `tests-gate/run-all.sh <rev> gate` → G01, G04 пойманы · Закрывает: AC8 · Сделано: `c3776f3`, `09a86d5` (шаг `lint`)
+- [x] **S10** — Хуки и релиз: pre-push по дереву коммита, `commit-msg`, `release-diff`, guard (KGATE-08/09, `gate-hook-paths`)
+  - Проверка: AC8, AC9 → выполнены · Закрывает: AC8, AC9 · Сделано: `ac89312`, фикс по валидатору C — `2f68bfd`
+- [x] **S11** — Скилл `/plan` — одна копия с шаблоном, CLAUDE.md — таблица «Маршрут задачи», специфика репо — `references/repo.md`
+  - Проверка: AC11 → выполнен · Закрывает: AC11 · Сделано: `d37016a`; патч шаблону — `M/gate/template-plan-skill.patch`
 - [ ] **S12** — Доки к коду: остаток KDOC-07, KDOC-09 без бюджета outbox, KDOC-10, KDOC-11, P7 HX01, корневые README и CLAUDE.md —
   к API партии; ✗ ручной сверки пересчитаны
   - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S1, S2, S6, S8, S10
@@ -121,34 +118,24 @@ blocked-by: —
 ## Решения
 - **Фиксы валидатора A** (с `94cb178`) — причины в телах коммитов: при `LOG_SILENT` ERROR логгеров без OTel-sink — в stderr; спан
   otelpgx — имя sqlc или операция; `Stop` telemetry — ⅔ бюджета; authnkit ленив; вне сверки сигналов httpkit — проза.
-- **archkit.** Кит без `Module`, конфига и сигналов: `archkit.Check(t, opts…)`, корень и module path — из `go.mod` (stdlib);
-  правила — семь проверок archtest шаблона (`TestInternalLayout`, `TestImportBoundaries`, `TestDomainRootIsTransportAgnostic`,
-  `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`, `TestNoCrossDomainIdentityClosure`, `TestQueriesUseOwnTables`), настройки
-  и известные нарушения — опции. Доверие корня домена пакету с I/O — отдельной `WithUncheckedPackages`, не `WithPurePackages`:
-  одна опция на оба смысла снимала проверку `pkg/policy` (B2 валидатора B); запись про запас — FAIL, и о пакете, которого корень
-  домена не импортирует (R3: иначе исключение включается с первым импортом, без решения). Правила читают то, что берёт сборка, —
-  и пакет по импорту из `testdata`, каталога на `.` или `_`, вложенного модуля, файл-ссылку (B1); неимпортированный код таких
-  каталогов правила слоёв не читают: в сборке его нет. Каталоги `WithInternalDirs` — над доменами: ai-gateway с `internal/gen` —
-  перенос в `pkg/` или известные нарушения. Против источника: строже — в заготовке аннотации, точнее и пределы —
-  `M/archkit/README.md`. Новое или более строгое правило — minor со строкой Breaking.
-- **Этапы в ветках.** archkit (S7–S8, `p3-archkit`) и гейт (S9–S11, `p3-gate`) шли параллельно в ветках (дирижёр): план правился
-  при слиянии, а не коммитами шагов, — шаблон и релиз не ждали; коммиты archkit сверх двух шагов — фиксы по отчёту валидатора B.
-- **Гейт.** forbidigo — `fmt.Print*`, `print`/`println`, `log.*`, `slog.Default` и функции пакета `slog`, `http.DefaultClient`,
-  `http.Get/Post/Head`; contextcheck — если проба без ложных, иначе причина здесь; `:latest` — проверка Go-кода шагом гейта.
-  Эталон линтеров и форматтеров — файл в `scripts/`, его сверка с `golangci-lint linters --json` — в шаге `lint` (G04); версии —
-  против пинов `Makefile`, ставит `make tools`; apidiff — пиненный через `make tools`, не в `go.mod`. Пути гейта (`Makefile`,
-  `scripts/`, `.golangci.yml`, `.claude/settings.json`, `.claude/hooks/`) — в «Сначала спросить».
-- **Хуки.** pre-push берёт `scripts/gate-clean.sh` из пушимого коммита: правка в дереве гейт не выключает, правка в коммите видна
-  в диффе. `commit-msg` — по образцу шаблона, `hooks-check` — оба хука. `make release-diff PREV=…` — apidiff по пакетам, diff
-  env-тегов и дефолтов (envdoc) и имён метрик; `/release` требует строку аннотации на каждую несовместимость.
-- **`/plan`.** Тело SKILL.md — общее: нужен ли план, решает таблица «Маршрут задачи» CLAUDE.md («Точка входа» golibinfra
-  становится ею), «в какой гейт и хук входит проверка — там же», накопитель handoff — «из профиля»; профиль golibinfra: pre-commit
-  и накопителя нет, Handoff — в аннотацию. `validate-plan.sh` — без накопителя: он нужен релизу образов шаблона. Сверка — с копией
-  шаблона на момент шага.
-- **Эксперименты и релиз.** S13 — агент, не писавший код партии; контракты сигналов (`expected-signals*.json`) — заново из доков
-  HEAD; инструменты — с поправками N4 валидатора A `harden-gate-defaults` (L3 через `make lint`, G21 по тексту отказа); правка
-  эксперимента под API — со смыслом, оригинал рядом. «Гейт» аннотации: `make gate-clean`, `make test-full`, `release-diff` против
-  v1.3.0, сборка шаблона через `replace` (и archkit на нём: инъекции AC7), `go test -race ./archkit/`, эксперименты S13.
+- **archkit.** Правила `archkit.Check` — семь проверок archtest шаблона (`TestInternalLayout`, `TestImportBoundaries`,
+  `TestDomainRootIsTransportAgnostic`, `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`, `TestNoCrossDomainIdentityClosure`,
+  `TestQueriesUseOwnTables`); настройки и известные нарушения — опции, доверие корня домена пакету с I/O — отдельной
+  `WithUncheckedPackages` (запись про запас — FAIL); `WithInternalDirs` — над доменами: ai-gateway с `internal/gen` — перенос в
+  `pkg/` или известные нарушения. Причины и пределы — тела фиксов, `archkit/README.md` и `M/archkit/README.md`.
+- **Этапы в ветках.** archkit и гейт шли в ветках параллельно (дирижёр: шаблон и релиз не ждали), план правился при слиянии;
+  коммиты сверх шагов — фиксы по отчётам валидаторов B и C, `09a86d5` — по финальному прогону исполнителя. Rebase гейта на
+  `2f99e7f` — без конфликтов и правок; в материалах его коммиты — `c0daf37`, `64a0834`, `4189a29`, `f4af223`, `1198e17`.
+- **Гейт и хуки.** Решения полным текстом — `M/gate/plan-patch.md` и тела коммитов. contextcheck не включён: проба — 30 замечаний,
+  ложные либо правка — смена API; `context.Background()` в обработчике держит ревью. pre-push сам ставит worktree на пушимый
+  коммит, а не берёт `scripts/gate-clean.sh` из него (отступление: до `a71b807` скрипт гейтит HEAD) — скрипт удалён. `commit-msg`
+  строже образца шаблона: длина subject — без байтов-продолжений UTF-8, `!` и футер `BREAKING CHANGE:` — только вместе (цена —
+  строка прозы, начатая с `BREAKING CHANGE: `, — футер). `release-diff` не видит labels и поведение — их несут `!` и футеры.
+- **Guard и `/plan`.** Команда с путём хука проходит, только если guard узнал чтение (цена — ложные отказы чтения, README § Гейт);
+  формы, закрытые guard шаблона, — бэклог `guard-template-parity`. `/plan` — текст шаблона `e2f3dd2`, кроме двух строк (Handoff);
+  профиль: pre-commit и накопителя нет, Handoff — в аннотацию, коммит плана — `chore(plan)` (`meta(plan)` хук отклоняет).
+- **Эксперименты.** Контракты сигналов (`expected-signals*.json`) — заново из доков HEAD; инструменты — с поправками N4 валидатора
+  A `harden-gate-defaults` (L3 через `make lint`, G21 по тексту отказа); правка эксперимента под API — со смыслом, оригинал рядом.
 
 ## Handoff
 **Шаблон, `repair-harness` S7 — bump v1.4.0** (места — по сборке шаблона `e2f3dd2` через `replace`; на bump — сверить сборкой):
@@ -194,12 +181,20 @@ blocked-by: —
   (`json.Unmarshal` в тип события): `user/usecase_test.go:145,383,510`, `verification/usecase_test.go:193,301`; хэшер —
   `&authntest.DeterministicHasher{}` (значением не собирается — 6 пакетов); свои `brokenHasher`, `countingHasher`, `failingAudit`
   снять (`testkit-failing-fakes`): `HashErr`, `VerifyCalls()`, `VerifyDummyCalls()`, `audittest.Recorder{LogErr: …}`.
-- **`/plan`.** Строка «Формат проверяет …» SKILL.md — из golibinfra, pre-commit — в `references/repo.md` шаблона: копии совпадают.
+- **`/plan`.** `M/gate/template-plan-skill.patch` (на `e2f3dd2`: `git apply --check`, `go test ./internal/archtest/` зелёный):
+  SKILL.md — строка «Формат проверяет …» из golibinfra и «отдельным коммитом плана (его вид — в профиле)» вместо `meta(plan)`,
+  `references/repo.md` — строка «Коммит плана без кода: `meta(plan)`»; после него `diff` SKILL.md и plan-template.md пуст.
+- **Гейт шаблона (находки, bump не держат).** `commit-msg`: `.{1,72}` под `LC_ALL=C` считает байты — русский subject длиннее 36
+  букв отклонён; `cherry-pick --continue` отклоняет давний коммит не по форме. Guard `e2f3dd2`: ложный отказ на `\|` и `\;` в
+  двойных кавычках (`grep -n "push\|pre-push"`); запись в хук «читателями» проходит — `cp … <хук> 2>/dev/null` (и `-f`, `--`,
+  комментарий), `sort -o`, `find … -fprint`, `awk` (`system`, `|`, `FILENAME`), `sed 'w <хук>'` и `e`, `git … --output=<хук>`,
+  экранированная кавычка (`echo don\'t; chmod -x <хук>`). Замер: `HOOK=<его guard> M/gate/guard_fix.py` — проходят 80 форм записи
+  из 111, исполнением (`guard_exec_fuzz.py 2500 11`) хук портят 459 команд. Образец — guard golibinfra и его `guard-cases.txt`.
 
 ## Где мы сейчас
-S1–S8 закрыты: S1–S6 — фиксы по валидатору A; archkit (S7–S8) принят валидатором B, перебазирован на первый этап и перепроверен на
-шаблоне. S9–S11 — в ветке `p3-gate` (план — при слиянии); дальше S12, S13, S14. S13: эксперименты под API (`M/exs8/orig/*.v130`,
-`*.s12`, `*.p2*`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках.
+S1–S11 закрыты: первый этап (S1–S6) — на перепроверке фиксов у валидатора A, archkit (S7–S8) принят валидатором B, гейт (S9–S11) —
+валидатором C и слит в `main`. Дальше S12, S13, S14. S13: эксперименты под API (`M/exs8/orig/*.v130`, `*.s12`, `*.p2*`), H15
+`[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках; apidiff пина — `M/kits-audit/api-docs/bin`.
 
 Заготовка аннотации v1.4.0 (первая половина — `harden-kits-contracts`; вторая — по шагам):
 - **Breaking.** config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`); ошибка `Load`: поле без тега (тег или
@@ -298,3 +293,8 @@ S1–S8 закрыты: S1–S6 — фиксы по валидатору A; arch
   параметром и кодом после `return`; dot-импорт `time` — и рядом с другим dot-импортом; пакет в корне модуля закрыт домену, `pkg`
   и platform; пакет в каталоге на точку и в каталоге-ссылке читается по импорту; Go-файл в каталоге на точку прямо под
   `internal/` — нарушение правила каталогов. Закрывается правкой или записью `WithKnownViolations` с ID находки.
+- **Гейт.** `make gate-clean` и `make test-full`; `make release-diff PREV=v1.3.0` — каждая несовместимая строка API, снятая
+  переменная и имя метрики — в Breaking, сменившийся дефолт — в Поведении; сборка шаблона через `replace` (и archkit на нём:
+  инъекции AC7), `go test -race ./archkit/`; эксперименты S13. Контрибьютору: гейт отказывает на `golangci-lint` или `govulncheck`
+  не из пина — `make tools` (ставит и apidiff); `make hooks` включает и `commit-msg` (Conventional Commits, `!` только с футером
+  `BREAKING CHANGE:`); forbidigo не пускает в киты `fmt.Print*`, `log`, `slog` по умолчанию и `http.DefaultClient`.
