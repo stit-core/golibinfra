@@ -46,10 +46,7 @@ func TestInternalLayout(t *testing.T) {
 
 	t.Run("without directories of the consumer", func(t *testing.T) {
 		t.Parallel()
-		got, err := inspect(fixture(t, nil), configure(WithPurePackages("internal/platform/identity", "pkg/policy"), WithRootLibs(rootLibs...)))
-		if err != nil {
-			t.Fatal(err)
-		}
+		got := failuresWith(t, nil, fixturePure, fixtureUnchecked, fixtureLibs)
 		requireFailures(t, got, []string{"internal/testkit/orderfix: " + whyLayout})
 	})
 }
@@ -340,6 +337,29 @@ func TestDomainRoot(t *testing.T) {
 			want: []string{"internal/platform/userbridge/bridge.go imports internal/domain/customer/delivery/http: " + whyLowLayer},
 		},
 		{
+			name:  "client in a package of the pure layers",
+			edits: edits{"pkg/policy/client.go": goSrc("policy", "net/http")},
+			want: []string{
+				"internal/domain/customer/policy.go imports pkg/policy: " + whyRoot + " (pkg/policy → net/http)",
+				"internal/domain/customer/usecase.go imports pkg/paging: " + whyRoot + " (pkg/paging → pkg/policy → net/http)",
+			},
+		},
+		{
+			name: "wrapper in a package of the pure layers",
+			edits: edits{
+				"pkg/client/client.go": goSrc("client", "net/http"),
+				"pkg/policy/client.go": goSrc("policy", mod+"/pkg/client"),
+			},
+			want: []string{
+				"internal/domain/customer/policy.go imports pkg/policy: " + whyRoot + " (pkg/policy → pkg/client → net/http)",
+				"internal/domain/customer/usecase.go imports pkg/paging: " + whyRoot + " (pkg/paging → pkg/policy → pkg/client → net/http)",
+			},
+		},
+		{
+			name:  "client in an unchecked package",
+			edits: edits{"internal/platform/identity/client.go": goSrc("identity", "net/http", "os")},
+		},
+		{
 			name:  "platform package over a kit with I/O",
 			edits: importing(mod + "/internal/platform/events"),
 			want: []string{root + " imports internal/platform/events: " + whyRoot +
@@ -382,30 +402,31 @@ func TestDomainRoot(t *testing.T) {
 
 	t.Run("without a root lib", func(t *testing.T) {
 		t.Parallel()
-		libs := []string{kit + "/clockkit", kit + "/logkit", kit + "/outboxkit", kit + "/pgkit", "go.uber.org/fx"}
-		got, err := inspect(fixture(t, nil), configure(
-			WithInternalDirs("internal/testkit"), WithPurePackages("internal/platform/identity", "pkg/policy"), WithRootLibs(libs...)))
-		if err != nil {
-			t.Fatal(err)
-		}
+		libs := WithRootLibs(kit+"/clockkit", kit+"/logkit", kit+"/outboxkit", kit+"/pgkit", "go.uber.org/fx")
+		got := failuresWith(t, nil, fixtureDirs, fixturePure, fixtureUnchecked, libs)
 		requireFailures(t, got, []string{"internal/domain/order/usecase.go imports " + kit + "/idkit: " + whyRoot})
 	})
 
-	// Пакет WithPurePackages корень видит, не заглядывая внутрь: без настройки identity фикстуры
-	// выдаёт свой импорт httpkit.
+	// Пакет WithUncheckedPackages корень видит, не заглядывая внутрь: без записи identity фикстуры
+	// выдаёт свой импорт httpkit каждому файлу корня, который её берёт, — и чистому слою.
+	t.Run("without unchecked packages", func(t *testing.T) {
+		t.Parallel()
+		chain := whyRoot + " (internal/platform/identity → " + kit + "/httpkit)"
+		requireFailures(t, failuresWith(t, nil, fixtureDirs, fixturePure, fixtureLibs), []string{
+			"internal/domain/customer/entity.go imports internal/platform/identity: " + chain,
+			"internal/domain/customer/policy.go imports internal/platform/identity: " + chain,
+			"internal/domain/customer/usecase.go imports internal/platform/identity: " + chain,
+			"internal/domain/order/usecase.go imports internal/platform/identity: " + chain,
+		})
+	})
+
+	// Чистым слоям пакет открывает только WithPurePackages: запись WithUncheckedPackages — не она.
 	t.Run("without pure packages", func(t *testing.T) {
 		t.Parallel()
-		got, err := inspect(fixture(t, nil), configure(WithInternalDirs("internal/testkit"), WithRootLibs(rootLibs...)))
-		if err != nil {
-			t.Fatal(err)
-		}
-		chain := whyRoot + " (internal/platform/identity → " + kit + "/httpkit)"
-		requireFailures(t, got, []string{
+		requireFailures(t, failuresWith(t, nil, fixtureDirs, fixtureUnchecked, fixtureLibs), []string{
 			"internal/domain/customer/entity.go imports internal/platform/identity: " + whyPure,
 			"internal/domain/customer/policy.go imports internal/platform/identity: " + whyPure,
 			"internal/domain/customer/policy.go imports pkg/policy: " + whyPure,
-			"internal/domain/customer/usecase.go imports internal/platform/identity: " + chain,
-			"internal/domain/order/usecase.go imports internal/platform/identity: " + chain,
 		})
 	})
 }

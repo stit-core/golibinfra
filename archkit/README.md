@@ -82,7 +82,7 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 | Каталоги `internal/` | Go-файл под `internal/` лежит в `internal/domain`, `internal/platform` или каталоге `WithInternalDirs`: вне них код не видят правила слоёв. Правило смотрит, где лежит код, а не что из него собрано, — и в `testdata`, каталоге на `.` или `_`, вложенном модуле |
 | Границы импортов | Не-тестовый код модуля импортирует пакеты модуля по таблице ниже |
 | Чистые слои | `entity.go`, `policy.go`, `dto.go`, `errors.go`, `events.go` корня домена видят stdlib без побочных эффектов и потоков (без `database/sql`, `net`, `os`, `syscall`, `io`, `bufio` и пакетов под ними; парсеры `net/mail`, `net/netip`, `net/url` — можно) и пакеты `WithPurePackages` |
-| Корень домена | Остальные файлы корня видят stdlib без I/O (без `database/sql`, `net`, `os`, `syscall` и пакетов под ними, кроме тех же парсеров), пакеты `WithRootLibs` и `WithPurePackages`, а из `pkg/` и `internal/platform/` — пакеты, которые сами видят только это; путь до I/O — в скобках отказа: `(pkg/wrap → internal/platform/probeio → net/http)` |
+| Корень домена | Файлы корня видят stdlib без I/O (без `database/sql`, `net`, `os`, `syscall` и пакетов под ними, кроме тех же парсеров), пакеты `WithRootLibs`, а из `pkg/` и `internal/platform/` — пакеты, которые сами видят только это, и пакеты `WithPurePackages` — на том же условии; путь до I/O — в скобках отказа: `(pkg/wrap → internal/platform/probeio → net/http)` |
 | Часы | Не-тестовый код домена не трогает `time.Now`, `Since`, `Until`, `After`, `AfterFunc`, `Tick`, `NewTimer`, `NewTicker`, `Sleep` (и под алиасом) и не dot-импортирует `time`: время — `clockkit.Clock` |
 | Порты между доменами | В `module/` нет функции, которая отдаёт значение чужого домена как порт без адаптера: `func(uc *user.Usecase) auth.Port { return uc }`, и в форме `(auth.Port, error)`, и с другими параметрами рядом |
 | Свои таблицы | Таблицу из `migrations/*.up.sql` запрашивает один домен (`infra/postgres/queries/*.sql`): `FROM`, `JOIN`, список через запятую, подзапрос, `INSERT`, `UPDATE`, `DELETE … USING` |
@@ -109,7 +109,8 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 | Опция | Значение |
 |---|---|
 | `WithRootLibs(pkgs…)` | Внешние пакеты, которые видит корень домена: порты и значения китов, DI. Путь импорта целиком — подпакет (`auditkit/pgstore` при `auditkit`) под запись не попадает |
-| `WithPurePackages(pkgs…)` | Пакеты модуля (путь от корня: `internal/platform/identity`), которые видят чистые слои. Корень домена видит их, не заглядывая в их импорты, — за чистоту такого пакета отвечает потребитель |
+| `WithPurePackages(pkgs…)` | Пакеты модуля (путь от корня: `pkg/policy`), которые видят чистые слои. Корень домена проверяет их импорты наравне с остальными пакетами `pkg/` и `internal/platform/` |
+| `WithUncheckedPackages(pkgs…)` | Исключение из правила корня: пакеты `pkg/` и `internal/platform/` (путь от корня: `internal/platform/identity`), в импорты которых правило не заглядывает. За чистоту такого пакета отвечает потребитель, машина её не держит. Запись о пакете, который чист и без неё, и запись мимо этих каталогов — отказ |
 | `WithInternalDirs(dirs…)` | Каталоги `internal/` сверх `domain` и `platform` (путь от корня: `internal/testkit`). Другая форма (`internal`, `testkit`, `internal/a/b`) — отказ |
 | `WithKnownViolations(map)` | Известные нарушения — см. ниже |
 
@@ -148,6 +149,7 @@ type Option func(*options)
 
 func WithRootLibs(pkgs ...string) Option
 func WithPurePackages(pkgs ...string) Option
+func WithUncheckedPackages(pkgs ...string) Option
 func WithInternalDirs(dirs ...string) Option
 func WithKnownViolations(known map[string]string) Option
 ```

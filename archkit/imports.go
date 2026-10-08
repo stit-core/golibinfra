@@ -19,7 +19,7 @@ const (
 	whyRootPorts   = "the domain root depends on ports, not on its own subpackages"
 	whyDelivery    = "delivery calls the usecase, not infra"
 
-	whyRoot = "the domain root sees stdlib without I/O, the WithRootLibs and WithPurePackages packages and those of pkg/ and internal/platform/ that see nothing else — transport, drivers and I/O go through ports"
+	whyRoot = "the domain root sees stdlib without I/O, the WithRootLibs packages and those packages of pkg/ and internal/platform/ that see nothing else — transport, drivers and I/O go through ports"
 	whyPure = "pure layers (entity.go, policy.go, dto.go, errors.go, events.go) see side-effect-free stdlib and the WithPurePackages packages only"
 )
 
@@ -133,12 +133,13 @@ func (t *tree) domainRoot() {
 }
 
 // ioChain — путь от импорта корня домена до пакета, который корню не виден; nil — импорт чист:
-// stdlib без I/O, пакет WithRootLibs или WithPurePackages, а пакет pkg/ и internal/platform/ —
-// когда чист каждый импорт его не-тестовых файлов. Прочие пакеты модуля держит importBoundaries.
+// stdlib без I/O, пакет WithRootLibs, а пакет pkg/ и internal/platform/ — когда чист каждый импорт
+// его не-тестовых файлов или потребитель назвал его в WithUncheckedPackages. Прочие пакеты модуля
+// держит importBoundaries.
 func (t *tree) ioChain(imp string) []string {
 	rel, inModule := t.inModule(imp)
 	switch {
-	case inModule && (!lowLayer(rel) || slices.Contains(t.opts.purePackages, rel)):
+	case inModule && (!lowLayer(rel) || slices.Contains(t.opts.unchecked, rel)):
 		return nil
 	case inModule:
 		return t.packageIOChain(rel)

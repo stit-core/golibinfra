@@ -36,14 +36,15 @@ var clean = sync.OnceValues(func() (fstest.MapFS, error) {
 // rootLibs — внешние пакеты, которые видит корень домена фикстуры.
 var rootLibs = []string{kit + "/clockkit", kit + "/idkit", kit + "/logkit", kit + "/outboxkit", kit + "/pgkit", "go.uber.org/fx"}
 
-// consumer — настройки потребителя фикстуры.
-func consumer() []Option {
-	return []Option{
-		WithInternalDirs("internal/testkit"),
-		WithPurePackages("internal/platform/identity", "pkg/policy"),
-		WithRootLibs(rootLibs...),
-	}
-}
+// Настройки потребителя фикстуры.
+var (
+	fixtureDirs      = WithInternalDirs("internal/testkit")
+	fixturePure      = WithPurePackages("internal/platform/identity", "pkg/policy")
+	fixtureUnchecked = WithUncheckedPackages("internal/platform/identity")
+	fixtureLibs      = WithRootLibs(rootLibs...)
+)
+
+func consumer() []Option { return []Option{fixtureDirs, fixturePure, fixtureUnchecked, fixtureLibs} }
 
 // edits — правки фикстуры: путь → содержимое, "" — файла нет.
 type edits map[string]string
@@ -76,7 +77,13 @@ func configure(opts ...Option) options {
 // failures — строки отказа по фикстуре с правками и настройками потребителя, дополненными opts.
 func failures(t *testing.T, e edits, opts ...Option) []string {
 	t.Helper()
-	got, err := inspect(fixture(t, e), configure(append(consumer(), opts...)...))
+	return failuresWith(t, e, append(consumer(), opts...)...)
+}
+
+// failuresWith — строки отказа по фикстуре с правками и ровно этими настройками.
+func failuresWith(t *testing.T, e edits, opts ...Option) []string {
+	t.Helper()
+	got, err := inspect(fixture(t, e), configure(opts...))
 	if err != nil {
 		t.Fatalf("inspect: %v", err)
 	}

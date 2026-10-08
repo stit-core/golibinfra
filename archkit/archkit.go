@@ -22,6 +22,7 @@ type Option func(*options)
 type options struct {
 	rootLibs     []string
 	purePackages []string
+	unchecked    []string
 	internalDirs []string
 	known        map[string]string
 }
@@ -32,10 +33,17 @@ func WithRootLibs(pkgs ...string) Option {
 	return func(o *options) { o.rootLibs = append(o.rootLibs, pkgs...) }
 }
 
-// WithPurePackages называет пакеты модуля (путь от его корня), которые видят чистые слои домена;
-// корень домена видит их, не заглядывая в их импорты.
+// WithPurePackages называет пакеты модуля (путь от его корня), которые видят чистые слои домена.
+// Корень домена проверяет их импорты, как у любого пакета pkg/ и internal/platform/.
 func WithPurePackages(pkgs ...string) Option {
 	return func(o *options) { o.purePackages = append(o.purePackages, pkgs...) }
+}
+
+// WithUncheckedPackages называет пакеты pkg/ и internal/platform/ (путь от корня модуля), в импорты
+// которых правило корня домена не заглядывает: за их чистоту отвечает потребитель, машина её не
+// держит. Запись о пакете, который чист и без неё, и запись мимо этих каталогов — отказ.
+func WithUncheckedPackages(pkgs ...string) Option {
+	return func(o *options) { o.unchecked = append(o.unchecked, pkgs...) }
 }
 
 // WithInternalDirs называет каталоги internal/ потребителя (путь от корня модуля) сверх
@@ -118,6 +126,11 @@ func inspect(fsys fs.FS, o options) ([]string, error) {
 			return nil, fmt.Errorf("WithInternalDirs(%q): a directory of internal/ is named from the module root, such as internal/testkit", dir)
 		}
 	}
+	for _, pkg := range o.unchecked {
+		if !lowLayer(pkg) {
+			return nil, fmt.Errorf("WithUncheckedPackages(%q): a package of pkg/ or internal/platform/ is named from the module root, such as internal/platform/identity", pkg)
+		}
+	}
 	t, err := load(fsys, o)
 	if err != nil {
 		return nil, err
@@ -129,6 +142,11 @@ func inspect(fsys fs.FS, o options) ([]string, error) {
 	for _, v := range t.found {
 		if _, known := o.known[v.what]; !known {
 			failures = append(failures, v.what+": "+v.why)
+		}
+	}
+	for _, pkg := range o.unchecked {
+		if t.packageIOChain(pkg) == nil {
+			failures = append(failures, fmt.Sprintf("unchecked package %q sees nothing the domain root does not: remove it from WithUncheckedPackages", pkg))
 		}
 	}
 	for _, what := range slices.Sorted(maps.Keys(o.known)) {

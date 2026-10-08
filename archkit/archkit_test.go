@@ -125,6 +125,54 @@ func TestBrokenTree(t *testing.T) {
 	})
 }
 
+// Запись WithUncheckedPackages — исключение из правила корня: лишняя запись и запись мимо pkg/ и
+// internal/platform/ — отказ.
+func TestUncheckedPackages(t *testing.T) {
+	t.Parallel()
+	stale := func(pkg string) []string {
+		return []string{`unchecked package "` + pkg + `" sees nothing the domain root does not: remove it from WithUncheckedPackages`}
+	}
+	runCases(t, []ruleCase{
+		{
+			name:  "package with I/O under the domain root",
+			edits: edits{"pkg/client/client.go": goSrc("client", "net/http"), "internal/domain/order/remote.go": goSrc("order", mod+"/pkg/client")},
+			opts:  []Option{WithUncheckedPackages("pkg/client")},
+		},
+		{
+			name: "package without I/O",
+			opts: []Option{WithUncheckedPackages("pkg/policy")},
+			want: stale("pkg/policy"),
+		},
+		{
+			name: "package that is not there",
+			opts: []Option{WithUncheckedPackages("internal/platform/ghost")},
+			want: stale("internal/platform/ghost"),
+		},
+		{
+			name:  "package over another unchecked one",
+			edits: edits{"pkg/caller/caller.go": goSrc("caller", "context", mod+"/internal/platform/identity")},
+			opts:  []Option{WithUncheckedPackages("pkg/caller")},
+			want:  stale("pkg/caller"),
+		},
+		{
+			name:  "violations and the entry of no use together",
+			edits: edits{crossref: goSrc("order", domains+"/customer")},
+			opts:  []Option{WithUncheckedPackages("pkg/paging")},
+			want:  append([]string{crossrefWhat + ": " + whyCrossDomain}, stale("pkg/paging")...),
+		},
+	})
+
+	for _, pkg := range []string{"identity", "internal/domain/order", "internal/testkit/orderfix", "cmd/api", "internal", "pkgs/policy", ""} {
+		t.Run("form "+pkg, func(t *testing.T) {
+			t.Parallel()
+			got, err := inspect(fixture(t, nil), configure(append(consumer(), WithUncheckedPackages(pkg))...))
+			if want := fmt.Sprintf("WithUncheckedPackages(%q): a package of pkg/ or internal/platform/ is named from the module root, such as internal/platform/identity", pkg); err == nil || err.Error() != want {
+				t.Fatalf("inspect = %q, %v; want the error %q", got, err, want)
+			}
+		})
+	}
+}
+
 func TestInternalDirsOption(t *testing.T) {
 	t.Parallel()
 	for _, dir := range []string{"internal", "internal/", "testkit", "internal/testkit/orderfix", "pkg/testkit", ""} {
