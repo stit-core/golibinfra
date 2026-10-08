@@ -161,8 +161,12 @@ func (t *tree) add(what, why string) {
 	t.found = append(t.found, violation{what: what, why: why})
 }
 
-// inModule — путь пакета модуля от его корня: example.org/shop/pkg/policy → "pkg/policy", true.
+// inModule — путь пакета модуля от его корня: example.org/shop/pkg/policy → "pkg/policy", true;
+// пакет в самом корне — ".".
 func (t *tree) inModule(imp string) (string, bool) {
+	if imp == t.module {
+		return ".", true
+	}
 	return strings.CutPrefix(imp, t.module+"/")
 }
 

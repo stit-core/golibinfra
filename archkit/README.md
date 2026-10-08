@@ -92,7 +92,7 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 |---|---|
 | любой не-тестовый код → пакет `mocks` | `mocks are for tests only` |
 | `internal/platform`, `pkg` → всё, кроме них самих | `platform and pkg lie below the domains: they import only platform and pkg` |
-| домен → пакет модуля вне доменов, `platform` и `pkg`: `cmd`, каталог `WithInternalDirs` | `besides domains, a domain imports only platform and pkg: …` |
+| домен → пакет модуля вне доменов, `platform` и `pkg`: `cmd`, каталог `WithInternalDirs`, пакет в корне модуля (`.`) | `besides domains, a domain imports only platform and pkg: …` |
 | кто-либо, кроме `module/` домена и `cmd/migrate`, → `infra/outbox` домена | `a domain outbox is mounted by its own module/ and migrated by cmd/migrate only` |
 | кто-либо, кроме `infra/postgres` домена, → его `infra/postgres/db` | `sqlc types stay inside the domain's infra/postgres` |
 | домен, кроме `module/`, → другой домен | `another domain is reached through a port and an adapter in module/` |

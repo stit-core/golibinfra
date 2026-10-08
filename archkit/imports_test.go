@@ -132,6 +132,18 @@ func TestImportBoundaries(t *testing.T) {
 			want:  []string{"internal/domain/order/infra/postgres/gen.go imports tools/gen: " + whyBridge},
 		},
 		{
+			name: "domain and pkg import the package of the module root",
+			edits: edits{
+				"bridge.go": goSrc("shop", domains+"/customer", domains+"/order/infra/postgres"),
+				"internal/domain/order/infra/postgres/bridge.go": goSrc("postgres", mod),
+				"pkg/policy/bridge.go":                           goSrc("policy", mod),
+			},
+			want: []string{
+				"internal/domain/order/infra/postgres/bridge.go imports .: " + whyBridge,
+				"pkg/policy/bridge.go imports .: " + whyLowLayer,
+			},
+		},
+		{
 			name: "cmd and directories of the consumer import anything",
 			edits: edits{
 				"cmd/worker/main.go":                goSrc("main", domains+"/order/infra/postgres", domains+"/order/module", mod+"/internal/testkit/orderfix"),
