@@ -32,7 +32,8 @@ import (
 
 func TestLayout(t *testing.T) {
 	t.Parallel()
-	archkit.Check(t,
+	archkit.Check(
+		t,
 		archkit.WithInternalDirs("internal/archtest", "internal/testkit"),
 		archkit.WithPurePackages("internal/platform/identity", "pkg/policy"),
 		archkit.WithRootLibs(
