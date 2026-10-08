@@ -63,6 +63,8 @@ make test         # быстрый цикл: unit -short -race, без конт�
 вызывать по отдельности: `make lint`, `make test-full`, …; подмножество пакетов
 для них — `PKGS=./<kit>/...`, `check` его не видит); есть ещё `make coverage`,
 `make bench`, `make fuzz` и `make test-timing` (timing-тест logkit, вне гейта).
+С `golangci-lint` или `govulncheck` не той версии, что пин `Makefile`, шаги гейта отказывают —
+`make tools`; набор линтеров `.golangci.yml` сверяется с эталоном `scripts/linters.txt`.
 
 - Новый kit → собственный `README.md` кита (+ `docs/` у сложного), строка-индекс
   в `README.md § Пакеты` и, если нужны test-хелперы, `testkit/<name>test`.
@@ -72,6 +74,8 @@ make test         # быстрый цикл: unit -short -race, без конт�
   дефолты в обе стороны.
 - Багфикс → регрессионный тест в том же PR; новый `Module` → fx-тест
   (`fx.ValidateApp`).
+- Лог — через `logkit.Logger`, исходящий HTTP — `httpclient` или клиент с таймаутом: `fmt.Print*`,
+  пакет `log`, `slog` с логгером по умолчанию и `http.DefaultClient` в коде китов lint не пускает.
 - **Conventional Commits** — `<type>(<scope>)?: <subject>`, subject ≤72. Типы:
   `feat`, `fix`, `refactor`, `docs`, `test`, `chore`; breaking — `!` и футер
   `BREAKING CHANGE:`. Пример: `feat(httpkit)!: NewServer принимает ServerOption`.

@@ -12,6 +12,7 @@ linters:
     - errcheck
     - errname
     - errorlint
+    - forbidigo
     - gocritic
     - gosec
     - govet
@@ -33,6 +34,23 @@ linters:
       errorf: true
       asserts: true
       comparison: true
+    forbidigo:
+      analyze-types: true
+      forbid:
+        - pattern: '^fmt\.Print(f|ln)?$'
+          pkg: '^fmt$'
+          msg: "log through logkit.Logger: it redacts and carries trace_id and request_id"
+        - pattern: '^(print|println)$'
+          msg: "log through logkit.Logger: it redacts and carries trace_id and request_id"
+        - pattern: '^log\.'
+          pkg: '^log$'
+          msg: "log through logkit.Logger: it redacts and carries trace_id and request_id"
+        - pattern: '^slog\.(Default|SetDefault|With|Log|LogAttrs|(Debug|Info|Warn|Error)(Context)?)$'
+          pkg: '^log/slog$'
+          msg: "the default slog logger bypasses logkit: take logkit.Logger as a dependency"
+        - pattern: '^http\.(DefaultClient|Get|Head|Post|PostForm)$'
+          pkg: '^net/http$'
+          msg: "http.DefaultClient has no timeout: use httpclient or an http.Client with a Timeout"
     nolintlint:
       require-explanation: true
       require-specific: true
@@ -55,7 +73,12 @@ linters:
           - gosec
           - noctx
           - bodyclose
+          - forbidigo
         path: _test\.go
+      # Инструменты гейта печатают свой отчёт в stdout — это их вывод, а не лог.
+      - linters:
+          - forbidigo
+        path: ^scripts/
     paths:
       - third_party$
       - builtin$

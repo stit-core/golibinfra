@@ -1,9 +1,16 @@
 GO      ?= go
 PKGS    ?= ./...
-GOLANGCI_LINT_VERSION ?= v2.12.2
-GOVULNCHECK_VERSION   ?= v1.8.0
 COVERPROFILE          ?= coverage.out
 FUZZTIME              ?= 10s
+
+# Версии тулов гейта — константы: окружение и командная строка их не меняют. Чужая версия молча
+# меняет вердикт, поэтому шаг сверяет с пином бинарь из PATH — по его build info, не запуская.
+override GOLANGCI_LINT_VERSION := v2.12.2
+override GOVULNCHECK_VERSION   := v1.8.0
+override pinned = @go version -m "$$(command -v $(1))" 2>/dev/null | \
+	awk -v mod=$(2) -v ver=$(3) '$$1 == "mod" && $$2 == mod && $$3 == ver { ok = 1 } END { exit !ok }' || \
+	{ echo "FAIL: $(1) ($$(command -v $(1) || echo 'нет в PATH')) — не $(3): пиненную версию ставит make tools"; exit 1; }
+override golangci_pinned = $(call pinned,golangci-lint,github.com/golangci/golangci-lint/v2,$(GOLANGCI_LINT_VERSION))
 
 # Кеш golangci-lint — свой у каждого checkout'а: ключ кеша — содержимое пакета, а замечание
 # хранит путь checkout'а, где его нашли первым, поэтому общий кеш судит по чужим файлам.
@@ -64,16 +71,19 @@ hooks-check: ## pre-push активен: git берёт хуки из scripts/gi
 	echo "OK: pre-push активен (scripts/git-hooks)"
 
 fmt: ## Форматирование (gofumpt через golangci-lint)
+	$(golangci_pinned)
 	golangci-lint fmt $(PKGS)
 
 fmt-check: ## Проверка форматирования без записи
+	$(golangci_pinned)
 	golangci-lint fmt --diff $(PKGS)
 
 vet: ## go vet
 	$(GO) vet $(PKGS)
 
-lint: ## golangci-lint (.golangci.yml)
-	golangci-lint run $(PKGS)
+lint: ## golangci-lint (.golangci.yml): схема конфига, набор линтеров по эталону scripts/linters.txt, прогон
+	$(golangci_pinned)
+	scripts/lint.sh $(PKGS)
 
 test: ## Быстрый цикл: unit-тесты -short -race, без контейнеров (не гейт)
 	$(GO) test -short -race -count=1 $(PKGS)
@@ -91,6 +101,7 @@ tidy-check: ## go.mod/go.sum синхронны с кодом
 	$(GO) mod tidy -diff
 
 vuln: ## govulncheck по всем пакетам
+	$(call pinned,govulncheck,golang.org/x/vuln,$(GOVULNCHECK_VERSION))
 	govulncheck $(PKGS)
 
 plan-check: ## Формат планов .claude/plans/ (A=--summary — сводка активных планов)

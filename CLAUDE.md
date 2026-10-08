@@ -56,6 +56,11 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 (`hooks-check`). Перед тегом — `make gate-clean`: он ловит файлы, которые есть локально,
 но не в git, и гоняет гейт без make-окружения вызывающего и с холодным кешем lint.
 
+`fmt-check`, `lint` и `vuln` отказывают, если `golangci-lint` или `govulncheck` в PATH — не версии
+пина `Makefile` (ставит `make tools`). `make lint` до прогона проверяет схему `.golangci.yml` и
+сверяет набор включённых линтеров и форматтеров с эталоном `scripts/linters.txt`: линтер, снятый
+из `enable`, — отказ.
+
 ## Карта пакетов
 
 Полный список — `README.md § Пакеты`. Назначение, конфиг и эмитимые сигналы
@@ -225,17 +230,23 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - Смена конвенции имён метрик (`bizmetric`, `biz_*`) — на неё опираются все сервисы.
 - Новая зависимость в `go.mod` — она уезжает в граф каждого потребителя.
 - Удаление кита или смена его границ — breaking для потребителей.
+- Правка гейта, после которой он проверяет меньше: `Makefile`, `scripts/`, `.golangci.yml`,
+  `.claude/settings.json`, `.claude/hooks/` — снятый шаг, линтер или запрет виден только в диффе.
 
 ### Не делать
-- `:latest` в примерах и тестах: тег плавает, и тест перестаёт быть воспроизводимым.
+- `:latest` в примерах и тестах: тег плавает, и тест перестаёт быть воспроизводимым (в Go-коде
+  ловит `TestImageTagsArePinned`, `testkit`).
 - `fmt.Print*` / `slog.Default()` в production-коде: лог идёт только через
-  `logkit.Logger`, иначе теряет redact, `trace_id`/`request_id` и OTel log-bridge.
+  `logkit.Logger`, иначе теряет redact, `trace_id`/`request_id` и OTel log-bridge. Ловит forbidigo
+  — вместе с `print`/`println`, пакетом `log` и функциями `slog` с логгером по умолчанию; тесты и
+  инструменты `scripts/` — вне запрета.
 - Product-specific логика: golibinfra — общая lib, доменное живёт в сервис-репо.
   Исключения — `hubkit` (SDK хаба) и `amocrmkit`; их выносят в отдельные модули, когда
   появляется второй потребитель вне stit-core или конфликт версий зависимостей у потребителя.
 - `http.DefaultClient` без таймаута и `context.Background()` в обработчике, где
   доступен контекст запроса: первый вешает вызов без предела, второй теряет отмену,
-  дедлайн и трейс запроса.
+  дедлайн и трейс запроса. Первое ловит forbidigo (и `http.Get`/`Head`/`Post`/`PostForm`), второе
+  держит ревью.
 - Обходить хуки и гейт: `--no-verify`, `git commit -n`, смена `core.hooksPath`, запись в хук
   (`scripts/git-hooks` — только чтение) — из сессии Claude их блокируют `permissions.deny` и хук
   `.claude/hooks/guard-bash.sh` (`.claude/settings.json`); красный гейт чинят, а не обходят.

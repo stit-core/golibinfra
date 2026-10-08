@@ -341,6 +341,14 @@ makefile (`-f`, в том числе `Makefile` другого каталога)
 переопределяет рецепты самого гейта, — уже его правка. Кеш golangci-lint —
 свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
 
+Версии `golangci-lint` и `govulncheck` — пины `Makefile`: шаги `fmt-check`, `lint` и `vuln`
+сверяют с ними бинарь из PATH и на другой версии отказывают (ставит `make tools`). `make lint` до
+прогона проверяет схему `.golangci.yml` и набор включённых линтеров и форматтеров по эталону
+`scripts/linters.txt` — линтер, снятый из `enable`, не проходит. В коде вне тестов и `scripts/`
+forbidigo не пускает `fmt.Print*`, `print`/`println`, пакет `log`, функции `slog` с логгером по
+умолчанию, `http.DefaultClient` и `http.Get`/`Head`/`Post`/`PostForm`; образ с тегом `:latest` в
+Go-коде ловит тест `testkit` (`TestImageTagsArePinned`).
+
 Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь
 `make check` на каждом пушимом коммите в свежем worktree, как `make gate-clean`, — без
 make-окружения вызывающего, незакоммиченных правок и gitignored-файлов; без активного

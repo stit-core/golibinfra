@@ -1,0 +1,26 @@
+# Эталон гейта: линтеры и форматтеры, которые включает .golangci.yml. make lint сверяет его
+# с ответом golangci-lint: линтер, снятый из enable, в отчёте «0 issues» следа не оставляет.
+# Правится вместе с .golangci.yml.
+bodyclose
+copyloopvar
+errcheck
+errname
+errorlint
+forbidigo
+gocritic
+gofumpt
+gosec
+govet
+ineffassign
+misspell
+nilerr
+noctx
+nolintlint
+perfsprint
+prealloc
+revive
+sqlclosecheck
+staticcheck
+unconvert
+unused
+usetesting
