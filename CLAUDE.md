@@ -82,6 +82,8 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
   `authnkit/session` + `session/pgstore`), `oidckit` (OIDC BFF),
   `hubkit` (SDK хаба stit: sso/issuer/client/sync/projection/hubclaims), `anthropickit`
   (клиент Anthropic с `Usage`+`Cost`), `amocrmkit` (транспорт к amoCRM).
+- **Раскладка сервиса:** `archkit` (правила `internal/domain/<d>`, `internal/platform` и `pkg` одним
+  вызовом из теста потребителя — `archkit.Check`; настройки и известные нарушения — его опции).
 - **Тесты:** `testkit` (testcontainers, лесенка миграций `MigrationLadder`) + сабпакеты
   `testkit/<name>test`
   (`anthropictest`, `audittest`, `authntest`, `bruteforcetest`, `cachetest`, `grpctest`,
