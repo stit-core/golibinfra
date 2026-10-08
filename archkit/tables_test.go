@@ -96,6 +96,10 @@ HAVING count(*) > 1;
 			edits: edits{orderQueries: `-- name: Noise :one
 -- FROM customers
 SELECT id /* JOIN customers c */ FROM orders WHERE note = 'FROM customers' OR note = 'it''s FROM customers';
+
+-- name: Inline :one
+SELECT id FROM orders -- JOIN customers c ON c.id = orders.customer_id
+WHERE id = $1;
 `},
 		},
 		{
@@ -155,6 +159,7 @@ func TestQueriedTables(t *testing.T) {
 		{"SELECT a FROM t1 AS set, t2 WHERE set.id = t2.id", []string{"t1", "t2"}},
 		{"INSERT INTO t1 (a) SELECT a FROM t2 ON CONFLICT DO NOTHING RETURNING a, b", []string{"t1", "t2"}},
 		{"INSERT INTO t1 (a, b) SELECT a, b FROM t2 ON CONFLICT (a) DO UPDATE SET b = EXCLUDED.b, c = 1", []string{"t1", "t2"}},
+		{"SELECT a FROM t1) x JOIN t2 ON true", []string{"t1", "t2"}},
 		{"SELECT 1", nil},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {

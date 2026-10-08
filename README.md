@@ -84,7 +84,7 @@ go mod tidy
   даёт caller, `NewConfig` валидирует и падает на старте.
 - **fx-first.** Кит с конфигом или ресурсом экспортирует `Module` для проводки (у
   хранилищ китов — в сабпакете `pgstore`); хелперы без состояния (`ptrkit`, `mapkit`,
-  `idkit`, `bizmetric`) и `healthkit` (`ProvideProbe`) модуля не имеют.
+  `idkit`, `bizmetric`, `archkit`) и `healthkit` (`ProvideProbe`) модуля не имеют.
 - **Observability-by-default.** Все компоненты с I/O инструментированы OTel.
 - **Безопасные дефолты.** Cookie `Secure`, обязательный `aud` у SSO (`hubkit/sso`,
   `oidckit`), таймауты у каждого исходящего вызова, retry только идемпотентных запросов.

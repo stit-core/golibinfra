@@ -199,6 +199,8 @@ var reader = func(uc *cust.Usecase) any { return uc }
 	paired  = func(uc *customer.Usecase) (order.CustomerReader, *order.Order) { return uc, nil }
 	other   = func(uc *customer.Usecase, r order.CustomerReader) order.CustomerReader { return r }
 	local   = func(uc *customer.Usecase) order.CustomerReader { return reader }
+	void    = func(uc *customer.Usecase) { _ = uc }
+	bare    = func(uc *customer.Usecase) { return }
 	logged  = func(uc *customer.Usecase) order.CustomerReader {
 		ready()
 		return uc

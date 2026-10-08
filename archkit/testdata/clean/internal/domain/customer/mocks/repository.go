@@ -2,10 +2,41 @@
 
 package mocks
 
-import "github.com/stretchr/testify/mock"
+import (
+	"context"
+	"time"
 
-// MockRepository — мок порта Repository.
+	"github.com/stretchr/testify/mock"
+
+	"example.org/shop/internal/domain/customer"
+	"example.org/shop/pkg/paging"
+)
+
+// MockRepository — мок порта customer.Repository.
 type MockRepository struct{ mock.Mock }
 
 // NewMockRepository — мок с проверкой ожиданий в конце теста.
-func NewMockRepository(t interface{ Cleanup(func()) }) *MockRepository { return &MockRepository{} }
+func NewMockRepository(t interface {
+	mock.TestingT
+	Cleanup(func())
+},
+) *MockRepository {
+	m := &MockRepository{}
+	m.Test(t)
+	t.Cleanup(func() { m.AssertExpectations(t) })
+	return m
+}
+
+// Get отдаёт покупателя из ожидания.
+func (m *MockRepository) Get(ctx context.Context, id string) (*customer.Customer, error) {
+	args := m.Called(ctx, id)
+	c, _ := args.Get(0).(*customer.Customer)
+	return c, args.Error(1)
+}
+
+// List отдаёт страницу покупателей из ожидания.
+func (m *MockRepository) List(ctx context.Context, page paging.Page, since time.Time) ([]*customer.Customer, error) {
+	args := m.Called(ctx, page, since)
+	cs, _ := args.Get(0).([]*customer.Customer)
+	return cs, args.Error(1)
+}

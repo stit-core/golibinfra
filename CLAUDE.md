@@ -142,7 +142,7 @@ Docker и сеть (govulncheck). Гейт всегда проверяет `./..
 - **gofumpt + golangci-lint** (`.golangci.yml`).
 - **fx-first.** Кит с конфигом или ресурсом отдаёт `Module` (`fx.Option`; у хранилищ —
   в `pgstore`, дополнительные — `MigrateModule`, `FactoryModule`); консьюмер собирает
-  `App` из них. Хелперы без состояния (`ptrkit`, `mapkit`, `idkit`, `bizmetric`) и
+  `App` из них. Хелперы без состояния (`ptrkit`, `mapkit`, `idkit`, `bizmetric`, `archkit`) и
   `healthkit` (`ProvideProbe`) модуля не имеют. Прямой `New*()` без fx допустим, но менее
   идиоматичен.
 - **Одна форма API.** Регистрация конструктора в fx-группу — `Provide<Thing>(ctor, anns…)`

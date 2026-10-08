@@ -57,6 +57,15 @@ func TestKnownViolations(t *testing.T) {
 			},
 		},
 		{
+			name:  "entry that is the beginning of a violation",
+			edits: edits{crossref: goSrc("order", domains+"/customer/delivery/http")},
+			opts:  []Option{WithKnownViolations(map[string]string{crossrefWhat: "ADP-02"})},
+			want: []string{
+				crossrefWhat + "/delivery/http: " + whyCrossDomain,
+				`known violation "` + crossrefWhat + `" (ADP-02) matches no violation: remove it`,
+			},
+		},
+		{
 			name:  "entry without a finding ID",
 			edits: violation,
 			opts:  []Option{WithKnownViolations(map[string]string{crossrefWhat: "TODO"})},
