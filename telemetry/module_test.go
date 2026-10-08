@@ -185,6 +185,73 @@ func TestModule_StopWithCollectorDownIsBestEffort(t *testing.T) {
 	}
 }
 
+// Молчащий коллектор (соединение принято, ответа нет) держит финальный экспорт каждого сигнала до
+// его дедлайна: остановка укладывается в бюджет и не возвращает ошибку — хук, дотянувший до
+// дедлайна fx, был бы ошибкой остановки и кодом выхода 1.
+func TestModule_StopWithSilentCollectorFitsBudget(t *testing.T) {
+	restoreGlobals(t)
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+	held := make(chan net.Conn, 16)
+	go func() {
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			held <- c
+		}
+	}()
+	t.Cleanup(func() {
+		for len(held) > 0 {
+			_ = (<-held).Close()
+		}
+	})
+	cfg := Config{
+		ServiceName:     "svc",
+		OTLPEndpoint:    "http://" + ln.Addr().String(),
+		SampleRatio:     1,
+		ExportTimeout:   10 * time.Second,
+		TraceBatchDelay: time.Hour,
+		MetricInterval:  time.Hour,
+		LogBatchDelay:   time.Hour,
+	}
+
+	stderr := captureStream(t, &os.Stderr)
+	var providers *Providers
+	app := fx.New(fx.NopLogger, fx.Supply(cfg, logkit.Config{Level: "info", Silent: true}), Module, fx.Populate(&providers))
+	if err := app.Start(t.Context()); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	// У каждого сигнала есть что экспортировать: все три шага остановки упираются в коллектор.
+	_, span := otel.Tracer("test").Start(context.Background(), "job")
+	span.End()
+	counter, err := otel.Meter("test").Int64Counter("jobs_total")
+	if err != nil {
+		t.Fatalf("counter: %v", err)
+	}
+	counter.Add(context.Background(), 1)
+	log, err := logkit.New(logkit.Config{Level: "info", Silent: true}, logkit.WithOTel(providers.LoggerProvider))
+	if err != nil {
+		t.Fatalf("logger: %v", err)
+	}
+	log.Info(context.Background(), "a record to flush")
+
+	const budget = 900 * time.Millisecond
+	stopCtx, cancel := context.WithTimeout(t.Context(), budget)
+	defer cancel()
+	begin := time.Now()
+	if err := app.Stop(stopCtx); err != nil {
+		t.Fatalf("Stop with a silent collector = %v after %s, want nil within the %s budget", err, time.Since(begin), budget)
+	}
+	if got := stderr(); strings.Count(got, "context deadline exceeded") < 3 || !strings.Contains(got, `"msg":"telemetry: shutdown"`) {
+		t.Fatalf("every signal must have waited for the collector and the failure must be logged:\n%s", got)
+	}
+}
+
 // captureStdout подменяет os.Stdout: логгер ошибок экспорта Module строит сам,
 // снаружи его writer не задать.
 func captureStdout(t *testing.T) func() string {

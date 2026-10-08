@@ -3,6 +3,7 @@ package telemetry
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.opentelemetry.io/otel/log"
 	"go.uber.org/fx"
@@ -11,8 +12,9 @@ import (
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
-// Module поднимает SDK и гасит его на OnStop: ошибка финального экспорта (коллектор недоступен) —
-// запись ERROR логгера ошибок, а не ошибка остановки, — телеметрия best-effort. Config он не
+// Module поднимает SDK и гасит его на OnStop за две трети остатка бюджета остановки: ошибка
+// финального экспорта (коллектор недоступен или молчит) — запись ERROR логгера ошибок, а не
+// ошибка остановки, — телеметрия best-effort. Config он не
 // provide'ит — caller регистрирует telemetry.NewConfig и logkit.NewConfig сам. Инструменты киты
 // берут у глобальных провайдеров (otel.Tracer/otel.Meter), поэтому в граф уходят только
 // *Providers и log.LoggerProvider (второй sink для logkit).
@@ -61,6 +63,13 @@ func newProvidersWithLifecycle(p providerParams) (*Providers, error) {
 		return nil, err
 	}
 	p.LC.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+		// Треть бюджета остановки — в запасе: хук, вернувшийся на самом дедлайне, fx считает
+		// просроченным — молчащий коллектор дал бы ошибку остановки.
+		if deadline, ok := ctx.Deadline(); ok {
+			var cancel context.CancelFunc
+			ctx, cancel = context.WithTimeout(ctx, time.Until(deadline)*2/3)
+			defer cancel()
+		}
 		// Ошибка остановки — код выхода 1: Job без коллектора упал бы, хотя работа сделана.
 		if err := providers.Shutdown(ctx); err != nil {
 			l.ErrorContext(ctx, "telemetry: shutdown", "error", err)

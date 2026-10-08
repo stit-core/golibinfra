@@ -14,4 +14,6 @@ var Module = fx.Module(
 			return NewURLBuilder(cfg.PublicBaseURL, cfg.Bucket, cfg.URLStyle), nil
 		},
 	),
+	// Без Invoke конструктор ленив: проверка Config ждала бы первого потребителя *URLBuilder.
+	fx.Invoke(func(*URLBuilder) {}),
 )

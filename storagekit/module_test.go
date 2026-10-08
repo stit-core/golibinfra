@@ -29,12 +29,13 @@ func TestModule_ProvidesURLBuilderFromConfig(t *testing.T) {
 }
 
 // Config мимо NewConfig (App-структура, fx.Supply) с опечаткой стиля и без эндпоинта — отказ
-// сборки графа, а не URLBuilder из невалидного Config.
+// сборки графа и без потребителя *URLBuilder (регрессия KFX-03), а не URLBuilder из невалидного
+// Config.
 func TestModule_RejectsInvalidConfig(t *testing.T) {
 	cfg := validConfig()
 	cfg.URLStyle = "Virtual"
 	cfg.Endpoint = ""
-	err := fx.New(fx.NopLogger, fx.Supply(cfg), storagekit.Module, fx.Invoke(func(*storagekit.URLBuilder) {})).Err()
+	err := fx.New(fx.NopLogger, fx.Supply(cfg), storagekit.Module).Err()
 	if !errors.Is(err, storagekit.ErrConfig) {
 		t.Fatalf("err = %v, want ErrConfig", err)
 	}
