@@ -10,6 +10,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -381,6 +382,113 @@ func TestRetainPrevious_RotatedKIDSurvivesGrace(t *testing.T) {
 	clock.Advance(11 * time.Minute)
 	if _, err := c.Key(ctx, "k1"); !errors.Is(err, jwks.ErrUnknownKey) {
 		t.Fatalf("после grace-периода ожидали ErrUnknownKey, получили %v", err)
+	}
+}
+
+// Регрессия KTST-02: grace-срок выведенного поколения истекает и при недоступном JWKS — простой
+// endpoint'а не продлевает доверие снятому ключу, а действующий набор остаётся рабочим.
+func TestRetainPrevious_GraceExpiresDuringOutage(t *testing.T) {
+	ks := newKeyServer(t, jwk(t, "k1"))
+	clock := clockkit.NewTickable(time.Now())
+	c := jwks.New(ks.srv.URL, ks.srv.Client(),
+		jwks.WithClock(clock), jwks.WithRetainPrevious(10*time.Minute))
+	ctx := context.Background()
+
+	if _, err := c.Key(ctx, "k1"); err != nil {
+		t.Fatalf("Key k1: %v", err)
+	}
+	ks.set(http.StatusOK, jwk(t, "k2"))
+	clock.Advance(jwks.DefaultMinRefresh)
+	if _, err := c.Key(ctx, "k2"); err != nil {
+		t.Fatalf("Key k2 после ротации: %v", err)
+	}
+
+	ks.set(http.StatusBadGateway)
+	clock.Advance(5 * time.Minute)
+	if _, err := c.Key(ctx, "k1"); err != nil {
+		t.Fatalf("выведенный kid внутри grace-периода при недоступном JWKS: %v", err)
+	}
+	clock.Advance(6 * time.Minute)
+	if k, err := c.Key(ctx, "k1"); err == nil {
+		t.Fatalf("после grace-периода выведенный kid %q всё ещё доверен: JWKS недоступен, а срок истёк", k.KeyID)
+	}
+	if _, err := c.Key(ctx, "k2"); err != nil {
+		t.Fatalf("действующий ключ потерян при недоступном JWKS: %v", err)
+	}
+}
+
+// Регрессия KTST-02: в набор идут только публичные ключи. Симметричный (oct) или приватный JWK,
+// попавший в ответ issuer'а, проверять подпись не должен: его значение знает каждый, кто читает JWKS.
+func TestLoad_SkipsNonPublicKeys(t *testing.T) {
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("gen key: %v", err)
+	}
+	secret := jose.JSONWebKey{Key: []byte("0123456789abcdef0123456789abcdef"), KeyID: "oct", Algorithm: string(jose.HS256), Use: "sig"}
+	private := jose.JSONWebKey{Key: priv, KeyID: "private", Algorithm: string(jose.ES256), Use: "sig"}
+	ctx := context.Background()
+
+	mixed := newKeyServer(t, secret, private, jwk(t, "public"))
+	c := jwks.New(mixed.srv.URL, mixed.srv.Client())
+	if k, err := c.Key(ctx, "public"); err != nil || !k.IsPublic() {
+		t.Fatalf("публичный ключ рядом с непубличными: public=%v err=%v", k.IsPublic(), err)
+	}
+	for _, kid := range []string{"oct", "private"} {
+		if _, err := c.Key(ctx, kid); !errors.Is(err, jwks.ErrUnknownKey) {
+			t.Errorf("kid %q: непубличный ключ попал в набор (err=%v), ожидали ErrUnknownKey", kid, err)
+		}
+	}
+
+	only := newKeyServer(t, secret, private)
+	if err := jwks.New(only.srv.URL, only.srv.Client()).Refresh(ctx); !errors.Is(err, jwks.ErrNoKeys) {
+		t.Fatalf("набор из одних непубличных ключей: ожидали ErrNoKeys, получили %v", err)
+	}
+}
+
+// Регрессия KTST-02: тело JWKS читается не дальше 1 МиБ — набор с бесконечным «хвостом» отвергается
+// ошибкой разбора, а не загружается в память целиком.
+func TestLoad_BodyIsLimited(t *testing.T) {
+	good, err := jwk(t, "k1").MarshalJSON()
+	if err != nil {
+		t.Fatalf("marshal jwk: %v", err)
+	}
+	ks := newKeyServer(t)
+	ks.setRaw(`{"keys":[` + string(good) + `],"padding":"` + strings.Repeat("x", 2<<20) + `"}`)
+	c := jwks.New(ks.srv.URL, ks.srv.Client())
+
+	if err := c.Refresh(context.Background()); err == nil {
+		t.Fatal("JWKS на 2 МиБ принят: тело прочитано без предела")
+	}
+	if c.Loaded() {
+		t.Fatal("после отвергнутого тела набор считается загруженным")
+	}
+}
+
+// Регрессия KTST-02: max-age issuer'а расширяет окно не дальше MaxCacheControlAge — сутки в
+// Cache-Control не оставляют снятый ключ доверенным на сутки.
+func TestRespectCacheControl_CappedAtMaxAge(t *testing.T) {
+	ks := newKeyServer(t, jwk(t, "k1"))
+	ks.setCacheControl("public, max-age=86400")
+	clock := clockkit.NewTickable(time.Now())
+	c := jwks.New(ks.srv.URL, ks.srv.Client(), jwks.WithClock(clock), jwks.WithRespectCacheControl())
+	ctx := context.Background()
+
+	if _, err := c.Key(ctx, "k1"); err != nil {
+		t.Fatalf("Key k1: %v", err)
+	}
+	clock.Advance(jwks.MaxCacheControlAge - time.Second)
+	if _, err := c.Key(ctx, "k1"); err != nil {
+		t.Fatalf("Key k1: %v", err)
+	}
+	if got := ks.hits.Load(); got != 1 {
+		t.Fatalf("внутри потолка окна ожидали 1 загрузку, получили %d", got)
+	}
+	clock.Advance(time.Second)
+	if _, err := c.Key(ctx, "k1"); err != nil {
+		t.Fatalf("Key k1: %v", err)
+	}
+	if got := ks.hits.Load(); got != 2 {
+		t.Fatalf("max-age=86400 не ограничен потолком %s: %d загрузок, ожидали 2", jwks.MaxCacheControlAge, got)
 	}
 }
 

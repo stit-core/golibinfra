@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/redis/go-redis/v9"
 	"go.uber.org/fx"
 	"go.uber.org/fx/fxtest"
 
@@ -80,9 +81,10 @@ func TestModule_StartsWithoutPingAndClosesOnStop(t *testing.T) {
 	}
 	app.RequireStop()
 
-	// OnStop закрыл клиент: дальше любая команда возвращает ошибку кита.
-	if err := cache.Ping(context.Background()); err == nil {
-		t.Fatal("Ping after OnStop must fail")
+	// Регрессия KTST-02: OnStop закрыл клиент — ошибка Ping называет закрытый клиент, а не
+	// соединение: недоступный сервер отказал бы и клиенту, который Stop оставил открытым.
+	if err := cache.Ping(context.Background()); !errors.Is(err, redis.ErrClosed) {
+		t.Fatalf("Ping after OnStop = %v, want redis.ErrClosed", err)
 	}
 }
 

@@ -20,9 +20,24 @@ func metricsSince(t *testing.T) func() metrictest.Snapshot {
 	}
 }
 
+// counter — значение серии name с ровно этими labels. Тип инструмента — часть контракта: rate()
+// дашборда потребителя молча ломает UpDownCounter или gauge под тем же именем.
+func counter(t *testing.T, d metrictest.Snapshot, name string, labels ...string) float64 {
+	t.Helper()
+	s := d.Get(t, name, labels...)
+	if s.Kind != metrictest.Counter {
+		t.Errorf("%s: instrument kind %q, want %q", name, s.Kind, metrictest.Counter)
+	}
+	return s.Value
+}
+
 // histogram — число наблюдений и границы гистограммы name по сериям с labels.
-func histogram(d metrictest.Snapshot, name string, labels ...string) (count uint64, bounds []float64) {
+func histogram(t *testing.T, d metrictest.Snapshot, name string, labels ...string) (count uint64, bounds []float64) {
+	t.Helper()
 	for _, s := range d.Find(name, labels...) {
+		if s.Kind != metrictest.Histogram || s.Unit != "s" {
+			t.Errorf("%s: instrument kind %q, unit %q; want %q in seconds", name, s.Kind, s.Unit, metrictest.Histogram)
+		}
 		count += s.Count
 		bounds = s.Bounds
 	}
@@ -40,10 +55,10 @@ func TestMetrics_SuccessfulCall(t *testing.T) {
 		t.Fatalf("ListLeads: %v", err)
 	}
 
-	if got := since().Value("amocrm_api_calls_total", "endpoint", "leads.list", "status", "200"); got != 1 {
+	if got := counter(t, since(), "amocrm_api_calls_total", "endpoint", "leads.list", "status", "200"); got != 1 {
 		t.Errorf("amocrm_api_calls_total{endpoint=leads.list,status=200} = %v, want 1", got)
 	}
-	count, bounds := histogram(since(), "amocrm_api_duration_seconds", "endpoint", "leads.list")
+	count, bounds := histogram(t, since(), "amocrm_api_duration_seconds", "endpoint", "leads.list")
 	if count != 1 {
 		t.Errorf("amocrm_api_duration_seconds{endpoint=leads.list} count = %d, want 1", count)
 	}
@@ -65,10 +80,10 @@ func TestMetrics_RemoteRateLimit(t *testing.T) {
 		t.Fatal("ListLeads must fail on 429")
 	}
 
-	if got := since().Value("amocrm_rate_limited_total", "tld", "ru", "result", "remote"); got != 1 {
+	if got := counter(t, since(), "amocrm_rate_limited_total", "tld", "ru", "result", "remote"); got != 1 {
 		t.Errorf("amocrm_rate_limited_total{tld=ru,result=remote} = %v, want 1", got)
 	}
-	if got := since().Value("amocrm_api_calls_total", "endpoint", "leads.list", "status", "429"); got != 1 {
+	if got := counter(t, since(), "amocrm_api_calls_total", "endpoint", "leads.list", "status", "429"); got != 1 {
 		t.Errorf("amocrm_api_calls_total{status=429} = %v, want 1", got)
 	}
 }
@@ -88,13 +103,13 @@ func TestMetrics_LocalRateLimit(t *testing.T) {
 		t.Fatalf("server got %d requests from a paused account", rec.hits)
 	}
 
-	if got := since().Value("amocrm_rate_limited_total", "tld", "ru", "result", "local"); got != 1 {
+	if got := counter(t, since(), "amocrm_rate_limited_total", "tld", "ru", "result", "local"); got != 1 {
 		t.Errorf("amocrm_rate_limited_total{tld=ru,result=local} = %v, want 1", got)
 	}
 	if got := since().Value("amocrm_api_calls_total"); got != 0 {
 		t.Errorf("amocrm_api_calls_total = %v, want 0 — the call never reached the network", got)
 	}
-	if count, _ := histogram(since(), "amocrm_api_duration_seconds"); count != 0 {
+	if count, _ := histogram(t, since(), "amocrm_api_duration_seconds"); count != 0 {
 		t.Errorf("amocrm_api_duration_seconds count = %d, want 0", count)
 	}
 }
@@ -122,10 +137,10 @@ func TestMetrics_OAuthGrantAndStatus(t *testing.T) {
 		t.Fatal("RefreshToken must fail on 401")
 	}
 
-	if got := since().Value("amocrm_oauth_refresh_total", "grant", "authorization_code", "status", "success"); got != 1 {
+	if got := counter(t, since(), "amocrm_oauth_refresh_total", "grant", "authorization_code", "status", "success"); got != 1 {
 		t.Errorf("amocrm_oauth_refresh_total{grant=authorization_code,status=success} = %v, want 1", got)
 	}
-	if got := since().Value("amocrm_oauth_refresh_total", "grant", "refresh_token", "status", "error"); got != 1 {
+	if got := counter(t, since(), "amocrm_oauth_refresh_total", "grant", "refresh_token", "status", "error"); got != 1 {
 		t.Errorf("amocrm_oauth_refresh_total{grant=refresh_token,status=error} = %v, want 1", got)
 	}
 }
@@ -149,7 +164,7 @@ func TestMetrics_RejectedBeforeNetworkWritesNothing(t *testing.T) {
 			t.Errorf("%s = %v, want 0", name, got)
 		}
 	}
-	if count, _ := histogram(since(), "amocrm_api_duration_seconds"); count != 0 {
+	if count, _ := histogram(t, since(), "amocrm_api_duration_seconds"); count != 0 {
 		t.Errorf("amocrm_api_duration_seconds count = %d, want 0", count)
 	}
 }

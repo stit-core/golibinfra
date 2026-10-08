@@ -131,14 +131,16 @@ func TestProvideProbe_WithAnnotations(t *testing.T) {
 	})
 }
 
-// Регрессия: Probe без Check не должна ронять обработчик /ready паникой.
+// Регрессия: Probe без Check — ошибка конфигурации графа с именем пробы, а не пойманная panic
+// проверки: /ready пишет ту ERROR'ом со стеком.
 func TestProbe_Run_NilCheck(t *testing.T) {
 	err := healthkit.Probe{Name: "pgkit"}.Run(context.Background())
 	if err == nil {
 		t.Fatal("want error for a probe without Check")
 	}
-	if !strings.Contains(err.Error(), "pgkit") {
-		t.Fatalf("error must name the probe: %v", err)
+	var panicked *healthkit.PanicError
+	if errors.As(err, &panicked) || !strings.Contains(err.Error(), `probe "pgkit": check is nil`) {
+		t.Fatalf("error must name the probe and the missing check, not a recovered panic: %v", err)
 	}
 }
 
@@ -162,7 +164,15 @@ func TestWithTimeout_HangingProbe(t *testing.T) {
 		return nil
 	}), 20*time.Millisecond)
 
-	err := p.Run(context.Background())
+	// Свой дедлайн теста: без таймаута пробы Run не вернётся, и пакет завис бы до лимита go test.
+	done := make(chan error, 1)
+	go func() { done <- p.Run(context.Background()) }()
+	var err error
+	select {
+	case err = <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("Run did not return: WithTimeout must give control back after 20ms without the probe")
+	}
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Run: got %v, want context.DeadlineExceeded", err)
 	}

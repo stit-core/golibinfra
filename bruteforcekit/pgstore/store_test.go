@@ -233,6 +233,24 @@ func TestStore_Guard(t *testing.T) {
 		}
 	})
 
+	// Регрессия KTST-02: успех снимает окно по тому же свёрнутому ключу, под которым попытки
+	// учтены, — вход `Mixed@Example.COM` с IPv4-mapped адреса обнуляет историю `mixed@example.com`.
+	t.Run("success resets history by the normalized key", func(t *testing.T) {
+		s := newStore(t, db, config())
+		const subject, ip = "mixed@example.com", "10.0.0.13"
+
+		attempts(t, ctx, s, subject, ip, 2)
+		if err := s.RecordSuccess(ctx, "  Mixed@Example.COM ", "::ffff:10.0.0.13"); err != nil {
+			t.Fatalf("RecordSuccess: %v", err)
+		}
+		if n := failedCount(t, ctx, db, subject, ip); n != -1 {
+			t.Fatalf("pair row survived RecordSuccess by another spelling of the key: failed_count %d", n)
+		}
+		if n := failedCount(t, ctx, db, subject, ""); n != 0 {
+			t.Fatalf("subject window after RecordSuccess by another spelling of the key: failed_count = %d, want 0", n)
+		}
+	})
+
 	// Успех на последней попытке окна снимает блокировку, которую она выставила.
 	t.Run("success on the last attempt lifts the lock", func(t *testing.T) {
 		cfg := config()

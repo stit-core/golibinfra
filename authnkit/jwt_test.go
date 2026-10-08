@@ -403,7 +403,10 @@ func TestHS256JWT_IssuerAndAudience(t *testing.T) {
 	if _, err := otherAudience.Parse(ctx, multiTok); err != nil {
 		t.Fatalf("intersecting audience rejected: %v", err)
 	}
-	// Своим считается токен для любого значения JWT_AUDIENCE, а не только для первого.
+	// Своим считается токен для любого значения JWT_AUDIENCE: и первого, и второго.
+	if _, err := multi.Parse(ctx, tok); err != nil {
+		t.Fatalf("token for the first configured audience rejected: %v", err)
+	}
 	secondTok, err := otherAudience.SignAccess(ctx, map[string]any{"sub": "u"})
 	if err != nil {
 		t.Fatalf("SignAccess: %v", err)

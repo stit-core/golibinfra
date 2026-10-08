@@ -49,8 +49,8 @@ func TestInstrumentsAreNotPackageLevel(t *testing.T) {
 
 // Страж видит инструмент в коде инициализации пакета — инициализаторе var, init() и
 // sync.OnceValue/OnceValues/OnceFunc — напрямую и через функцию (и generic), метод, значение
-// функции пакета и замыкание, которое init() зовёт; замыкание, которое выполнит позже
-// конструктор fx, — нет.
+// функции пакета и замыкание, которое init() зовёт сам или отдаёт функции пакета, зовущей свой
+// аргумент; замыкание, которое выполнит позже конструктор fx, — нет.
 func TestPackageLevelInstruments_SeesPackageHelpers(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "kit.go")
@@ -91,15 +91,41 @@ func init() {
 	f()
 }
 
+var viaGenericList = genList[int, string]()
+
+func init() {
+	var f = func() { viaClosure = newCounter() }
+	f()
+}
+
+func init() {
+	f := func() { viaClosure = newCounter() }
+	run(f)
+	relay(f)
+	run(func() { viaClosure = meter() })
+	keep(f)
+	_ = later(f)
+}
+
 type factory struct{}
 
 func (factory) counter() any { return meter() }
 
 func provide(constructor func() any) any { return constructor }
 
+func run(f func()) { f() }
+
+func relay(f func()) { run(f) }
+
+func keep(f func()) { viaClosure = any(f) }
+
+func later(f func()) func() { return func() { f() } }
+
 func newCounter() any { return meter() }
 
 func gen[T any]() any { return meter() }
+
+func genList[T, U any]() any { return meter() }
 
 func meter() any { return otelkit.Meter("kit") }
 `
@@ -109,6 +135,7 @@ func meter() any { return otelkit.Meter("kit") }
 	want := []string{
 		"kit.go:9 otelkit.Meter", "kit.go:11 newCounter", "kit.go:15 newCounter", "kit.go:17 sync.OnceValue",
 		"kit.go:19 counter", "kit.go:23 mk", "kit.go:27 newCounter", "kit.go:29 gen", "kit.go:35 f",
+		"kit.go:38 genList", "kit.go:42 f", "kit.go:47 run", "kit.go:48 relay", "kit.go:49 meter",
 	}
 	if got := packageLevelInstruments(t, dir, []string{path}); !slices.Equal(got, want) {
 		t.Fatalf("found %v, want %v", got, want)
@@ -130,7 +157,7 @@ func packageLevelInstruments(t *testing.T, root string, paths []string) []string
 		}
 		files[i], scopes[i] = file, newFileScope(t, path, file)
 	}
-	m := makers{funcs: map[string]bool{}, methods: map[string]bool{}}
+	m := makers{funcs: map[string]bool{}, methods: map[string]bool{}, callers: map[string]bool{}}
 	for grown := true; grown; { // до неподвижной точки: функция пакета зовёт другую такую же
 		grown = false
 		for i, file := range files {
@@ -166,8 +193,8 @@ func packageLevelInstruments(t *testing.T, root string, paths []string) []string
 }
 
 // makers — функции, методы (по имени) и пакетные значения функций (var mk = newCounter) своего
-// пакета, которые создают инструмент.
-type makers struct{ funcs, methods map[string]bool }
+// пакета, которые создают инструмент; callers — функции пакета, которые зовут свой аргумент.
+type makers struct{ funcs, methods, callers map[string]bool }
 
 // learn добавляет в makers функцию, метод или значение функции из decl; true — добавил.
 func (m makers) learn(decl ast.Decl, fs fileScope) bool {
@@ -179,7 +206,13 @@ func (m makers) learn(decl ast.Decl, fs fileScope) bool {
 	}
 	switch d := decl.(type) {
 	case *ast.FuncDecl:
-		if d.Body == nil || len(m.creating(d.Body, fs)) == 0 {
+		if d.Body == nil {
+			break
+		}
+		if d.Recv == nil && m.callsParam(d) {
+			add(m.callers, d.Name.Name)
+		}
+		if len(m.creating(d.Body, fs)) == 0 {
 			break
 		}
 		if d.Recv == nil {
@@ -206,6 +239,44 @@ func (m makers) learn(decl ast.Decl, fs fileScope) bool {
 	return grown
 }
 
+// callsParam — функция зовёт свой параметр сама или отдаёт его функции пакета, которая зовёт;
+// замыкание в её теле выполнится позже и не в счёт.
+func (m makers) callsParam(d *ast.FuncDecl) bool {
+	params := map[string]bool{}
+	for _, field := range d.Type.Params.List {
+		for _, name := range field.Names {
+			params[name.Name] = true
+		}
+	}
+	found := false
+	ast.Inspect(d.Body, func(n ast.Node) bool {
+		if _, closure := n.(*ast.FuncLit); closure {
+			return false
+		}
+		call, ok := n.(*ast.CallExpr)
+		if !ok {
+			return true
+		}
+		if id, ok := call.Fun.(*ast.Ident); ok && params[id.Name] {
+			found = true
+		}
+		if m.isCaller(call.Fun) {
+			for _, arg := range call.Args {
+				if id, ok := arg.(*ast.Ident); ok && params[id.Name] {
+					found = true
+				}
+			}
+		}
+		return true
+	})
+	return found
+}
+
+func (m makers) isCaller(fun ast.Expr) bool {
+	id, ok := generic(fun).(*ast.Ident)
+	return ok && m.callers[id.Name]
+}
+
 // isMaker — e — функция, создающая инструмент: функция (и generic), метод или значение функции
 // пакета из makers либо литерал функции, который зовёт шов или их.
 func (m makers) isMaker(e ast.Expr, fs fileScope) bool {
@@ -223,13 +294,17 @@ func (m makers) isMaker(e ast.Expr, fs fileScope) bool {
 }
 
 // creating — вызовы в n, которые создают инструмент: шов, функция из makers или локальное
-// значение функции (f := func…), которое их зовёт. Замыкание выполнится позже (конструктор fx) и
-// пропускается, кроме аргумента sync.OnceValue, OnceValues и OnceFunc: его результат живёт в
-// пакете.
+// значение функции (f := func…, var f = func…), которое их зовёт. Замыкание выполнится позже
+// (конструктор fx) и пропускается, кроме аргумента sync.OnceValue, OnceValues и OnceFunc — его
+// результат живёт в пакете — и аргумента функции пакета, которая его зовёт.
 func (m makers) creating(n ast.Node, fs fileScope) []*ast.CallExpr {
 	var out []*ast.CallExpr
 	eager := map[*ast.FuncLit]bool{}
 	local := map[string]bool{}
+	isLocal := func(e ast.Expr) bool {
+		id, ok := e.(*ast.Ident)
+		return ok && local[id.Name]
+	}
 	ast.Inspect(n, func(n ast.Node) bool {
 		switch n := n.(type) {
 		case *ast.FuncLit:
@@ -242,14 +317,19 @@ func (m makers) creating(n ast.Node, fs fileScope) []*ast.CallExpr {
 					}
 				}
 			}
+		case *ast.ValueSpec:
+			for i, v := range n.Values {
+				if i < len(n.Names) && m.isMaker(v, fs) {
+					local[n.Names[i].Name] = true
+				}
+			}
 		case *ast.CallExpr:
-			id, isIdent := n.Fun.(*ast.Ident)
-			made := fs.isSeam(n.Fun) || m.isMaker(n.Fun, fs) || isIdent && local[id.Name]
-			if fs.isOnce(n.Fun) {
+			made := fs.isSeam(n.Fun) || m.isMaker(n.Fun, fs) || isLocal(n.Fun)
+			if fs.isOnce(n.Fun) || m.isCaller(n.Fun) {
 				for _, arg := range n.Args {
 					if lit, ok := arg.(*ast.FuncLit); ok {
 						eager[lit] = true
-					} else if m.isMaker(arg, fs) {
+					} else if m.isMaker(arg, fs) || isLocal(arg) {
 						made = true
 					}
 				}
