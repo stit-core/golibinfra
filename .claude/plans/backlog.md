@@ -13,8 +13,9 @@
   второй кит с той же дырой маркера.
 - **bool-default-true-literal** — поля bool с `default:"true"` (`outboxkit/pgstore.RequireTx`, `cachekit.PingOnStart`,
   `storagekit.ProbeOnStart`, `pgkit.OTelTrace`, `natskit.StreamManaged`) в литерале с нулями выключаются — расходится с «ноль
-  литерала — значение доки» (по нему снят `STORAGE_S3_USE_SSL`); у `pgstore.Config{}` снят tx-guard. Триггер: повторный аудит
-  угла 1 или потребитель на литерале конфига.
+  литерала — значение доки» (по нему снят `STORAGE_S3_USE_SSL`); у `pgstore.Config{}` снят tx-guard (RAPI-01 повторного аудита:
+  воспроизведено, minor). Правка — инверсия пяти полей с новыми переменными: breaking, строки аннотации. Триггер: следующий
+  breaking-minor или потребитель на литерале конфига.
 - **logkit-redact-disabled-literal** — конструктор логгера с `WithRedact(RedactConfig{Disabled: true, …})` не зовёт `Validate`:
   невалидный паттерн или замена у выключенного redact проходит (путь ENV — `NewRedactConfig` — отвергает), против «формат
   проверяется и у выключенного»; README logkit это называет. Правка — отказ конструктора: смена поведения, строка аннотации.
@@ -55,3 +56,43 @@
 - **grpckit-health-test-time-bound** — `TestHealthProbeTimeoutIsIndependentOfInterval` (`grpckit/health_test.go`) отличает дедлайн
   пробы (50 мс) от `GRPC_HEALTH_INTERVAL` (400 мс) по часам процесса: запас 350 мс — допуск по времени, под тяжёлой нагрузкой тест
   может покраснеть без дефекта кита. Триггер: падение этого теста в гейте или pre-push.
+- **fx-resources-without-start** — FX-12: граф, собранный без старта или упавший в `fx.New`, оставляет ресурсы конструкторов:
+  пул pgkit (3 соединения), соединение natskit (`CONNECTED`), SDK telemetry (горутины и экспорт «мёртвых» провайдеров). В проде
+  процесс выходит; задеты тесты потребителя с `fx.New(…).Err()`. Правка — подключение в `OnStart`, а не в конструкторе: смена
+  жизненного цикла трёх китов. Триггер: утечки в тестах потребителя или правка конструкторов этих китов.
+- **httpkit-idempotency-budget-knob** — бюджет ключей идемпотентности на клиента — константа (10 000 ответов за окно
+  `HTTP_IDEMPOTENCY_TTL`, счёт в памяти процесса): интеграция, которой его мало, получает отказ store на новый ключ. Настройка —
+  новая переменная (minor). Триггер: потребитель с клиентом тяжелее бюджета или WARN `key budget of the client is exhausted` в проде.
+- **httpkit-raw-route-stream-mark** — RSEC-05, остаток: у маршрута мимо huma поток, которому не ставится дедлайн запроса,
+  называет заголовок клиента (`Accept: text/event-stream`, `Upgrade`) — описания у маршрута нет. Пометка маршрута потоком — новый
+  экспорт. Триггер: медленный маршрут мимо huma у потребителя или повторный аудит угла 3.
+- **httpkit-ratelimit-overflow-bucket** — RSEC-07: после 100 000 bucket'ов лимитера новые клиенты делят один bucket — клиент,
+  которого сервис видит впервые, получает 429. Компромисс назван в доке; правка — свёртка ключа до короткого префикса или
+  вытеснение молчащих bucket'ов: смена поведения лимитера. Триггер: атака с большого префикса IPv6 или повторный аудит угла 3.
+- **httpclient-redirect-scheme-downgrade** — RSEC-04: редирект `https → http` на тот же хост несёт заголовки-секреты, а при
+  `HTTPCLIENT_ALLOW_CROSS_HOST_REDIRECTS=true` на чужой хост уходит `Referer` с query. Отказ на понижении схемы — новый sentinel
+  (экспорт) и смена поведения. Триггер: upstream с редиректом на `http://` или следующий minor.
+- **logkit-open-group-secret** — RSEC-03: `slog.Logger.WithGroup("credentials")` (логгер `NewSlog`) не прячет содержимое открытой
+  группы с именем-секретом — атрибутом (`slog.Group`) та же группа заменяется целиком. Правка — handler помнит открытую группу.
+  Триггер: потребитель с `WithGroup` или правка `redactHandler`.
+- **redact-dsn-error-tail** — RSEC-08: текст ошибки разбора битого `PG_DSN` (pgx цитирует DSN со своей маской) и
+  `redact.RequestURL` при `?` или `/` в пароле userinfo оставляют хвост пароля. Только битый конфиг; правка — не цитировать ошибку
+  разбора в pgkit и маска userinfo до последнего `@`. Триггер: правка `internal/redact` или повторный аудит угла 3.
+- **auditkit-concurrent-index-migration** — RCOR-04: миграция `0002` auditkit — `CREATE INDEX CONCURRENTLY IF NOT EXISTS`: после
+  обрыва по `PG_MIGRATE_LOCK_TIMEOUT` повтор «проходит» мимо INVALID-индекса (рецепт снятия — в доке pgkit). Правка миграции —
+  отдельный оператор вне транзакции; `CheckSchema` не сверяет `indisvalid`. Триггер: правка миграций auditkit или `CheckSchema`.
+- **fx-job-ctor-error-names-kit** — RFX-03: ошибка графа у job-конструкторов (`timerkit.ProvideJob`, pgstore китов) называет
+  `reflect.makeFuncStub` и `*pgstore.Store` без кита. Правка — именованные конструкторы с `fx.In`, как у httpkit. Триггер:
+  правка `ProvideJob` или жалоба потребителя на текст ошибки графа.
+- **httpclient-method-label** — ROBS-05: label `method` и имя спана httpclient — сырой метод запроса: шлюз, проксирующий метод
+  клиента, заводит серию на токен. Правка — общий с httpkit `methodLabel` в `internal/` и `other` для неизвестных: смена значений
+  сигнала. Триггер: потребитель-шлюз или правка сигналов httpclient.
+- **outbox-idle-signal-volume** — ROBS-07: на дефолтах лежащий брокер даёт ERROR `timerkit: job error` на каждый тик outbox
+  (3600 в час на инстанс), пустой тик — трассу из пяти спанов. Правка — дроссель повторов и спан только у непустого тика: смена
+  сигналов. Триггер: шум в логах или цена трасс у потребителя.
+- **state-change-info-logs** — ROBS-08: применённые на старте миграции, дроп партиций outbox и retention аудита не оставляют
+  записи в логе (только метрика или ничего). Правка — INFO в трёх китах, двум из них нужен логгер. Триггер: разбор инцидента по
+  логам или правка этих путей.
+- **kit-form-leftovers** — RAPI-05, остаток: `Server.API()` — алиас `BindAPI()`, `SecuritySchemeGroup` в единственном числе,
+  `natskit.ProvideConfig(name)` вне формы `Provide<Thing>(ctor)`, `logkit.ServiceConfig` без `Validate`,
+  `NewRedactHandler(inner, cfg)` — конфиг вторым. Переименования — breaking. Триггер: следующий breaking-minor.

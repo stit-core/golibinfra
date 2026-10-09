@@ -3,8 +3,13 @@ package pgstore_test
 import (
 	"context"
 	"errors"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
 	"git.stit.tech/stit-core/golibinfra/authnkit/session"
@@ -243,5 +248,71 @@ func TestStore_Metrics(t *testing.T) {
 		if got := d.Get(t, want.name, want.labels...); got.Kind != metrictest.Counter || got.Value != want.value {
 			t.Errorf("%v (%s), want counter delta %v", got, got.Kind, want.value)
 		}
+	}
+}
+
+// cancelAfterLookup — трассировщик pgx: отменяет ctx запроса, как только завершился lookup токена
+// (второй запрос Rotate у токена, не прошедшего условный UPDATE).
+type cancelAfterLookup struct {
+	cancel atomic.Pointer[context.CancelFunc]
+	hits   atomic.Int32
+}
+
+type lookupKey struct{}
+
+func (c *cancelAfterLookup) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	return context.WithValue(ctx, lookupKey{}, strings.Contains(data.SQL, "LEAST(t.expires_at, s.expires_at)"))
+}
+
+func (c *cancelAfterLookup) TraceQueryEnd(ctx context.Context, _ *pgx.Conn, _ pgx.TraceQueryEndData) {
+	if is, _ := ctx.Value(lookupKey{}).(bool); is {
+		if cancel := c.cancel.Load(); cancel != nil {
+			c.hits.Add(1)
+			(*cancel)()
+		}
+	}
+}
+
+// Регрессия RCOR-02: отзыв сессии при повторе токена не зависит от клиента. Запрос жертвы оборван
+// между чтением «токен использован» и отзывом (клиент ушёл, дедлайн) — сессия всё равно отозвана,
+// и токен того, кто ротировал украденный, больше не работает.
+func TestStore_ReuseRevokeSurvivesClientCancel(t *testing.T) {
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	tracer := &cancelAfterLookup{}
+	pcfg, err := pgxpool.ParseConfig(pg.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcfg.ConnConfig.Tracer = tracer
+	pool, err := pgxpool.NewWithConfig(t.Context(), pcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	s := newStore(t, pgkit.NewDB(pool), clockkit.NewTickable(testStart))
+	bg := context.WithoutCancel(t.Context())
+
+	stolen, err := s.Issue(bg, "victim")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	thief, err := s.Rotate(bg, stolen.Value)
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(bg)
+	defer cancel()
+	tracer.cancel.Store(&cancel)
+	_, err = s.Rotate(ctx, stolen.Value)
+	tracer.cancel.Store(nil)
+	if tracer.hits.Load() == 0 {
+		t.Fatal("the lookup of the used token was not traced: the test missed its window")
+	}
+	if !errors.Is(err, session.ErrReused) {
+		t.Fatalf("Rotate of the used token on a cancelled ctx = %v, want ErrReused", err)
+	}
+	if _, err := s.Rotate(bg, thief.Value); !errors.Is(err, session.ErrInvalid) {
+		t.Fatalf("the thief's token after the cancelled reuse: %v, want ErrInvalid — the session must be revoked", err)
 	}
 }

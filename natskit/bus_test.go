@@ -3,6 +3,7 @@ package natskit_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -171,10 +172,10 @@ func TestBus_HandlerErrorLogged(t *testing.T) {
 	bus := newBus(t, conn, log, natskit.Config{})
 
 	ctx := context.Background()
-	subject := subj(t, "failing")
+	subject, filter := subj(t, "failing.42"), subj(t, "failing.*")
 
 	called := make(chan struct{}, 2)
-	if _, err := bus.Subscribe(ctx, subject, func(context.Context, []byte) error {
+	if _, err := bus.Subscribe(ctx, filter, func(context.Context, []byte) error {
 		called <- struct{}{}
 		return errors.New("boom")
 	}); err != nil {
@@ -188,8 +189,13 @@ func TestBus_HandlerErrorLogged(t *testing.T) {
 	eventually(t, 3*time.Second, "handler error logged", func() bool {
 		return log.has("error", "natskit: handler error")
 	})
-	if e := log.find("error", "natskit: handler error"); e == nil || !log.contains("instance") {
+	e := log.find("error", "natskit: handler error")
+	if e == nil || !log.contains("instance") {
 		t.Fatalf("handler error entry has no instance attribute: %v", log.dump())
+	}
+	// Регрессия ROBS-06: subject записи — сообщения, а не фильтр wildcard-подписки (он — в filter).
+	if text := e.text(); !strings.Contains(text, subject) || !strings.Contains(text, filter) {
+		t.Fatalf("handler error entry must name the message subject and the filter: %s", text)
 	}
 }
 

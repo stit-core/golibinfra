@@ -136,6 +136,9 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	return session.Token{}, err
 }
 
+// revokeTimeout — срок отзыва сессии при повторе токена: он идёт мимо отмены ctx запроса.
+const revokeTimeout = 5 * time.Second
+
 const lookupSQL = `
 SELECT s.id, s.subject, t.used_at IS NOT NULL, s.revoked_at IS NOT NULL, LEAST(t.expires_at, s.expires_at)
 FROM authn_session_tokens t
@@ -161,7 +164,11 @@ func (s *Store) reject(ctx context.Context, refresh string, now time.Time) (stri
 	case err != nil:
 		return resultError, fmt.Errorf("authnkit/session/pgstore: rotate: lookup: %w", err)
 	case used:
-		tag, err := s.db.Exec(ctx, revokeSessionSQL, sessionID, now)
+		// Отзыв не зависит от клиента: запрос, оборванный между чтением «токен использован» и
+		// отзывом, оставил бы сессию живой — и токен того, кто ротировал украденный, рабочим.
+		revokeCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), revokeTimeout)
+		defer cancel()
+		tag, err := s.db.Exec(revokeCtx, revokeSessionSQL, sessionID, now)
 		if err != nil {
 			return resultError, fmt.Errorf("authnkit/session/pgstore: rotate: revoke reused session: %w", err)
 		}

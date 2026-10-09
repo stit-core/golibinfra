@@ -186,7 +186,7 @@ func (b *natsBus) handleOne(parent context.Context, msg *nats.Msg, subject strin
 			spanerr.Record(span, fmt.Errorf("natskit: handler panic: %v", rec), b.log)
 			b.log.Error(
 				ctx, "natskit: handler panic",
-				"subject", subject,
+				"subject", msg.Subject, "filter", subject,
 				"panic", rec,
 				"stack", string(debug.Stack()),
 			)
@@ -202,7 +202,8 @@ func (b *natsBus) handleOne(parent context.Context, msg *nats.Msg, subject strin
 		// Текст ошибки обработчика — потребителя: в спан он идёт под теми же масками, что в лог.
 		spanerr.Record(span, err, b.log)
 		if !errors.Is(err, context.Canceled) {
-			b.log.Error(ctx, "natskit: handler error", "subject", subject, "error", err)
+			// subject — сообщения, а не фильтр подписки: у wildcard по фильтру не понять, что упало.
+			b.log.Error(ctx, "natskit: handler error", "subject", msg.Subject, "filter", subject, "error", err)
 		}
 	}
 }

@@ -1,6 +1,7 @@
 package minio_test
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -175,5 +176,30 @@ func TestModule_SkipsStartupCheckWhenDisabled(t *testing.T) {
 	}
 	if elapsed := time.Since(start); elapsed > 2*time.Second {
 		t.Fatalf("start took %s: startup hook is talking to S3 with ProbeOnStart=false", elapsed)
+	}
+}
+
+// Регрессия RCOR-06: инстансы, стартующие одновременно на пустом окружении, создают бакет оба:
+// между «есть бакет?» и «создать» его создаёт сосед. Бакет уже наш — это не отказ старта.
+func TestModule_ConcurrentStartsCreateTheBucketOnce(t *testing.T) {
+	for range 5 {
+		cfg := containerConfig(t, func(c *storagekit.Config) {
+			c.CreateBucket = true
+			c.ProbeOnStart = false
+		})
+		errs := make(chan error, 4)
+		for range cap(errs) {
+			go func() {
+				app := fx.New(appOptions(cfg))
+				err := app.Start(t.Context())
+				_ = app.Stop(context.WithoutCancel(t.Context()))
+				errs <- err
+			}()
+		}
+		for range cap(errs) {
+			if err := <-errs; err != nil {
+				t.Fatalf("a concurrent start with CreateBucket failed: %v", err)
+			}
+		}
 	}
 }

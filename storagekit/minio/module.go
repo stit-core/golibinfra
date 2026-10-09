@@ -74,7 +74,10 @@ func ensureBucket(ctx context.Context, client *miniogo.Client, cfg storagekit.Co
 	if exists {
 		return nil
 	}
-	if err := client.MakeBucket(ctx, cfg.Bucket, miniogo.MakeBucketOptions{Region: cfg.Region}); err != nil {
+	err = client.MakeBucket(ctx, cfg.Bucket, miniogo.MakeBucketOptions{Region: cfg.Region})
+	// Между проверкой и созданием бакет создал соседний инстанс, стартующий одновременно: он
+	// уже наш — это не отказ старта.
+	if err != nil && miniogo.ToErrorResponse(err).Code != "BucketAlreadyOwnedByYou" {
 		return fmt.Errorf("storagekit/minio: create bucket %q: %w", cfg.Bucket, err)
 	}
 	return nil

@@ -89,9 +89,10 @@ blocked-by: —
   `result=error` (RSEC-02, ROBS-04)
   - Проверка: `go test -race ./logkit/ ./cachekit/` → PASS · Закрывает: AC3, AC6
   - Сделано: `maskJSONKeys` маскирует до места обрыва, `[]byte` — тем же сканером, что строка (`TestRedact_TruncatedJSONStaysMasked`, до правки 26 подтестов красные); `MaintNotificationsConfig{Mode: disabled}` у обоих клиентов (`TestRedisCache_HandshakeHasNoErrorSignals`, до правки `cmd=client,result=error` = 2)
-- [ ] **S10** — остальные minor четырёх отчётов: правка в несколько строк и без риска — здесь,
+- [x] **S10** — остальные minor четырёх отчётов: правка в несколько строк и без риска — здесь,
   остальное — строкой в бэклог с ID находки и причиной; FX-12 и уточнение RAPI-01 — там же
   - Проверка: `make test-full` → PASS; `make plan-check` → OK · Закрывает: AC2, AC3, AC6
+  - Сделано: RCOR-02 (отзыв при повторе токена — мимо отмены ctx), RCOR-06 (одновременный старт с `CREATE_BUCKET`), ROBS-06 (subject сообщения в логе Core-обработчика), RAPI-05 (sentinel у `lockTimeout`) — с тестами, до правок красными (`M/fixround1/logs/red-s10-minors.log`); строки доков — RSEC-06, RSEC-09, RCOR-04; в бэклог — FX-12, RAPI-01, RAPI-05 (остаток), RSEC-03, RSEC-04, RSEC-07, RSEC-08, RCOR-04 (код), RFX-03, ROBS-05, ROBS-07, ROBS-08 и два остатка своих решений
 - [x] **S11** — гейт: самозащита `make check` без условия на `MAKECMDGOALS`, pre-push с окружением
   без make-переменных, 34 формы аудитора — в тесте; envdoc и анонимная структура, `//nolint`
   невключённых линтеров, проводка guard в `settings.json` (RGATE-01, RGATE-02, RGATE-03, RGATE-05)
@@ -177,6 +178,6 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S9, S11, S12, S15 и S16 закрыты. Цель круга по решению владельца — девятка по каждому углу (запасной
-исход — 8). Следующие шаги: S10 (дешёвые minor и
-бэклог), S13 (пробы на HEAD), S14 (релиз).
+S1–S12, S15 и S16 закрыты. Цель круга по решению владельца — девятка по каждому углу (запасной
+исход — 8). Следующие шаги: S13 (пробы и эксперименты
+аудиторов на HEAD), S14 (релиз).

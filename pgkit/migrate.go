@@ -101,7 +101,7 @@ func MigrateVersion(ctx context.Context, dsn string, src Source) (version uint, 
 
 func checkLockTimeout(d time.Duration) error {
 	if d <= 0 {
-		return fmt.Errorf("pgkit: migrate: lock timeout must be > 0, got %s", d)
+		return fmt.Errorf("%w: migrate: lock timeout must be > 0, got %s", ErrConfig, d)
 	}
 	return nil
 }

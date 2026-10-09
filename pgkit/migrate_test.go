@@ -555,7 +555,7 @@ func TestMigrate_RejectsNonPositiveLockTimeout(t *testing.T) {
 			"MigrateDown":  pgkit.MigrateDown(ctx, "postgres://x", d, src),
 			"MigrateUpAll": pgkit.MigrateUpAll(ctx, "postgres://x", d, src),
 		} {
-			if err == nil || !strings.Contains(err.Error(), "lock timeout must be > 0") {
+			if !errors.Is(err, pgkit.ErrConfig) || !strings.Contains(err.Error(), "lock timeout must be > 0") {
 				t.Fatalf("%s(lock timeout %s) = %v, want the lock timeout error", name, d, err)
 			}
 		}
