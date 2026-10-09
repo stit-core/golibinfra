@@ -4,12 +4,14 @@ package bruteforcetest
 
 import (
 	"context"
+	"maps"
 	"sync"
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit"
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 )
 
 // validateKey — контракт ключа pgstore без агрегации IPv6: пустой subject, subject с NUL или не
@@ -205,17 +207,29 @@ func (r *countingRow) lock(scope bruteforcekit.LockScope, now time.Time) *brutef
 	return &bruteforcekit.LockState{Until: r.lockedUntil, RetryAfter: r.lockedUntil.Sub(now), FailedCount: r.failedCount, Scope: scope}
 }
 
-// RecordSuccess стирает историю попыток пары (subject, ip) и окно субъекта.
-func (c *Counting) RecordSuccess(_ context.Context, subject, ip string) error {
+// RecordSuccess стирает историю попыток пары (subject, ip) и окно субъекта. В транзакции фейка
+// pgtest её откат возвращает стёртое — как у pgstore: откат оставляет счётчики.
+func (c *Counting) RecordSuccess(ctx context.Context, subject, ip string) error {
 	key, err := c.key(subject, ip)
 	if err != nil {
 		return err
 	}
+	keys := []Attempt{key, {Subject: key.Subject}}
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	delete(c.rows, key)
-	delete(c.rows, Attempt{Subject: key.Subject})
+	saved := map[Attempt]*countingRow{}
+	for _, k := range keys {
+		if row, ok := c.rows[k]; ok {
+			saved[k] = row
+		}
+		delete(c.rows, k)
+	}
+	pgtest.OnRollback(ctx, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		maps.Copy(c.rows, saved)
+	})
 	return nil
 }
 

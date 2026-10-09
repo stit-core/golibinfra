@@ -111,6 +111,47 @@ type jsBus struct {
 	// с PubAck. Иначе Core-публикацией: JetStream ждал бы PubAck, которого не будет.
 	dlqInStream bool
 	instr       *natsInstruments
+
+	// filters — фильтр живых подписок шины на durable-консьюмер («стрим/durable»): консьюмер у
+	// сервера один, и второй фильтр перенацелил бы его.
+	filtersMu sync.Mutex
+	filters   map[string]durableFilter
+}
+
+type durableFilter struct {
+	filter string
+	subs   int
+}
+
+// claimFilter закрепляет фильтр за durable-консьюмером на время жизни подписки и отдаёт
+// освобождение. Подписка с другим фильтром на тот же durable — ErrConfig:
+// CreateOrUpdateConsumer сменил бы фильтр консьюмера, и первая подписка молча перестала бы
+// получать сообщения. Пустой durable — эфемерный консьюмер, у каждой подписки свой.
+func (b *jsBus) claimFilter(stream, durable, filter string) (release func(), err error) {
+	if durable == "" {
+		return func() {}, nil
+	}
+	key := stream + "/" + durable
+	b.filtersMu.Lock()
+	defer b.filtersMu.Unlock()
+	held := b.filters[key]
+	if held.subs > 0 && held.filter != filter {
+		return nil, fmt.Errorf("%w: durable %q of stream %s is already subscribed with filter %q: filter %q would retarget the consumer and stop its deliveries — use one durable per filter",
+			ErrConfig, durable, stream, held.filter, filter)
+	}
+	if b.filters == nil {
+		b.filters = map[string]durableFilter{}
+	}
+	b.filters[key] = durableFilter{filter: filter, subs: held.subs + 1}
+	return sync.OnceFunc(func() {
+		b.filtersMu.Lock()
+		defer b.filtersMu.Unlock()
+		if left := b.filters[key]; left.subs > 1 {
+			b.filters[key] = durableFilter{filter: left.filter, subs: left.subs - 1}
+		} else {
+			delete(b.filters, key)
+		}
+	}), nil
 }
 
 type disabledStreamBus struct{}
@@ -476,6 +517,16 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 		return nil, fmt.Errorf("%w: NATS_JS_DLQ_SUBJECT %q is matched by consumer filter %q: dead letters would loop back to the handler",
 			ErrConfig, b.dlqSubject, subject)
 	}
+	release, err := b.claimFilter(stream, durable, subject)
+	if err != nil {
+		return nil, err
+	}
+	subscribed := false
+	defer func() {
+		if !subscribed {
+			release()
+		}
+	}()
 	ccfg := jetstream.ConsumerConfig{
 		Durable:       durable,
 		AckPolicy:     jetstream.AckExplicitPolicy,
@@ -492,8 +543,9 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 	}
 	sc := streamConsumer{stream: stream, durable: durable, filter: subject}
 
-	return b.c.subscribe(func() (*subscription, error) {
+	sub, err := b.c.subscribe(func() (*subscription, error) {
 		s := newSubscription(b.c, subject)
+		s.onForget = release
 		cc, err := cons.Consume(func(msg jetstream.Msg) {
 			// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
 			_ = b.sem.Acquire(context.Background(), 1)
@@ -525,6 +577,11 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 		}
 		return s, nil
 	})
+	if err != nil {
+		return nil, err
+	}
+	subscribed = true
+	return sub, nil
 }
 
 func (b *jsBus) handleStreamOne(parent context.Context, sc streamConsumer, msg jetstream.Msg, handler Handler) {

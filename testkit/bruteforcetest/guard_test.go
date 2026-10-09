@@ -1,6 +1,7 @@
 package bruteforcetest_test
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"testing"
@@ -10,6 +11,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/bruteforcetest"
+	"git.stit.tech/stit-core/golibinfra/testkit/pgtest"
 )
 
 var (
@@ -348,5 +350,48 @@ func TestLocked_RetryAfter(t *testing.T) {
 	st, err := bruteforcetest.Locked{Until: time.Now().Add(time.Hour)}.Attempt(t.Context(), "u1", "203.0.113.7")
 	if err != nil || st == nil || st.Scope != bruteforcekit.ScopePair || st.RetryAfter <= 59*time.Minute {
 		t.Fatalf("Attempt = %+v, %v; want a pair lock with about an hour left", st, err)
+	}
+}
+
+// Регрессия RTST-03: RecordSuccess в транзакции, которая откатилась, счётчики не стирает — как
+// у pgstore (так обещает контракт Guard): вход, не дошедший до коммита, попытки не обнуляет.
+func TestCounting_RecordSuccessFollowsTheTransaction(t *testing.T) {
+	t.Parallel()
+	cfg := countingConfig()
+	g, err := bruteforcetest.NewCounting(cfg, clockkit.NewTickable(time.Unix(1_700_000_000, 0)))
+	if err != nil {
+		t.Fatalf("NewCounting: %v", err)
+	}
+	ctx := t.Context()
+	attempt := func() *bruteforcekit.LockState {
+		t.Helper()
+		st, err := g.Attempt(ctx, "u1", "203.0.113.7")
+		if err != nil {
+			t.Fatalf("Attempt: %v", err)
+		}
+		return st
+	}
+	for range cfg.MaxFailures - 1 {
+		attempt()
+	}
+	failed := errors.New("login failed after the guard")
+	if err := (pgtest.Identity{}).WithTx(ctx, func(ctx context.Context) error {
+		if err := g.RecordSuccess(ctx, "u1", "203.0.113.7"); err != nil {
+			return err
+		}
+		return failed
+	}); !errors.Is(err, failed) {
+		t.Fatalf("WithTx = %v, want the error of fn", err)
+	}
+	attempt()
+	if st := attempt(); st == nil {
+		t.Fatal("the rolled back RecordSuccess erased the attempts: the pair is not locked after MaxFailures")
+	}
+
+	if err := (pgtest.Identity{}).WithTx(ctx, func(ctx context.Context) error { return g.RecordSuccess(ctx, "u1", "203.0.113.7") }); err != nil {
+		t.Fatalf("WithTx: %v", err)
+	}
+	if st := attempt(); st != nil {
+		t.Fatalf("the committed RecordSuccess must erase the lock, got %+v", st)
 	}
 }

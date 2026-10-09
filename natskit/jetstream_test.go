@@ -1096,3 +1096,47 @@ func TestStreamBus_UnmanagedStreams(t *testing.T) {
 		t.Fatalf("unmanaged stream modified: subjects = %v", got.Subjects)
 	}
 }
+
+// Регрессия RTST-03: один durable — один фильтр. Консьюмер у сервера один, и второй
+// SubscribeStream с тем же durable и другим фильтром перенацеливал его: первая подписка молча
+// переставала получать сообщения. Теперь это отказ; тот же фильтр вторым подписчиком и другой
+// фильтр после снятия подписок — можно.
+func TestStreamBus_SecondFilterOnOneDurableIsRejected(t *testing.T) {
+	stream := nameFor(t)
+	sb := newStreamBus(t, jsConfig(stream))
+	ctx := context.Background()
+	got := make(chan string, 8)
+	handler := func(ctx context.Context, _ []byte) error {
+		got <- natskit.SubjectFromContext(ctx)
+		return nil
+	}
+	first, err := sb.SubscribeStream(ctx, stream, stream+".a.>", "worker", handler)
+	if err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if _, err := sb.SubscribeStream(ctx, stream, stream+".b.>", "worker", handler); !errors.Is(err, natskit.ErrConfig) ||
+		!strings.Contains(err.Error(), "already subscribed with filter") {
+		t.Fatalf("a second filter on the durable: err = %v, want ErrConfig naming the first filter", err)
+	}
+	if err := sb.PublishStream(ctx, stream+".a.created", []byte(`{}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	if s := recv(t, got, 10*time.Second, "the message of the first filter"); s != stream+".a.created" {
+		t.Fatalf("delivered %q, want the message of the first filter", s)
+	}
+
+	same, err := sb.SubscribeStream(ctx, stream, stream+".a.>", "worker", handler)
+	if err != nil {
+		t.Fatalf("a second subscriber with the same filter shares the durable: %v", err)
+	}
+	for _, sub := range []natskit.Subscription{first, same} {
+		if err := sub.Unsubscribe(); err != nil {
+			t.Fatalf("unsubscribe: %v", err)
+		}
+	}
+	other, err := sb.SubscribeStream(ctx, stream, stream+".b.>", "worker", handler)
+	if err != nil {
+		t.Fatalf("another filter after the subscriptions are gone: %v", err)
+	}
+	t.Cleanup(func() { _ = other.Unsubscribe() })
+}

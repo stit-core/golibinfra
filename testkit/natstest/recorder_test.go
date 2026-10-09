@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/nats-io/nats.go"
@@ -348,4 +349,64 @@ func TestRecorder_RedeliversStreamHandlerErrors(t *testing.T) {
 	if calls != 2 {
 		t.Errorf("calls = %d, want the redelivery to stop at the first success", calls)
 	}
+}
+
+// Регрессия RTST-03: фейк держит правила шины, которые тест иначе узнал бы только в проде. Один
+// durable — один фильтр (второй фильтр перенацелил бы консьюмер шины, и первая подписка молча
+// перестала бы получать сообщения); panic обработчика — ошибка обработчика с переотправкой, а не
+// panic издателя; stream-публикация читает отменённый ctx, Core-публикация — нет.
+func TestRecorder_KeepsBusRules(t *testing.T) {
+	ctx := context.Background()
+	ok := func(context.Context, []byte) error { return nil }
+
+	t.Run("one filter per durable", func(t *testing.T) {
+		r := natstest.New(natstest.WithStream("ORDERS", "orders.>"))
+		first, err := r.SubscribeStream(ctx, "ORDERS", "orders.a.>", "worker", ok)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.SubscribeStream(ctx, "ORDERS", "orders.b.>", "worker", ok); !errors.Is(err, natskit.ErrConfig) ||
+			!strings.Contains(err.Error(), "already subscribed with filter") {
+			t.Fatalf("a second filter on the durable: err = %v, want ErrConfig naming the first filter", err)
+		}
+		if _, err := r.SubscribeStream(ctx, "ORDERS", "orders.a.>", "worker", ok); err != nil {
+			t.Fatalf("a second subscriber with the same filter shares the durable: %v", err)
+		}
+		if _, err := r.SubscribeStream(ctx, "ORDERS", "orders.b.>", "other", ok); err != nil {
+			t.Fatalf("another durable takes another filter: %v", err)
+		}
+		_ = first.Unsubscribe()
+	})
+
+	t.Run("handler panic is a handler error", func(t *testing.T) {
+		r := natstest.New(orders, natstest.WithMaxDeliver(3))
+		calls := 0
+		if _, err := r.SubscribeStream(ctx, "ORDERS", "orders.created", "d", func(context.Context, []byte) error {
+			calls++
+			panic("boom")
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if err := r.PublishStream(ctx, "orders.created", []byte(`{}`)); err != nil {
+			t.Fatalf("PublishStream = %v: a handler panic must not reach the publisher", err)
+		}
+		if errs := r.HandlerErrors(); calls != 3 || len(errs) != 3 || !strings.Contains(errs[0].Error(), "handler panic: boom") {
+			t.Fatalf("calls %d, handler errors %v; want the panic redelivered up to MaxDeliver as a handler error", calls, errs)
+		}
+	})
+
+	t.Run("stream publish reads the ctx", func(t *testing.T) {
+		r := natstest.New(orders)
+		cancelled, cancel := context.WithCancel(ctx)
+		cancel()
+		if err := r.PublishStream(cancelled, "orders.created", []byte(`{}`)); !errors.Is(err, context.Canceled) {
+			t.Fatalf("PublishStream with a cancelled ctx = %v, want context.Canceled", err)
+		}
+		if err := r.Publish(cancelled, "orders.created", []byte(`{}`)); err != nil {
+			t.Fatalf("Publish with a cancelled ctx = %v, want nil: a core publish does not read it", err)
+		}
+		if n := len(r.Published()); n != 1 {
+			t.Fatalf("published %d messages, want only the core one", n)
+		}
+	})
 }

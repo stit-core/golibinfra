@@ -227,6 +227,9 @@ func (c *Conn) forget(s *subscription) {
 	c.mu.Lock()
 	delete(c.subs, s)
 	c.mu.Unlock()
+	if s.onForget != nil {
+		s.onForget()
+	}
 }
 
 func (c *Conn) isClosing() bool {

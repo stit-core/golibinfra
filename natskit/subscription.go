@@ -31,6 +31,8 @@ type subscription struct {
 	cancel context.CancelFunc
 	// stop останавливает транспортную подписку; drain=true — дообработать буфер.
 	stop func(drain bool) error
+	// onForget — подписка снята (Unsubscribe, Drain): шина освобождает то, что держала за ней.
+	onForget func()
 	// done закрывает транспорт, когда подписка полностью закрыта: все callback'и
 	// вернулись, новых add в inflight не будет.
 	done     <-chan struct{}

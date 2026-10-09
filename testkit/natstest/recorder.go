@@ -183,6 +183,10 @@ func (r *Recorder) publish(ctx context.Context, subject string, payload []byte, 
 	if err := r.checkPublish(subject, payload, jetStream); err != nil {
 		return err
 	}
+	// JetStream ждёт PubAck под ctx публикации; Core-публикация его не читает — как у шины.
+	if jetStream && ctx.Err() != nil {
+		return fmt.Errorf("natstest: jetstream publish: %w", ctx.Err())
+	}
 
 	r.mu.Lock()
 	if err := r.publishErr; err != nil {
@@ -280,7 +284,7 @@ func (r *Recorder) deliver(ctx context.Context, subject string, payload []byte, 
 		}
 		// Повтор — как ретрай JetStream: ошибка, кроме терминальной, — до maxDeliver доставок.
 		for range deliveries {
-			err := s.handler(natskit.ContextWithMessage(ctx, subject, header), payload)
+			err := handle(natskit.ContextWithMessage(ctx, subject, header), s.handler, payload)
 			if err == nil {
 				break
 			}
@@ -296,19 +300,31 @@ func (r *Recorder) deliver(ctx context.Context, subject string, payload []byte, 
 	return errors.Join(errs...)
 }
 
+// handle зовёт обработчик и, как шина, ловит его panic: издателю она не уходит, а становится
+// ошибкой обработчика (HandlerErrors) — stream-сообщение с ней переотправляется.
+func handle(ctx context.Context, handler natskit.Handler, payload []byte) (err error) {
+	defer func() {
+		if rec := recover(); rec != nil {
+			err = fmt.Errorf("natstest: handler panic: %v", rec)
+		}
+	}()
+	return handler(ctx, payload)
+}
+
 // Subscribe регистрирует fan-out подписку.
 func (r *Recorder) Subscribe(ctx context.Context, subject string, handler natskit.Handler) (natskit.Subscription, error) {
-	return r.subscribe(ctx, subject, "", false, handler)
+	return r.subscribe(ctx, subject, "", "", handler)
 }
 
 // SubscribeQueue регистрирует подписку queue-группы: сообщение получает один её участник.
 func (r *Recorder) SubscribeQueue(ctx context.Context, subject, queue string, handler natskit.Handler) (natskit.Subscription, error) {
-	return r.subscribe(ctx, subject, queue, false, handler)
+	return r.subscribe(ctx, subject, queue, "", handler)
 }
 
 // SubscribeStream регистрирует stream-подписку; durable — её queue-группа. Как у шины: стрим —
-// объявленный (WithStream), фильтр, накрывающий DLQ (WithDLQ), — natskit.ErrConfig. Строже шины:
-// фильтр вне subject'ов стрима и пустой durable она принимает, а подписка молчит.
+// объявленный (WithStream), фильтр, накрывающий DLQ (WithDLQ), и второй фильтр на занятый durable
+// — natskit.ErrConfig. Строже шины: фильтр вне subject'ов стрима и пустой durable она принимает,
+// а подписка молчит.
 func (r *Recorder) SubscribeStream(ctx context.Context, stream, subject, durable string, handler natskit.Handler) (natskit.Subscription, error) {
 	subjects, declared := r.streams[stream]
 	switch {
@@ -322,10 +338,28 @@ func (r *Recorder) SubscribeStream(ctx context.Context, stream, subject, durable
 		return nil, fmt.Errorf("%w: NATS_JS_DLQ_SUBJECT %q is matched by consumer filter %q: dead letters would loop back to the handler",
 			natskit.ErrConfig, r.dlq, subject)
 	}
-	return r.subscribe(ctx, subject, durable, true, handler)
+	if held, taken := r.durableFilter(stream, durable); taken && held != subject {
+		return nil, fmt.Errorf("%w: durable %q of stream %s is already subscribed with filter %q: filter %q would retarget the consumer and stop its deliveries — use one durable per filter",
+			natskit.ErrConfig, durable, stream, held, subject)
+	}
+	return r.subscribe(ctx, subject, durable, stream, handler)
 }
 
-func (r *Recorder) subscribe(ctx context.Context, subject, queue string, jetStream bool, handler natskit.Handler) (natskit.Subscription, error) {
+// durableFilter — фильтр живой stream-подписки на durable стрима: консьюмер у шины один, и второй
+// фильтр перенацелил бы его.
+func (r *Recorder) durableFilter(stream, durable string) (filter string, taken bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for _, s := range r.subs {
+		if s.jetStream && s.stream == stream && s.queue == durable {
+			return s.filter, true
+		}
+	}
+	return "", false
+}
+
+// subscribe: stream — стрим stream-подписки, пусто — Core.
+func (r *Recorder) subscribe(ctx context.Context, subject, queue, stream string, handler natskit.Handler) (natskit.Subscription, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
@@ -338,7 +372,7 @@ func (r *Recorder) subscribe(ctx context.Context, subject, queue string, jetStre
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nextSubID++
-	s := &subscription{r: r, id: r.nextSubID, filter: subject, queue: queue, jetStream: jetStream, handler: handler}
+	s := &subscription{r: r, id: r.nextSubID, filter: subject, queue: queue, stream: stream, jetStream: stream != "", handler: handler}
 	r.subs = append(r.subs, s)
 	return s, nil
 }
@@ -359,6 +393,7 @@ type subscription struct {
 	id        int
 	filter    string
 	queue     string
+	stream    string
 	jetStream bool
 	handler   natskit.Handler
 }
