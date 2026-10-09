@@ -34,8 +34,13 @@ while read -r local_ref local_sha _ _; do
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/golibinfra-gate.XXXXXX")
 	git -C "$root" worktree add --detach --quiet "$tmp" "$commit"
 	echo "pre-push: $local_ref — make check в свежем worktree $tmp @ $(git -C "$root" rev-parse --short "$commit")"
-	# Флаги и makefile'ы вызывающего make (MAKEFLAGS=i, -n…) до гейта не доходят; stdin гейта — не
+	# Переменные make из окружения вызывающего (MAKEFLAGS=i, MAKEFILES, MAKECMDGOALS, MAKE…) до
+	# гейта не доходят: каждая из них меняет шаги или выключает его самозащиту. stdin гейта — не
 	# список ref'ов: его дочитывает цикл.
-	env -u MAKEFLAGS -u MFLAGS -u GNUMAKEFLAGS -u MAKEFILES make -C "$tmp" check </dev/null
+	drop=()
+	while IFS= read -r name; do
+		drop+=(-u "$name")
+	done < <(compgen -e | grep -E '^(MAKE.*|MFLAGS|GNUMAKEFLAGS)$' || true)
+	env ${drop[@]+"${drop[@]}"} make -C "$tmp" check </dev/null
 	cleanup
 done

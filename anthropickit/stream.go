@@ -69,7 +69,7 @@ func (e *errStream) Close() error              { return nil }
 type sseStream struct {
 	s      *ssestream.Stream[anthropic.MessageStreamEventUnion]
 	client *Client
-	ctx    context.Context //nolint:containedctx // удерживаем для финальной записи метрик
+	ctx    context.Context // удерживаем для финальной записи метрик
 	span   trace.Span
 	model  string
 	start  time.Time

@@ -97,15 +97,15 @@ func contractRoutes(api huma.API) {
 		return nil, huma.Error503ServiceUnavailable("db is down: password=s3cret", fmt.Errorf("pool: %w", retryError(30*time.Second)))
 	}, public)
 	huma.Register(api, httpkit.Public(huma.Operation{OperationID: "signup", Method: http.MethodPost, Path: "/signup"}),
-		func(context.Context, *signupInput) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+		func(context.Context, *signupInput) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 	huma.Register(api, huma.Operation{
 		OperationID: "me", Method: http.MethodGet, Path: "/me",
 		Security: []map[string][]string{{"Bearer": {}}},
-	}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 	huma.Register(api, huma.Operation{
 		OperationID: "create-order", Method: http.MethodPost, Path: "/orders",
 		Security: []map[string][]string{{"Bearer": {}}},
-	}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 }
 
 type contractCase struct {

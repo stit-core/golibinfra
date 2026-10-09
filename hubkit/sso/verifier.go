@@ -143,7 +143,7 @@ func NewCustomerVerifier(cfg Config, doer Doer, opts ...Option) (*CustomerVerifi
 		return nil, err
 	}
 	if !cfg.CustomerEnabled() {
-		return nil, nil //nolint:nilnil // пустой JWKS-URL = контур выключен, это не ошибка
+		return nil, nil // пустой JWKS-URL = контур выключен, это не ошибка
 	}
 	v := buildVerifier(cfg, cfg.CustomerJWKSURL, cfg.CustomerIssuer, cfg.CustomerAudience, KindCustomer, doer, opts)
 	return &CustomerVerifier{Verifier: v}, nil

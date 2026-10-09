@@ -153,7 +153,7 @@ func (s *signalStand) routes(api huma.API) {
 		},
 		) (*struct{}, error) {
 			time.Sleep(signalItemDelay)
-			return nil, nil //nolint:nilnil // тело не нужно
+			return nil, nil // тело не нужно
 		})
 	huma.Register(api, httpkit.Public(huma.Operation{OperationID: "get-missing", Method: http.MethodGet, Path: "/missing"}),
 		func(context.Context, *struct{}) (*struct{}, error) { return nil, signalErrors.Map(errSignalItem) })
@@ -164,7 +164,7 @@ func (s *signalStand) routes(api huma.API) {
 	huma.Register(api, httpkit.Public(huma.Operation{OperationID: "get-slow", Method: http.MethodGet, Path: "/slow"}),
 		func(ctx context.Context, _ *struct{}) (*struct{}, error) {
 			<-ctx.Done()
-			return nil, nil //nolint:nilnil // ответ не дойдёт: дедлайн запроса уже ответил
+			return nil, nil // ответ не дойдёт: дедлайн запроса уже ответил
 		})
 	huma.Register(api, httpkit.Public(huma.Operation{OperationID: "signup", Method: http.MethodPost, Path: "/signup"}),
 		func(context.Context, *struct {
@@ -173,20 +173,20 @@ func (s *signalStand) routes(api huma.API) {
 			}
 		},
 		) (*struct{}, error) {
-			return nil, nil //nolint:nilnil // тело не нужно
+			return nil, nil // тело не нужно
 		})
 	huma.Register(api, huma.Operation{OperationID: "get-secret", Method: http.MethodGet, Path: "/secret", Security: bearer},
-		func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело не нужно
+		func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело не нужно
 	huma.Register(api, huma.Operation{OperationID: "create-order", Method: http.MethodPost, Path: "/orders", DefaultStatus: http.StatusCreated, Security: bearer},
 		func(_ context.Context, in *signalOrder) (*struct{}, error) {
 			if in.Body.N == 99 {
 				s.holding <- struct{}{}
 				<-s.hold
 			}
-			return nil, nil //nolint:nilnil // тело не нужно
+			return nil, nil // тело не нужно
 		})
 	huma.Register(api, httpkit.Public(huma.Operation{OperationID: "create-public", Method: http.MethodPost, Path: "/public", DefaultStatus: http.StatusCreated}),
-		func(context.Context, *signalOrder) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело не нужно
+		func(context.Context, *signalOrder) (*struct{}, error) { return nil, nil }) // тело не нужно
 }
 
 func (s *signalStand) probe() healthkit.Probe {

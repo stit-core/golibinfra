@@ -115,7 +115,7 @@ func TestHumaErrors_FormatMessagesDoNotEchoInput(t *testing.T) {
 		}
 	}
 	api := handlertest.NewAPI(t, func(api huma.API) {
-		huma.Post(api, "/formats", func(context.Context, *formats) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+		huma.Post(api, "/formats", func(context.Context, *formats) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 	})
 	resp := api.Post("/formats", map[string]any{
 		"email":    "a@b.c, S3CRETmail@x.y",
@@ -155,7 +155,7 @@ func TestHumaErrors_ParamDecoderDoesNotEchoInput(t *testing.T) {
 		Hdr netip.Addr   `header:"X-Client-IP"`
 	}
 	api := handlertest.NewAPI(t, func(api huma.API) {
-		huma.Get(api, "/params", func(context.Context, *params) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+		huma.Get(api, "/params", func(context.Context, *params) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 	})
 	for location, resp := range map[string]*httptest.ResponseRecorder{
 		"query.ip":           api.Get("/params?ip=S3CRETip"),

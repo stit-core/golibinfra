@@ -199,7 +199,7 @@ func TestModule_AuthRequiresExtractor(t *testing.T) {
 		huma.Register(api, huma.Operation{
 			OperationID: "guarded-too", Method: http.MethodPost, Path: "/guarded",
 			Security: []map[string][]string{{"Bearer": {}}},
-		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 	}
 
 	noExtract := httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry { return bearerEntry(nil) })
@@ -243,7 +243,7 @@ func TestModule_AuthRequiresExtractorForEveryMethod(t *testing.T) {
 				ID string `path:"id"`
 			},
 			) (*struct{}, error) {
-				return nil, nil //nolint:nilnil // тело ответа не нужно
+				return nil, nil // тело ответа не нужно
 			})
 		}))
 		if !errors.Is(err, httpkit.ErrAuthNotConfigured) || !strings.Contains(err.Error(), "change-item") {
@@ -258,7 +258,7 @@ func TestModule_AuthHiddenOperationNeedsExtractor(t *testing.T) {
 		huma.Register(api, huma.Operation{
 			OperationID: "hidden", Method: http.MethodGet, Path: "/hidden", Hidden: true,
 			Security: []map[string][]string{{"Bearer": {}}},
-		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+		}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 	}))
 	if !errors.Is(err, httpkit.ErrAuthNotConfigured) || !strings.Contains(err.Error(), "hidden") {
 		t.Fatalf("hidden secured operation without an extractor must fail the start: %v", err)

@@ -92,7 +92,7 @@ func TestNewServer_AssemblesKitChain(t *testing.T) {
 		panic("boom")
 	})
 	huma.Register(api, httpkit.Public(operation("echo", http.MethodPost, "/echo")), func(context.Context, *struct{ Body map[string]any }) (*struct{}, error) {
-		return nil, nil //nolint:nilnil // тело ответа не нужно
+		return nil, nil // тело ответа не нужно
 	})
 	secured := operation("me", http.MethodGet, "/me")
 	secured.Security = []map[string][]string{{"Bearer": {}}}

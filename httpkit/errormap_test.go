@@ -183,7 +183,7 @@ func TestErrorMap_Declare(t *testing.T) {
 			}
 		},
 		) (*struct{}, error) {
-			return nil, nil //nolint:nilnil // тело ответа не нужно
+			return nil, nil // тело ответа не нужно
 		})
 	})
 	raw, err := json.Marshal(api.OpenAPI())
@@ -233,7 +233,7 @@ func TestErrorMap_DeclareSecured401(t *testing.T) {
 		httpkit.ErrorRule{Err: errLocked, Status: http.StatusUnauthorized, Code: "AUTH_TOKEN_EXPIRED"},
 	)
 	secured := []map[string][]string{{"Bearer": {}}}
-	noBody := func(context.Context, *struct{}) (*struct{}, error) { return nil, nil } //nolint:nilnil // тело ответа не нужно
+	noBody := func(context.Context, *struct{}) (*struct{}, error) { return nil, nil } // тело ответа не нужно
 	api := handlertest.NewAPI(t, func(api huma.API) {
 		huma.Register(api, huma.Operation{OperationID: "getMe", Method: http.MethodGet, Path: "/me", Security: secured}, noBody)
 		huma.Register(api, authErrors.Declare(huma.Operation{OperationID: "refresh", Method: http.MethodPost, Path: "/refresh", Security: secured}), noBody)
@@ -276,7 +276,7 @@ func TestErrorMap_DeclareSecured401FromConsumerHook(t *testing.T) {
 		})
 	})
 	api := mustServer(t, testConfig(t, "127.0.0.1:0"), secureAdmin).BindAPI()
-	huma.Get(api, "/admin/users", func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	huma.Get(api, "/admin/users", func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 
 	resp := api.OpenAPI().Paths["/admin/users"].Get.Responses["401"]
 	if resp == nil || resp.Description != "Unauthorized: UNAUTHORIZED" {

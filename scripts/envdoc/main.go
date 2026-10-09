@@ -199,11 +199,21 @@ func skipDir(name string) bool {
 func (p *pkg) envVars(pkgs map[string]*pkg, allow map[string]bool) (vars []envVar, problems []string) {
 	for _, f := range p.files {
 		osName := importName(f, "os")
+		named := map[*ast.StructType]bool{}
 		ast.Inspect(f, func(n ast.Node) bool {
 			switch n := n.(type) {
 			case *ast.TypeSpec:
-				if st, ok := n.Type.(*ast.StructType); ok && hasEnvTag(st) {
-					v, pr := p.structVars(pkgs, f, n.Name.Name, st)
+				if st, ok := n.Type.(*ast.StructType); ok {
+					named[st] = true
+					if hasEnvTag(st) {
+						v, pr := p.structVars(pkgs, f, n.Name.Name, st)
+						vars, problems = append(vars, v...), append(problems, pr...)
+					}
+				}
+			case *ast.StructType:
+				// Анонимная структура (`var c struct{…}` под envconf.Load) — те же переменные.
+				if !named[n] && hasEnvTag(n) {
+					v, pr := p.structVars(pkgs, f, "struct", n)
 					vars, problems = append(vars, v...), append(problems, pr...)
 				}
 			case *ast.CallExpr:

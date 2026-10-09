@@ -344,7 +344,9 @@ make release-diff PREV=vX.Y.Z  # что изменилось с тега: API (a
 всегда проверяет всё дерево и заканчивается строкой `✓ check clean (./...)`:
 `PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-k`/`-n`/`-p`/`-q`/`-t`, `--eval`, лишним
 makefile в обычных формах (`-f`, в том числе `Makefile` другого каталога, и `MAKEFILES`), `GOFLAGS`
-(env или `go env -w`) и подменой `MAKE`/`SHELL`/`.SHELLFLAGS` гейт не запускается. Makefile,
+(env или `go env -w`) и подменой `MAKE`/`SHELL`/`.SHELLFLAGS` гейт не запускается — отказы стоят
+и при чтении Makefile, и первой строкой рецепта, какой бы целью до него ни дошли; `MAKECMDGOALS` и
+`MAKEFILE_LIST` от вызывающего (командная строка, окружение) — отказ make для любой цели. Makefile,
 написанный под подделку (переприсваивает `MAKEFILE_LIST`), обходит любую сверку внутри make: свой
 makefile — правка гейта, а вердикт для remote — pre-push. Кеш golangci-lint — свой у каждого
 checkout'а (`.cache/`), у `gate-clean` — холодный.
@@ -356,14 +358,16 @@ Go старше неё скачивает названный в ней, Go но�
 Версии `golangci-lint` и `govulncheck` — пины `Makefile`: шаги `fmt-check`, `lint` и `vuln`
 сверяют с ними бинарь из PATH и на другой версии отказывают (ставит `make tools`). `make lint` до
 прогона проверяет схему `.golangci.yml` и набор включённых линтеров и форматтеров по эталону
-`scripts/linters.txt` — линтер, снятый из `enable`, не проходит. В коде вне тестов и `scripts/`
+`scripts/linters.txt` — линтер, снятый из `enable`, не проходит, как и `//nolint` с именем
+линтера вне `enable` (такая директива ничего не подавляет, а `nolintlint` её не видит). В коде вне тестов и `scripts/`
 forbidigo не пускает `fmt.Print*`, `print`/`println`, пакет `log`, функции `slog` с логгером по
 умолчанию, `http.DefaultClient` и `http.Get`/`Head`/`Post`/`PostForm`; образ с тегом `:latest` в
 Go-коде ловит тест `testkit` (`TestImageTagsArePinned`).
 
 Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь `make check` на
 верхнем коммите каждого пушимого ref'а в свежем worktree — по дереву и `Makefile` самого коммита,
-без make-окружения вызывающего, незакоммиченных правок и gitignored-файлов; `make gate-clean` —
+без переменных make из окружения вызывающего (`MAKE*`, `MFLAGS`, `GNUMAKEFLAGS`), незакоммиченных
+правок и gitignored-файлов; `make gate-clean` —
 тот же прогон на HEAD. Формат сообщения коммита держит `commit-msg`: Conventional Commit, subject
 до 72 символов, `!` и футер `BREAKING CHANGE:` — только вместе. Без активных хуков `make check`
 красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
@@ -378,7 +382,8 @@ Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-pus
 с `>`, `|` или `system`, `sort -o`, действия `find`, `git … --output`, `rg --pre`); `cp`, `sort`,
 `find` и `awk` со словом, которое раскроет оболочка (`$X`, `{a,b}`, glob), — тоже отказ. Формы,
 которые guard держит, — `scripts/testdata/guard-cases.txt` (`TestGuardBash`); цена — отказ на
-чтении командой вне его списка (`nl`, `od`, цикл `for`) и на `chmod +x` хука: читают `cat` и
+чтении командой вне его списка (`nl`, `od`, цикл `for`), на `chmod +x` хука и на команде, где
+имя хука — часть другого слова (ветка `fix/pre-push`, заголовок PR): читают `cat` и
 `sed -n`, право на запуск ставит `make hooks`.
 
 Это барьер от случайного обхода, а не песочница. Guard не видит, в том числе: имя `git` в кавычках
@@ -388,8 +393,8 @@ Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-pus
 `find … -exec` с каталога выше хуков; алиасы, `include` и команды в конфиге git (`core.pager`),
 правку `.git/config` и снятие секции `core`; `git send-pack`; push из клона или worktree, где
 хуков нет; кавычку, открытую строкой выше, и маркер heredoc внутри кавычек; правку инструментами
-Edit и Write. Такой обход — правка гейта (`CLAUDE.md § Границы`). Поведение хуков, guard и
-самозащиты `make check` держит `scripts/gate_test.go`.
+Edit и Write. Такой обход — правка гейта (`CLAUDE.md § Границы`). Поведение хуков, guard, его
+проводку в `.claude/settings.json` и самозащиту `make check` держит `scripts/gate_test.go`.
 
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),

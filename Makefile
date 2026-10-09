@@ -33,30 +33,42 @@ override GATE_PKGS  := ./...
 override GATE_STEPS := hooks-check fmt-check vet lint test-full build tidy-check vuln envdoc-check plan-check
 override GATE       := $(MAKE) --no-print-directory PKGS=$(GATE_PKGS) GO=go A=
 
+# Цели и список makefile'ов задаёт сам make. MAKECMDGOALS из командной строки, окружения или
+# makefile'а, прочитанного раньше, выключил бы отказы ниже (они включаются по цели), MAKEFILE_LIST
+# из командной строки — сверку makefile'ов: с такими переменными Makefile не читается ни для
+# какой цели.
+override gate_forged := $(if $(filter-out default undefined,$(origin MAKECMDGOALS)),MAKECMDGOALS) \
+	$(if $(filter command% environment% override,$(origin MAKEFILE_LIST)),MAKEFILE_LIST)
+ifneq (,$(strip $(gate_forged)))
+$(error make не запускается с переменной $(strip $(gate_forged)) — её задаёт сам make)
+endif
+
 # check и gate-clean не запускаются там, где сказали бы «clean», не проверив всё: -i и -k глушат
 # ошибки шагов, -n/-q/-t их не выполняют, -p печатает рецепты, подмена MAKE, SHELL, .SHELLFLAGS и
 # MAKEFILES (и --eval до чтения Makefile) меняет шаги, makefile, прочитанный раньше этого, подменяет
-# рецепт, GOFLAGS (из env или go env -w) — go test, vet и govulncheck.
-ifneq (,$(filter check gate-clean,$(MAKECMDGOALS)))
-override gate_bad := $(foreach f,i k n p q t,$(if $(findstring $f,$(firstword -$(MAKEFLAGS))),-$f)) \
+# рецепт, GOFLAGS (из env или go env -w) — go test, vet и govulncheck. Отказ — дважды: при чтении
+# Makefile по цели (с -n, -q и -t рецепт не исполняется) и первой строкой рецепта — когда прочитаны
+# все makefile'ы и какой бы целью до рецепта ни дошли (--eval 'x: check').
+override gate_bad = $(strip $(foreach f,i k n p q t,$(if $(findstring $f,$(firstword -$(MAKEFLAGS))),-$f)) \
 	$(if $(filter --eval=%,$(MAKEFLAGS)),--eval) \
 	$(filter-out $(abspath Makefile),$(abspath $(MAKEFILE_LIST))) \
 	$(foreach v,MAKE SHELL .SHELLFLAGS MAKEFILES,$(if $(filter command% environment%,$(origin $v)),$v=…)) \
-	$(if $(shell go env GOFLAGS),GOFLAGS=$(shell go env GOFLAGS))
-ifneq (,$(strip $(gate_bad)))
-$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с $(strip $(gate_bad)) — запусти без них)
+	$(if $(shell go env GOFLAGS),GOFLAGS=$(shell go env GOFLAGS)))
+ifneq (,$(filter check gate-clean,$(MAKECMDGOALS)))
+ifneq (,$(gate_bad))
+$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с $(gate_bad) — запусти без них)
 endif
 endif
 
 # Makefile, прочитанный после этого (make -f Makefile -f extra.mk), подменил бы рецепт. Рецепты check
 # и gate-clean — правила «::»: чужое «check:» — ошибка разбора, чужое «check::» идёт после этого, а
-# его первая строка сверяет состав makefile'ов, когда прочитаны все, — до первого шага и при любых
+# его первая строка повторяет отказы, когда прочитаны все makefile'ы, — до первого шага и при любых
 # флагах make. Makefile, написанный под подделку (переприсваивает MAKEFILE_LIST), обходит любую
 # сверку внутри make — это правка гейта; вердикт для remote — pre-push.
-override gate_makefiles = $(if $(filter-out $(abspath Makefile),$(abspath $(MAKEFILE_LIST))),$(error make $(filter check gate-clean,$(MAKECMDGOALS)) не запускается с makefile'ами $(strip $(MAKEFILE_LIST)) — только Makefile этого каталога))
+override gate_refuse = $(if $(gate_bad),$(error make $@ не запускается с $(gate_bad) — запусти без них))
 
 check:: ## Канонический gate: хуки, fmt-check, vet, lint, test-full, build, tidy, vuln, envdoc, планы (Docker и сеть)
-	$(gate_makefiles)
+	$(gate_refuse)
 	@set -e; for step in $(GATE_STEPS); do echo "→ $$step"; $(GATE) $$step; done
 	@echo "✓ check clean ($(GATE_PKGS))"
 
@@ -135,7 +147,7 @@ fuzz: ## Короткий прогон каждого Fuzz-таргета (FUZZT
 
 # Реализация одна — хук: gate-clean отдаёт ему HEAD так же, как git отдаёт пушимый коммит.
 gate-clean:: ## `make check` HEAD в свежем worktree, как pre-push на пушимом коммите: без make-окружения вызывающего, с холодным кешем lint
-	$(gate_makefiles)
+	$(gate_refuse)
 	@echo "HEAD $$(git rev-parse HEAD) - -" | scripts/git-hooks/pre-push
 
 release-diff: ## release-diff PREV=vX.Y.Z — что изменилось для потребителя с тега: API (apidiff), env-теги с дефолтами, имена метрик

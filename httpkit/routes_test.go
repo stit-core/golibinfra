@@ -49,7 +49,7 @@ var (
 	bearerOnly = []map[string][]string{{"Bearer": {}}}
 )
 
-func noBody(context.Context, *struct{}) (*struct{}, error) { return nil, nil } //nolint:nilnil // тело ответа не нужно
+func noBody(context.Context, *struct{}) (*struct{}, error) { return nil, nil } // тело ответа не нужно
 
 func register(ops ...huma.Operation) fx.Option {
 	return fx.Invoke(func(api huma.API) {

@@ -53,7 +53,8 @@ make coverage     # покрытие -short + сводка; ещё есть benc
 Docker и сеть (govulncheck). Гейт всегда проверяет `./...` (последняя строка —
 `✓ check clean (./...)`): `PKGS`, `GO` и `A` до шагов не доходят, а с `-i`/`-k`/`-n`/`-p`/`-q`/`-t`,
 `--eval`, лишним makefile в обычных формах (`-f`, `MAKEFILES`), `GOFLAGS` (env или `go env -w`) и
-подменой `MAKE`/`SHELL`/`.SHELLFLAGS` он не запускается. Makefile, написанный под подделку
+подменой `MAKE`/`SHELL`/`.SHELLFLAGS` он не запускается; `MAKECMDGOALS` и `MAKEFILE_LIST` от
+вызывающего (командная строка, окружение) — отказ для любой цели. Makefile, написанный под подделку
 (переприсваивает `MAKEFILE_LIST`), сверку внутри make обходит — это правка гейта (§ Границы);
 вердикт для remote — pre-push. Кеш golangci-lint — в `.cache/` checkout'а. Без активных хуков
 `make check` красный (`hooks-check`). Перед тегом — `make gate-clean`: тот же прогон, что pre-push
@@ -63,7 +64,7 @@ make-окружения вызывающего и с холодным кешем
 `fmt-check`, `lint` и `vuln` отказывают, если `golangci-lint` или `govulncheck` в PATH — не версии
 пина `Makefile` (ставит `make tools`). `make lint` до прогона проверяет схему `.golangci.yml` и
 сверяет набор включённых линтеров и форматтеров с эталоном `scripts/linters.txt`: линтер, снятый
-из `enable`, — отказ.
+из `enable`, — отказ; `//nolint` с именем линтера вне `enable` — тоже.
 
 ## Карта пакетов
 

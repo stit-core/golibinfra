@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -208,7 +209,7 @@ func TestCommitMsgHookOnCherryPick(t *testing.T) {
 func TestPrePushGatesPushedCommit(t *testing.T) {
 	hook := filepath.Join(repoRoot(t), "scripts", "git-hooks", "pre-push")
 	repo, tmp := t.TempDir(), t.TempDir()
-	const gate = "check:\n\t@echo \"toy gate: $$(cat verdict)\"; test \"$$(cat verdict)\" = green\n"
+	const gate = "check:\n\t@echo \"toy gate: $$(cat verdict) goals=$(MAKECMDGOALS) make=$(notdir $(MAKE))\"; test \"$$(cat verdict)\" = green\n"
 	git := func(args ...string) string {
 		t.Helper()
 		out, err := run(t, repo, "", nil, "git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
@@ -245,6 +246,17 @@ func TestPrePushGatesPushedCommit(t *testing.T) {
 		t.Fatalf("a red commit is pushed past the gate of the commit (err %v):\n%s", err, out)
 	}
 
+	// Регрессия RGATE-01: переменные make из окружения пушащего до гейта не доходят — ни флаги,
+	// глушащие ошибки шагов, ни MAKECMDGOALS и MAKE, которыми выключается самозащита make check.
+	forge := filepath.Join(tmp, "forge.mk")
+	write(t, tmp, map[string]string{"forge.mk": "check::\n\t@echo forged\n"})
+	out, err = run(t, repo, "refs/heads/main "+red+" refs/heads/main "+zero+"\n", []string{
+		"TMPDIR=" + tmp, "MAKEFLAGS=i", "MFLAGS=-i", "GNUMAKEFLAGS=-i", "MAKEFILES=" + forge, "MAKECMDGOALS=x", "MAKE=true", "MAKELEVEL=3",
+	}, hook)
+	if err == nil || !strings.Contains(out, "toy gate: red goals=check make=make") || strings.Contains(out, "forged") {
+		t.Fatalf("make variables of the pusher's environment reach the gate (err %v):\n%s", err, out)
+	}
+
 	green := commit("green")
 	out, err = push(
 		"refs/heads/main "+green+" refs/heads/main "+red,
@@ -259,9 +271,11 @@ func TestPrePushGatesPushedCommit(t *testing.T) {
 	}
 }
 
-// Флаги make и лишний makefile не подделывают вердикт гейта. Настоящий гейт здесь падает на первом
-// шаге с golangci-lint — в PATH не пиненная версия, — поэтому проба не гоняет его целиком. Makefile
-// под подделку (переприсваивает MAKEFILE_LIST) обходит любую сверку внутри make: это правка гейта.
+// Флаги make, переменные вызывающего и лишний makefile не подделывают вердикт гейта. Настоящий гейт
+// здесь падает на первом шаге с golangci-lint — в PATH не пиненная версия, — поэтому проба не гоняет
+// его целиком. Формы F и T — формы запуска повторного аудита (RGATE-01): отказы самозащиты
+// включались по MAKECMDGOALS, а её задаёт вызывающий. Makefile под подделку (переприсваивает
+// MAKEFILE_LIST) обходит любую сверку внутри make: это правка гейта.
 func TestMakeCheckCannotBeForged(t *testing.T) {
 	root := repoRoot(t)
 	bin, fakes := t.TempDir(), t.TempDir()
@@ -276,8 +290,15 @@ func TestMakeCheckCannotBeForged(t *testing.T) {
 		"colon.mk":  "check gate-clean:\n\t@echo \"" + gateVerdict + "\"\n",
 		"double.mk": "check gate-clean::\n\t@echo \"" + gateVerdict + "\"\n",
 		"shell.mk":  "override SHELL := /bin/true\n",
+		"goals.mk":  "MAKECMDGOALS := x\n",
 	})
 	colon, double, shell := filepath.Join(fakes, "colon.mk"), filepath.Join(fakes, "double.mk"), filepath.Join(fakes, "shell.mk")
+	goals := filepath.Join(fakes, "goals.mk")
+	steps := []string{"hooks-check", "fmt-check", "vet", "lint", "test-full", "build", "tidy-check", "vuln", "envdoc-check", "plan-check"}
+	oldSteps := make([]string, 0, 2*len(steps))
+	for _, step := range steps {
+		oldSteps = append(oldSteps, "-o", step)
+	}
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -301,6 +322,45 @@ func TestMakeCheckCannotBeForged(t *testing.T) {
 		{name: "gate-clean: second makefile after", args: []string{"-f", "Makefile", "-f", double, "gate-clean"}},
 		{name: "gate-clean: second makefile before", args: []string{"-f", double, "-f", "Makefile", "gate-clean"}},
 		{name: "gate-clean: -o and second makefile", args: []string{"-o", "gate-makefiles", "-f", "Makefile", "-f", colon, "gate-clean"}},
+
+		{name: "F02 -o vet", args: []string{"-o", "vet", "check"}, gate: true},
+		{name: "F03 --old-file", args: []string{"--old-file=vet", "check"}, gate: true},
+		{name: "F04 --assume-old", args: []string{"--assume-old=vet", "check"}, gate: true},
+		{name: "F05 -o for every step", args: append(oldSteps, "check"), gate: true},
+		{name: "F06 MAKEFLAGS=-o vet in env", args: []string{"check"}, env: []string{"MAKEFLAGS=-o vet"}, gate: true},
+		{name: "F07 -i with MAKECMDGOALS on the command line", args: []string{"-i", "check", "MAKECMDGOALS=x"}},
+		{name: "F08 -i with MAKECMDGOALS in env", args: []string{"-i", "check"}, env: []string{"MAKECMDGOALS=x"}},
+		{name: "F09 MAKE and MAKECMDGOALS in env", args: []string{"check"}, env: []string{"MAKE=true", "MAKECMDGOALS=x"}},
+		{name: "F10 MAKEFLAGS=i and MAKECMDGOALS in env", args: []string{"check"}, env: []string{"MAKECMDGOALS=x", "MAKEFLAGS=i"}},
+		{name: "F11 MAKEFLAGS=i on the command line", args: []string{"check", "MAKEFLAGS=i"}},
+		{name: "F12 --ignore-errors", args: []string{"--ignore-errors", "check"}},
+		{name: "F13 --keep-going", args: []string{"--keep-going", "check"}},
+		{name: "F14 --dry-run", args: []string{"--dry-run", "check"}},
+		{name: "F15 --touch", args: []string{"--touch", "check"}},
+		{name: "F16 --question", args: []string{"--question", "check"}},
+		{name: "F17 CURDIR", args: []string{"check", "CURDIR=/tmp"}, gate: true},
+		{name: "F18 -i, second makefile and MAKEFILE_LIST", args: []string{"-i", "-f", "Makefile", "-f", double, "check", "MAKEFILE_LIST=Makefile"}},
+		{name: "F19 -k, second makefile, MAKEFILE_LIST and MAKECMDGOALS", args: []string{"-k", "-f", "Makefile", "-f", double, "check", "MAKEFILE_LIST=Makefile", "MAKECMDGOALS=x"}},
+		{name: "F20 override variables on the command line", args: []string{"check", "gate_bad=", "gate_refuse=", "gate_forged=", "GATE=true", "GATE_STEPS="}, gate: true},
+		{name: "F21 -e with GATE in env", args: []string{"-e", "check"}, env: []string{"GATE=true", "GATE_STEPS="}, gate: true},
+		{name: "F22 two goals", args: []string{"check", "vet"}, gate: true},
+		{name: "F23 two goals and -o", args: []string{"vet", "check", "-o", "vet"}, gate: true},
+		{name: "F24 -j8", args: []string{"-j8", "check"}, gate: true},
+		{name: "F25 -s", args: []string{"-s", "check"}, gate: true},
+		{name: "F26 -B", args: []string{"-B", "check"}, gate: true},
+		{name: "F27 -W", args: []string{"check", "-W", "vet"}, gate: true},
+		{name: "F28 --eval of GATE_STEPS", args: []string{"check", "--eval=override GATE_STEPS := hooks-check"}},
+		{name: "F29 GO, PKGS and A", args: []string{"check", "GO=true", "PKGS=./flagkit/...", "A=--summary"}, gate: true},
+		{name: "F30 GOFLAGS in env", args: []string{"check"}, env: []string{"GOFLAGS=-vet=off"}},
+		{name: "T02 GOFLAGS on the command line", args: []string{"check", "GOFLAGS=-run=^$"}},
+		{name: "T03 -o test-full", args: []string{"-o", "test-full", "check"}, gate: true},
+		{name: "T04 GOFLAGS and MAKECMDGOALS in env", args: []string{"check"}, env: []string{"GOFLAGS=-run=^$", "MAKECMDGOALS=x"}},
+
+		{name: "MAKECMDGOALS from a makefile read before", args: []string{"-i", "-f", goals, "-f", "Makefile", "check"}},
+		{name: "MAKEFILE_LIST alone on the command line", args: []string{"-f", "Makefile", "-f", double, "check", "MAKEFILE_LIST=Makefile"}},
+		{name: "-i behind a goal alias from --eval", args: []string{"-i", "--eval", "x: check", "x"}},
+		{name: "-k behind a goal alias from a second makefile", args: []string{"-k", "-f", "Makefile", "-f", double, "--eval", "x: check", "x"}},
+		{name: "gate-clean: -i with MAKECMDGOALS", args: []string{"-i", "gate-clean", "MAKECMDGOALS=x"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := append([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}, tc.env...)
@@ -311,9 +371,15 @@ func TestMakeCheckCannotBeForged(t *testing.T) {
 			if tc.gate && !strings.Contains(out, "→ hooks-check") {
 				t.Fatalf("make %v must run the real gate:\n%s", tc.args, out)
 			}
+			if !tc.gate && strings.Contains(out, "→ hooks-check") {
+				t.Fatalf("make %v must refuse to start the gate:\n%s", tc.args, out)
+			}
 			// До fmt-check гейт доходит с активными хуками (make hooks); дальше его не пускает версия тула.
 			if strings.Contains(out, "→ fmt-check") && !strings.Contains(out, "пиненную версию") {
 				t.Fatalf("make %v must stop at the tool that is not the pinned version:\n%s", tc.args, out)
+			}
+			if strings.Contains(out, "→ vet") {
+				t.Fatalf("make %v went past the failed step:\n%s", tc.args, out)
 			}
 		})
 	}
@@ -353,5 +419,65 @@ func TestLintRefusesWeakenedConfig(t *testing.T) {
 				t.Fatalf("lint must refuse the config with %q (err %v):\n%s", tc.want, err, out)
 			}
 		})
+	}
+}
+
+// Регрессия RGATE-03: //nolint с именем линтера, которого нет в enable, — отказ lint до прогона.
+// Такая директива ничего не подавляет, и nolintlint её не видит: включат линтер — его замечание
+// заглушено заранее.
+func TestLintRefusesNolintOfDisabledLinter(t *testing.T) {
+	root := repoRoot(t)
+	// Директива собрана из частей: проверка читает и этот файл.
+	files := map[string]string{"a.go": "package a\n\nfunc f() (*int, error) { return nil, nil } //nol" + "int:gosec,nilnil // не нужно\n"}
+	for _, name := range []string{".golangci.yml", "scripts/linters.txt"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files[name] = string(data)
+	}
+	dir := t.TempDir()
+	write(t, dir, files)
+	out, err := run(t, dir, "", nil, "bash", filepath.Join(root, "scripts", "lint.sh"))
+	if err == nil || !strings.Contains(out, "//nolint называет линтер вне enable .golangci.yml: nilnil") || !strings.Contains(out, "a.go:3:") {
+		t.Fatalf("lint must refuse a //nolint of a linter that is not enabled (err %v):\n%s", err, out)
+	}
+}
+
+// Регрессия RGATE-05: проводку guard держит тест. TestGuardBash гоняет сам скрипт, а снятая
+// секция hooks или deny в .claude/settings.json оставляли след только в диффе.
+func TestSettingsWireTheGuard(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join(repoRoot(t), ".claude", "settings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var settings struct {
+		Permissions struct {
+			Deny []string `json:"deny"`
+		} `json:"permissions"`
+		Hooks struct {
+			PreToolUse []struct {
+				Matcher string `json:"matcher"`
+				Hooks   []struct {
+					Type    string `json:"type"`
+					Command string `json:"command"`
+				} `json:"hooks"`
+			} `json:"PreToolUse"`
+		} `json:"hooks"`
+	}
+	if err := json.Unmarshal(data, &settings); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(settings.Permissions.Deny, "Bash(*--no-veri*)") {
+		t.Errorf("permissions.deny lost the --no-verify rule: %v", settings.Permissions.Deny)
+	}
+	wired := false
+	for _, entry := range settings.Hooks.PreToolUse {
+		for _, h := range entry.Hooks {
+			wired = wired || entry.Matcher == "Bash" && h.Type == "command" && strings.Contains(h.Command, ".claude/hooks/guard-bash.sh")
+		}
+	}
+	if !wired {
+		t.Errorf("hooks.PreToolUse does not call guard-bash.sh for Bash: %s", data)
 	}
 }

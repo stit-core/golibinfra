@@ -87,6 +87,14 @@ func TestCheck(t *testing.T) {
 			want: "internal/otelkit: нет README.md ни в каталоге, ни выше — переменные без доков: OTELKIT_INJECTED",
 		},
 		{
+			// Регрессия RGATE-02: тег анонимной структуры — такая же переменная кода.
+			name: "tag of an anonymous struct",
+			inject: func(_ *testing.T, f fstest.MapFS) {
+				add(f, "flagkit/zz_inj.go", "package flagkit\n\nimport \"git.stit.tech/stit-core/golibinfra/internal/envconf\"\n\nfunc zzEnv() (string, error) {\n\tvar c struct {\n\t\tToken string `envconfig:\"ZZ_ANON_TOKEN\"`\n\t}\n\terr := envconf.Load(&c)\n\treturn c.Token, err\n}\n")
+			},
+			want: "ZZ_ANON_TOKEN — нет строки таблицы",
+		},
+		{
 			name: "E4 root table default differs from code",
 			inject: func(t *testing.T, f fstest.MapFS) {
 				edit(t, f, "README.md", "(\\| `NATS_URL` \\| `natskit` \\| )`nats://localhost:4222`", "${1}`nats://evil:4222`")

@@ -358,7 +358,7 @@ func TestModule_ValidationErrorKeepsDetails(t *testing.T) {
 		huma.Register(api, huma.Operation{
 			OperationID: "create", Method: http.MethodPost, Path: "/items",
 		}, func(context.Context, *boomInput) (*struct{}, error) {
-			return nil, nil //nolint:nilnil // тело ответа не нужно
+			return nil, nil // тело ответа не нужно
 		})
 	}))
 
@@ -506,7 +506,7 @@ func TestModule_ClientIPInContext(t *testing.T) {
 	srv := startApp(t, fx.Invoke(func(api huma.API) {
 		huma.Get(api, "/whoami", func(ctx context.Context, _ *struct{}) (*struct{}, error) {
 			got = httpkit.ClientIPFrom(ctx)
-			return nil, nil //nolint:nilnil // тело ответа не нужно
+			return nil, nil // тело ответа не нужно
 		})
 	}))
 	if resp := do(t, srv, http.MethodGet, "/whoami", nil, "X-Forwarded-For: 6.6.6.6, 203.0.113.7"); resp.StatusCode != http.StatusNoContent {

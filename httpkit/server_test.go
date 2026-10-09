@@ -172,7 +172,7 @@ func TestBindAPI_MaxBodyBytesReachesOperations(t *testing.T) {
 		}
 	},
 	) (*struct{}, error) {
-		return nil, nil //nolint:nilnil // тело ответа не нужно
+		return nil, nil // тело ответа не нужно
 	})
 	if op := api.OpenAPI().Paths["/echo"].Post; op.MaxBodyBytes != 16 {
 		t.Fatalf("Operation.MaxBodyBytes = %d, want 16", op.MaxBodyBytes)
@@ -201,7 +201,7 @@ func TestWithMiddleware(t *testing.T) {
 	s := mustNewServer(t, validConfig(), WithMiddleware(mw("outer"), mw("inner")))
 	api := s.BindAPI()
 	huma.Get(api, "/ping", func(context.Context, *struct{}) (*struct{}, error) {
-		return nil, nil //nolint:nilnil // тело ответа не нужно
+		return nil, nil // тело ответа не нужно
 	})
 
 	s.Router().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/ping", nil))

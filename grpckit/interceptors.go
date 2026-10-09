@@ -20,7 +20,7 @@ import (
 // обогащают контекст, а ServerStream.Context() иначе read-only).
 type wrappedStream struct {
 	grpc.ServerStream
-	ctx context.Context //nolint:containedctx // ctx стрима по контракту grpc
+	ctx context.Context // ctx стрима по контракту grpc
 }
 
 func (w *wrappedStream) Context() context.Context { return w.ctx }

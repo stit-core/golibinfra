@@ -73,7 +73,7 @@ func registerSlow(api huma.API, res *resource, gate *slowGate) {
 		if !res.open.Load() {
 			return nil, httpkit.Unavailable("RESOURCE_CLOSED", "resource closed before the request finished")
 		}
-		return nil, nil //nolint:nilnil // тело ответа не нужно
+		return nil, nil // тело ответа не нужно
 	})
 }
 
@@ -277,7 +277,7 @@ func TestModule_StopRequestGetsShutdownTimeoutAfterPause(t *testing.T) {
 			close(entered)
 			select {
 			case <-time.After(1500 * time.Millisecond): // пауза и половина HTTP_SHUTDOWN_TIMEOUT
-				return nil, nil //nolint:nilnil // тело не нужно
+				return nil, nil // тело не нужно
 			case <-ctx.Done():
 				return nil, ctx.Err()
 			}
@@ -332,7 +332,7 @@ func TestModule_StopIsBoundedByShutdownTimeout(t *testing.T) {
 		huma.Get(api, "/stuck", func(context.Context, *struct{}) (*struct{}, error) {
 			close(entered)
 			<-release
-			return nil, nil //nolint:nilnil // тело не нужно
+			return nil, nil // тело не нужно
 		})
 	})
 	var srv *httpkit.Server
@@ -406,7 +406,7 @@ func TestModule_StopDeadlineCancelsHandlersAndLeavesBudget(t *testing.T) {
 		huma.Get(api, "/stuck", func(context.Context, *struct{}) (*struct{}, error) {
 			close(stuck)
 			<-release
-			return nil, nil //nolint:nilnil // тело не нужно
+			return nil, nil // тело не нужно
 		})
 	})
 	var srv *httpkit.Server
