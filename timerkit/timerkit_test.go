@@ -3,6 +3,8 @@ package timerkit
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -17,6 +19,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
@@ -254,6 +257,41 @@ func TestSpanPerRun(t *testing.T) {
 	panicked := spanByName(t, "timerkit.job span-panic")
 	if panicked.Status().Code != codes.Error || panicked.Status().Description != "panic" {
 		t.Errorf("panicked run status = %v, want error/panic", panicked.Status())
+	}
+}
+
+// Регрессия ROBS-03: текст ошибки и panic job'а — потребителя — в спане под теми же масками, что
+// в записи лога: e-mail и токен из ошибки не лежат в трассе открытыми.
+func TestSpan_JobErrorTextIsMasked(t *testing.T) {
+	const email, token = "ivan.petrov@example.com", "sk_live_51Mabcdef0123456789abcdef0123"
+	failure := fmt.Errorf("charge customer %s: provider rejected Authorization: Bearer %s", email, token)
+	log := logtest.Capture()
+	r := newRunner(log, clockkit.NewTickable(time.Unix(0, 0)))
+	r.once(context.Background(), Job{Name: "pii-err", Run: func(context.Context) error { return failure }})
+	r.once(context.Background(), Job{Name: "pii-panic", Run: func(context.Context) error { panic(failure) }})
+
+	logged, _ := log.Find(slog.LevelError, "timerkit: job error")
+	failed := spanByName(t, "timerkit.job pii-err")
+	texts := []string{failed.Status().Description}
+	for _, name := range []string{"timerkit.job pii-err", "timerkit.job pii-panic"} {
+		for _, e := range spanByName(t, name).Events() {
+			for _, kv := range e.Attributes {
+				if e.Name == "exception" && kv.Key == "exception.message" {
+					texts = append(texts, kv.Value.AsString())
+				}
+			}
+		}
+	}
+	if len(texts) != 3 {
+		t.Fatalf("spans carry %d error texts, want the status and two exception events: %q", len(texts), texts)
+	}
+	for _, text := range texts {
+		if strings.Contains(text, email) || strings.Contains(text, token) || !strings.Contains(text, "provider rejected") {
+			t.Errorf("span text must carry the error under the log masks: %q", text)
+		}
+	}
+	if texts[0] != logged.Str("error") {
+		t.Errorf("span status %q and the log record %q must carry the same masked text", texts[0], logged.Str("error"))
 	}
 }
 

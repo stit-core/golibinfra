@@ -78,7 +78,11 @@ fx.New(
 
 | Спан | Kind | Атрибуты | Статус |
 | --- | --- | --- | --- |
-| `timerkit.job <name>` | internal | `timer.job` = `Job.Name` | `Error` + `RecordError` на ошибке `Run`; `Error`/`panic` на panic'е |
+| `timerkit.job <name>` | internal | `timer.job` = `Job.Name` | `Error` + exception-событие на ошибке `Run`; `Error`/`panic` + exception-событие на panic'е |
+
+Текст ошибки и panic job'а — текст потребителя: в статус спана и `exception.message` он идёт
+под масками логгера графа — теми же, что в записи `timerkit: job error` (свой
+`LOG_REDACT_PATTERNS` действует и на спан, `LOG_REDACT_DISABLED=true` оставляет текст как есть).
 
 Спан — корень трейса запуска: всё, что инструментировано внутри `Run` (pgkit,
 httpclient, natskit), становится его детьми, а не сиротскими трейсами.

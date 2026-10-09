@@ -88,8 +88,14 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 - Метрики пишутся с тем же `ctx`, что несёт спан измерения (publish — ctx
   producer-спана, consume — ctx обработчика): при включённых exemplar'ах из
   гистограммы `nats_handle_duration_seconds` можно прыгнуть в конкретный трейс.
-- На обоих концах при ошибке/панике вызывается `span.RecordError` +
-  `span.SetStatus(codes.Error, …)`.
+- На обоих концах при ошибке/панике спан получает exception-событие и статус
+  `Error` с текстом ошибки.
+
+**PII.** Текст ошибки и panic обработчика — текст потребителя: в consumer-спан (статус и
+`exception.message`) он идёт под масками логгера шины — теми же, что в записи
+`natskit: handler error`: свой `LOG_REDACT_PATTERNS` действует и на спан, выключенный redact
+(`LOG_REDACT_DISABLED=true`) оставляет текст как есть и там, и там. Логгер не из `logkit` —
+дефолтные маски. Ошибка публикации — текст клиента NATS — пишется как есть.
 
 ## Логи
 

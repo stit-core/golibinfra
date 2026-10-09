@@ -19,6 +19,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/internal/otelkit"
+	"git.stit.tech/stit-core/golibinfra/internal/spanerr"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -149,15 +150,15 @@ func (r *runner) once(ctx context.Context, j Job) {
 		defer func() {
 			if p := recover(); p != nil {
 				result = "panic"
-				span.RecordError(fmt.Errorf("panic: %v", p))
+				spanerr.Record(span, fmt.Errorf("panic: %v", p), r.log)
 				span.SetStatus(codes.Error, "panic")
 				r.log.Error(ctx, "timerkit: panic in job", "job", j.Name, "panic", p, "stack", string(debug.Stack()))
 			}
 		}()
 		if err := j.Run(runCtx); err != nil {
 			result = "error"
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			// Текст ошибки job'а — потребителя: в спан он идёт под теми же масками, что в лог.
+			spanerr.Record(span, err, r.log)
 			r.log.Error(ctx, "timerkit: job error", "job", j.Name, "error", err)
 		}
 	}()

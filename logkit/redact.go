@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"regexp"
 	"strings"
+	"sync"
 	"unicode"
 )
 
@@ -96,6 +97,16 @@ func NewRedactHandler(inner slog.Handler, cfg RedactConfig) (slog.Handler, error
 	}
 	return &redactHandler{inner: inner, rules: rules, with: with}, nil
 }
+
+// defaultMasks — правила дефолтного набора для текста вне записи лога (MaskText логгера без
+// своих правил).
+var defaultMasks = sync.OnceValue(func() *redactHandler {
+	rules, err := compileRedact(RedactConfig{})
+	if err != nil {
+		panic(err) // дефолтный набор — константа пакета
+	}
+	return &redactHandler{inner: slog.DiscardHandler, rules: rules, with: defaultReplaceWith}
+})
 
 // compileRedact собирает один альтернативный regexp: одна прогонка по строке
 // вместо N. Замена — литеральная, поэтому «$» в ReplaceWith безопасен.

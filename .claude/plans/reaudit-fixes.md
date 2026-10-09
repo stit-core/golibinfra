@@ -68,8 +68,9 @@ blocked-by: —
   - Сделано: при `Disabled` провайдер трасс процесса — no-op (`trace/noop`); `TestInitDisabled_LeavesTraceContextToNeighbours` до правки красный (`…-00` и новый корень), после — PASS
 
 ### На границе medium
-- [ ] **S6** — logkit, natskit, timerkit: текст ошибки потребителя в спане — под масками логгера (ROBS-03)
-  - Проверка: `go test -short -race ./logkit/ ./natskit/ ./timerkit/ ./internal/otelkit/` → PASS · Закрывает: AC6
+- [x] **S6** — logkit, natskit, timerkit: текст ошибки потребителя в спане — под масками логгера (ROBS-03)
+  - Проверка: `go test -race ./logkit/ ./natskit/ ./timerkit/ ./internal/spanerr/` → PASS · Закрывает: AC6
+  - Сделано: `internal/spanerr.Record` — exception-событие и статус с текстом под масками логгера (`MaskText` у логгеров logkit, чужой логгер — дефолтные маски); `TestConsumerSpan_HandlerErrorTextIsMasked`, `TestSpan_JobErrorTextIsMasked`, `TestRecord_MasksErrorTextLikeTheLogger`; до правки e-mail и Bearer-токен в спане открыты
 - [ ] **S7** — httpkit, cachekit, authnkit, pgkit: nil-логгер — `Nop`; тексты ошибок `Validate` и
   каталога миграций (RAPI-02, RAPI-03, RAPI-04)
   - Проверка: `go test -short -race ./httpkit/ ./cachekit/ ./authnkit/ ./pgkit/` → PASS · Закрывает: AC1
@@ -122,6 +123,11 @@ blocked-by: —
   `Providers.TracerProvider` остаётся SDK-провайдером без экспорта (тип и «не nil» — контракт
   `Init`), в глобальные он не ставится. Цена: `trace_id` в логах выключенного сервиса есть
   только у запросов с входящим контекстом — строка «Поведения» и Handoff шаблону.
+- Маска текста для спана — метод `MaskText` конкретных логгеров logkit, который кит находит
+  утверждением интерфейса в `internal/spanerr`, а не новый экспорт logkit: правила масок графа
+  (свой набор, выключатель) есть только у логгера, а экспортируемая функция сделала бы релиз
+  minor'ом. Под масками — только текст потребителя (обработчик шины, job); ошибки драйверов и
+  самого кита (NATS, Redis, транспорт httpclient) идут как есть.
 - Поток, которому не ставится дедлайн запроса, у операции huma определяет её описание (ответ
   `text/event-stream`), у маршрута мимо huma — по-прежнему заголовок запроса: описания у него
   нет, а пометка маршрута — новый экспорт (бэклог `httpkit-raw-route-stream-mark`).
@@ -136,4 +142,4 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S5 закрыты (все medium). Следующий шаг — S6 (текст ошибки потребителя в спане — под масками).
+S1–S6 закрыты. Следующий шаг — S7 (nil-логгер httpkit, тексты ошибок `Validate` и каталога миграций).

@@ -15,10 +15,10 @@ import (
 	"github.com/nats-io/nats.go"
 	"github.com/nats-io/nats.go/jetstream"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/trace"
 	"golang.org/x/sync/semaphore"
 
+	"git.stit.tech/stit-core/golibinfra/internal/spanerr"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -548,8 +548,8 @@ func (b *jsBus) handleStreamOne(parent context.Context, sc streamConsumer, msg j
 
 	status := "ok"
 	if handlerErr != nil {
-		span.RecordError(handlerErr)
-		span.SetStatus(codes.Error, handlerErr.Error())
+		// Текст ошибки обработчика — потребителя: в спан он идёт под теми же масками, что в лог.
+		spanerr.Record(span, handlerErr, b.log)
 		status = b.failStream(ctx, sc, msg, handlerErr, panicked)
 	} else if err := msg.Ack(); err != nil {
 		b.log.Error(ctx, "natskit: jetstream ack error", "subject", subject, "error", err)

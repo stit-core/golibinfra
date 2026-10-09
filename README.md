@@ -136,7 +136,8 @@ go mod tidy
 общие шкалы bucket-границ для гистограмм длительности — `DurationBuckets` и
 `LongDurationBuckets`), `internal/envconf` (ридер ENV — `New*Config` китов и
 `config.Env`), `internal/requestid`
-(ctx-ключ request-id), `internal/stopbudget` (доля бюджета остановки fx для ждущего `OnStop` —
+(ctx-ключ request-id), `internal/spanerr` (ошибка потребителя в спане — текст под масками логгера
+кита: `natskit`, `timerkit`), `internal/stopbudget` (доля бюджета остановки fx для ждущего `OnStop` —
 две трети остатка, треть — хукам после), `internal/clientip` (ctx-ключ IP клиента и свёртка IPv6 в ключ —
 общая у лимитера `httpkit` и `bruteforcekit`), `internal/jwks` (JWKS-кэш с троттлингом и grace-периодом
 ключа), `internal/httpdoer` (общий интерфейс `Doer`), `internal/redact` (URL без секретов для

@@ -14,10 +14,10 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"go.opentelemetry.io/otel/attribute"
-	"go.opentelemetry.io/otel/codes"
 	"golang.org/x/sync/semaphore"
 
 	"git.stit.tech/stit-core/golibinfra/internal/natsname"
+	"git.stit.tech/stit-core/golibinfra/internal/spanerr"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -183,9 +183,7 @@ func (b *natsBus) handleOne(parent context.Context, msg *nats.Msg, subject strin
 		dur := time.Since(start).Seconds()
 		if rec := recover(); rec != nil {
 			status = "panic"
-			err := fmt.Errorf("natskit: handler panic: %v", rec)
-			span.RecordError(err)
-			span.SetStatus(codes.Error, err.Error())
+			spanerr.Record(span, fmt.Errorf("natskit: handler panic: %v", rec), b.log)
 			b.log.Error(
 				ctx, "natskit: handler panic",
 				"subject", subject,
@@ -201,8 +199,8 @@ func (b *natsBus) handleOne(parent context.Context, msg *nats.Msg, subject strin
 
 	if err := handler(ctx, msg.Data); err != nil {
 		status = "handler_error"
-		span.RecordError(err)
-		span.SetStatus(codes.Error, err.Error())
+		// Текст ошибки обработчика — потребителя: в спан он идёт под теми же масками, что в лог.
+		spanerr.Record(span, err, b.log)
 		if !errors.Is(err, context.Canceled) {
 			b.log.Error(ctx, "natskit: handler error", "subject", subject, "error", err)
 		}

@@ -102,7 +102,8 @@ make-окружения вызывающего и с холодным кешем
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
   `internal/envconf` (ридер ENV — `New*Config` китов и `config.Env`),
-  `internal/requestid` (ctx-ключ request-id), `internal/stopbudget` (две трети остатка бюджета
+  `internal/requestid` (ctx-ключ request-id), `internal/spanerr` (ошибка потребителя в спане —
+  текст под масками логгера кита), `internal/stopbudget` (две трети остатка бюджета
   остановки fx — `OnStop`, который ждёт: HTTP, gRPC, пул pgkit, подписка и шина natskit, job'ы
   timerkit, telemetry), `internal/clientip` (ctx-ключ IP клиента — httpkit
   и `handlertest`, свёртка IPv6 — у лимитера httpkit и bruteforcekit),
@@ -156,6 +157,11 @@ make-окружения вызывающего и с холодным кешем
   `<kit>`, `<kit>/<sub>`, у инстанса — `<kit>:<instance>`); в `/ready` и в health-loop `grpckit`
   попадает через `healthkit.ProvideProbe(ctor)`, у инстанса — `<kit>.ProvideProbe(name)`
   (fx-группа `healthkit.ProbesGroup` = `healthkit.probes`).
+- Текст ошибки потребителя (обработчик шины, job) в спан пишет `spanerr.Record(span, err, log)`:
+  статус и `exception.message` — под масками логгера кита, а не `span.RecordError(err)` — маски
+  logkit стоят только в цепочке лога, и скрытое в записи лежало бы рядом в трассе открытым.
+  Ошибки самого кита и драйвера (публикация NATS, Redis, транспорт httpclient) идут как есть;
+  держат тесты китов (`…ErrorTextIsMasked`) и ревью.
 - `OnStop`, который ждёт (запросы, обработчики, job'ы, соединения, экспорт), берёт две трети
   остатка бюджета остановки — `stopbudget.Share(ctx)` — и по их исчерпании пишет WARN и
   возвращает `nil`: fx на истёкшем ctx пропускает хуки после, и один ждущий хук отнял бы

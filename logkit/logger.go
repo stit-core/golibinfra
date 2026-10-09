@@ -25,9 +25,13 @@ func Nop() Logger { return nopLogger{} }
 
 type nopLogger struct{}
 
-func (nopLogger) Debug(context.Context, string, ...any)    {}
-func (nopLogger) Info(context.Context, string, ...any)     {}
-func (nopLogger) Warn(context.Context, string, ...any)     {}
-func (nopLogger) Error(context.Context, string, ...any)    {}
-func (nopLogger) With(...any) Logger                       { return nopLogger{} }
+func (nopLogger) Debug(context.Context, string, ...any) {}
+func (nopLogger) Info(context.Context, string, ...any)  {}
+func (nopLogger) Warn(context.Context, string, ...any)  {}
+func (nopLogger) Error(context.Context, string, ...any) {}
+func (nopLogger) With(...any) Logger                    { return nopLogger{} }
+
+// MaskText — text под дефолтными масками: правил у Nop нет, а текст ошибки в спане скрывают и они.
+func (nopLogger) MaskText(text string) string { return defaultMasks().text(text) }
+
 func (nopLogger) Enabled(context.Context, slog.Level) bool { return false }

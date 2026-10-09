@@ -178,6 +178,17 @@ func (s *slogLogger) Error(ctx context.Context, msg string, kv ...any) {
 	s.log(ctx, slog.LevelError, msg, kv)
 }
 
+// MaskText — text по правилам масок этого логгера: киты пропускают через них текст ошибки
+// потребителя перед записью в спан (internal/spanerr), чтобы скрытое в логе не лежало открытым
+// в трассе. Логгер с выключенным redact и логгер поверх чужого slog.Handler текст не меняют —
+// как и запись лога.
+func (s *slogLogger) MaskText(text string) string {
+	if h, ok := s.l.Handler().(*redactHandler); ok {
+		return h.text(text)
+	}
+	return text
+}
+
 func (s *slogLogger) With(kv ...any) Logger {
 	return &slogLogger{l: s.l.With(kv...)}
 }

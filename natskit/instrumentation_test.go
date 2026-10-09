@@ -3,10 +3,14 @@ package natskit_test
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/codes"
 	"go.opentelemetry.io/otel/propagation"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	"go.opentelemetry.io/otel/sdk/trace/tracetest"
@@ -14,6 +18,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/natskit"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
@@ -346,4 +351,88 @@ func TestStreamBus_ConsumeMetricsUseFilterSubject(t *testing.T) {
 		}
 		return false
 	})
+}
+
+// Регрессия ROBS-03: текст ошибки и panic обработчика — потребителя — в consumer-спане под теми
+// же масками, что в записи лога: e-mail и токен из ошибки не лежат в трассе открытыми.
+func TestConsumerSpan_HandlerErrorTextIsMasked(t *testing.T) {
+	const email, token = "ivan.petrov@example.com", "sk_live_51Mabcdef0123456789abcdef0123"
+	failure := fmt.Errorf("charge customer %s: provider rejected Authorization: Bearer %s", email, token)
+	spans := installTracing(t)
+	stream := nameFor(t)
+	conn := connect(t, natsURL(t))
+	log := logtest.Capture()
+	bus := newBus(t, conn, log, natskit.Config{})
+	sb, err := natskit.NewStreamBus(jsConfig(stream), conn, log)
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+	ctx := context.Background()
+	// JetStream переотправит сообщение после отказа: сигнал — без блокировки обработчика.
+	done := make(chan struct{}, 16)
+	signal := func() {
+		select {
+		case done <- struct{}{}:
+		default:
+		}
+	}
+	fail := func(context.Context, []byte) error {
+		defer signal()
+		return failure
+	}
+	if _, err := bus.Subscribe(ctx, "core."+stream+".fail", fail); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if _, err := bus.Subscribe(ctx, "core."+stream+".panic", func(context.Context, []byte) error {
+		defer signal()
+		panic(failure)
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if _, err := sb.SubscribeStream(ctx, stream, stream+".>", "worker", fail); err != nil {
+		t.Fatalf("subscribe stream: %v", err)
+	}
+	for _, subject := range []string{"core." + stream + ".fail", "core." + stream + ".panic"} {
+		if err := bus.Publish(ctx, subject, []byte("x")); err != nil {
+			t.Fatalf("publish %s: %v", subject, err)
+		}
+	}
+	if err := sb.PublishStream(ctx, stream+".fail", []byte("x")); err != nil {
+		t.Fatalf("publish stream: %v", err)
+	}
+	for range 3 {
+		recv(t, done, 10*time.Second, "handler")
+	}
+
+	texts := func() (out []string) {
+		for _, s := range spans.Ended() {
+			if s.SpanKind() != trace.SpanKindConsumer || s.Status().Code != codes.Error {
+				continue
+			}
+			out = append(out, s.Status().Description)
+			for _, e := range s.Events() {
+				for _, kv := range e.Attributes {
+					if e.Name == "exception" && kv.Key == "exception.message" {
+						out = append(out, kv.Value.AsString())
+					}
+				}
+			}
+		}
+		return out
+	}
+	for deadline := time.Now().Add(5 * time.Second); len(texts()) < 6 && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := texts()
+	if len(got) < 6 {
+		t.Fatalf("consumer spans with an error carry %d texts, want status and exception.message of three spans: %q", len(got), got)
+	}
+	for _, text := range got {
+		if strings.Contains(text, email) || strings.Contains(text, token) || !strings.Contains(text, "provider rejected") {
+			t.Errorf("span text must carry the error under the log masks: %q", text)
+		}
+	}
+	if e, ok := log.Find(slog.LevelError, "natskit: handler error"); !ok || strings.Contains(e.Str("error"), email) || !slices.Contains(got, e.Str("error")) {
+		t.Errorf("the span and the log record must carry the same masked text: log %q, spans %q", e.Str("error"), got)
+	}
 }
