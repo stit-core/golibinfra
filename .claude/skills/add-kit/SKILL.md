@@ -67,9 +67,10 @@ description: Завести в golibinfra новый kit по конвенция
    `<kit_prefix>_<what>_<unit|total>`, label'ы — конечные множества. Гистограмма
    длительности — `metric.WithUnit("s")` + `otelkit.DurationBuckets()`, своих
    границ не заводим. Кит с инфраструктурной зависимостью (БД, брокер, кэш,
-   объектное хранилище) отдаёт `Probe(...) healthkit.Probe` (`healthkit.New`,
-   при сетевом вызове — `healthkit.WithTimeout`) для `/ready`; для SaaS-зависимости
-   проба opt-in — регистрирует потребитель.
+   объектное хранилище) отдаёт `Probe(...) healthkit.Probe` (`healthkit.New`) для
+   `/ready`: дедлайн пробе ставит вызывающий (`/ready` httpkit, health-loop grpckit), свой
+   `healthkit.WithTimeout` — когда у кита свой таймаут пробы (`STORAGE_S3_PROBE_TIMEOUT`);
+   для SaaS-зависимости проба opt-in — регистрирует потребитель.
 5. **Ошибки и таймауты.** Sentinel-ошибки на английском с префиксом кита
    (`errors.New("<kit>: …")`, обёртка `fmt.Errorf("<kit>: …: %w", err)`; у сабпакета
    префикс — `<kit>/<sub>`); каждый исходящий вызов — с таймаутом (никакого
@@ -79,14 +80,15 @@ description: Завести в golibinfra новый kit по конвенция
    (`cachekit` → `testkit/cachetest/`; см. `authntest`, `bruteforcetest`).
    Внутри каталога кита test-хелперов не держим; исключения — in-memory реализация
    двойного назначения, фейки часов `clockkit` и маркер `pgkit.WithTestTx` (CLAUDE.md
-   § Стиль). Добавь строку в `testkit/README.md`
-   и в перечень сабпакетов в корневом `README.md`.
+   § Стиль). Добавь строку в `testkit/README.md` и в перечни сабпакетов корневого
+   `README.md` и карты `CLAUDE.md`.
 7. **Документация.** Заведи `<kit>/README.md` (назначение, импорт, быстрый старт,
    конфигурация, observability, API, инварианты) — единый источник правды по
    киту. Для сложного кита разнеси детали по `<kit>/docs/` (`architecture.md`,
    `configuration.md`, `observability.md`, `usage.md`, `testing.md`). Плюс строка
    в `README.md § Пакеты` (и в env-таблицу, если кит читает endpoint) и в карту
-   пакетов `CLAUDE.md`. Без README kit «невидим».
+   пакетов `CLAUDE.md`. Без README kit «невидим»; строки кита, сабпакета testkit и пакета
+   `internal/` в обоих индексах требует `TestDocsNameEveryPackage`.
 8. **Gate.** `make check` зелёный перед claim «готово»: integration-тесты кита
    (testcontainers) входят в него.
 

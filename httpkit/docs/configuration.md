@@ -20,7 +20,7 @@
 | `HTTP_SHUTDOWN_TIMEOUT` | `ShutdownTimeout` | `time.Duration` | `10s` | сколько после паузы дорабатывают запросы в полёте; на дедлайне их ctx отменяется, соединения закрываются; `> 0` (§ Остановка) |
 | `HTTP_API_TITLE` | `APITitle` | `string` | `API` | title в OpenAPI; не пуст |
 | `HTTP_API_VERSION` | `APIVersion` | `string` | `0.1.0` | version в OpenAPI; не пуст |
-| `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `false` | `true` отдаёт `/docs`, `/openapi.json`, `/openapi.yaml`, `/schemas` без аутентификации — карта всех операций; для dev и внутреннего контура |
+| `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `false` | `true` отдаёт `/docs`, `/openapi.json`, `/openapi.yaml` (и `/openapi-3.0.json`, `/openapi-3.0.yaml`), `/schemas` без аутентификации — карта всех операций; для dev и внутреннего контура |
 | `HTTP_READY_PROBE_TIMEOUT` | `ReadyProbeTimeout` | `time.Duration` | `5s` | потолок одной пробы `/ready`; `> 0` |
 | `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана; `-` — таких путей нет |
 | `HTTP_TRUST_PROXY_HOPS` | `TrustProxyHops` | `int` | `0` | сколько доверенных прокси перед сервисом дописывают `X-Forwarded-For` (§ IP клиента); `>= 0` |
@@ -117,7 +117,7 @@ Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP и�
 |---|---|---|---|---|
 | `HTTP_IDEMPOTENCY_HEADER` | `Header` | `string` | `Idempotency-Key` | заголовок с ключом |
 | `HTTP_IDEMPOTENCY_TTL` | `TTL` | `time.Duration` | `24h` | срок хранения ответа; `> 0` |
-| `HTTP_IDEMPOTENCY_RESERVE_TTL` | `ReserveTTL` | `time.Duration` | `60s` | сколько ключ считается «выполняется», если процесс упал в середине запроса; больше `HTTP_REQUEST_TIMEOUT` (резерв переживает запрос) |
+| `HTTP_IDEMPOTENCY_RESERVE_TTL` | `ReserveTTL` | `time.Duration` | `60s` | сколько ключ считается «выполняется», если процесс упал в середине запроса; больше `HTTP_REQUEST_TIMEOUT` (резерв переживает запрос); ответ хендлера, который его пережил, не сохраняется (`result=skipped`) |
 | `HTTP_IDEMPOTENCY_MAX_BODY_BYTES` | `MaxBodyBytes` | `int64` | `65536` | потолок буферизации запроса и ответа; больше — запрос идёт без идемпотентности; `> 0` |
 | `HTTP_IDEMPOTENCY_STORE_TIMEOUT` | `StoreTimeout` | `time.Duration` | `2s` | потолок одной операции store; запись результата не зависит от отмены ctx клиента; `> 0` |
 | `HTTP_IDEMPOTENCY_FAIL_CLOSED` | `FailClosed` | `bool` | `false` | `true` — недоступный store отвечает `503 IDEMPOTENCY_UNAVAILABLE`; `false` — запрос выполняется без дедупликации (fail-open) |

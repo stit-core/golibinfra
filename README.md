@@ -139,9 +139,10 @@ go mod tidy
 (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента и свёртка IPv6 в ключ —
 общая у лимитера `httpkit` и `bruteforcekit`), `internal/jwks` (JWKS-кэш с троттлингом и grace-периодом
 ключа), `internal/httpdoer` (общий интерфейс `Doer`), `internal/redact` (URL без секретов для
-ошибок, логов и спанов китов), `internal/grpcstatus`
-(классификация gRPC-кодов) и `internal/grpclogkit` (мост grpclog → logkit)
-наружу не экспортируются.
+ошибок, логов и спанов китов), `internal/jsonb` (что из JSON не хранит Postgres JSONB —
+`auditkit` и фейк `outboxtest`), `internal/natsname` (правила имён NATS — `natskit` и фейк
+`natstest`), `internal/grpcstatus` (классификация gRPC-кодов) и `internal/grpclogkit` (мост
+grpclog → logkit) наружу не экспортируются.
 
 ## Per-concern endpoints (multi-host)
 
@@ -343,6 +344,10 @@ makefile в обычных формах (`-f`, в том числе `Makefile` �
 написанный под подделку (переприсваивает `MAKEFILE_LIST`), обходит любую сверку внутри make: свой
 makefile — правка гейта, а вердикт для remote — pre-push. Кеш golangci-lint — свой у каждого
 checkout'а (`.cache/`), у `gate-clean` — холодный.
+
+Гейт идёт на toolchain из директивы `toolchain` в `go.mod` (с `GOTOOLCHAIN=auto` он скачивается
+сам): по нему `govulncheck` судит stdlib. Потребителя она не касается — его минимум задаёт
+директива `go`.
 
 Версии `golangci-lint` и `govulncheck` — пины `Makefile`: шаги `fmt-check`, `lint` и `vuln`
 сверяют с ними бинарь из PATH и на другой версии отказывают (ставит `make tools`). `make lint` до

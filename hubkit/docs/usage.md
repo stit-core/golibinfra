@@ -102,7 +102,7 @@ var Module = fx.Options(
 
 ```go
 sess := issuer.Session{
-	SID:         idkit.New().String(),
+	SID:         idkit.NewV7(),
 	Subject:     account.Subject,
 	Kind:        hubclaims.KindCustomer, // пусто = сотрудник
 	CompanyID:   account.CompanyID,      // у заказчика обязателен
@@ -174,7 +174,7 @@ case err == nil:
 case errors.Is(err, client.ErrNotFound):
 	return nil, huma.Error404NotFound("company not found")
 case errors.Is(err, client.ErrUnavailable):
-	return projection.GetCompany(ctx, id) // деградация на локальную проекцию
+	return companies.Get(ctx, id) // деградация на локальную проекцию: свой репозиторий
 default:
 	return nil, err
 }

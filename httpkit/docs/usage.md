@@ -41,7 +41,8 @@ app.Run()
 
 HTTP стартует последним и гасится первым: `Module` — на верхнем уровне `fx.New`,
 роуты регистрирует Invoke внутри `fx.Module` домена или корневой `fx.Invoke` до
-`Module` ([architecture.md § Порядок хуков](architecture.md#порядок-хуков)).
+`Module`; там же — корневой `fx.Invoke`, который сам вешает хук
+([architecture.md § Порядок хуков](architecture.md#порядок-хуков)).
 
 ## Добавить роут
 
@@ -135,28 +136,18 @@ IDEMPOTENCY_IN_PROGRESS`. Ответы `5xx` и «не выполнено, по�
 `idempotency store failed` и fail-open (метрика `result=error`) или `503` при
 `HTTP_IDEMPOTENCY_FAIL_CLOSED=true`.
 
-Ключ привязан к клиенту: к субъекту, если extractor его положил, иначе к хешу
-`Authorization` + `Cookie`. `Idempotency` стоит в цепочке huma после `HumaAuth`: у
-защищённой операции replay получает только запрос, прошедший её схему, extractor зовётся
-один раз. Идемпотентность — у операций huma, маршрутам мимо huma её нет.
+Ключ привязан к клиенту: к субъекту, если extractor схемы его положил
+(`httpkit.ContextWithSubject`, пример — [§ Auth](#auth)), иначе к хешу `Authorization` +
+`Cookie`. Субъект — стабильный scope: ротация токена не превращает ретрай в новую
+операцию. `Idempotency` стоит в цепочке huma после `HumaAuth`: у защищённой операции
+replay получает только запрос, прошедший её схему, extractor зовётся один раз.
+Идемпотентность — у операций huma, маршрутам мимо huma её нет.
 
 **Без credentials дедупликации нет.** Запрос без субъекта, `Authorization` и `Cookie` идёт
 сквозным проходом (`result=skipped`): у анонимов общий scope ключа. Публичная
 write-операция (`httpkit.Public`) с анонимным клиентом выполняется столько раз, сколько раз
 пришёл запрос, — закрывайте такие операции `Security` или не опирайтесь на
 `Idempotency-Key` в их контракте.
-
-```go
-Extract: func(r *http.Request) (context.Context, error) {
-    id, err := v.Verify(r)
-    if err != nil {
-        return nil, err
-    }
-    // Субъект — стабильный scope идемпотентности: ротация токена не
-    // превращает ретрай в новую операцию.
-    return httpkit.ContextWithSubject(contextWithIdentity(r.Context(), id), id.Subject), nil
-},
-```
 
 Подключение store через fx — `Module` навесит middleware с `Config.Idempotency`:
 
@@ -262,19 +253,28 @@ extractor'а, в том числе скрытая, не даёт стартов�
 extractor'ом; операция, которой подходит любая, перечисляет их альтернативами.
 
 ```go
-httpkit.ProvideSecurityScheme(func(v *authnkit.Verifier) httpkit.SecuritySchemeEntry {
-    return httpkit.SecuritySchemeEntry{Name: "Bearer",
+httpkit.ProvideSecurityScheme(func(jwt authnkit.JWTParser, revoked cachekit.Cache) httpkit.SecuritySchemeEntry {
+    return httpkit.SecuritySchemeEntry{
+        Name:   "Bearer",
         Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer", BearerFormat: "JWT"},
         Extract: func(r *http.Request) (context.Context, error) {
-            claims, err := v.Verify(extractBearer(r))
-            if errors.Is(err, authnkit.ErrKeysUnavailable) {
-                return nil, fmt.Errorf("verify: %w", httpkit.ErrAuthUnavailable)
-            }
+            token, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+            claims, err := jwt.ParseAccess(r.Context(), token)
             if err != nil {
-                return nil, err
+                return nil, err // 401, текст — только в лог
             }
-            return contextWithClaims(r.Context(), claims), nil
-        }}
+            sub, _ := claims["sub"].(string)
+            _, gone, err := revoked.Get(r.Context(), "revoked:"+sub)
+            if err != nil { // Redis недоступен — 503, а не разлогин
+                return nil, fmt.Errorf("%w: %w", httpkit.ErrAuthUnavailable, err)
+            }
+            if gone {
+                return nil, errors.New("subject revoked")
+            }
+            // Субъект — scope ключа идемпотентности (httpkit.SubjectFrom читает его в хендлере).
+            return httpkit.ContextWithSubject(r.Context(), sub), nil
+        },
+    }
 })
 ```
 

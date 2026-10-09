@@ -7,11 +7,11 @@
 ## `testkit.StartPostgres`
 
 ```go
-func StartPostgres(t testing.TB, opts ...testkit.Option) *PostgresFixture
+func StartPostgres(t testing.TB, opts ...Option) *PostgresFixture
 
-func WithMigrations(sources ...pgkit.Source) testkit.Option // источники китов/приложения
-func WithMigrationsDir(path string) testkit.Option          // каталог приложения (источник app)
-func WithImage(ref string) testkit.Option                   // другой образ (pgvector, postgis)
+func WithMigrations(sources ...pgkit.Source) Option // источники китов/приложения
+func WithMigrationsDir(path string) Option          // каталог приложения (источник app)
+func WithImage(ref string) Option                   // другой образ (pgvector, postgis)
 ```
 
 Поднимает `testkit.PostgresImage` на свободном порту, ждёт готовности и

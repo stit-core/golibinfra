@@ -85,7 +85,8 @@ func WithTimeout(p Probe, d time.Duration) Probe {
 // Конструктор неверного типа отвергается при сборке графа: иначе значение
 // молча ложится в группу другим типом и /ready остаётся «ok» без проб.
 // Дополнительные аннотации (например fx.ParamTags для именованного инстанса)
-// применяются до групповой; свой fx.ResultTags передавать нельзя.
+// применяются до групповой; свой fx.ResultTags — ошибка графа, fx.As уводит пробу
+// из группы молча.
 func ProvideProbe(ctor any, anns ...fx.Annotation) fx.Option {
 	if err := validateCtor(ctor); err != nil {
 		return fx.Error(err)

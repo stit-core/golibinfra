@@ -55,7 +55,8 @@ fx.New(
 графа, недоступный Redis (при `REDIS_PING_ON_START`) — старт. Логгер — `logkit.Logger`
 графа.
 
-Без fx: `cachekit.NewRedisCache(cfg, log)`; закрывать `Close()` самому.
+Без fx: `cachekit.NewRedisCache(cfg, log)`; закрывать `Close()` самому, версию сервера
+сверяет только `Module`.
 
 ## Конфигурация
 
@@ -172,10 +173,10 @@ type Cache interface {
 ```go
 func NewIdempotencyStore(c Cache) *IdempotencyStore
 
-func (s *IdempotencyStore) Reserve(ctx, key string, ttl time.Duration) (token string, ok bool, err error)
-func (s *IdempotencyStore) Get(ctx, key string) ([]byte, bool, error)
-func (s *IdempotencyStore) Set(ctx, key, token string, record []byte, ttl time.Duration) (stored bool, err error)
-func (s *IdempotencyStore) Release(ctx, key, token string) error
+func (s *IdempotencyStore) Reserve(ctx context.Context, key string, ttl time.Duration) (token string, ok bool, err error)
+func (s *IdempotencyStore) Get(ctx context.Context, key string) ([]byte, bool, error)
+func (s *IdempotencyStore) Set(ctx context.Context, key, token string, record []byte, ttl time.Duration) (stored bool, err error)
+func (s *IdempotencyStore) Release(ctx context.Context, key, token string) error
 ```
 
 Байтовый store для `httpkit.Idempotency` (структурно совместим с

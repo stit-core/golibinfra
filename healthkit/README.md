@@ -18,6 +18,7 @@ import "git.stit.tech/stit-core/golibinfra/healthkit"
 
 ```go
 fx.New(
+    // … логгер и конфиги китов — как в их README
     pgkit.Module, natskit.Module(""), cachekit.Module, httpkit.Module,
     healthkit.ProvideProbe(pgkit.Probe),
     natskit.ProvideProbe(""),
@@ -95,10 +96,10 @@ health-loop `grpckit` зовут пробы в своих горутинах, г
 отвергается при сборке графа — `fx.New(...).Err()` возвращает ошибку с текстом
 `healthkit: ProvideProbe …`.
 
-Дополнительные аннотации (`fx.ParamTags` для именованного инстанса, `fx.As`)
-применяются до групповой. Свой `fx.ResultTags` передавать нельзя: групповой тег
-ставит сам `ProvideProbe` — иначе проверка типа обходится, а проба молча не
-попадает в группу.
+Дополнительные аннотации (`fx.ParamTags` для именованного инстанса) применяются до
+групповой. Свой `fx.ResultTags` — ошибка сборки графа: групповой тег ставит сам
+`ProvideProbe`. `fx.As` передавать нельзя: граф соберётся, а проба ляжет в группу под
+типом интерфейса, и `/ready` её не увидит.
 
 ## Observability
 

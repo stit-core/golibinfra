@@ -13,6 +13,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
@@ -117,6 +118,33 @@ func TestNewServer_AssemblesKitChain(t *testing.T) {
 	}
 	if ok := serve(http.MethodGet, "/me", "", "Authorization", "Bearer ok"); ok.Code != http.StatusNoContent {
 		t.Fatalf("secured with token: %d, want 204", ok.Code)
+	}
+}
+
+// Сниппет README § Быстрый старт → «Без fx» проходит проверку старта как написан: при схеме в
+// WithSecuritySchemes операция без Security и без Public — отказ CheckRoutes.
+func TestReadme_WithoutFx(t *testing.T) {
+	cfg := testConfig(t, "127.0.0.1:0")
+	log := logkit.Nop()
+	bearer := httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme, Extract: func(r *http.Request) (context.Context, error) {
+		return r.Context(), nil
+	}}
+	handler := noBody
+
+	s, err := httpkit.NewServer(cfg, log, httpkit.WithSecuritySchemes(bearer))
+	if err != nil {
+		t.Fatalf("NewServer: %v", err)
+	}
+	api := s.BindAPI()
+	httpkit.RegisterHealth(api, cfg.ReadyProbeTimeout, log, healthkit.New("pgkit", func(context.Context) error { return nil }))
+	huma.Register(api, httpkit.Public(huma.Operation{Method: http.MethodGet, Path: "/ping"}), handler)
+	if err := s.CheckRoutes(); err != nil {
+		t.Fatalf("CheckRoutes: %v", err)
+	}
+	rec := httptest.NewRecorder()
+	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ping", nil))
+	if rec.Code != http.StatusNoContent {
+		t.Fatalf("GET /ping = %d, want 204", rec.Code)
 	}
 }
 

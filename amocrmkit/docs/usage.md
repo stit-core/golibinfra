@@ -41,11 +41,12 @@ app := fx.New(
 ## Подключение через прямой New
 
 ```go
-c, err := amocrmkit.New(
-    amocrmkit.Config{RateRPS: 7},
-    httpclient.Config{Timeout: 10 * time.Second, MaxRetries: 3, RetryWait: 200 * time.Millisecond},
-    clockkit.Real{}, logkit.Nop(),
-)
+hcCfg, err := httpclient.NewConfig() // дефолты тегов: литерал httpclient.Config с нулями — ErrConfig
+if err != nil {
+    // ...
+}
+hcCfg.Timeout = 10 * time.Second
+c, err := amocrmkit.New(amocrmkit.Config{RateRPS: 7}, hcCfg, clockkit.Real{}, logkit.Nop())
 if err != nil {
     // ...
 }

@@ -14,15 +14,9 @@
 при этом сохраняются — проверяется именно то, что уйдёт в прод.
 
 ```go
-hcCfg := httpclient.Config{
-    Timeout:    5 * time.Second,
-    MaxRetries: 0, // в тестах ретраи обычно отключают
-    RetryWait:  time.Millisecond,
-    Breaker: httpclient.BreakerConfig{
-        FailureThreshold: 100,
-        RecoveryTimeout:  time.Second,
-    },
-}
+hcCfg, _ := httpclient.NewConfig()   // дефолты тегов: литерал httpclient.Config с нулями — ErrConfig
+hcCfg.MaxRetries = 0                 // в тестах ретраи обычно отключают
+hcCfg.Breaker.FailureThreshold = 100 // и breaker не размыкают
 c, _ := amocrmkit.New(
     amocrmkit.Config{
         RateRPS:      1000,    // высокий — чтобы тесты не троттлились

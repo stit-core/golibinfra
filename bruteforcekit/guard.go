@@ -51,8 +51,8 @@ type Guard interface {
 	RecordSuccess(ctx context.Context, subject, ip string) error
 }
 
-// Cleaner — maintenance-путь guard'а, отдельный от request-path: его реализуют
-// только хранилища, а не адаптеры и фейки вокруг Guard.
+// Cleaner — maintenance-путь guard'а, отдельный от request-path: его реализуют хранилища
+// (pgstore.Store и фейк-хранилище bruteforcetest.Counting), а не адаптеры вокруг Guard.
 type Cleaner interface {
 	// Cleanup удаляет разблокированные строки старше Config.CleanupRetention, занятые попыткой
 	// пропускает; идемпотентен, обычно вешается на периодический job.

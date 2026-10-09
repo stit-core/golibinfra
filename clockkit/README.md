@@ -174,13 +174,15 @@ type Timer interface {
 ### Kit'ы, которые принимают часы
 
 Кит, чьё поведение зависит от времени (истёк ли токен, какой месяц партиции,
-когда следующий тик), принимает `Clock` и не зовёт `time.Now()` сам:
+когда следующий тик), принимает `Clock` и не зовёт `time.Now()` сам — в одной из трёх
+форм (какой именно — в README кита):
 
-- `timerkit` — берёт `Clock` из графа (опционально, иначе `Real{}`) и считает по
-  нему ожидание между запусками;
-- `authnkit`, `cachekit` (`MemoryCache`) — через опцию `WithClock(clock)` у
-  конструктора;
-- `amocrmkit` — аргументом конструктора `New`.
+- из графа, опционально (иначе `Real{}`) — так `timerkit` считает ожидание между
+  запусками, так берут часы хранилища `outboxkit/pgstore` и `authnkit/session/pgstore`;
+- опцией `WithClock(clock)` конструктора — `authnkit` (JWT, TOTP), `cachekit.MemoryCache`,
+  те же хранилища без fx;
+- аргументом конструктора — `amocrmkit.New`, фейки `bruteforcetest.NewCounting` и
+  `sessiontest.New`.
 
 ```go
 // Паттерн опции: конструктор берёт Real{}, тест подменяет фейком.

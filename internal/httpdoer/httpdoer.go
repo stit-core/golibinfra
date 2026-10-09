@@ -1,5 +1,5 @@
-// Package httpdoer — один минимальный HTTP-порт на все киты: киты объявляют
-// свой публичный Doer его алиасом, а не третьей копией интерфейса.
+// Package httpdoer — минимальный HTTP-порт китов: internal/jwks и hubkit/client объявляют
+// свой публичный Doer его алиасом, а не копией интерфейса (у oidckit — свой, того же вида).
 package httpdoer
 
 import "net/http"

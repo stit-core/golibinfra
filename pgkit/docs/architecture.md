@@ -44,7 +44,8 @@ health-check'у, `MaxConns = 0` отвергается puddle. `PoolConfig{DSN: 
 Сессионные таймауты (`statement_timeout`, `idle_in_transaction_session_timeout`,
 `lock_timeout`) переводятся в миллисекунды и кладутся в
 `ConnConfig.RuntimeParams` — они уезжают в StartupMessage при установке
-соединения. Отрицательные значения нормализуются в `0` (без лимита).
+соединения. Ноль уезжает как `0` — без лимита, поверх `ALTER ROLE` и `ALTER DATABASE
+… SET`; отрицательное значение отвергает `Validate`.
 
 WHY `RuntimeParams`, а не `SET` в `AfterConnect`: `SET` стоит трёх round-trip'ов
 на каждое новое физическое соединение (ротация по `MaxConnLifetime`,

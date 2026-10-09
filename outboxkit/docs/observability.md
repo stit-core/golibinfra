@@ -30,7 +30,8 @@ label дал бы серию на сущность. Гистограммы `_sec
 
 Семантика `status` у `outbox_events_inserted_total`:
 
-- `ok` — событие вставлено в outbox-таблицу.
+- `ok` — вставка в транзакции вызывающего прошла; её откат счётчик не вычитает (коммита
+  `Bus.Publish` не видит).
 - `error` — вставка не удалась (ошибка хранилища или tx-strict guard).
 - `marshal_error` — payload не сериализуется в JSON; до хранилища не дошёл.
 - `payload_too_large` — тело в представлении хранилища больше `OUTBOX_MAX_PAYLOAD_BYTES`

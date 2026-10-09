@@ -27,6 +27,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
 )
@@ -48,10 +49,13 @@ func main() {
 		encoded, _ = hasher.Hash(ctx, "s3cr3t")
 	}
 
-	// 2. JWT: секрет ≥ 32 байт; тип токена проверяется при разборе.
-	jwt, err := authnkit.NewHS256JWT(authnkit.JWTConfig{Secret: "change-me-to-a-32-byte-or-longer-secret"})
+	// 2. JWT: секрет ≥ 32 байт и срок access-токена; тип токена проверяется при разборе.
+	jwt, err := authnkit.NewHS256JWT(authnkit.JWTConfig{
+		Secret:    "change-me-to-a-32-byte-or-longer-secret",
+		AccessTTL: 15 * time.Minute,
+	})
 	if err != nil {
-		panic(err) // ErrConfig: короткий секрет / отрицательные TTL
+		panic(err) // ErrConfig: короткий секрет, AccessTTL не больше нуля
 	}
 	token, _ := jwt.SignAccess(ctx, map[string]any{"sub": "user-123", "role": "admin"})
 	claims, err := jwt.ParseAccess(ctx, token)

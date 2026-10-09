@@ -162,7 +162,7 @@ type redisCache struct {
 
 // NewRedisCache собирает Cache поверх go-redis; без fx закрывать Close самому. Внутренний лог
 // go-redis (пул, переподключения) уходит в log записью WARN; nil и logkit.Nop его не забирают.
-// Версию сервера проверяет Module на старте — вне fx это делает checkServerVersion.
+// Версию сервера сверяет только Module на старте: вне fx её не проверяет никто.
 func NewRedisCache(cfg Config, log logkit.Logger) (Cache, error) {
 	return newRedisCache(cfg, log)
 }

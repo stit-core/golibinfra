@@ -1,5 +1,5 @@
-// Package requestid — ctx-ключ request-id, общий для httpkit, httpclient и grpckit,
-// чтобы клиентские киты не тянули huma/chi ради одного ключа.
+// Package requestid — ctx-ключ request-id, общий для серверов (httpkit, grpckit), клиентов
+// (httpclient, grpcclient) и auditkit: им не нужно тянуть huma/chi ради одного ключа.
 package requestid
 
 import "context"

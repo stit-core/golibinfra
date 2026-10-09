@@ -106,6 +106,8 @@ make-окружения вызывающего и с холодным кешем
   и `handlertest`, свёртка IPv6 — у лимитера httpkit и bruteforcekit),
   `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`), `internal/redact`
   (URL без секретов — ошибки, логи и спаны natskit, cachekit, storagekit, telemetry, httpclient),
+  `internal/jsonb` (что из JSON не хранит Postgres JSONB — auditkit и `outboxtest`),
+  `internal/natsname` (правила имён NATS — natskit и `natstest`),
   `internal/grpcstatus` (классификация gRPC-кодов), `internal/grpclogkit`
   (мост grpclog → logkit). Общие helper'ы живут в `internal/`, наружу не
   экспортируются.
@@ -122,16 +124,19 @@ make-окружения вызывающего и с холодным кешем
   конечные множества (route-pattern, а не путь; хост, а не URL).
 - Инструменты — в конструкторе кита (`otelkit.Meter`/`otelkit.Tracer` при сборке объекта), не
   на уровне пакета: пакетный инструмент делегат OTel привязывает к первому провайдеру процесса.
-  `TestInstrumentsAreNotPackageLevel` (`internal/otelkit`) ловит его в коде инициализации пакета
-  (`var`, `init()`, `sync.OnceValue`/`OnceValues`/`OnceFunc`) — напрямую и через функцию своего
-  пакета (и generic), метод, значение функции пакета или замыкание, которое `init()` зовёт сам
-  либо отдаёт функции пакета, зовущей свой аргумент; хелпер другого пакета, dot-import и
-  присваивание пакетной переменной из функции держит ревью. Запись в тестах проверяет
-  `testkit/metrictest` — кит через провайдер процесса (`Collect`), код с переданным `Meter` —
-  через `NewProvider`; глобальный `MeterProvider` тест не ставит.
+  `TestInstrumentsAreNotPackageLevel` (`internal/otelkit`) ловит вызов шва (`Meter`, `Tracer`,
+  `Get*Provider` пакетов `otelkit` и `otel`) в коде инициализации пакета (`var`, `init()`,
+  `sync.OnceValue`/`OnceValues`/`OnceFunc`) — напрямую и через функцию своего пакета (и generic),
+  метод, значение такой функции или замыкание, которое `init()` зовёт сам либо отдаёт функции
+  пакета, зовущей свой аргумент. Остальное держит ревью: хелпер другого пакета, dot-import шва,
+  значение самой функции шва (`var mk = otelkit.Meter`), функция из среза, map или поля
+  структуры, провайдер логов (`otel/log/global`), присваивание пакетной переменной из функции.
+  Запись в тестах проверяет `testkit/metrictest` — кит через провайдер процесса (`Collect`), код
+  с переданным `Meter` — через `NewProvider`; глобальный `MeterProvider` тест не ставит.
 - Ключ ошибки в записи лога — `error` (так пишет и `FxLogger`): запрос по одному ключу видит все
   киты; `TestLogErrorKeyIsError` (`logkit`) ловит литерал `"err"` аргументом вызова, в `[]any` и
-  полем составного литерала (`slog.Attr{Key: …}`); ключ из константы или переменной держит ревью.
+  полем составного литерала (`slog.Attr{Key: …}`); ключ из константы, переменной или функции и
+  другое имя ключа (`cause`) держит ревью.
 - **`biz_<domain>_<event>_total|_seconds|<gauge>`** — единственная конвенция имён
   business-метрик; enforce'ится `bizmetric.Counter/Histogram/Gauge` (panic при нарушении).
 - Гистограммы длительности — в секундах, `WithUnit("s")` + общие границы
@@ -221,7 +226,9 @@ make-окружения вызывающего и с холодным кешем
 - Перед claim «готово» — `make check` зелёный; перед тегом — `make gate-clean`
   (§ Команды).
 - Новый kit — через `/add-kit`: без собственного `README.md` кита (+ `docs/` у сложного)
-  и строки-индекса в `README.md § Пакеты` потребитель его не найдёт.
+  и строки-индекса в `README.md § Пакеты` потребитель его не найдёт. Строку кита, сабпакета
+  testkit и пакета `internal/` в `README.md` и карте пакетов требует `TestDocsNameEveryPackage`,
+  состав `make check` в доках — `TestDocsListGateSteps`.
 - Тронул конфиг / эмитимые метрики / labels / span-attrs — обнови `README.md`
   (+ `docs/`) соответствующего кита (§ Конфигурация / § Observability) и, если
   переменная — endpoint, строку в `README.md § Per-concern endpoints`:

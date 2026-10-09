@@ -66,8 +66,10 @@ caller (`NewPoolConfig`/`NewMigrateRunnerConfig` или App-структура) 
 
 ## Инварианты
 
-- Нули размеров и таймаутов `PoolConfig` означают дефолт pgxpool, а не
-  «выключено»: `PoolConfig{DSN: dsn}` — рабочий пул.
+- Нули размеров и таймаутов пула в `PoolConfig` означают дефолт pgxpool, а не
+  «выключено»: `PoolConfig{DSN: dsn}` — рабочий пул. Ноль сессионного таймаута
+  (`StatementTimeout`, `IdleInTxSessionTimeout`, `LockTimeout`) — без лимита: он уходит
+  в соединение и перекрывает настройку роли и базы.
 - `Validate` у всех трёх конфигов валит старт с `pgkit.ErrConfig`, а не первый
   запрос.
 - Ошибка `fn` из `WithTx` не оборачивается; ошибка отката присоединяется через

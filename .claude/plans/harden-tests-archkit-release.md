@@ -13,10 +13,9 @@ blocked-by: —
 
 ## Контекст
 - **Порядок.** После `harden-kits-contracts` (его Handoff и аннотация — здесь); программа — `audit-program.md` шаблона; находки и
-  «Как повторить аудит» — `M/kits-audit/summary.md` (`M` = `/home/mm/.cache/stit-audit-program/`).
-- **archkit.** Источник — archtest шаблона `e2f3dd2`, потребитель — `repair-harness` S7 и AC9; материалы — `M/archkit/README.md`.
-- **Гейт сейчас:** запреты, конфиг, хуки и guard держит `make check` (`scripts/gate_test.go`, `scripts/testdata/guard-cases.txt`);
-  матрица — `M/kits-audit/tests-gate/gate_inject.py` (G31 — с чистого ref, `run-all.sh` — с `ONLY=`), по одной — `M/gate/`.
+  «Как повторить аудит» — `M/kits-audit/summary.md` (`M` = `/home/mm/.cache/stit-audit-program/`). archkit — из archtest шаблона
+  `e2f3dd2` для `repair-harness` S7 (`M/archkit/README.md`); матрица гейта — `M/kits-audit/tests-gate/gate_inject.py` (G31 — с
+  чистого ref, `run-all.sh` — с `ONLY=`), по одной — `M/gate/`.
 - **Правила шага:** доки кита — тем же коммитом; breaking — `!`, `BREAKING CHANGE:`, строка аннотации; без новых зависимостей.
 
 ## Не входит
@@ -26,46 +25,38 @@ blocked-by: —
 
 ## Критерии приёмки
 `<rev>` — проверяемый коммит, `<wt>` — worktree на нём; скрипты — от `M/kits-audit/`.
-- [x] **AC1** — Жизненный цикл: flagkit, natskit, cachekit, tzkit проверяют конфиг и связь на старте и без потребителя; `Stop` при
-  недоступном коллекторе — без ошибки и кода 1; ошибка конфига telemetry и строки go-redis — JSON-записи logkit. Проверка:
-  `fx-observability/run.sh <rev> fx` → KX40, KX67 (a, d) PASS, KX66 — `Stop` без ошибки
+- [x] **AC1** — flagkit, natskit, cachekit, tzkit проверяют конфиг и связь на старте и без потребителя; `Stop` при недоступном
+  коллекторе — без ошибки; ошибка конфига telemetry и строки go-redis — JSON logkit. Проверка: `fx-observability/run.sh <rev> fx`
   - Подтверждено: фиксы A — KX40–44, KX67a, d (stdout) и g, h (`LOG_SILENT`: stderr) PASS, KX66 `err=<nil>`, blackhole 10 с из 15
 - [x] **AC2** — Одна конвенция сигналов, как в доках (semconv БД, спан otelpgx без SQL, ключ `error`, `not_found`, TOTP `replay`,
-  anthropickit без метрик otelhttp). Проверка: `fx-observability/run.sh <rev> obs-unit obs` → KO15, KO16, KO18 PASS, `compare.py`
-  — 0 расхождений с доками, `promname` — 0 коллизий; `api-docs/claims-A-exp/run.sh <wt>` (`authn`) → `ok:1 replay:1`
+  anthropickit без метрик otelhttp). Проверка: `fx-observability/run.sh <rev> obs-unit obs`, `api-docs/claims-A-exp/run.sh <wt>`
   - Подтверждено: фиксы A — KO01–08, KO11–21 PASS (KO15: sqlc — `query CountOrders`), compare 0, promname 0; `ok:1 replay:1`
-- [x] **AC3** — Фейки testkit ведут себя как боевые: расхождения зонда — только задокументированные (база — 26 из 50);
-  `pgkit.WithTestTx` на ctx usecase'а не пропускает `Publish` мимо транзакции. Проверка: `tests-gate/run-all.sh <rev> probes` →
-  расхождений вне доков нет; `api-docs/claims-A-exp/run.sh <wt>` (`fakes`, `logtest`, `clock`) → по докам
+- [x] **AC3** — Фейки testkit ведут себя как боевые: расхождения зонда — только задокументированные; `pgkit.WithTestTx` на ctx
+  usecase'а не пропускает `Publish` мимо транзакции. Проверка: `tests-gate/run-all.sh <rev> probes`, `claims-A-exp/run.sh <wt>`
   - Подтверждено: дерево S4 — зонд 50 SAME из 50; `fakes`, `logtest`, `clock` — по докам (`cap` канала таймера 1 — в доке); C2 ✓
-- [x] **AC4** — Тесты убивают мутантов базового аудита; регрессия таймаута healthkit — падение теста, а не зависание; тест метрик
-  amocrmkit ловит смену типа инструмента; страж пакетных инструментов — по `CLAUDE.md`. Проверка: `tests-gate/run-all.sh <rev>
-  mutants`, `summarize.py` → выжили только эквивалентные (с причиной); V-G2, V-J1b, P-G4, P-G5 (`M/val-rel130/mut/`) → красные
+- [x] **AC4** — Тесты убивают мутантов аудита; регрессия таймаута healthkit — падение, а не зависание; тест метрик amocrmkit ловит
+  смену типа; страж инструментов — по `CLAUDE.md`. Проверка: `tests-gate/run-all.sh <rev> mutants`, `M/val-rel130/mut/`
   - Подтверждено: дерево S5 — 139 мутантов: гейт 109, integration 30, выживших 0; V-G2, V-J1b, P-G4, P-G5, N11a — красные
 - [x] **AC5** — Контракт сигналов httpkit и паритет handlertest держит `make check`; ответ известного маршрута до роутинга — с его
-  маршрутом, `unmatched` — только неизвестному. Проверка: `httpkit-b/run.sh <rev> exp mut gate` → HO01 PASS, `compare.py` и
-  `compare_logs.py` — 0, выжили только эквивалентные мутанты (hk-ctr-05 убит), GH01, GH03, GH04, GH06, GH08 пойманы
+  маршрутом, `unmatched` — только неизвестному. Проверка: `httpkit-b/run.sh <rev> exp mut gate` (hk-ctr-05 убит, GH пойманы)
   - Подтверждено: S6 — 63 мутанта, GH01–08; фиксы A — HO01, оба compare 0; 21 мутант сигналов, GH01/03/06, D2/D4/D6/D28 — красные
-- [x] **AC6** — `archkit.Check` одной точкой входа держит раскладку любого сервиса на golibinfra — семь правил («Решения»);
-  module path — из `go.mod`; настройки и известные нарушения (с ID находки, устаревшая запись — FAIL) — у потребителя. Проверка:
-  `go test -race ./archkit/...` → PASS: нарушение и мутант «правило снято» у каждого правила — красные, чистая фикстура — зелёная
+- [x] **AC6** — `archkit.Check` одной точкой входа держит раскладку любого сервиса на golibinfra — семь правил («Решения»); module
+  path из `go.mod`; настройки и известные нарушения (с ID, устаревшая — FAIL) — у потребителя. Проверка: `go test -race ./archkit/`
   - Подтверждено: PASS; мутанты `M/archkit/mut.py`: «правило снято» — 7 из 7 красные, всего 199 из 204, 5 эквивалентны
 - [x] **AC7** — Шаблон берёт archkit без потерь: в его worktree через `replace` чистое дерево зелёное, инъекции 1b, 3b, 13, M,
-  ADP b, c, g, h, i, k — FAIL из archkit, копия с module path форка — правила действуют. Проверка: кейсы `M/s12/inj.py`,
-  `M/valb2/inj.py` в worktree шаблона → как сказано, протокол — `M/archkit/README.md`
+  ADP b, c, g, h, i, k — FAIL из archkit, копия с module path форка — правила действуют. Проверка: `M/s12/inj.py`, `M/valb2/inj.py`
   - Подтверждено: шаблон и форки зелёные, 10 инъекций → FAIL `TestLayout`; 144 кейса валидатора B — без потерь, 8 строже источника
 - [x] **AC8** — Гейт держит запреты и свой конфиг: `fmt.Print*`, `slog.Default`, `http.DefaultClient` и `:latest` в Go-коде
   краснят `make check` (G01); линтер, снятый из `enable` (G04), и чужая версия golangci-lint или govulncheck — отказ; коммит не по
-  Conventional Commits не создаётся; `/release` берёт несовместимое из apidiff, env- и metric-diff. Проверка:
-  `tests-gate/run-all.sh <rev> gate` → обязательные отказы пойманы, контроли зелёные; `git commit -m "update stuff"` → отказ хука
+  Conventional Commits не создаётся; `/release` берёт несовместимое из `release-diff`. Проверка: `tests-gate/run-all.sh <rev> gate`
   - Подтверждено: валидатор C (`1198e17`): матрица — 31 отказ, G00 и G23 зелёные; по одной — 14 из 14; `update stuff` → отказ
-- [x] **AC9** — Push проверяет то, что пушит: правка `scripts/gate-clean.sh` в рабочем дереве гейт push не выключает; guard не
-  отказывает на чтении хуков. Проверка: `printf 'exit 0' > scripts/gate-clean.sh` без коммита, push HEAD с падающим тестом в bare
-  → отказ; `M/hgd/guard_cases.py`, `M/val-hgd-B/guard_b.py` и `find -name pre-push`, `awk`/`sort`/`cp` из хука → 0 расхождений
+- [x] **AC9** — Push проверяет то, что пушит: правка рабочего дерева без коммита гейт push не выключает; guard не отказывает на
+  чтении хуков. Проверка: push HEAD с падающим тестом в bare; `M/hgd/guard_cases.py`, `M/val-hgd-B/guard_b.py`
   - Подтверждено: валидатор C (`1198e17`): push красного HEAD → отказ; guard: чтение — 0 расхождений, запись — 0 из 56 форм
-- [ ] **AC10** — Доки совпадают с кодом: статика — 0 расхождений; ✗ ручной сверки закрыты; P7 HX01 назван в доке порядка хуков.
+- [x] **AC10** — Доки совпадают с кодом: статика — 0 расхождений; ✗ ручной сверки закрыты; P7 HX01 назван в доке порядка хуков.
   Проверка: `api-docs/scripts/run-static.sh <rev>` → D3, D4, D6, D10 — 0, D7 — ERR только от заглушек; `httpkit-a/static.sh <rev>`
   → 0; пересчёт `api-docs/claims-*.md` и `httpkit-a/claims.md` → ✗ нет
+  - Подтверждено: статика — настоящих расхождений 0 (ложные разобраны), ✗ 36 → 0, `~` 55 → 0, P7 — в доке: `M/s12docs/recount.md`
 - [x] **AC11** — Скилл `/plan` — одна копия с шаблоном. Проверка: `diff` его `SKILL.md` и `references/plan-template.md` с копиями
   шаблона, на который наложен `M/gate/template-plan-skill.patch` (`git apply --check`), → пусто; `make plan-check` → OK
   - Подтверждено: `e2f3dd2` с патчем — пусто (без него — два фрагмента `SKILL.md`), его `internal/archtest` зелёный; plan-check OK
@@ -103,9 +94,9 @@ blocked-by: —
   - Проверка: AC8, AC9 → выполнены · Закрывает: AC8, AC9 · Сделано: `ac89312`, фикс по валидатору C — `2f68bfd`
 - [x] **S11** — Скилл `/plan` — одна копия с шаблоном, CLAUDE.md — таблица «Маршрут задачи», специфика репо — `references/repo.md`
   - Проверка: AC11 → выполнен · Закрывает: AC11 · Сделано: `d37016a`; патч шаблону — `M/gate/template-plan-skill.patch`
-- [ ] **S12** — Доки к коду: остаток KDOC-07, KDOC-09 без бюджета outbox, KDOC-10, KDOC-11, P7 HX01, корневые README и CLAUDE.md —
+- [x] **S12** — Доки к коду: остаток KDOC-07, KDOC-09 без бюджета outbox, KDOC-10, KDOC-11, P7 HX01, корневые README и CLAUDE.md —
   к API партии; ✗ ручной сверки пересчитаны
-  - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S1, S2, S6, S8, S10
+  - Проверка: AC10 → выполнен · Закрывает: AC10 · Зависит от: S1, S2, S6, S8, S10 · Сделано: пересчёт, логи и зонды — `M/s12docs/`
 ### Релиз
 - [ ] **S13** — Повтор всех экспериментов «Как повторить аудит» на кандидате тега — агентом, не писавшим код партии; таблица
   исходов — в «Где мы сейчас»
@@ -116,26 +107,21 @@ blocked-by: —
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
 
 ## Решения
-- **Фиксы валидатора A** (с `94cb178`) — причины в телах коммитов: при `LOG_SILENT` ERROR логгеров без OTel-sink — в stderr; спан
-  otelpgx — имя sqlc или операция; `Stop` telemetry — ⅔ бюджета; authnkit ленив; вне сверки сигналов httpkit — проза.
-- **archkit.** Правила `archkit.Check` — семь проверок archtest шаблона (`TestInternalLayout`, `TestImportBoundaries`,
-  `TestDomainRootIsTransportAgnostic`, `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`, `TestNoCrossDomainIdentityClosure`,
-  `TestQueriesUseOwnTables`); настройки и известные нарушения — опции, доверие корня домена пакету с I/O — отдельной
-  `WithUncheckedPackages` (запись про запас — FAIL); `WithInternalDirs` — над доменами: ai-gateway с `internal/gen` — перенос в
-  `pkg/` или известные нарушения. Причины и пределы — тела фиксов, `archkit/README.md` и `M/archkit/README.md`.
-- **Этапы в ветках.** archkit и гейт шли в ветках параллельно (дирижёр: шаблон и релиз не ждали), план правился при слиянии;
-  коммиты сверх шагов — фиксы по отчётам валидаторов B и C, `09a86d5` — по финальному прогону исполнителя. Rebase гейта на
-  `2f99e7f` — без конфликтов и правок; в материалах его коммиты — `c0daf37`, `64a0834`, `4189a29`, `f4af223`, `1198e17`.
-- **Гейт и хуки.** Решения полным текстом — `M/gate/plan-patch.md` и тела коммитов. contextcheck не включён: проба — 30 замечаний,
-  ложные либо правка — смена API; `context.Background()` в обработчике держит ревью. pre-push сам ставит worktree на пушимый
-  коммит, а не берёт `scripts/gate-clean.sh` из него (отступление: до `a71b807` скрипт гейтит HEAD) — скрипт удалён. `commit-msg`
-  строже образца шаблона: длина subject — без байтов-продолжений UTF-8, `!` и футер `BREAKING CHANGE:` — только вместе (цена —
-  строка прозы, начатая с `BREAKING CHANGE: `, — футер). `release-diff` не видит labels и поведение — их несут `!` и футеры.
-- **Guard и `/plan`.** Команда с путём хука проходит, только если guard узнал чтение (цена — ложные отказы чтения, README § Гейт);
-  формы, закрытые guard шаблона, — бэклог `guard-template-parity`. `/plan` — текст шаблона `e2f3dd2`, кроме двух строк (Handoff);
-  профиль: pre-commit и накопителя нет, Handoff — в аннотацию, коммит плана — `chore(plan)` (`meta(plan)` хук отклоняет).
+- **S1–S11** — причины в телах коммитов, `M/archkit/README.md` и `M/gate/plan-patch.md` (коммиты гейта там — `c0daf37`, `64a0834`,
+  `4189a29`, `f4af223`, `1198e17`). archkit: правила `archkit.Check` — семь проверок archtest шаблона (`TestInternalLayout`,
+  `TestImportBoundaries`, `TestDomainRootIsTransportAgnostic`, `TestPureLayersHaveNoIO`, `TestNoWallClockInDomains`,
+  `TestNoCrossDomainIdentityClosure`, `TestQueriesUseOwnTables`), доверие корня пакету с I/O — `WithUncheckedPackages`; ai-gateway с
+  `internal/gen` — перенос в `pkg/` или известные нарушения. Гейт: contextcheck не включён (30 замечаний: ложные либо правка —
+  смена API); `release-diff` не видит labels и поведение — их несут `!` и футеры; коммит плана без кода — `chore(plan)`.
 - **Эксперименты.** Контракты сигналов (`expected-signals*.json`) — заново из доков HEAD; инструменты — с поправками N4 валидатора
-  A `harden-gate-defaults` (L3 через `make lint`, G21 по тексту отказа); правка эксперимента под API — со смыслом, оригинал рядом.
+  A `harden-gate-defaults` (L3 через `make lint`, G21 по тексту отказа); правка эксперимента под API или доки — со смыслом, оригинал
+  рядом (`M/exs8/orig/`); S12: docsym без `testdata`, `archkit` в статике, B1 и H51 — под доки, P7 — задокументирован (`*.p2s12`).
+- **S12.** Поведение китов не менялось: доки, doc-comment'ы, тесты. `logkit.New` с `WithRedact` и `Disabled` паттерны не
+  проверяет — названо в README, правка (смена поведения) — бэклог `logkit-redact-disabled-literal`; `internal/httpdoer` — правка
+  package-doc, а не алиас в oidckit (кит вне объёма; только под API правлены и доки amocrmkit, hubkit); теги образов Postgres и
+  Redis — мажорная линия: README testkit это говорит. Машина держит перечни пакетов и состав `make check` в корневых доках
+  (`docs_test.go`) и сниппеты README, падавшие на запуске (httpkit, authnkit): docex их только собирает. Гейт покраснел на шаге
+  `vuln` без правок кода (уязвимости stdlib go1.26.6 и x/net 0.59) — `7f7b626`: `toolchain go1.26.9`, минимум `go 1.26.6` прежний.
 
 ## Handoff
 **Шаблон, `repair-harness` S7 — bump v1.4.0** (места — по сборке шаблона `e2f3dd2` через `replace`; на bump — сверить сборкой):
@@ -174,6 +160,8 @@ blocked-by: —
   `rules/domain-architecture.md:53`, `architecture.md:18,147,170`, `domain-mapping.md:99`, `triage-failure/SKILL.md:90`,
   `scaffold/references/port.md:157`, package-doc; новое в правилах — «строже» из аннотации. Сборка через `replace`: `go build
   ./...` — `M/archkit/template-bump-compile.patch` (5 файлов), тесты 12 пакетов (11 без `integration`) — по пунктам выше.
+  Строка в `prune.md`: если после prune `internal/platform/identity` не берёт ни один корень домена (сам или через `pkg/`),
+  запись `WithUncheckedPackages` из `layout_settings_test.go` форка убрать — иначе `TestLayout` красный с подсказкой `remove it`.
 - **Логи, тесты, telemetry.** Ключ ошибки — `error` в каноне и коде; `cmd/api/boot_test.go`: хуки — `fx.WithLogger` теста с
   `hookLog`, не `teeLog`; опцию `logkit.FxLogger` в `service` он подменяет — её держит отдельная проверка. testkit: `logtest` — с
   масками (`logmail_test.go:39-42` — проверять поля, не подстроку); `natstest.New(natstest.WithStream("user"))` —
@@ -184,6 +172,8 @@ blocked-by: —
 - **`/plan`.** `M/gate/template-plan-skill.patch` (на `e2f3dd2`: `git apply --check`, `go test ./internal/archtest/` зелёный):
   SKILL.md — строка «Формат проверяет …» из golibinfra и «отдельным коммитом плана (его вид — в профиле)» вместо `meta(plan)`,
   `references/repo.md` — строка «Коммит плана без кода: `meta(plan)`»; после него `diff` SKILL.md и plan-template.md пуст.
+- **Toolchain.** Уязвимости stdlib (GO-2026-6599…6617, исправлены в go1.26.9): `govulncheck` шаблона красный до `toolchain
+  go1.26.9` в `go.mod` и образа сборки `golang:1.26.9-alpine` (`Dockerfile`, `Dockerfile.migrate` — 1.26.8); x/net 0.60 — с bump.
 - **Гейт шаблона (находки, bump не держат).** `commit-msg`: `.{1,72}` под `LC_ALL=C` считает байты — русский subject длиннее 36
   букв отклонён; `cherry-pick --continue` отклоняет давний коммит не по форме. Guard `e2f3dd2`: ложный отказ на `\|` и `\;` в
   двойных кавычках (`grep -n "push\|pre-push"`); запись в хук «читателями» проходит — `cp … <хук> 2>/dev/null` (и `-f`, `--`,
@@ -192,9 +182,9 @@ blocked-by: —
   из 111, исполнением (`guard_exec_fuzz.py 2500 11`) хук портят 459 команд. Образец — guard golibinfra и его `guard-cases.txt`.
 
 ## Где мы сейчас
-S1–S11 закрыты и приняты: первый этап (S1–S6) — валидатором A после фиксов, archkit (S7–S8) — валидатором B, гейт (S9–S11) —
-валидатором C; всё слито в `main`. Дальше S12, S13, S14. S13: эксперименты под API (`M/exs8/orig/*.v130`, `*.s12`, `*.p2*`), H15
-`[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12, 255 KDOC-09 — в доках; apidiff пина — `M/kits-audit/api-docs/bin`.
+S1–S12 закрыты; S1–S11 приняты валидаторами A, B и C, S12 ждёт валидатора шага. Дальше S13, S14. S13: эксперименты под API и доки
+(`M/exs8/orig/*.v130`, `*.s12`, `*.p2*`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12; ложные срабатывания
+статики доков и пересчёт ✗ — `M/s12docs/recount.md`; apidiff пина — `M/kits-audit/api-docs/bin`, в PATH его ставит `make tools`.
 
 Заготовка аннотации v1.4.0 (первая половина — `harden-kits-contracts`; вторая — по шагам):
 - **Breaking.** config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`); ошибка `Load`: поле без тега (тег или
@@ -297,4 +287,5 @@ S1–S11 закрыты и приняты: первый этап (S1–S6) — �
   переменная и имя метрики — в Breaking, сменившийся дефолт — в Поведении; сборка шаблона через `replace` (и archkit на нём:
   инъекции AC7), `go test -race ./archkit/`; эксперименты S13. Контрибьютору: гейт отказывает на `golangci-lint` или `govulncheck`
   не из пина — `make tools` (ставит и apidiff); `make hooks` включает и `commit-msg` (Conventional Commits, `!` только с футером
-  `BREAKING CHANGE:`); forbidigo не пускает в киты `fmt.Print*`, `log`, `slog` по умолчанию и `http.DefaultClient`.
+  `BREAKING CHANGE:`); forbidigo не пускает в киты `fmt.Print*`, `log`, `slog` по умолчанию и `http.DefaultClient`. Зависимости:
+  x/net 0.60 и `toolchain go1.26.9` модуля — уязвимости HTTP/2 и stdlib; сервис собирать на Go ≥ 1.26.9 (`go` модуля — 1.26.6).

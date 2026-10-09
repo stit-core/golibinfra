@@ -27,11 +27,11 @@ pgkit.ErrConfig)`). Те же проверки делают `PoolConfig.Validate
 | `PG_MAX_CONN_LIFETIME` | `MaxConnLifetime` | `time.Duration` | `30m` | время жизни соединения до плановой замены; `0` — дефолт pgxpool |
 | `PG_MAX_CONN_IDLE_TIME` | `MaxConnIdleTime` | `time.Duration` | `5m` | простой, после которого idle-соединение закрывается; `0` — дефолт pgxpool |
 | `PG_HEALTH_CHECK` | `HealthCheck` | `time.Duration` | `30s` | период фоновой проверки соединений пула (`HealthCheckPeriod`); `0` — дефолт pgxpool |
-| `PG_CONNECT_TIMEOUT` | `ConnectTimeout` | `time.Duration` | `10s` | таймаут установки каждого физического соединения и стартового `Ping`; `<= 0` — не переопределять (действует `connect_timeout` из DSN, а без него — лимита нет) |
+| `PG_CONNECT_TIMEOUT` | `ConnectTimeout` | `time.Duration` | `10s` | таймаут установки каждого физического соединения и стартового `Ping`; `0` — не переопределять (действует `connect_timeout` из DSN, а без него — лимита нет) |
 | `PG_OTEL_TRACE` | `OTelTrace` | `bool` | `true` | вешать ли `otelpgx`-tracer на соединения (спаны запросов, connect и acquire) |
-| `PG_STATEMENT_TIMEOUT` | `StatementTimeout` | `time.Duration` | `30s` | `statement_timeout` сессии |
-| `PG_IDLE_IN_TX_SESSION_TIMEOUT` | `IdleInTxSessionTimeout` | `time.Duration` | `60s` | `idle_in_transaction_session_timeout` сессии |
-| `PG_LOCK_TIMEOUT` | `LockTimeout` | `time.Duration` | `5s` | `lock_timeout` сессии |
+| `PG_STATEMENT_TIMEOUT` | `StatementTimeout` | `time.Duration` | `30s` | `statement_timeout` сессии; `0` — без лимита |
+| `PG_IDLE_IN_TX_SESSION_TIMEOUT` | `IdleInTxSessionTimeout` | `time.Duration` | `60s` | `idle_in_transaction_session_timeout` сессии; `0` — без лимита |
+| `PG_LOCK_TIMEOUT` | `LockTimeout` | `time.Duration` | `5s` | `lock_timeout` сессии; `0` — без лимита |
 
 `Validate` (и значит `NewPoolConfig`/`NewPool`) требует: непустой `PG_DSN`,
 неотрицательные размеры и duration'ы, `PG_MIN_CONNS <= PG_MAX_CONNS` при
@@ -39,8 +39,8 @@ pgkit.ErrConfig)`). Те же проверки делают `PoolConfig.Validate
 
 Ноль в размерах и таймаутах пула означает **дефолт pgxpool**, а не «выключено»:
 `PoolConfig{DSN: dsn}` даёт рабочий пул. Сессионные таймауты переводятся в
-миллисекунды и уезжают в StartupMessage через `ConnConfig.RuntimeParams`;
-значение `<= 0` нормализуется в `0` (без лимита). Детали — в
+миллисекунды и уезжают в StartupMessage через `ConnConfig.RuntimeParams`: ноль —
+без лимита, и он перекрывает `ALTER ROLE` и `ALTER DATABASE … SET`. Детали — в
 [architecture.md § Пул соединений](architecture.md).
 
 ## `ReplicaConfig` (`replica.go`)
