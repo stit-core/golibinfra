@@ -96,30 +96,32 @@ type Argon2idConfig struct {
 	SaltLen uint32 `envconfig:"ARGON2_SALTLEN" default:"16"`
 }
 
-// Validate — параметры внутри окна; вне окна → ErrConfig.
+// Validate — параметры внутри окна; вне окна → ErrConfig с именем переменной параметра.
 func (p Argon2idConfig) Validate() error {
-	if err := p.check(); err != nil {
-		return fmt.Errorf("%w: argon2id: %w", ErrConfig, err)
+	if env, err := p.check(); err != nil {
+		return fmt.Errorf("%w: %s: argon2id: %w", ErrConfig, env, err)
 	}
 	return nil
 }
 
-func (p Argon2idConfig) check() error {
+// check — первый параметр вне окна: его переменная и причина (ею же проверяются параметры
+// PHC-строки из хранилища).
+func (p Argon2idConfig) check() (env string, err error) {
 	switch {
 	case p.Time < MinTime || p.Time > MaxTime:
-		return fmt.Errorf("t must be within %d..%d", MinTime, MaxTime)
+		return "ARGON2_TIME", fmt.Errorf("t must be within %d..%d", MinTime, MaxTime)
 	case p.Threads < MinThreads || p.Threads > MaxThreads:
-		return fmt.Errorf("p must be within %d..%d", MinThreads, MaxThreads)
+		return "ARGON2_THREADS", fmt.Errorf("p must be within %d..%d", MinThreads, MaxThreads)
 	case p.Memory < MinMemoryKiB || p.Memory > MaxMemoryKiB:
-		return fmt.Errorf("m must be within %d..%d KiB", MinMemoryKiB, MaxMemoryKiB)
+		return "ARGON2_MEMORY_KIB", fmt.Errorf("m must be within %d..%d KiB", MinMemoryKiB, MaxMemoryKiB)
 	case uint64(p.Time)*uint64(p.Memory) > MaxCostKiBPasses:
-		return fmt.Errorf("t*m must not exceed %d KiB-passes", MaxCostKiBPasses)
+		return "ARGON2_TIME, ARGON2_MEMORY_KIB", fmt.Errorf("t*m must not exceed %d KiB-passes", MaxCostKiBPasses)
 	case p.KeyLen < MinKeyLen || p.KeyLen > MaxKeyLen:
-		return fmt.Errorf("hash length must be within %d..%d bytes", MinKeyLen, MaxKeyLen)
+		return "ARGON2_KEYLEN", fmt.Errorf("hash length must be within %d..%d bytes", MinKeyLen, MaxKeyLen)
 	case p.SaltLen < MinSaltLen || p.SaltLen > MaxSaltLen:
-		return fmt.Errorf("salt must be within %d..%d bytes", MinSaltLen, MaxSaltLen)
+		return "ARGON2_SALTLEN", fmt.Errorf("salt must be within %d..%d bytes", MinSaltLen, MaxSaltLen)
 	}
-	return nil
+	return "", nil
 }
 
 // Argon2idHasher — Hasher поверх argon2.IDKey с самоописывающей PHC-строкой.
@@ -308,7 +310,7 @@ func parsePHC(encoded string) (phc, error) {
 	}
 	// Окно проверяется до argon2.IDKey: иначе t/m из строки задавали бы
 	// стоимость вычисления.
-	if err := p.check(); err != nil {
+	if _, err := p.check(); err != nil {
 		return phc{}, fmt.Errorf("%w: %w", ErrHashParams, err)
 	}
 	return phc{params: p, salt: salt, hash: hash}, nil

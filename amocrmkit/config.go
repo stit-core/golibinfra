@@ -31,10 +31,10 @@ type Config struct {
 // вместо нулевого MaxWait: собранный вручную Config не ждёт слот бесконечно.
 func (c *Config) Validate() error {
 	if c.RateRPS <= 0 {
-		return fmt.Errorf("%w: RateRPS must be > 0, got %d", ErrConfig, c.RateRPS)
+		return fmt.Errorf("%w: AMOCRM_RATE_RPS must be > 0, got %d", ErrConfig, c.RateRPS)
 	}
 	if c.MaxWait < 0 {
-		return fmt.Errorf("%w: MaxWait must be >= 0, got %s", ErrConfig, c.MaxWait)
+		return fmt.Errorf("%w: AMOCRM_MAX_WAIT must be >= 0, got %s", ErrConfig, c.MaxWait)
 	}
 	if c.MaxWait == 0 {
 		c.MaxWait = defaultMaxWait

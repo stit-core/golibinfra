@@ -143,6 +143,34 @@ func TestMigrateModule_KitsThenAppDir(t *testing.T) {
 	}
 }
 
+// Регрессия RAPI-04: каталога миграций приложения нет или он пуст — ошибка старта называет
+// каталог и переменную PG_MIGRATIONS_PATH (и как запускаться без своих миграций), а не
+// «failed to init driver with path .». До базы дело не доходит.
+func TestMigrateModule_MissingAppDirNamesTheVariable(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "migrations")
+	for name, dir := range map[string]string{"missing": missing, "empty": t.TempDir()} {
+		t.Run(name, func(t *testing.T) {
+			app := fx.New(
+				fx.NopLogger,
+				fx.Supply(
+					pgkit.PoolConfig{DSN: "postgres://app@127.0.0.1:1/app"},
+					pgkit.MigrateRunnerConfig{Path: dir, Timeout: time.Minute, LockTimeout: time.Minute},
+				),
+				pgkit.MigrateModule,
+			)
+			err := app.Start(context.Background())
+			if err == nil {
+				t.Fatal("Start = nil, want the missing application migrations to fail the start")
+			}
+			for _, want := range []string{"pgkit: migrate on start: PG_MIGRATIONS_PATH", dir, "PG_MIGRATIONS_PATH=-"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("start error %q does not name %q", err, want)
+				}
+			}
+		})
+	}
+}
+
 func TestMigrateModule_EmptyPathSkipsApp(t *testing.T) {
 	kit := fstest.MapFS{
 		"migrations/0001_c.up.sql": {Data: []byte(`CREATE TABLE c_log (v INT);`)},

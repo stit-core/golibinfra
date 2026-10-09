@@ -279,8 +279,11 @@ func storeCtx(parent context.Context, timeout time.Duration) (context.Context, c
 // телом, путём, query или методом — 422, параллельный повтор — 409. Кэшируются только ответы
 // < 500, кроме 408, 409, 425 и 429, и не больше scopeMaxKeys на scope за окно TTL: новый ключ
 // сверх бюджета — как отказ store. Ошибка store — строка лога и fail-open, если не задан
-// FailClosed.
+// FailClosed. nil-логгер — logkit.Nop().
 func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger) func(http.Handler) http.Handler {
+	if log == nil {
+		log = logkit.Nop()
+	}
 	return idempotency(cfg, store, log, newKeyBudget(cfg.TTL))
 }
 

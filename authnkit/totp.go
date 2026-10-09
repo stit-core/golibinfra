@@ -36,11 +36,11 @@ type TOTPConfig struct {
 func (c TOTPConfig) Validate() error {
 	switch {
 	case c.Issuer == "":
-		return fmt.Errorf("%w: TOTP issuer must not be empty", ErrConfig)
+		return fmt.Errorf("%w: TOTP_ISSUER is required", ErrConfig)
 	case strings.ContainsAny(c.Issuer, ":/"):
-		return fmt.Errorf("%w: TOTP issuer must not contain ':' or '/'", ErrConfig)
+		return fmt.Errorf("%w: TOTP_ISSUER must not contain ':' or '/'", ErrConfig)
 	case c.Skew > MaxTOTPSkew:
-		return fmt.Errorf("%w: TOTP skew must be within 0..%d", ErrConfig, MaxTOTPSkew)
+		return fmt.Errorf("%w: TOTP_SKEW must be within 0..%d, got %d", ErrConfig, MaxTOTPSkew, c.Skew)
 	}
 	return nil
 }

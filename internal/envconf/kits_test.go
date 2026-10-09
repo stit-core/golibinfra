@@ -225,3 +225,54 @@ func TestKitConfigs_ParseErrorIsErrConfigWithVariable(t *testing.T) {
 		})
 	}
 }
+
+// Регрессия RAPI-03: значение, которое разбирается, но не проходит Validate, — ErrConfig кита с
+// именем переменной: оператор ищет её в таблице README, а имя поля Go или проза ему её не
+// называют. Значение вне диапазона — у каждого числа и длительности конфига; пустая строка
+// («-») — у строковых полей.
+func TestKitConfigs_ValidateErrorNamesVariable(t *testing.T) {
+	for _, kc := range kitConfigs() {
+		t.Run(kc.name, func(t *testing.T) {
+			setRequired(t)
+			cfg, err := kc.load()
+			if err != nil {
+				t.Fatalf("%s with defaults: %v", kc.name, err)
+			}
+			rejected := 0
+			for _, l := range leaves(reflect.TypeOf(cfg)) {
+				var values []string
+				switch l.kind {
+				case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32:
+					values = []string{"-100", "0"}
+				case reflect.Int64:
+					// time.Duration и int64 читаются по-разному: длительность — с единицей.
+					values = []string{"-100h", "0s", "-100", "0"}
+				case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+					values = []string{"0", "250"}
+				case reflect.Float32, reflect.Float64:
+					values = []string{"-100", "100"}
+				case reflect.String:
+					values = []string{"-"}
+				default:
+					continue
+				}
+				key := envName(kc.prefix, l.tag)
+				for _, value := range values {
+					t.Run(key+"="+value, func(t *testing.T) {
+						t.Setenv(key, value)
+						_, err := kc.load()
+						// Принятое значение и ошибка разбора (её держит тест выше) — не этот случай.
+						if err == nil || strings.Contains(err.Error(), key+": ") {
+							return
+						}
+						rejected++
+						if !errors.Is(err, kc.errConfig) || !strings.Contains(err.Error(), l.tag) {
+							t.Errorf("%s=%s: %v, want %v naming the variable", key, value, err, kc.errConfig)
+						}
+					})
+				}
+			}
+			t.Logf("%d rejected values", rejected)
+		})
+	}
+}

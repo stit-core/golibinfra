@@ -49,15 +49,15 @@ type Config struct {
 func (c Config) Validate() error {
 	switch {
 	case c.PoolSize < 1:
-		return fmt.Errorf("%w: PoolSize must be >= 1", ErrConfig)
+		return fmt.Errorf("%w: REDIS_POOL_SIZE must be >= 1, got %d", ErrConfig, c.PoolSize)
 	case c.MaxRetries < -1:
-		return fmt.Errorf("%w: MaxRetries must be >= -1 (-1 disables retries)", ErrConfig)
+		return fmt.Errorf("%w: REDIS_MAX_RETRIES must be >= -1 (-1 disables retries), got %d", ErrConfig, c.MaxRetries)
 	case c.DialTimeout < 0:
-		return fmt.Errorf("%w: DialTimeout < 0", ErrConfig)
+		return fmt.Errorf("%w: REDIS_DIAL_TIMEOUT must be >= 0, got %s", ErrConfig, c.DialTimeout)
 	case c.ReadTimeout < 0:
-		return fmt.Errorf("%w: ReadTimeout < 0", ErrConfig)
+		return fmt.Errorf("%w: REDIS_READ_TIMEOUT must be >= 0, got %s", ErrConfig, c.ReadTimeout)
 	case c.WriteTimeout < 0:
-		return fmt.Errorf("%w: WriteTimeout < 0", ErrConfig)
+		return fmt.Errorf("%w: REDIS_WRITE_TIMEOUT must be >= 0, got %s", ErrConfig, c.WriteTimeout)
 	}
 	if _, err := redis.ParseURL(c.URL); err != nil {
 		return fmt.Errorf("%w: REDIS_URL %q: %w", ErrConfig, redact.URL(c.URL), redact.ParseError(err))

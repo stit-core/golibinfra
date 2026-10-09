@@ -71,9 +71,9 @@ var ErrConfig = errors.New("httpkit: invalid config")
 func (c Config) Validate() error {
 	switch {
 	case c.Addr == "":
-		return fmt.Errorf("%w: Addr is empty", ErrConfig)
+		return fmt.Errorf("%w: HTTP_ADDR is required", ErrConfig)
 	case c.ReadTimeout < 0 || c.ReadHeaderTimeout < 0 || c.WriteTimeout < 0 || c.IdleTimeout < 0:
-		return fmt.Errorf("%w: timeouts must be >= 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_READ_TIMEOUT, HTTP_READ_HEADER_TIMEOUT, HTTP_WRITE_TIMEOUT and HTTP_IDLE_TIMEOUT must be >= 0", ErrConfig)
 	case c.RequestTimeout == 0:
 		return fmt.Errorf("%w: HTTP_REQUEST_TIMEOUT must be > 0 or negative (-1s: no deadline)", ErrConfig)
 	case c.RequestTimeout > 0 && c.WriteTimeout > 0 && c.RequestTimeout >= c.WriteTimeout:
@@ -83,27 +83,29 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: HTTP_IDEMPOTENCY_RESERVE_TTL (%s) must be greater than HTTP_REQUEST_TIMEOUT (%s): the reservation outlives the request",
 			ErrConfig, c.Idempotency.ReserveTTL, c.RequestTimeout)
 	case c.ShutdownTimeout <= 0:
-		return fmt.Errorf("%w: ShutdownTimeout must be > 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_SHUTDOWN_TIMEOUT must be > 0, got %s", ErrConfig, c.ShutdownTimeout)
 	case c.ShutdownDrainDelay < 0:
-		return fmt.Errorf("%w: ShutdownDrainDelay must be >= 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_SHUTDOWN_DRAIN_DELAY must be >= 0, got %s", ErrConfig, c.ShutdownDrainDelay)
 	case c.ReadyProbeTimeout <= 0:
-		return fmt.Errorf("%w: ReadyProbeTimeout must be > 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_READY_PROBE_TIMEOUT must be > 0, got %s", ErrConfig, c.ReadyProbeTimeout)
 	case c.TrustProxyHops < 0:
-		return fmt.Errorf("%w: TrustProxyHops must be >= 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_TRUST_PROXY_HOPS must be >= 0, got %d", ErrConfig, c.TrustProxyHops)
 	case c.APITitle == "" || c.APIVersion == "":
-		return fmt.Errorf("%w: APITitle and APIVersion are required", ErrConfig)
+		return fmt.Errorf("%w: HTTP_API_TITLE and HTTP_API_VERSION are required", ErrConfig)
 	case c.RateLimit.RPS < 0 || c.RateLimit.Burst < 0:
-		return fmt.Errorf("%w: RateLimit.RPS and Burst must be >= 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_RATE_LIMIT_RPS and HTTP_RATE_LIMIT_BURST must be >= 0", ErrConfig)
 	case c.MaxBody.MaxBytes < 0:
-		return fmt.Errorf("%w: MaxBody.MaxBytes must be >= 0", ErrConfig)
-	case c.Idempotency.Header == "" || c.Idempotency.TTL <= 0 || c.Idempotency.ReserveTTL <= 0 || c.Idempotency.MaxBodyBytes <= 0:
-		return fmt.Errorf("%w: Idempotency.Header, TTL, ReserveTTL and MaxBodyBytes are required", ErrConfig)
+		return fmt.Errorf("%w: HTTP_MAX_BODY_BYTES must be >= 0, got %d", ErrConfig, c.MaxBody.MaxBytes)
+	case c.Idempotency.Header == "":
+		return fmt.Errorf("%w: HTTP_IDEMPOTENCY_HEADER is required", ErrConfig)
+	case c.Idempotency.TTL <= 0 || c.Idempotency.ReserveTTL <= 0 || c.Idempotency.MaxBodyBytes <= 0:
+		return fmt.Errorf("%w: HTTP_IDEMPOTENCY_TTL, HTTP_IDEMPOTENCY_RESERVE_TTL and HTTP_IDEMPOTENCY_MAX_BODY_BYTES must be > 0", ErrConfig)
 	case c.Idempotency.StoreTimeout <= 0:
-		return fmt.Errorf("%w: Idempotency.StoreTimeout must be > 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_IDEMPOTENCY_STORE_TIMEOUT must be > 0, got %s", ErrConfig, c.Idempotency.StoreTimeout)
 	case c.CORS.AllowCredentials && slices.Contains(c.CORS.Origins, "*"):
-		return fmt.Errorf("%w: CORS.AllowCredentials is incompatible with origin \"*\"", ErrConfig)
+		return fmt.Errorf("%w: HTTP_CORS_ALLOW_CREDENTIALS is incompatible with the origin \"*\" in HTTP_CORS_ORIGINS", ErrConfig)
 	case c.CORS.MaxAge < 0:
-		return fmt.Errorf("%w: CORS.MaxAge must be >= 0", ErrConfig)
+		return fmt.Errorf("%w: HTTP_CORS_MAX_AGE must be >= 0, got %d", ErrConfig, c.CORS.MaxAge)
 	}
 	return nil
 }

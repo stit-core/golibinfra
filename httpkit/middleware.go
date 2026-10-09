@@ -127,8 +127,11 @@ func RequestID() func(http.Handler) http.Handler {
 
 // Recovery переводит panic в 500; после записанного заголовка — отправляет начатое и паникует
 // http.ErrAbortHandler: net/http обрывает соединение, и усечённый ответ не выглядит полным. Свой
-// http.ErrAbortHandler хендлера пробрасывает дальше.
+// http.ErrAbortHandler хендлера пробрасывает дальше. nil-логгер — logkit.Nop().
 func Recovery(log logkit.Logger) func(http.Handler) http.Handler {
+	if log == nil {
+		log = logkit.Nop()
+	}
 	instr := newInstruments()
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -176,8 +179,11 @@ func pathSet(paths []string) map[string]struct{} {
 
 // AccessLog пишет одну строку на запрос; request_id и trace_id добавляет logkit
 // из ctx, поэтому middleware стоит после RequestID и OTel. Успешные ответы на
-// quietPaths (пробы оркестратора) логируются на Debug.
+// quietPaths (пробы оркестратора) логируются на Debug. nil-логгер — logkit.Nop().
 func AccessLog(log logkit.Logger, quietPaths ...string) func(http.Handler) http.Handler {
+	if log == nil {
+		log = logkit.Nop()
+	}
 	quiet := pathSet(quietPaths)
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -233,8 +239,11 @@ var ErrAuthNotConfigured = errors.New("httpkit: auth not configured")
 // открыт без личности. Схема без extractor'а альтернативу не открывает: если открыть нечем, —
 // 500 AUTH_NOT_CONFIGURED. 401 несёт WWW-Authenticate по схемам операции; отказ бэкенда любой
 // схемы — 503, и при `{}`: предъявленные credentials не превращаются в анонима. Работает на
-// любом huma-адаптере (chi в проде, humatest в тестах потребителя).
+// любом huma-адаптере (chi в проде, humatest в тестах потребителя). nil-логгер — logkit.Nop().
 func HumaAuth(schemes []SecuritySchemeEntry, log logkit.Logger) func(huma.Context, func(huma.Context)) {
+	if log == nil {
+		log = logkit.Nop()
+	}
 	extractors := make(map[string]AuthExtractor, len(schemes))
 	defs := make(map[string]*huma.SecurityScheme, len(schemes))
 	for _, e := range schemes {

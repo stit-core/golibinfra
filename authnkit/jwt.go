@@ -48,15 +48,15 @@ type JWTConfig struct {
 func (c JWTConfig) Validate() error {
 	switch {
 	case len(c.Secret) < MinSecretLen:
-		return fmt.Errorf("%w: JWT secret must be at least %d bytes", ErrConfig, MinSecretLen)
+		return fmt.Errorf("%w: JWT_SECRET must be at least %d bytes", ErrConfig, MinSecretLen)
 	case c.PreviousSecret != "" && len(c.PreviousSecret) < MinSecretLen:
-		return fmt.Errorf("%w: JWT previous secret must be at least %d bytes", ErrConfig, MinSecretLen)
+		return fmt.Errorf("%w: JWT_PREVIOUS_SECRET must be at least %d bytes", ErrConfig, MinSecretLen)
 	case c.AccessTTL <= 0:
 		return fmt.Errorf("%w: JWT_ACCESS_TTL must be > 0, got %s", ErrConfig, c.AccessTTL)
 	case c.Leeway < 0:
-		return fmt.Errorf("%w: JWT leeway must not be negative", ErrConfig)
+		return fmt.Errorf("%w: JWT_LEEWAY must be >= 0, got %s", ErrConfig, c.Leeway)
 	case slices.Contains(c.Audience, ""):
-		return fmt.Errorf("%w: JWT audience has an empty value", ErrConfig)
+		return fmt.Errorf("%w: JWT_AUDIENCE has an empty value", ErrConfig)
 	}
 	return nil
 }

@@ -3,6 +3,8 @@ package pgkit
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"time"
@@ -87,6 +89,9 @@ func provideMigrated(p migrateParams) (Migrated, error) {
 			ctx, cancel := context.WithTimeout(ctx, p.Runner.Timeout)
 			defer cancel()
 
+			if err := checkAppDir(p.Runner.Path); err != nil {
+				return fmt.Errorf("pgkit: migrate on start: %w", err)
+			}
 			sources := startupSources(p.Sources, p.Runner.Path)
 			if err := MigrateUpAll(ctx, p.Pool.DSN, p.Runner.LockTimeout, sources...); err != nil {
 				return fmt.Errorf("pgkit: migrate on start: %w", err)
@@ -95,6 +100,22 @@ func provideMigrated(p migrateParams) (Migrated, error) {
 		},
 	})
 	return Migrated{}, nil
+}
+
+// checkAppDir — каталог миграций приложения на месте и не пуст: источник читает его как корень
+// «.», и ошибка источника не назвала бы ни каталог, ни переменную.
+func checkAppDir(path string) error {
+	if path == "" {
+		return nil
+	}
+	const hint = "set PG_MIGRATIONS_PATH=- if the service has no migrations of its own"
+	if _, err := os.Stat(path); err != nil {
+		return fmt.Errorf("PG_MIGRATIONS_PATH %q: %w (%s)", path, err, hint)
+	}
+	if found, _ := filepath.Glob(filepath.Join(path, "*.up.sql")); len(found) == 0 {
+		return fmt.Errorf("PG_MIGRATIONS_PATH %q: no *.up.sql migrations in the directory (%s)", path, hint)
+	}
+	return nil
 }
 
 // startupSources: киты по имени (порядок fx-группы не определён), приложение

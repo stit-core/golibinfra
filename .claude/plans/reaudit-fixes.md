@@ -27,8 +27,9 @@ blocked-by: —
 - Push и bump в шаблоне — после валидатора, у дирижёра.
 
 ## Критерии приёмки
-- [ ] **AC1** — угол 1 (API): nil-логгер в функциях httpkit — `Nop`, тексты `Validate` называют
+- [x] **AC1** — угол 1 (API): nil-логгер в функциях httpkit — `Nop`, тексты `Validate` называют
   переменную, отказ каталога миграций называет каталог. Проверка: `go test -short ./httpkit/ ./cachekit/ ./authnkit/ ./pgkit/` → PASS
+  - Подтверждено: `TestNilLoggerIsNop`, `TestKitConfigs_ValidateErrorNamesVariable`, `TestMigrateModule_MissingAppDirNamesTheVariable` → PASS (до правок — красные, логи `M/fixround1/logs/red-s7-*.log`)
 - [ ] **AC2** — угол 2 (корректность): NUL в ошибке транспорта не стопорит тик outbox, отказ DLQ на
   последней доставке не теряет сообщение. Проверка: пробы RA-C05, RA-C07 в worktree HEAD → PASS
 - [ ] **AC3** — угол 3 (безопасность): идемпотентность дедуплицирует только запрос с личностью,
@@ -71,9 +72,10 @@ blocked-by: —
 - [x] **S6** — logkit, natskit, timerkit: текст ошибки потребителя в спане — под масками логгера (ROBS-03)
   - Проверка: `go test -race ./logkit/ ./natskit/ ./timerkit/ ./internal/spanerr/` → PASS · Закрывает: AC6
   - Сделано: `internal/spanerr.Record` — exception-событие и статус с текстом под масками логгера (`MaskText` у логгеров logkit, чужой логгер — дефолтные маски); `TestConsumerSpan_HandlerErrorTextIsMasked`, `TestSpan_JobErrorTextIsMasked`, `TestRecord_MasksErrorTextLikeTheLogger`; до правки e-mail и Bearer-токен в спане открыты
-- [ ] **S7** — httpkit, cachekit, authnkit, pgkit: nil-логгер — `Nop`; тексты ошибок `Validate` и
+- [x] **S7** — httpkit, cachekit, authnkit, pgkit: nil-логгер — `Nop`; тексты ошибок `Validate` и
   каталога миграций (RAPI-02, RAPI-03, RAPI-04)
-  - Проверка: `go test -short -race ./httpkit/ ./cachekit/ ./authnkit/ ./pgkit/` → PASS · Закрывает: AC1
+  - Проверка: `go test -short -race ./httpkit/ ./cachekit/ ./authnkit/ ./pgkit/ ./internal/envconf/` → PASS · Закрывает: AC1
+  - Сделано: шесть функций httpkit берут nil-логгер как `Nop` (`TestNilLoggerIsNop`, до правки — panic); ошибка `Validate` у cachekit, httpkit, authnkit и amocrmkit называет переменную — держит `TestKitConfigs_ValidateErrorNamesVariable` (до правки 49 значений без имени переменной); отказ каталога миграций называет каталог и `PG_MIGRATIONS_PATH`
 
 ### Minor
 - [ ] **S8** — outboxkit, natskit: NUL в тексте ошибки транспорта, отказ DLQ на последней
@@ -142,4 +144,4 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S6 закрыты. Следующий шаг — S7 (nil-логгер httpkit, тексты ошибок `Validate` и каталога миграций).
+S1–S7 закрыты. Следующий шаг — S8 (NUL в ошибке транспорта outbox, отказ DLQ на последней доставке).
