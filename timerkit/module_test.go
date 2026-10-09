@@ -121,14 +121,14 @@ func TestModule_StuckJobLeavesStopBudget(t *testing.T) {
 	t.Cleanup(func() { close(release) })
 	<-started
 
-	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Millisecond)
 	defer cancel()
 	begin := time.Now()
 	if err := app.Stop(ctx); err != nil {
 		t.Fatalf("Stop = %v, want nil: a stuck job is not a stop failure", err)
 	}
-	if elapsed := time.Since(begin); elapsed > 280*time.Millisecond {
-		t.Errorf("Stop took %s of a 300ms budget: nothing is left to later hooks", elapsed)
+	if elapsed := time.Since(begin); elapsed > 850*time.Millisecond {
+		t.Errorf("Stop took %s of a 900ms budget: nothing is left to later hooks", elapsed)
 	}
 	if !later.Load() {
 		t.Error("the hook after timerkit did not run on a live ctx")

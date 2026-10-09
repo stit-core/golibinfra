@@ -191,9 +191,12 @@ func TestModule_RequestDeadline(t *testing.T) {
 	t.Setenv("HTTP_WRITE_TIMEOUT", "2s")
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "200ms")
 	var hasDeadline atomic.Bool
+	// seen — что увидел хендлер: ответ потока приходит клиенту раньше, чем хендлер начал работу.
+	seen := make(chan bool, 16)
 	work := func(ctx context.Context) {
 		_, ok := ctx.Deadline()
 		hasDeadline.Store(ok)
+		seen <- ok
 		time.Sleep(600 * time.Millisecond)
 	}
 	slow := func(ctx context.Context, _ *struct{}) (*struct{}, error) {
@@ -232,9 +235,17 @@ func TestModule_RequestDeadline(t *testing.T) {
 	}
 
 	for _, c := range []struct{ path, header string }{{"/events", "Accept: text/event-stream"}, {"/ws", "Upgrade: websocket"}} {
-		hasDeadline.Store(true)
-		if resp := do(t, srv, http.MethodGet, c.path, nil, c.header); resp.StatusCode >= http.StatusBadRequest || hasDeadline.Load() {
-			t.Errorf("stream route %s with %q: %d, ctx deadline %v; want the handler's response without a deadline", c.path, c.header, resp.StatusCode, hasDeadline.Load())
+		for len(seen) > 0 {
+			<-seen
+		}
+		resp := do(t, srv, http.MethodGet, c.path, nil, c.header)
+		select {
+		case deadline := <-seen:
+			if resp.StatusCode >= http.StatusBadRequest || deadline {
+				t.Errorf("stream route %s with %q: %d, ctx deadline %v; want the handler's response without a deadline", c.path, c.header, resp.StatusCode, deadline)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("stream route %s with %q: the handler did not run", c.path, c.header)
 		}
 	}
 	for _, method := range []string{http.MethodGet, http.MethodPost} {

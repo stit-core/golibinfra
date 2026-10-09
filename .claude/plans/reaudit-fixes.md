@@ -39,9 +39,10 @@ blocked-by: —
 - [x] **AC4** — угол 4 (fx): обработчик шины и job в полёте оставляют бюджет остановки хукам
   после себя, `Stop` — `nil`. Проверка: `M/reaudit/fxobs/ra-run.sh HEAD fx fx-docker` → RX01, RX02 PASS
   - Подтверждено: RX01a, RX01b, RX02 ×4, RT01 на HEAD → PASS (`M/fixround1/logs/fxobs/`)
-- [ ] **AC5** — угол 5 (тесты): scope идемпотентности по субъекту и `CleanupJob.Run` закреплены
+- [x] **AC5** — угол 5 (тесты): scope идемпотентности по субъекту и `CleanupJob.Run` закреплены
   тестами, контрактные наборы testkit проваливают сломанную реализацию, фейки не расходятся с
   боевыми молча, фикстуры живут под `-count>1`. Проверка: мутанты аудитора hk2-06, sess-11, tk3-01…03 (`M/reaudit/tg/scripts/rmutate.py`) → убиты; `go test -race -count=3 ./tzkit/` → PASS
+  - Подтверждено: мутанты аудитора руками — hk2-06 (по смыслу), sess-11, tk3-01…03 убиты (`M/fixround1/logs/mutants-*.log`); `go test -race -count=3 ./tzkit/` → ok; зонд фейков на HEAD — DIVERGE 23, все названы в доках (`M/fixround1/logs/fakes2-probe.log`)
 - [x] **AC6** — угол 6 (observability): занятый пул не стопорит экспорт метрик, выключенный SDK не
   меняет решение о сэмплировании, текст ошибки в спане — под масками, рукопожатие Redis — без
   `result=error`. Проверка: `M/reaudit/fxobs/ra-run.sh HEAD tel tel-docker obs-unit obs` → RT02, RT02b, RT05, RO2 PASS, RO3 — маски
@@ -49,9 +50,10 @@ blocked-by: —
 - [x] **AC7** — угол 7 (доки): графы `fx.New` доков, которые не собирались как написаны,
   собираются и закреплены тестом. Проверка: `go test -short -run 'TestDocGraphs' .` → PASS
   - Подтверждено: `TestDocGraphs` (4 графа: блок доки — тело функции теста байт в байт, `fx.ValidateApp`) → PASS; остальные 22 графа доков аудитор собрал на `v1.4.0`, правки круга их не трогали, кроме трёх быстрых стартов с `logkit.Module` (RDOC-02)
-- [ ] **AC8** — угол 8 (гейт): ни одна из 34 форм запуска аудитора не даёт `✓ check clean` на
+- [x] **AC8** — угол 8 (гейт): ни одна из 34 форм запуска аудитора не даёт `✓ check clean` на
   красном дереве — и через pre-push; envdoc видит анонимную структуру с тегом, `//nolint`
   невключённого линтера — отказ, проводку guard держит тест. Проверка: `go test ./scripts/...` → PASS; `M/reaudit/tg/scripts/gate_forge.sh` на HEAD → честных 34 из 34
+  - Подтверждено: `gate_forge.sh` на HEAD — 34 формы из 34 честные (`M/fixround1/logs/forge/`); инъекции RG31, RG54, RG55 пойманы (`M/fixround1/logs/inject/`); `go test ./scripts/...` → PASS
 - [ ] **AC9** — релиз готов: гейт на чистом дереве зелёный, аннотация и Handoff шаблону лежат в
   `M/`, тег стоит локально. Проверка: `make gate-clean` → `✓ check clean (./...)`; `git tag -l 'v1.*' | tail -1`
 
@@ -184,6 +186,8 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S13, S15 и S16 закрыты: пробы и эксперименты аудиторов на HEAD чисты, отложенное — в бэклоге.
-Остался S14 — релиз: `make tools`, `make test-full`, `make gate-clean`, `make release-diff
-PREV=v1.4.0`, аннотация и Handoff шаблону в `M/`, закрытие плана, тег `v1.4.1` локально.
+S1–S13, S15 и S16 закрыты, AC1–AC8 подтверждены: пробы и эксперименты аудиторов на HEAD чисты,
+отложенное — в бэклоге. Остался S14 — релиз патча `v1.4.1` (`make release-diff PREV=v1.4.0` пуст:
+API, env и метрики те же): `make test-full`, закрытие плана, `make gate-clean` на коммите
+закрытия, аннотация и Handoff шаблону (заготовки — `M/annotation-v1.4.1.txt`,
+`M/handoff-golibinfra-v1.4.1.md`), тег локально. Точка продолжения — `M/fixround1/progress.md`.
