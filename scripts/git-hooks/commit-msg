@@ -1,8 +1,10 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # commit-msg: первая строка сообщения — Conventional Commit, breaking — и `!`, и футер
 # `BREAKING CHANGE:`: по ним /release собирает заметки версии. Формат и список типов — CLAUDE.md
 # § Git workflow; список правится там и здесь одним коммитом. Сообщения, которые пишет сам git
 # (git revert, commit --fixup/--squash), проходят; merge-коммит — нет: история линейная.
+# Строка интерпретатора — `bash -p`: окружение оболочки коммитящего (BASH_ENV, экспортированные
+# функции, SHELLOPTS) хук не читает.
 set -euo pipefail
 
 # Под LC_ALL=C символ — байт: длину subject считаем без байтов-продолжений UTF-8, и предел в 72

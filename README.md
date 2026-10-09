@@ -348,8 +348,10 @@ makefile в обычных формах (`-f`, в том числе `Makefile` �
 и при чтении Makefile, и первой строкой рецепта, какой бы целью до него ни дошли; `MAKECMDGOALS` и
 `MAKEFILE_LIST` от вызывающего (командная строка, окружение) — отказ make для любой цели. Makefile,
 написанный под подделку (переприсваивает `MAKEFILE_LIST`), обходит любую сверку внутри make: свой
-makefile — правка гейта, а вердикт для remote — pre-push. Кеш golangci-lint — свой у каждого
-checkout'а (`.cache/`), у `gate-clean` — холодный.
+makefile — правка гейта, а вердикт для remote — pre-push. Окружение оболочки вызывающего до шагов
+не доходит: `BASH_ENV`, `SHELLOPTS`, `BASHOPTS` и экспортированные функции Makefile с окружения
+шагов снимает, а скрипты шагов (`scripts/*.sh`) стартуют `bash -p` и сами их не читают. Кеш
+golangci-lint — свой у каждого checkout'а (`.cache/`), у `gate-clean` — холодный.
 
 Гейт идёт на toolchain не старше директивы `toolchain` в `go.mod`: с `GOTOOLCHAIN=auto` локальный
 Go старше неё скачивает названный в ней, Go новее — остаётся; по toolchain гейта `govulncheck`
@@ -366,12 +368,13 @@ Go-коде ловит тест `testkit` (`TestImageTagsArePinned`).
 
 Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-push`) гоняет весь `make check` на
 верхнем коммите каждого пушимого ref'а в свежем worktree — по дереву и `Makefile` самого коммита,
-без переменных make из окружения вызывающего (`MAKE*`, `MFLAGS`, `GNUMAKEFLAGS`), незакоммиченных
-правок и gitignored-файлов; `make gate-clean` —
-тот же прогон на HEAD. Формат сообщения коммита держит `commit-msg`: Conventional Commit, subject
-до 72 символов, `!` и футер `BREAKING CHANGE:` — только вместе. Без активных хуков `make check`
-красный (`hooks-check`, подсказка — `make hooks`). Обход — только руками человека
-(`git push --no-verify`).
+без переменных make и оболочки из окружения вызывающего (`MAKE*`, `MFLAGS`, `GNUMAKEFLAGS`,
+`BASH_ENV`, `SHELLOPTS`, `BASHOPTS`, экспортированные функции), незакоммиченных правок и
+gitignored-файлов; `make gate-clean` — тот же прогон на HEAD. Формат сообщения коммита держит
+`commit-msg`: Conventional Commit, subject до 72 символов, `!` и футер `BREAKING CHANGE:` — только
+вместе. Оба хука стартуют `bash -p`: файл автозапуска, функции и опции bash из окружения
+вызывающего их не выключают. Без активных хуков `make check` красный (`hooks-check`, подсказка —
+`make hooks`). Обход — только руками человека (`git push --no-verify`).
 
 Из сессии Claude Code удобные обходы блокируют deny `.claude/settings.json` (подстрока
 `--no-veri` где угодно в команде) и `.claude/hooks/guard-bash.sh`. Guard отклоняет `git commit -n`
@@ -393,8 +396,11 @@ Push проходит тот же гейт: pre-push (`scripts/git-hooks/pre-pus
 `find … -exec` с каталога выше хуков; алиасы, `include` и команды в конфиге git (`core.pager`),
 правку `.git/config` и снятие секции `core`; `git send-pack`; push из клона или worktree, где
 хуков нет; кавычку, открытую строкой выше, и маркер heredoc внутри кавычек; правку инструментами
-Edit и Write. Такой обход — правка гейта (`CLAUDE.md § Границы`). Поведение хуков, guard, его
-проводку в `.claude/settings.json` и самозащиту `make check` держит `scripts/gate_test.go`.
+Edit и Write. Гейт и хуки не ловят подставной бинарь в `PATH` (`make`, `go`, `git`; версию по
+build info сверяют только у `golangci-lint`, `govulncheck` и `apidiff`). Такой обход — правка
+гейта (`CLAUDE.md § Границы`). Поведение хуков, guard, его проводку в `.claude/settings.json` и
+самозащиту `make check` — от флагов и переменных make и от окружения оболочки — держит
+`scripts/gate_test.go`.
 
 Дополнительно: `make coverage` (покрытие `-short` + сводка), `make bench`
 (бенчмарки), `make fuzz` (короткий прогон каждого Fuzz-таргета, `FUZZTIME=10s`),

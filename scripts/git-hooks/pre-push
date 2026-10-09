@@ -1,10 +1,13 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # pre-push: гейт перед отправкой в remote — `make check` каждого пушимого коммита в свежем
 # worktree; CI нет, это последняя проверка. Вердикт — про то, что уходит в remote: гейт идёт по
-# дереву и Makefile самого коммита, без make-окружения вызывающего и с холодным кешем lint (Makefile
-# кладёт его в checkout) — незакоммиченные правки и gitignored-файлы рабочего дерева на него не
-# влияют. Тот же прогон на HEAD — `make gate-clean`. Включается `make hooks`; без него make check
-# красный.
+# дереву и Makefile самого коммита, без переменных make и оболочки из окружения вызывающего и с
+# холодным кешем lint (Makefile кладёт его в checkout) — незакоммиченные правки и gitignored-файлы
+# рабочего дерева на него не влияют. Тот же прогон на HEAD — `make gate-clean`. Включается
+# `make hooks`; без него make check красный.
+#
+# Строка интерпретатора — `bash -p`: файл автозапуска (BASH_ENV), экспортированные функции и
+# SHELLOPTS из окружения пушащего хук не читает — иначе `exit 0` в них пропускал бы push без гейта.
 #
 # Обход — только руками человека: git push --no-verify. Из сессии Claude его и смену
 # core.hooksPath блокируют .claude/settings.json и хук .claude/hooks/guard-bash.sh.
@@ -34,13 +37,15 @@ while read -r local_ref local_sha _ _; do
 	tmp=$(mktemp -d "${TMPDIR:-/tmp}/golibinfra-gate.XXXXXX")
 	git -C "$root" worktree add --detach --quiet "$tmp" "$commit"
 	echo "pre-push: $local_ref — make check в свежем worktree $tmp @ $(git -C "$root" rev-parse --short "$commit")"
-	# Переменные make из окружения вызывающего (MAKEFLAGS=i, MAKEFILES, MAKECMDGOALS, MAKE…) до
-	# гейта не доходят: каждая из них меняет шаги или выключает его самозащиту. stdin гейта — не
-	# список ref'ов: его дочитывает цикл.
+	# Переменные make и оболочки из окружения вызывающего (MAKEFLAGS=i, MAKEFILES, MAKECMDGOALS,
+	# MAKE…, BASH_ENV, SHELLOPTS, функции BASH_FUNC_…) до гейта не доходят: каждая из них меняет
+	# шаги или выключает его самозащиту. stdin гейта — не список ref'ов: его дочитывает цикл.
 	drop=()
-	while IFS= read -r name; do
-		drop+=(-u "$name")
-	done < <(compgen -e | grep -E '^(MAKE.*|MFLAGS|GNUMAKEFLAGS)$' || true)
+	while IFS= read -r -d '' entry; do
+		if [[ ${entry%%=*} =~ ^(MAKE.*|MFLAGS|GNUMAKEFLAGS|BASH_ENV|SHELLOPTS|BASHOPTS|BASH_FUNC_.*)$ ]]; then
+			drop+=(-u "${entry%%=*}")
+		fi
+	done < <(env -0)
 	env ${drop[@]+"${drop[@]}"} make -C "$tmp" check </dev/null
 	cleanup
 done

@@ -58,6 +58,22 @@ func write(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
+// shellForgeries — окружение оболочки, которым вызывающий подменил бы bash-скрипт: файл
+// автозапуска (BASH_ENV), функции с именами его команд (export -f) и опция «читать, но не
+// исполнять» (SHELLOPTS). Скрипты гейта и хуки стартуют `bash -p` и этого не читают.
+func shellForgeries(t *testing.T) map[string][]string {
+	t.Helper()
+	dir := t.TempDir()
+	write(t, dir, map[string]string{"exit0.sh": "exit 0\n"})
+	return map[string][]string{
+		"BASH_ENV":         {"BASH_ENV=" + filepath.Join(dir, "exit0.sh")},
+		"function set":     {"BASH_FUNC_set%%=() { exit 0; }"},
+		"function env":     {"BASH_FUNC_env%%=() { :; }"},
+		"function read":    {"BASH_FUNC_read%%=() { return 1; }"},
+		"SHELLOPTS=noexec": {"SHELLOPTS=noexec"},
+	}
+}
+
 // Guard сессии Claude не пускает удобные обходы хуков и не мешает их читать: ложный отказ на
 // чтении приучает обходить сам guard. Случаи — testdata/guard-cases.txt: guard получает команду
 // как JSON и ничего не исполняет.
@@ -151,6 +167,15 @@ func TestCommitMsgHook(t *testing.T) {
 			})
 		}
 	}
+	// Регрессия RGATE-01 (окружение оболочки): сообщение не по форме не проходит, чем бы ни было
+	// окружение коммитящего.
+	for name, env := range shellForgeries(t) {
+		dir := t.TempDir()
+		write(t, dir, map[string]string{"COMMIT_EDITMSG": "update stuff\n"})
+		if out, err := run(t, dir, "", env, hook, filepath.Join(dir, "COMMIT_EDITMSG")); err == nil {
+			t.Errorf("%s in the committer's environment switches the hook off: a message that is not a Conventional Commit passes:\n%s", name, out)
+		}
+	}
 }
 
 // Перенос давнего коммита не по форме после конфликта (cherry-pick --continue зовёт хук с его
@@ -209,7 +234,7 @@ func TestCommitMsgHookOnCherryPick(t *testing.T) {
 func TestPrePushGatesPushedCommit(t *testing.T) {
 	hook := filepath.Join(repoRoot(t), "scripts", "git-hooks", "pre-push")
 	repo, tmp := t.TempDir(), t.TempDir()
-	const gate = "check:\n\t@echo \"toy gate: $$(cat verdict) goals=$(MAKECMDGOALS) make=$(notdir $(MAKE))\"; test \"$$(cat verdict)\" = green\n"
+	const gate = "check:\n\t@echo \"toy gate: $$(cat verdict) goals=$(MAKECMDGOALS) make=$(notdir $(MAKE)) shell=[$${BASH_ENV-}$${SHELLOPTS-}$${BASHOPTS-}]\"; test \"$$(cat verdict)\" = green\n"
 	git := func(args ...string) string {
 		t.Helper()
 		out, err := run(t, repo, "", nil, "git", append([]string{"-c", "user.name=t", "-c", "user.email=t@t"}, args...)...)
@@ -257,6 +282,15 @@ func TestPrePushGatesPushedCommit(t *testing.T) {
 		t.Fatalf("make variables of the pusher's environment reach the gate (err %v):\n%s", err, out)
 	}
 
+	// Регрессия RGATE-01 (окружение оболочки): файл автозапуска, экспортированные функции и опции
+	// bash из окружения пушащего хук не выключают и до гейта не доходят.
+	for name, env := range shellForgeries(t) {
+		out, err := run(t, repo, "refs/heads/main "+red+" refs/heads/main "+zero+"\n", append([]string{"TMPDIR=" + tmp}, env...), hook)
+		if err == nil || !strings.Contains(out, "toy gate: red goals=check make=make shell=[]") {
+			t.Errorf("%s in the pusher's environment: a red commit passes or the variable reaches the gate (err %v):\n%s", name, err, out)
+		}
+	}
+
 	green := commit("green")
 	out, err = push(
 		"refs/heads/main "+green+" refs/heads/main "+red,
@@ -284,6 +318,17 @@ func TestMakeCheckCannotBeForged(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.Symlink(fail, filepath.Join(bin, "golangci-lint")); err != nil {
+		t.Fatal(err)
+	}
+	// Предохранитель: go вложенного make отвечает только на `go env` (по нему Makefile узнаёт
+	// GOFLAGS). Форма, прошедшая самозащиту, с флагом -i дошла бы до test-full настоящего гейта,
+	// а он снова запустил бы этот тест; без go шаги падают сразу, и подделка видна за секунды.
+	realGo, err := exec.LookPath("go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write(t, bin, map[string]string{"go": "#!/bin/sh\n[ \"$1\" = env ] && exec \"" + realGo + "\" \"$@\"\necho \"go $*: the forge probe has no toolchain\" >&2\nexit 1\n"})
+	if err := os.Chmod(filepath.Join(bin, "go"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	write(t, fakes, map[string]string{
@@ -361,6 +406,10 @@ func TestMakeCheckCannotBeForged(t *testing.T) {
 		{name: "-i behind a goal alias from --eval", args: []string{"-i", "--eval", "x: check", "x"}},
 		{name: "-k behind a goal alias from a second makefile", args: []string{"-k", "-f", "Makefile", "-f", double, "--eval", "x: check", "x"}},
 		{name: "gate-clean: -i with MAKECMDGOALS", args: []string{"-i", "gate-clean", "MAKECMDGOALS=x"}},
+
+		{name: "BASH_ENV in env", args: []string{"check"}, env: shellForgeries(t)["BASH_ENV"], gate: true},
+		{name: "SHELLOPTS=noexec in env", args: []string{"check"}, env: shellForgeries(t)["SHELLOPTS=noexec"], gate: true},
+		{name: "exported function set in env", args: []string{"check"}, env: shellForgeries(t)["function set"], gate: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			env := append([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")}, tc.env...)
@@ -441,6 +490,81 @@ func TestLintRefusesNolintOfDisabledLinter(t *testing.T) {
 	out, err := run(t, dir, "", nil, "bash", filepath.Join(root, "scripts", "lint.sh"))
 	if err == nil || !strings.Contains(out, "//nolint называет линтер вне enable .golangci.yml: nilnil") || !strings.Contains(out, "a.go:3:") {
 		t.Fatalf("lint must refuse a //nolint of a linter that is not enabled (err %v):\n%s", err, out)
+	}
+}
+
+// Регрессия RGATE-01 (окружение оболочки): шаги-скрипты гейта — lint и plan-check — на красном
+// дереве остаются красными при любом окружении оболочки вызывающего, и там, где sh — это bash
+// (SHELL=/bin/bash: рецепт читал бы BASH_ENV и SHELLOPTS сам). Дерево игрушечное: настоящие
+// Makefile и скрипты, конфиг lint со снятым линтером, бэклога планов нет.
+func TestGateScriptStepsIgnoreShellEnvironment(t *testing.T) {
+	root := repoRoot(t)
+	read := func(name string) string {
+		t.Helper()
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(data)
+	}
+	const dropped = "\n    - errcheck\n"
+	config := read(".golangci.yml")
+	if strings.Count(config, dropped) != 1 {
+		t.Fatalf("anchor %q: want one match in .golangci.yml", dropped)
+	}
+	dir := t.TempDir()
+	files := map[string]string{".golangci.yml": strings.Replace(config, dropped, "\n", 1)}
+	scripts := []string{"scripts/lint.sh", "scripts/validate-plan.sh"}
+	for _, name := range append([]string{"Makefile", "scripts/linters.txt"}, scripts...) {
+		files[name] = read(name)
+	}
+	write(t, dir, files)
+	for _, name := range scripts {
+		if err := os.Chmod(filepath.Join(dir, name), 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forgeries := shellForgeries(t)
+	forgeries["clean environment"] = nil
+	for step, refusal := range map[string]string{"lint": "снят: errcheck", "plan-check": "бэклог обязателен"} {
+		for name, env := range forgeries {
+			for _, shell := range []string{"", "SHELL=/bin/bash"} {
+				args := []string{step}
+				if shell != "" {
+					args = append(args, shell)
+				}
+				out, err := run(t, dir, "", env, "make", args...)
+				if err == nil || !strings.Contains(out, refusal) {
+					t.Errorf("make %v with %s: the step must stay red with %q (err %v):\n%s", args, name, refusal, err, out)
+				}
+			}
+		}
+	}
+}
+
+// Скрипты гейта и хуки git стартуют `bash -p` своей строкой интерпретатора: так их запускают git
+// и Makefile, и новый скрипт без неё читал бы окружение оболочки вызывающего.
+func TestGateScriptsStartPrivileged(t *testing.T) {
+	root := repoRoot(t)
+	var files []string
+	for _, pattern := range []string{"scripts/*.sh", "scripts/git-hooks/*"} {
+		found, err := filepath.Glob(filepath.Join(root, pattern))
+		if err != nil {
+			t.Fatal(err)
+		}
+		files = append(files, found...)
+	}
+	if len(files) < 5 {
+		t.Fatalf("scripts of the gate: %v — the list is cut", files)
+	}
+	for _, file := range files {
+		data, err := os.ReadFile(file)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if first, _, _ := strings.Cut(string(data), "\n"); first != "#!/bin/bash -p" {
+			t.Errorf("%s starts with %q, want #!/bin/bash -p", file, first)
+		}
 	}
 }
 

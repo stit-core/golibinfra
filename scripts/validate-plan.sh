@@ -1,4 +1,4 @@
-#!/usr/bin/env bash
+#!/bin/bash -p
 # validate-plan.sh — валидатор и сводка планов `.claude/plans/` (канон формата — skill `/plan`).
 #
 # Модель:

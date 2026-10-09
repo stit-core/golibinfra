@@ -19,6 +19,11 @@ override GOLANGCI_LINT_CACHE := $(CURDIR)/.cache/golangci-lint
 export GOLANGCI_LINT_CACHE
 # Патч из окружения оставил бы в отчёте lint только замечания по нему, cache-программа — чужой кеш.
 unexport GOLANGCI_DIFF_PROCESSOR_PATCH GOLANGCI_LINT_CACHEPROG
+# Окружение оболочки вызывающего до шагов не доходит: файл автозапуска bash (`exit 0` в нём — и шаг
+# «прошёл»), опции (SHELLOPTS=noexec — рецепт читается, но не исполняется) и экспортированные
+# функции с именами команд шага. Скрипты шагов и хуки стартуют `bash -p` и сами их не читают;
+# снятие отсюда закрывает рецепты там, где sh — это bash, и bash, запущенный шагами.
+unexport BASH_ENV SHELLOPTS BASHOPTS $(filter BASH_FUNC_%,$(.VARIABLES))
 
 .DEFAULT_GOAL := help
 
@@ -123,7 +128,7 @@ vuln: ## govulncheck по всем пакетам
 	govulncheck $(PKGS)
 
 plan-check: ## Формат планов .claude/plans/ (A=--summary — сводка активных планов)
-	bash scripts/validate-plan.sh $(A)
+	scripts/validate-plan.sh $(A)
 
 envdoc-check: ## env-переменные кода ↔ строки таблиц доков (имя и дефолт), корневая env-таблица
 	$(GO) run ./scripts/envdoc
