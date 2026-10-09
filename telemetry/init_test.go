@@ -3,9 +3,12 @@ package telemetry
 import (
 	"context"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"os/exec"
 	"slices"
 	"strings"
 	"sync"
@@ -23,6 +26,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/trace"
 )
 
 func TestInitDisabled_StillInstallsPropagatorAndGlobals(t *testing.T) {
@@ -362,10 +366,6 @@ func TestInit_ExportsAllSignalsToSpecPaths(t *testing.T) {
 	}
 }
 
-// restoreGlobals возвращает глобалы OTel после теста. Error-handler
-// восстанавливается тоже: иначе следующие тесты пакета отправляли бы ошибки
-// SDK в буфер уже завершившегося теста. Симметричного Get у otel.SetLogger нет,
-// поэтому канал внутренних сообщений просто глушится.
 // Регрессия ROBS-02: выключенный SDK не трогает trace-context. Спан поверх входящего контекста
 // несёт его вниз как пришёл — с тем же решением о сэмплировании, — а спан без родителя
 // контекста не порождает: нижестоящий сервис не получает traceparent с sampled=0 и пишет свою
@@ -400,6 +400,47 @@ func TestInitDisabled_LeavesTraceContextToNeighbours(t *testing.T) {
 	}
 }
 
+// Регрессия ROBS-02: tracer, созданный до Init (пакетная переменная потребителя, кит, собранный
+// раньше telemetry.Module), при выключенном SDK ведёт себя как созданный после: делегат OTel
+// привязывает его к первому провайдеру трасс процесса, и это no-op, а не SDK-провайдер с
+// sampled=0. Свой процесс: делегирование срабатывает один раз на процесс.
+func TestInitDisabled_TracerCreatedBeforeInitIsNoop(t *testing.T) {
+	const (
+		child   = "TELEMETRY_EARLY_TRACER_CHILD"
+		sampled = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+	)
+	if os.Getenv(child) == "1" {
+		early := otel.Tracer("early")
+		if _, err := Init(context.Background(), Config{Disabled: true}); err != nil {
+			fmt.Print("init: ", err)
+			return
+		}
+		prop := otel.GetTextMapPropagator()
+		for _, tracer := range []trace.Tracer{early, otel.Tracer("late")} {
+			for _, in := range []string{sampled, ""} {
+				ctx := prop.Extract(context.Background(), propagation.MapCarrier{"traceparent": in})
+				ctx, span := tracer.Start(ctx, "call")
+				out := propagation.MapCarrier{}
+				prop.Inject(ctx, out)
+				span.End()
+				fmt.Printf("[%s]", out["traceparent"])
+			}
+		}
+		return
+	}
+	cmd := exec.CommandContext(t.Context(), os.Args[0], "-test.run=^TestInitDisabled_TracerCreatedBeforeInitIsNoop$")
+	cmd.Env = append(os.Environ(), child+"=1")
+	out, err := cmd.CombinedOutput()
+	// Оба tracer'а: входящий контекст — вниз как пришёл, без входящего — заголовка нет.
+	if want := "[" + sampled + "][][" + sampled + "][]"; err != nil || !strings.Contains(string(out), want) {
+		t.Fatalf("early and late tracers must both leave the trace context alone, want %s; child: %v\n%s", want, err, out)
+	}
+}
+
+// restoreGlobals возвращает глобалы OTel после теста. Error-handler
+// восстанавливается тоже: иначе следующие тесты пакета отправляли бы ошибки
+// SDK в буфер уже завершившегося теста. Симметричного Get у otel.SetLogger нет,
+// поэтому канал внутренних сообщений просто глушится.
 func restoreGlobals(t *testing.T) {
 	t.Helper()
 	tp, mp, lp, prop := otel.GetTracerProvider(), otel.GetMeterProvider(), global.GetLoggerProvider(), otel.GetTextMapPropagator()

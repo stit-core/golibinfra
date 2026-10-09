@@ -99,7 +99,7 @@ chi применяет middleware в порядке регистрации: пе
 |---|---|---|---|
 | 1 | `RequestID` | всегда | `X-Request-ID` в ctx до всего остального: он попадает в каждую строку лога и в атрибут спана |
 | 2 | `ClientIP` | всегда | IP клиента в ctx (`ClientIPFrom`, `HTTP_TRUST_PROXY_HOPS`) до спана: ключ лимитера, `client.address`, аудит и антибрутфорс видят один адрес; `r.WithContext` выше `OTel` не трогает объект запроса otelhttp |
-| 3 | `OTel` | всегда | server-span; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log. `traceparent` клиента — ссылка на спане нового корня, baggage не читается (клиент не выбирает trace_id и сэмплирование); `HTTP_TRUST_TRACE_CONTEXT=true` за доверенным краем — спан продолжает трассу клиента |
+| 3 | `OTel` | всегда | server-span; всё ниже работает внутри спана, поэтому `trace_id` есть в access-log и panic-log. `traceparent` клиента — ссылка на спане нового корня, baggage не читается (клиент не выбирает trace_id и сэмплирование); `HTTP_TRUST_TRACE_CONTEXT=true` за доверенным краем — спан продолжает трассу клиента. Без SDK-провайдера трасс (`OTEL_SDK_DISABLED=true`) спана нет: контекст клиента без доверия дальше `OTel` не идёт, с доверием — идёт как пришёл, и `trace_id` в логах есть только у такого запроса |
 | 4 | `AccessLog` | всегда | строка на запрос с `route`, `status`, `bytes`, `duration_ms` |
 | 5 | `Metrics` | всегда | RED на chi route-pattern; имя спана и `client.address`; ниже него — всё, что может ответить клиенту |
 | 6 | `Recovery` | всегда | ловит panic из всего, что ниже: 500 + `http_panics_total`; после записанного заголовка — обрыв соединения (`http.ErrAbortHandler`): усечённый ответ не выглядит полным; свой `http.ErrAbortHandler` хендлера пробрасывает |

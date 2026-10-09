@@ -20,6 +20,7 @@ import (
 	"go.opentelemetry.io/otel/metric"
 	metricnoop "go.opentelemetry.io/otel/metric/noop"
 	"go.opentelemetry.io/otel/propagation"
+	"go.opentelemetry.io/otel/trace"
 
 	"git.stit.tech/stit-core/golibinfra/idkit"
 	"git.stit.tech/stit-core/golibinfra/internal/requestid"
@@ -434,10 +435,12 @@ func requestFrom(hc huma.Context) *http.Request {
 
 // OTel открывает server-спан. Входящий trace-context клиента без доверия (trustTraceContext,
 // HTTP_TRUST_TRACE_CONTEXT) — ссылка на спане нового корня, а baggage не читается: клиент не
-// выбирает trace_id, не включает сэмплирование и не кладёт значения в ctx. С доверием спан —
-// ребёнок входящего контекста, baggage — по глобальному propagator'у. RED-метрики otelhttp
-// выключены: их эмитит Metrics в одном словаре с остальными китами. Запросы на quietPaths (пробы
-// оркестратора) спан не открывают.
+// выбирает trace_id, не включает сэмплирование и не кладёт значения в ctx — при любом провайдере
+// трасс процесса: без SDK-провайдера (no-op при OTEL_SDK_DISABLED, telemetry в графе нет) корня
+// нет, и контекст клиента дальше OTel не идёт — ни в лог, ни в исходящие вызовы. С доверием спан
+// — ребёнок входящего контекста (без SDK-провайдера контекст идёт дальше как пришёл), baggage —
+// по глобальному propagator'у. RED-метрики otelhttp выключены: их эмитит Metrics в одном словаре
+// с остальными китами. Запросы на quietPaths (пробы оркестратора) спан не открывают.
 func OTel(trustTraceContext bool, quietPaths ...string) func(http.Handler) http.Handler {
 	quiet := pathSet(quietPaths)
 	opts := []otelhttp.Option{
@@ -454,8 +457,22 @@ func OTel(trustTraceContext bool, quietPaths ...string) func(http.Handler) http.
 			otelhttp.WithPropagators(propagation.TraceContext{}))
 	}
 	return func(next http.Handler) http.Handler {
+		if !trustTraceContext {
+			next = dropRemoteSpanContext(next)
+		}
 		return otelhttp.NewHandler(next, "http", opts...)
 	}
+}
+
+// dropRemoteSpanContext снимает с ctx контекст спана, пришедший из заголовка: tracer без SDK
+// WithNewRoot не исполняет, и его спан несёт контекст клиента как свой.
+func dropRemoteSpanContext(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if trace.SpanContextFromContext(r.Context()).IsRemote() {
+			r = r.WithContext(trace.ContextWithSpanContext(r.Context(), trace.SpanContext{}))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 // spanName вызывается otelhttp дважды: до роутинга (паттерн неизвестен) и

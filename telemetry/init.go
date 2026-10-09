@@ -22,6 +22,7 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	"go.opentelemetry.io/otel/trace"
 	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
@@ -111,12 +112,12 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Providers, error) {
 			LoggerProvider: sdklog.NewLoggerProvider(),
 			exportTimeout:  cfg.ExportTimeout,
 		}
-		setGlobals(p)
 		// Провайдер трасс процесса — no-op: спан несёт контекст родителя как есть. SDK-провайдер
 		// и с NeverSample выдаёт спану свой контекст с sampled=0 — он ушёл бы вниз в traceparent,
 		// и нижестоящий сервис перестал бы писать трассу, которую сэмплировал вышестоящий или
-		// которую начал бы сам.
-		otel.SetTracerProvider(tracenoop.NewTracerProvider())
+		// которую начал бы сам. Единственным: tracer, созданный до Init, делегат OTel
+		// привязывает к первому провайдеру процесса.
+		setGlobals(tracenoop.NewTracerProvider(), p)
 		return p, nil
 	}
 
@@ -144,7 +145,7 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Providers, error) {
 		_ = p.Shutdown(ctx)
 		return nil, fmt.Errorf("telemetry: runtime instrumentation: %w", err)
 	}
-	setGlobals(p)
+	setGlobals(p.TracerProvider, p)
 	return p, nil
 }
 
@@ -173,8 +174,8 @@ func mergeResource(base, extra *resource.Resource) (*resource.Resource, error) {
 	return nil, fmt.Errorf("telemetry: resource: %w", err)
 }
 
-func setGlobals(p *Providers) {
-	otel.SetTracerProvider(p.TracerProvider)
+func setGlobals(tracer trace.TracerProvider, p *Providers) {
+	otel.SetTracerProvider(tracer)
 	otel.SetMeterProvider(p.MeterProvider)
 	global.SetLoggerProvider(p.LoggerProvider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(

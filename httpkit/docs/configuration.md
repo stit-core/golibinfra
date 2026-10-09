@@ -24,7 +24,7 @@
 | `HTTP_READY_PROBE_TIMEOUT` | `ReadyProbeTimeout` | `time.Duration` | `5s` | потолок одной пробы `/ready`; `> 0` |
 | `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана; `-` — таких путей нет |
 | `HTTP_TRUST_PROXY_HOPS` | `TrustProxyHops` | `int` | `0` | сколько доверенных прокси перед сервисом дописывают `X-Forwarded-For` (§ IP клиента); `>= 0` |
-| `HTTP_TRUST_TRACE_CONTEXT` | `TrustTraceContext` | `bool` | `false` | `true` — `traceparent` и `baggage` клиента принимаются: server-спан — ребёнок входящего контекста; `false` — ссылка на спане нового корня, baggage не читается. `true` — только за доверенным краем (свой шлюз), иначе клиент выбирает trace_id, сэмплирование и значения baggage |
+| `HTTP_TRUST_TRACE_CONTEXT` | `TrustTraceContext` | `bool` | `false` | `true` — `traceparent` и `baggage` клиента принимаются: server-спан — ребёнок входящего контекста; `false` — ссылка на спане нового корня, baggage не читается. Без SDK-провайдера трасс (`OTEL_SDK_DISABLED=true`, `telemetry` в графе нет) спана нет: при `false` контекст клиента не попадает ни в лог, ни в исходящие вызовы, при `true` идёт дальше как пришёл. `true` — только за доверенным краем (свой шлюз), иначе клиент выбирает trace_id, сэмплирование и значения baggage |
 | — | `CORS` | `CORSConfig` | — | вложенный |
 | — | `RateLimit` | `RateLimitConfig` | — | вложенный |
 | — | `MaxBody` | `MaxBodyConfig` | — | вложенный |

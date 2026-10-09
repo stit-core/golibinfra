@@ -97,7 +97,9 @@ httpkit.AccessLog(log, "/ready")(handler).ServeHTTP(rec, req)
 
 Имя спана проверяется `tracetest.NewSpanRecorder` c `otel.SetTracerProvider`:
 запрос через chi-роутер с `OTel(false)` и `Metrics()` даёт спан `GET /users/{id}` и
-атрибуты `http.route`, `request_id`.
+атрибуты `http.route`, `request_id`. Судьбу trace-context клиента держит
+`TestServer_ClientTraceContextMatrix`: доверие × провайдер трасс (SDK, no-op) × входящий
+контекст — `trace_id` записей лога и заголовки вызова `httpclient` из хендлера.
 
 ## Идемпотентность
 
