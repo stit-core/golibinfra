@@ -599,9 +599,7 @@ func (b *jsBus) handleStreamOne(parent context.Context, sc streamConsumer, msg j
 	defer b.instr.inflight.Add(ctx, -1, filterAttr)
 	start := time.Now()
 
-	stopProgress := b.keepInProgress(ctx, msg, subject)
-	panicked, handlerErr := b.invoke(ctx, subject, handler, msg.Data())
-	stopProgress()
+	panicked, handlerErr := b.run(ctx, msg, handler)
 
 	status := "ok"
 	if handlerErr != nil {
@@ -616,6 +614,21 @@ func (b *jsBus) handleStreamOne(parent context.Context, sc streamConsumer, msg j
 		b.instr.subjectAttrs(sc.filter, attribute.String("status", status)))
 	b.instr.handleDuration.Record(ctx, time.Since(start).Seconds(), filterAttr)
 	span.End()
+}
+
+// errPastMaxDeliver — причина смерти сообщения, доставленного больше MaxDeliver раз.
+var errPastMaxDeliver = errors.New("natskit: delivery beyond NATS_JS_MAX_DELIVER: the handler never answered or an earlier DLQ publish failed")
+
+// run зовёт обработчик под +WPI. Доставку сверх MaxDeliver обработчик не видит — её исход
+// errPastMaxDeliver, дальше DLQ и Term: с DLQ серверного предела доставок нет, и сообщение, на
+// котором процесс умирает до ответа, иначе переотправлялось бы без конца.
+func (b *jsBus) run(ctx context.Context, msg jetstream.Msg, handler Handler) (panicked bool, err error) {
+	if deliveries, _ := position(msg); b.maxDeliver > 0 && deliveries > uint64(b.maxDeliver) {
+		return false, errPastMaxDeliver
+	}
+	stopProgress := b.keepInProgress(ctx, msg, msg.Subject())
+	defer stopProgress()
+	return b.invoke(ctx, msg.Subject(), handler, msg.Data())
 }
 
 // keepInProgress шлёт +WPI каждые AckWait/2, пока обработчик работает: сервер
@@ -670,7 +683,8 @@ func (b *jsBus) invoke(ctx context.Context, subject string, handler Handler, dat
 // исчерпанный MaxDeliver — DLQ (если задан) + Term; иначе NAK с растущей задержкой.
 // Term делается только после успешной DLQ-публикации: иначе недоступный DLQ
 // стирал бы сообщение и из стрима, и из DLQ. Провал публикации оставляет
-// сообщение на ределивери (NAK) — попытки ограничены MaxDeliver на сервере.
+// сообщение на ределивери (NAK): копия повторяется на каждой следующей доставке, пока DLQ
+// не оживёт, — сверх MaxDeliver уже без обработчика (run).
 func (b *jsBus) failStream(ctx context.Context, sc streamConsumer, msg jetstream.Msg, cause error, panicked bool) string {
 	subject := msg.Subject()
 	deliveries, streamSeq := position(msg)
@@ -733,11 +747,10 @@ func (b *jsBus) nakDelay(n uint64) time.Duration {
 	return min(d, b.nakMaxBackoff)
 }
 
-// terminalReason — почему сообщение не пойдёт на ретрай; пусто — идёт.
-// serverMaxDeliver — предел доставок консьюмера на сервере. Term после MaxDeliver доставок делает
-// клиент; серверный предел — страховка от сообщения, которое роняет процесс до Term. С DLQ его
-// нет: копия в DLQ публикуется на доставке номер MaxDeliver, и при том же пределе у сервера NAK
-// после её отказа не исполнялся бы — сообщение не дошло бы ни до DLQ, ни до обработчика.
+// serverMaxDeliver — предел доставок консьюмера на сервере. С DLQ его нет: копия в DLQ
+// публикуется на доставке номер MaxDeliver, и при том же пределе у сервера NAK после её отказа не
+// исполнялся бы — сообщение не дошло бы ни до DLQ, ни до обработчика. Предел тогда держит клиент
+// до вызова обработчика (run).
 func (b *jsBus) serverMaxDeliver() int {
 	if b.dlqSubject != "" {
 		return -1
@@ -745,6 +758,7 @@ func (b *jsBus) serverMaxDeliver() int {
 	return b.maxDeliver
 }
 
+// terminalReason — почему сообщение не пойдёт на ретрай; пусто — идёт.
 func (b *jsBus) terminalReason(cause error, deliveries uint64) string {
 	if errors.Is(cause, ErrTerminal) {
 		return ReasonTerminal

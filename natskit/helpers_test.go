@@ -293,6 +293,18 @@ func (l *memLogger) find(level, msg string) *logEntry {
 	return nil
 }
 
+func (l *memLogger) count(level, msg string) int {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	n := 0
+	for _, e := range l.entries {
+		if e.level == level && e.msg == msg {
+			n++
+		}
+	}
+	return n
+}
+
 // contains — есть ли текст (например, пароль) хоть в одной записи целиком.
 func (l *memLogger) contains(text string) bool {
 	l.mu.Lock()

@@ -107,6 +107,8 @@ func TestSomething(t *testing.T) {
 | `TestModule_*` | fx-граф: `Module` требует `Config` от caller'а, именованный инстанс, `ProvideProbe`, невалидное имя инстанса, живой Start/Stop. |
 | `TestNewConfig_*` / `TestConfig_Validate` | чтение ENV, дефолты, изоляция префиксов, табличная проверка `Validate` (URL, таймауты, файлы, JetStream-поля). |
 | `TestStreamBus_DLQPublishFailureKeepsMessage` | DLQ-стрим отвергает копию (`discard=new`) — оригинал не терминируется, а возвращается на ределивери. |
+| `TestStreamBus_DLQFailureOnLastDeliveryIsRetried` | отказ DLQ на последней доставке: сообщение переотправляется, пока DLQ лежит, — мимо обработчика (вызовов ровно `MaxDeliver`), копия доходит после его возвращения. |
+| `TestStreamBus_UnansweredMessageDiesAtMaxDeliver` | обработчик не отвечает (как умерший процесс): доставки считает сервер, доставка сверх `MaxDeliver` — DLQ и `Term` без обработчика. |
 | `TestKeepInProgress_*` | keepalive `+WPI`: транзиентная ошибка не выключает тикер (предупреждение — одно), подтверждённое сообщение и отмена `ctx` его останавливают. |
 | `TestRedactURL`, `TestSubjectMatches`, `TestParseRetention`, `TestInflightGroup_*`, `TestLoadEnv_ParseErrors`, `TestCloseBudget`, `TestSettledResult` | юнит-тесты чистых функций — идут и под `-short`. |
 

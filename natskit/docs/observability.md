@@ -45,7 +45,7 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | `error` | publish | Сбой публикации (`PublishMsg`/`PubAck`/`ErrAsyncPublishTimeout`). |
 | `handler_error` | consume | Обработчик вернул не-nil ошибку (в т.ч. `context.DeadlineExceeded` по `HandlerTimeout`), не `panic`, не исчерпание попыток. В JetStream → `Nak`/`NakWithDelay`. |
 | `panic` | consume | Обработчик паникнул — recover поймал, залогировал стек. Core: сообщение теряется. JetStream: NAK (если не исчерпан `MaxDeliver`). |
-| `dead` | consume (только JetStream) | Сообщение больше не ретраится: обработчик вернул ошибку, обёрнутую `natskit.ErrTerminal` (включая ошибку декода в `Subscribe*JSON`), **или** исчерпан `MaxDeliver`. DLQ-копия (если `NATS_JS_DLQ_SUBJECT` задан) сохранена, оригинал получил `Term`. |
+| `dead` | consume (только JetStream) | Сообщение больше не ретраится: обработчик вернул ошибку, обёрнутую `natskit.ErrTerminal` (включая ошибку декода в `Subscribe*JSON`), **или** исчерпан `MaxDeliver` (и доставка сверх него, которую обработчик не видит). DLQ-копия (если `NATS_JS_DLQ_SUBJECT` задан) сохранена, оригинал получил `Term`. |
 | `dlq_error` | consume (только JetStream) | Сообщение мёртвое, но DLQ-публикация не удалась: `Term` не делается, оригинал возвращается на ределивери (`Nak`). Серия > 0 — DLQ недоступен. |
 
 ### Семантика label `subject`
@@ -122,7 +122,7 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | `error` | `natskit: handler error` / `natskit: jetstream handler error` | Обработчик вернул ошибку (кроме `context.Canceled`): поля `subject` — subject сообщения, у Core ещё `filter` — фильтр подписки, `error`, `trace_id` спана обработки. Обработчик ошибку возвращает и сам её не логирует — запись уже есть. |
 | `error` | `natskit: handler panic` / `natskit: jetstream handler panic` | Паника обработчика, со стеком. |
 | `warn` | `natskit: jetstream nak error` | Не удалось вернуть сообщение на ретрай; сервер переотправит его после `AckWait`. |
-| `error` | `natskit: jetstream message dead` | Сообщение больше не ретраится (DLQ-копия сохранена, оригинал терминирован): поля `stream`, `durable`, `subject`, `stream_seq` — sequence сообщения в стриме (по нему его достают руками), `deliveries`, `reason` (`terminal`/`max-deliver`), `dlq`, `error` — причина последней попытки. |
+| `error` | `natskit: jetstream message dead` | Сообщение больше не ретраится (DLQ-копия сохранена, оригинал терминирован): поля `stream`, `durable`, `subject`, `stream_seq` — sequence сообщения в стриме (по нему его достают руками), `deliveries`, `reason` (`terminal`/`max-deliver`), `dlq`, `error` — причина последней попытки; у доставки сверх `MaxDeliver` — `natskit: delivery beyond NATS_JS_MAX_DELIVER: …` (обработчик не ответил ни на одну доставку или копия в DLQ не прошла раньше). |
 | `error` | `natskit: jetstream dlq publish failed, message kept for redelivery` | DLQ-публикация мёртвого сообщения не удалась: `Term` не сделан, оригинал ушёл на ределивери. Поля те же плюс `error` — ошибка публикации, `cause` — причина смерти. |
 | `error` | `natskit: jetstream ack error` / `… term error` | Сбой подтверждения сообщения. |
 
