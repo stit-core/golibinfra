@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
+	"strings"
 	"time"
 
 	"go.opentelemetry.io/otel/propagation"
@@ -277,7 +278,9 @@ func (s *Store) RecordFailures(ctx context.Context, failures []outboxkit.Failure
 	retry := make([]float64, len(failures))
 	for i, f := range failures {
 		refs[i] = f.Ref
-		errs[i] = f.Err
+		// NUL и невалидный UTF-8 в TEXT Postgres не хранит: текст ошибки чужого воркера не должен
+		// ронять запись исхода всего батча.
+		errs[i] = strings.ToValidUTF8(strings.ReplaceAll(f.Err, "\x00", ""), "")
 		dead[i] = f.Dead
 		retry[i] = f.RetryAfter.Seconds()
 	}

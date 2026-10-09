@@ -78,9 +78,10 @@ blocked-by: —
   - Сделано: шесть функций httpkit берут nil-логгер как `Nop` (`TestNilLoggerIsNop`, до правки — panic); ошибка `Validate` у cachekit, httpkit, authnkit и amocrmkit называет переменную — держит `TestKitConfigs_ValidateErrorNamesVariable` (до правки 49 значений без имени переменной); отказ каталога миграций называет каталог и `PG_MIGRATIONS_PATH`
 
 ### Minor
-- [ ] **S8** — outboxkit, natskit: NUL в тексте ошибки транспорта, отказ DLQ на последней
+- [x] **S8** — outboxkit, natskit: NUL в тексте ошибки транспорта, отказ DLQ на последней
   доставке (RCOR-03, RCOR-05)
   - Проверка: `go test -race ./outboxkit/... ./natskit/` → PASS · Закрывает: AC2
+  - Сделано: `truncErr` и `pgstore.RecordFailures` убирают NUL и битые руны (`TestWorker_BinaryErrorTextDoesNotStallTheTick`, до правки — откат тика `22021`); с DLQ предел доставок консьюмера на сервере — `2 × MaxDeliver` (`TestStreamBus_DLQFailureOnLastDeliveryIsRetried`, до правки копия в оживший DLQ не доходила)
 - [ ] **S9** — logkit, cachekit: маски ключей на оборванном JSON, рукопожатие go-redis без
   `result=error` (RSEC-02, ROBS-04)
   - Проверка: `go test -race ./logkit/ ./cachekit/` → PASS · Закрывает: AC3, AC6
@@ -130,6 +131,9 @@ blocked-by: —
   (свой набор, выключатель) есть только у логгера, а экспортируемая функция сделала бы релиз
   minor'ом. Под масками — только текст потребителя (обработчик шины, job); ошибки драйверов и
   самого кита (NATS, Redis, транспорт httpclient) идут как есть.
+- С DLQ серверный предел доставок — вдвое выше клиентского, а не снят: без предела сообщение,
+  которое роняет процесс до `Term`, переотправлялось бы вечно; запас в `MaxDeliver` доставок
+  даёт DLQ время ожить, а его исчерпание лог называет прямо.
 - Поток, которому не ставится дедлайн запроса, у операции huma определяет её описание (ответ
   `text/event-stream`), у маршрута мимо huma — по-прежнему заголовок запроса: описания у него
   нет, а пометка маршрута — новый экспорт (бэклог `httpkit-raw-route-stream-mark`).
@@ -144,4 +148,4 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S7 закрыты. Следующий шаг — S8 (NUL в ошибке транспорта outbox, отказ DLQ на последней доставке).
+S1–S8 закрыты. Следующий шаг — S9 (маски ключей logkit на оборванном JSON, рукопожатие go-redis).

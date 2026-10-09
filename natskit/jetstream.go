@@ -484,7 +484,7 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 		MaxAckPending: b.maxInFlight,
 	}
 	if b.maxDeliver > 0 {
-		ccfg.MaxDeliver = b.maxDeliver // server-side backstop; client-side Term ниже
+		ccfg.MaxDeliver = b.serverMaxDeliver()
 	}
 	cons, err := b.js.CreateOrUpdateConsumer(ctx, stream, ccfg)
 	if err != nil {
@@ -619,7 +619,11 @@ func (b *jsBus) failStream(ctx context.Context, sc streamConsumer, msg jetstream
 	deliveries, streamSeq := position(msg)
 	if reason := b.terminalReason(cause, deliveries); reason != "" {
 		if err := b.deadLetter(ctx, sc, msg, cause, reason, deliveries); err != nil {
-			b.log.Error(ctx, "natskit: jetstream dlq publish failed, message kept for redelivery",
+			text := "natskit: jetstream dlq publish failed, message kept for redelivery"
+			if b.maxDeliver > 0 && deliveries >= uint64(b.serverMaxDeliver()) { //nolint:gosec // предел доставок положителен
+				text = "natskit: jetstream dlq publish failed, redelivery budget exhausted: message stays in the stream"
+			}
+			b.log.Error(ctx, text,
 				"stream", sc.stream, "durable", sc.durable, "subject", subject, "stream_seq", streamSeq,
 				"deliveries", deliveries, "reason", reason, "dlq", b.dlqSubject,
 				"error", err, "cause", cause)
@@ -677,6 +681,18 @@ func (b *jsBus) nakDelay(n uint64) time.Duration {
 }
 
 // terminalReason — почему сообщение не пойдёт на ретрай; пусто — идёт.
+// serverMaxDeliver — предел доставок консьюмера на сервере. Term после MaxDeliver доставок делает
+// клиент; серверный предел — страховка от сообщения, которое роняет процесс до Term. С DLQ он
+// вдвое выше клиентского: копия в DLQ, не прошедшая на последней доставке, получает ещё MaxDeliver
+// попыток — при равных пределах сервер не исполнил бы NAK, и сообщение не дошло бы ни до DLQ, ни до
+// обработчика.
+func (b *jsBus) serverMaxDeliver() int {
+	if b.dlqSubject != "" {
+		return 2 * b.maxDeliver
+	}
+	return b.maxDeliver
+}
+
 func (b *jsBus) terminalReason(cause error, deliveries uint64) string {
 	if errors.Is(cause, ErrTerminal) {
 		return ReasonTerminal

@@ -124,6 +124,7 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | `warn` | `natskit: jetstream nak error` | Не удалось вернуть сообщение на ретрай; сервер переотправит его после `AckWait`. |
 | `error` | `natskit: jetstream message dead` | Сообщение больше не ретраится (DLQ-копия сохранена, оригинал терминирован): поля `stream`, `durable`, `subject`, `stream_seq` — sequence сообщения в стриме (по нему его достают руками), `deliveries`, `reason` (`terminal`/`max-deliver`), `dlq`, `error` — причина последней попытки. |
 | `error` | `natskit: jetstream dlq publish failed, message kept for redelivery` | DLQ-публикация мёртвого сообщения не удалась: `Term` не сделан, оригинал ушёл на ределивери. Поля те же плюс `error` — ошибка публикации, `cause` — причина смерти. |
+| `error` | `natskit: jetstream dlq publish failed, redelivery budget exhausted: message stays in the stream` | То же на последней доставке, которую разрешает сервер (`2 × MaxDeliver`): ределивери больше не будет, сообщение остаётся в стриме — его достают по `stream_seq`. Поля те же. |
 | `error` | `natskit: jetstream ack error` / `… term error` | Сбой подтверждения сообщения. |
 
 ## Health-probe

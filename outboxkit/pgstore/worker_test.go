@@ -250,3 +250,49 @@ func mustWorker(t *testing.T, name string, repo outboxkit.Repository, transport 
 	}
 	return w
 }
+
+// binaryErrTransport подтверждает первое событие батча, остальным отвечает ошибкой с NUL и
+// оборванной руной — так выглядит обрывок бинарного ответа upstream'а в ошибке своего Transport.
+type binaryErrTransport struct{}
+
+func (binaryErrTransport) Publish(context.Context, outboxkit.OutMsg) error { return nil }
+
+func (binaryErrTransport) PublishBatch(_ context.Context, msgs []outboxkit.OutMsg) ([]error, error) {
+	out := make([]error, len(msgs))
+	for i := 1; i < len(msgs); i++ {
+		out[i] = errors.New("upstream said: \x00\x01 binary \xd0 garbage")
+	}
+	return out, nil
+}
+
+// Регрессия RCOR-03: NUL в тексте ошибки транспорта не останавливает тик. Postgres не хранит NUL
+// в TEXT: last_error с ним откатывал транзакцию тика вместе с published_at подтверждённых строк —
+// те публиковались заново каждый тик, а сбойная строка не тратила попытки и не уходила в dead.
+func TestWorker_BinaryErrorTextDoesNotStallTheTick(t *testing.T) {
+	db, tr, ctx := startStore(t)
+	s := pgstore.NewStore(db)
+	insertN(t, ctx, s, 2)
+	cfg := outboxkit.Config{BatchSize: 5, Interval: time.Second, PublishMode: outboxkit.PublishBatch, TickTimeout: 30 * time.Second, MaxAttempts: 25, MaxPayloadBytes: outboxkit.DefaultMaxPayloadBytes}
+	w := mustWorker(t, "w", s, binaryErrTransport{}, tr, cfg)
+
+	// Run отдаёт ошибку публикации сбойного события — тик при этом закоммичен.
+	err := w.Run(ctx)
+	if published, attempts := rowStats(t, ctx, db); published != 1 || attempts != 1 {
+		t.Fatalf("after the tick (%v): published=%d attempts=%d, want the confirmed event published and one attempt of the failed one", err, published, attempts)
+	}
+	var lastError string
+	if err := db.QueryRow(ctx, `SELECT last_error FROM outbox WHERE attempts = 1`).Scan(&lastError); err != nil {
+		t.Fatalf("last_error: %v", err)
+	}
+	if lastError != "upstream said: \x01 binary  garbage" {
+		t.Fatalf("last_error = %q, want the text without NUL and broken runes", lastError)
+	}
+
+	// Порт публичный: Failure с NUL от своего воркера хранилище тоже принимает.
+	refs := list(t, tr, s, ctx, 5)
+	if err := tr.WithTx(ctx, func(ctx context.Context) error {
+		return s.RecordFailures(ctx, []outboxkit.Failure{{Ref: refs[0].Ref(), Err: "raw \x00 \xff text"}})
+	}); err != nil {
+		t.Fatalf("RecordFailures with a NUL in the text: %v", err)
+	}
+}

@@ -308,10 +308,11 @@ func (w *Worker) processed(ctx context.Context, subject, status string) {
 		w.instr.instance, attribute.String("status", status))...))
 }
 
-// truncErr режет текст по границе руны: обрывок многобайтового символа — это
-// невалидный UTF-8, который Postgres отвергает вместе со всем тиком.
+// truncErr — текст ошибки для last_error: без NUL и битых рун и не длиннее maxLastError, по
+// границе руны. NUL и невалидный UTF-8 Postgres в TEXT не хранит — отказ записи откатил бы
+// транзакцию тика вместе с отметками уже опубликованных событий, и так на каждом тике.
 func truncErr(err error) string {
-	s := strings.ToValidUTF8(err.Error(), "")
+	s := strings.ToValidUTF8(strings.ReplaceAll(err.Error(), "\x00", ""), "")
 	if utf8.RuneCountInString(s) <= maxLastError {
 		return s
 	}

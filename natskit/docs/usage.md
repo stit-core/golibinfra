@@ -386,7 +386,8 @@ sub, err := natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "ORDERS.created", "or
 `Term` кит делает только после успешной DLQ-копии: если публикация в
 `NATS_JS_DLQ_SUBJECT` не удалась, сообщение остаётся в стриме и уходит на
 ределивери (`error`-запись `natskit: jetstream dlq publish failed, message kept
-for redelivery`, метрика со `status=dlq_error`).
+for redelivery`, метрика со `status=dlq_error`) — и на последней доставке по
+`NATS_JS_MAX_DELIVER`: с DLQ сервер разрешает вдвое больше доставок.
 
 DLQ-сообщение приходит как обычное сообщение в `DLQSubject` — Core-подписчику
 или, если subject накрыт стримом, JetStream-консьюмеру с **другим** конфигом (в

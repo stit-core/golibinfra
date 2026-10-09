@@ -747,6 +747,79 @@ func TestStreamBus_DLQPublishFailureKeepsMessage(t *testing.T) {
 	}
 }
 
+// Регрессия RCOR-05: отказ DLQ на последней доставке не теряет сообщение. Копия в DLQ
+// публикуется на доставке номер MaxDeliver; при том же пределе у консьюмера на сервере NAK после
+// её отказа сервер не исполнял — сообщение не доходило ни до DLQ, ни до обработчика, хотя лог
+// обещал ределивери. С DLQ серверный предел вдвое выше клиентского: DLQ ожил — копия дошла.
+func TestStreamBus_DLQFailureOnLastDeliveryIsRetried(t *testing.T) {
+	url := natsURL(t)
+	stream := nameFor(t)
+	dlqStream, dlqSubject := stream+"_DLQ", "dlq."+stream
+	ctx := context.Background()
+
+	nc, err := natsgo.Connect(url)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(nc.Close)
+	js, err := jetstream.New(nc)
+	if err != nil {
+		t.Fatalf("jetstream: %v", err)
+	}
+	dlq, err := js.CreateStream(ctx, jetstream.StreamConfig{
+		Name: dlqStream, Subjects: []string{dlqSubject}, Storage: jetstream.MemoryStorage, MaxMsgs: 1, Discard: jetstream.DiscardNew,
+	})
+	if err != nil {
+		t.Fatalf("create dlq stream: %v", err)
+	}
+	t.Cleanup(func() { _ = js.DeleteStream(context.Background(), dlqStream) })
+	if _, err := js.Publish(ctx, dlqSubject, []byte("filler")); err != nil {
+		t.Fatalf("fill dlq stream: %v", err)
+	}
+
+	log := &memLogger{}
+	cfg := jsConfig(stream)
+	cfg.JetStream.MaxDeliver = 2
+	cfg.JetStream.AckWait = 2 * time.Second
+	cfg.JetStream.NakBackoff, cfg.JetStream.NakMaxBackoff = 200*time.Millisecond, 200*time.Millisecond
+	cfg.JetStream.DLQSubject = dlqSubject
+	sb, err := natskit.NewStreamBus(cfg, connect(t, url), log)
+	if err != nil {
+		t.Fatalf("NewStreamBus: %v", err)
+	}
+	subject := subj(t, "created")
+	var deliveries atomic.Int64
+	if _, err := sb.SubscribeStream(ctx, stream, subject, "poison", func(context.Context, []byte) error {
+		deliveries.Add(1)
+		return errors.New("poison")
+	}); err != nil {
+		t.Fatalf("subscribe: %v", err)
+	}
+	if err := sb.PublishStream(ctx, subject, []byte(`{"id":7}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+
+	// Вторая доставка — последняя по MaxDeliver: копия в полный DLQ не проходит.
+	eventually(t, 10*time.Second, "failed DLQ publish on the last delivery", func() bool {
+		return deliveries.Load() >= 2 && log.has("error", "natskit: jetstream dlq publish failed, message kept for redelivery")
+	})
+	if err := dlq.Purge(ctx); err != nil {
+		t.Fatalf("purge dlq stream: %v", err)
+	}
+	eventually(t, 10*time.Second, "the dead letter in the revived DLQ", func() bool {
+		info, err := dlq.Info(ctx)
+		return err == nil && info.State.Msgs == 1 && log.has("error", "natskit: jetstream message dead")
+	})
+
+	// DLQ не ожил и за запас доставок: сервер больше не переотправит — лог говорит об этом прямо.
+	if err := sb.PublishStream(ctx, subject, []byte(`{"id":8}`)); err != nil {
+		t.Fatalf("publish: %v", err)
+	}
+	eventually(t, 15*time.Second, "the exhausted redelivery budget in the log", func() bool {
+		return log.has("error", "natskit: jetstream dlq publish failed, redelivery budget exhausted: message stays in the stream")
+	})
+}
+
 // Медленный, но живой обработчик держит сообщение через +WPI: сервер не
 // переотправляет его, пока не истёк HandlerTimeout.
 func TestStreamBus_SlowHandlerNotRedelivered(t *testing.T) {
