@@ -63,11 +63,13 @@ blocked-by: —
 - [x] **AC12** — Все эксперименты «Как повторить аудит» на кандидате тега — «чисто» по критериям `M/kits-audit/summary.md`;
   открытых находок «п3» выше minor нет. Проверка: прогоны всех групп шести каталогов → таблица исходов в «Где мы сейчас»
   - Подтверждено: `01eda05` — 162 эксперимента чисты; medium «п3»: 26 — чистым экспериментом, KGATE-09 — AC8 (`M/s13/table.md`)
-- [ ] **AC13** — Тег `v1.4.0` готов: аннотированный, с разделами Breaking, Поведение, Изменения, Гейт; каждая строка apidiff
+- [x] **AC13** — Тег `v1.4.0` готов: аннотированный, с разделами Breaking, Поведение, Изменения, Гейт; каждая строка apidiff
   `v1.3.0 → v1.4.0` по объёму и каждое изменение envconfig-тегов, дефолтов и имён метрик — в аннотации с шагом миграции; каждая
   ошибка сборки шаблона на HEAD (`replace`) закрыта строкой Breaking; `make gate-clean` и `make test-full` зелёные. Проверка:
   `git tag -l --format='%(contents)' v1.4.0` → четыре раздела; `api-docs/scripts/run-versions.sh v1.3.0 v1.4.0`,
   `httpkit-a/versions.sh v1.3.0 v1.4.0` → всё покрыто; `make gate-clean` → зелёный
+  - Подтверждено: четыре раздела; 63 строки apidiff — по имени в Breaking, 17 футеров, env и метрика — со шагом
+    (`M/s14rel/annotation-breaking-cover.tsv`); шаблон `e2f3dd2` через `replace` — его `make check` зелёный; гейт и test-full зелёные
 
 ## Шаги
 ### Жизненный цикл, сигналы, тесты
@@ -102,10 +104,11 @@ blocked-by: —
 - [x] **S13** — Повтор всех экспериментов «Как повторить аудит» на кандидате тега — агентом, не писавшим код партии; таблица
   исходов — в «Где мы сейчас»
   - Проверка: AC12 → выполнен · Закрывает: AC12 · Зависит от: S5, S11, S12 · Сделано: `M/s13/table.md`, журнал — `progress.md`
-- [ ] **S14** — Релиз: `make test-full` и `make gate-clean`; `make release-diff PREV=v1.3.0`; сборка шаблона на HEAD через
+- [x] **S14** — Релиз: `make test-full` и `make gate-clean`; `make release-diff PREV=v1.3.0`; сборка шаблона на HEAD через
   `replace` в своём worktree (каждая ошибка — строкой Breaking); тег `v1.4.0` локально с разделами Breaking, Поведение, Изменения,
   Гейт. Push `main` и тега — дирижёр после PASS валидатора партии; затем план удаляется отдельным `chore(plan)`
-  - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13
+  - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13 · Сделано: `08b7c8a` (тесты grpckit), гейт и
+    `release-diff` на нём, репетиция bump шаблона; журнал — `M/s14rel/progress.md`
 
 ## Решения
 - **S1–S11** — причины в телах коммитов, `M/archkit/README.md` и `M/gate/plan-patch.md` (коммиты гейта там — `c0daf37`, `64a0834`,
@@ -123,9 +126,16 @@ blocked-by: —
   `docs_test.go` держит состав `make check` и перечни пакетов — по разделу-индексу; блок README authnkit и httpkit побайтно равен
   коду теста (блок через `go run` — код мимо vet и lint гейта); копии logkit и корневого графа — бэклог `readme-snippet-copies`.
 - **S13.** Находка `-count>1`: callback observable-инструментов outboxkit и pgkit — от `OnStart` до `OnStop`; hubkit/sync — бэклог.
+- **S14.** Плавающие тесты grpckit — гонки теста с сервером, кит не менялся (`08b7c8a`): WARN пробы пишется после смены статуса,
+  а мост grpclog пишет в буфер теста из горутин grpc-go. Аннотация: каждый символ apidiff — по имени; пункты футеров, которые
+  требуют правки у потребителя (`KEY=`, литерал с нулями, список из разделителей, схема китов на старте, label `subject`,
+  POST-поток под дедлайном), — в Breaking, а не в «Поведении». `maxLength` DTO huma считает в символах, предел пароля — байты:
+  названо в аннотации и Handoff, доки authnkit — бэклог `authnkit-maxlength-runes`.
 
 ## Handoff
-**Шаблон, `repair-harness` S7 — bump v1.4.0** (места — по сборке шаблона `e2f3dd2` через `replace`; на bump — сверить сборкой):
+**Шаблон, `repair-harness` S7 — bump v1.4.0.** Полный список с местами по `e2f3dd2`, порядком действий и открытым —
+`M/handoff-golibinfra-v1.4.0.md`; он пройден репетицией: `make check` шаблона на дереве тега через `replace` зелёный, дифф —
+`M/s14rel/template-bump.patch`. Кратко:
 - **Конфиг и формы API.** App (`internal/platform/config/config.go:45`) и `cmd/seed-admin:66` — на
   `config.Load(&cfg, config.Env())` и `authnkit.NewArgon2idConfig()` (`KEY=` и имена по тегам — как у китов, теневое
   `COOKIE_COOKIE_SECURE` уходит, `APP_ENV=` — «required»: правится `TestModule_EmptyEnvIsNotDev`); `cmd/api/main.go`:
@@ -134,7 +144,8 @@ blocked-by: —
   `httpkit.ProvideSecurityScheme`, `module_test.go:46` — `Argon2idConfig`; `identitytest`, `identity_test` —
   `httpkit.ClientIP(0, log)`; `authgate/jwt_test.go`, `auth/infra/jwt/jwt_test.go` — `JWTConfig` с `AccessTTL`, без
   `DefaultAccessTTL`/`DefaultLeeway`; `timerkit.ProvideJob`/`JobsGroup` — `rules/events-and-messaging.md`,
-  `docs/reference/architecture.md`, `docs/stack/_templates/runtime.md`.
+  `docs/reference/architecture.md`, `domain-mapping.md:33`, `docs/stack/_templates/runtime.md`; `healthkit.ProvideProbe` —
+  `de-template/references/wiring.md:20`; IP клиента в `identitytest.Anon` — `handlertest.ContextWithClientIP`.
 - **pgkit и outbox.** `cmd/migrate`: `MigrateUpAll`/`MigrateDown(ctx, dsn, cfg.LockTimeout, …)`; хранилища без миграций — ошибка
   старта. Миграция outbox 0003 (`trace_context JSONB` своей `SchemaSQL`), метрики без `subject`, предел — JSONB;
   `events/outbox_test.go:22` — `Insert(…, maxBytes)`, `:49` — `outboxkit.NewConfig`.
@@ -144,8 +155,9 @@ blocked-by: —
   `lock.RetryAfter`; длинный subject — ключ SHA-256, NUL — `ErrInvalidKey`: `guard_test.go:40` — случай с NUL вместо 255.
 - **auth и logkit.** `Revoke` → `(subject, err)`: `internal/domain/auth/usecase.go:199,213` (Logout — аудит `logout` с
   `ActorID: subject`, если не `""`), обёртки `usecase_test.go:235,240`, `TestLogout` (`:674`) — одна запись аудита с автором; DTO
-  пароля — `maxLength:"1024"`: `auth/delivery/http/dto.go:8,38,39`, `user/…/dto.go:11`, `verification/…/dto.go:12`. Маски шире:
-  тест, который ищет в логе `password=…`, base64url-токен или пароль URL, — на маркер.
+  пароля — `maxLength:"1024"`: `auth/delivery/http/dto.go:8,38,39`, `user/…/dto.go:11`, `verification/…/dto.go:12`; huma считает его
+  в символах, кит — в байтах: `ErrPasswordTooLong` из `Hash` перевести в 4xx (открыто, сейчас 500). Маски шире: тест, который
+  ищет в логе `password=…`, base64url-токен или пароль URL, — на маркер.
 - **env для INFRA-HANDOFF:** `PG_MIGRATE_LOCK_TIMEOUT` (5 с), `HTTPCLIENT_MAX_HOSTS`, `HTTP_REQUEST_TIMEOUT`,
   `HTTP_TRUST_TRACE_CONTEXT`, `BRUTEFORCE_SUBJECT_MAX_FAILURES` (20), `BRUTEFORCE_SUBJECT_LOCK_DURATION` (1m); старт падает, если
   `HTTP_REQUEST_TIMEOUT` ≥ `HTTP_WRITE_TIMEOUT` или `RESERVE_TTL`, а `BRUTEFORCE_CLEANUP_RETENTION` < `LOCK_DURATION` или
@@ -164,7 +176,8 @@ blocked-by: —
   Строка в `prune.md`: если после prune `internal/platform/identity` не берёт ни один корень домена (сам или через `pkg/`),
   запись `WithUncheckedPackages` из `layout_settings_test.go` форка убрать — иначе `TestLayout` красный с подсказкой `remove it`.
 - **Логи, тесты, telemetry.** Ключ ошибки — `error` в каноне и коде; `cmd/api/boot_test.go`: хуки — `fx.WithLogger` теста с
-  `hookLog`, не `teeLog`; опцию `logkit.FxLogger` в `service` он подменяет — её держит отдельная проверка. testkit: `logtest` — с
+  `hookLog`, не `teeLog`; опцию `logkit.FxLogger` в `service` он подменяет — её держит отдельная проверка (в репетиции —
+  `TestMainLogsStartFailure`). testkit: `logtest` — с
   масками (`logmail_test.go:39-42` — проверять поля, не подстроку); `natstest.New(natstest.WithStream("user"))` —
   `verification/delivery/nats/contract_test.go:52`, `handler_test.go:90`; `outboxtest.Last`/`Published` — `json.RawMessage`
   (`json.Unmarshal` в тип события): `user/usecase_test.go:145,383,510`, `verification/usecase_test.go:193,301`; хэшер —
@@ -183,8 +196,14 @@ blocked-by: —
   из 111, исполнением (`guard_exec_fuzz.py 2500 11`) хук портят 459 команд. Образец — guard golibinfra и его `guard-cases.txt`.
 
 ## Где мы сейчас
-S1–S13 закрыты (S1–S12 приняты валидаторами), дальше S14 (apidiff пина в PATH ставит `make tools`). S13: кандидат — `01eda05`; на
-`84a39be` — прогоны по коду вне диффа `84a39be..01eda05` и FAIL из «Решений» S13; archkit — 4 из 4; логи, адаптации — `M/s13/table.md`.
+S1–S14 закрыты. Тег `v1.4.0` создан локально на коммите этой записи (`chore(plan): S14`, поверх `08b7c8a`) и ждёт валидатора
+партии и push дирижёра (`main` и тег); затем план удаляется отдельным `chore(plan)`. Аннотация — в теге
+(`git tag -l --format='%(contents)' v1.4.0`, копия — `M/annotation-v1.4.0.txt`); заготовка, из которой она собрана, —
+`git show 08b7c8a:.claude/plans/harden-tests-archkit-release.md`. Журнал и логи S14 — `M/s14rel/`: `progress.md`,
+`release-diff-v1.3.0-08b7c8a.txt`, `breaking-footers.md`, `annotation-breaking-cover.tsv`, `template-bump.patch`.
+
+S13: кандидат — `01eda05`; на `84a39be` — прогоны по коду вне диффа `84a39be..01eda05` и FAIL из «Решений» S13; archkit — 4 из 4;
+логи, адаптации — `M/s13/table.md`. После кандидата в `main` — тесты grpckit (`08b7c8a`) и план.
 
 | Группа | Всего | Чисто | FAIL | Адаптировано (`M/exs8/orig/*.p2s13`) | Хеш прогона |
 |---|---|---|---|---|---|
@@ -194,107 +213,3 @@ S1–S13 закрыты (S1–S12 приняты валидаторами), да
 | tests-gate | 7 | 7 | 0; на `84a39be` — `flaky` | якорь G09 | мутанты 139, матрица — `84a39be`; мутанты outboxkit, pgkit, authnkit, `flaky`, `make check` — `01eda05` |
 | httpkit-a | 41 | 41 | 0 | H15 `[{}]`, таймаут S1 | `01eda05`; S2 — `84a39be` |
 | httpkit-b | 26 | 26 | 0 | — (контракт — из доков `01eda05`) | `01eda05`; мутанты 63, GH — `84a39be` |
-
-Заготовка аннотации v1.4.0 (первая половина — `harden-kits-contracts`; вторая — по шагам):
-- **Breaking.** config: App — именами тегов (`POSTGRES_PG_DSN` → `PG_DSN`); ошибка `Load`: поле без тега (тег или
-  `ignored:"true"`), тег на вложенной структуре (снять, имена — `PG_*`, не `DB_PG_DSN`; вторая секция кита — `ignored:"true"` и
-  свой `config.Load(&a.X, config.EnvPrefixed("x"))`, незаданная `X_*` — из голой), `map`, `[]byte`, `url.URL` или тип только с
-  `UnmarshalBinary`/`Set` (строка с разбором в `Validate` или тип с `UnmarshalText`); `*envconfig.ParseError` нет. natskit:
-  `NewConfigPrefixed` → `NewInstanceConfig`, `HealthProbe` → `ProvideProbe`, `NewBus(cfg, conn, log) (Bus, error)`,
-  `NewStreamBus(cfg, conn, log)`. healthkit, timerkit: `Group` → `ProbesGroup`/`JobsGroup`, `Provide` →
-  `ProvideProbe`/`ProvideJob`. pgkit: `ProvideMigrations` → `SupplyMigrations`; `MigrateUp/Down/UpAll(ctx, dsn, lockTimeout, …)` (>
-  0, команда миграций — `cfg.LockTimeout`); `Module` берёт `logkit.Logger`; литерал `MigrateRunnerConfig` без `LockTimeout` —
-  `ErrConfig`; вложенный `WithTxOptions` строже внешнего — `ErrNestedTxStricter`. authnkit: `DefaultAccessTTL`, `DefaultLeeway`
-  удалены, `Argon2idParams`/`NewArgon2idParams` → `Argon2idConfig`/`NewArgon2idConfig`; пароль длиннее 1024 байт —
-  `ErrPasswordTooLong` у `Hash` и `Verify` (DTO — `maxLength:"1024"`);
-  `session.Store.Revoke(ctx, refresh) (subject string, err error)` — свой `Store` и обёртки отдают владельца закрытой этим вызовом
-  сессии (`""` — неизвестна или закрыта раньше); `session/pgstore`: `NewStore(cfg, db…)`, `ErrSchema` и `Store.CheckSchema` →
-  `pgkit.ErrSchema`, `pgkit.CheckSchema`. bruteforcekit: `pgstore.NewStore(cfg, db…)`; литерал `Config` без `SubjectMaxFailures`
-  (`20` или `SubjectBudgetOff`) и `SubjectLockDuration`, а `CleanupRetention` меньше `LockDuration` — `ErrConfig`. outboxkit:
-  `New(name, cfg, …)`, `NewWorker(instance, cfg, …)` — с ошибкой, `Default{BatchSize,TickTimeout,MaxAttempts}` удалены;
-  `Repository.Insert(ctx, subject, payload, maxBytes)` — тело мерит хранилище (своё — по своему представлению), сверх —
-  `ErrPayloadTooLarge`; `pgstore.SchemaSQL` — с колонкой `trace_context JSONB` (своя копия схемы — добавить). cachekit:
-  `Cache.CompareAndSet` (свой `Cache` — реализовать), `IdempotencyStore.Set(ctx, key, token, record, ttl) (bool, error)`,
-  `NewRedisCache(cfg, log)`, `Module` берёт `logkit.Logger`. httpclient: `Validate` — value-приёмник, группа опций → значение
-  `httpclient.Options`, литерал `Config` без `MaxHosts` — `ErrConfig` (`1024` или `-1`). storagekit: `NewKey` → `string`,
-  `MemoryStorage.Bytes`/`Keys` удалены (`Get`); `Config.UseSSL` (`STORAGE_S3_USE_SSL`) удалён — endpoint без схемы — TLS, plaintext
-  — `http://host:port`; `minio.NewStorage(cfg, client, urls, log)` — с ошибкой. telemetry: `Headers.Decode` — без `ErrConfig`;
-  `OTEL_TOKEN` или `Authorization` к `http://` не на loopback — `ErrConfig`, и при `OTEL_SDK_DISABLED=true` (https или
-  `OTEL_ALLOW_INSECURE_TOKEN=true`). auditkit: NUL, не-UTF-8 и суррогат без пары в строках и `Metadata` (и ключах), `Metadata` > 64
-  КиБ JSON — `ErrInvalidEntry` до базы (`result=invalid`): ввод пользователя — проверить до `Log`. httpkit:
-  `NewServer(cfg, log, opts…) (*Server, error)` — с цепочкой кита и `HumaAuth` (`WithSecuritySchemes`, `WithIdempotencyStore`;
-  `WithLogger` удалён); `ClientIP(hops, log)`, `RegisterHealth(api, timeout, log, probes…)`, `HumaAuth(schemes, log)`,
-  `Idempotency(cfg, store, log)`, `OTel(trust, quiet…)`; схема — `ProvideSecurityScheme(ctor)`, extractor — её поле `Extract`
-  (`SecuritySchemeEntry` несравним: `==` и ключ map не компилируются); удалены `AuthExtractor` в графе, `WithAuthExtractor`,
-  `IdempotencyOption`, `WithAuth`; схема `Security` вне `components` и `Security` из одних `{}` — ошибка старта (`{}` —
-  `httpkit.Public`); идемпотентность — только у операций huma (маршрут мимо huma с `Idempotency-Key` исполняется каждый раз —
-  операция huma или обёртка `httpkit.Idempotency`); `IdempotencyStore.Set(ctx, key, token, record, ttl) (stored bool, err error)` —
-  только поверх резерва этого токена (свой store — `testkit/idempotencytest.RunContract`); литерал `Config` без `RequestTimeout` —
-  `ErrConfig` (`HTTP_REQUEST_TIMEOUT` 25s, меньше `HTTP_WRITE_TIMEOUT` и `RESERVE_TTL`; `-1s` — выкл.); handlertest — с цепочкой
-  кита, `WithAuth` → `WithSecuritySchemes` (схема с `Extract`); outboxtest: `Event.Payload`, `Published`, `Last` —
-  `json.RawMessage` (сравнение — `json.Unmarshal`), `Publish` — в транзакции фейка pgtest (метка `pgkit.WithTestTx` — `ErrNoTx`);
-  natstest: стримы объявляет тест (`WithStream`), без них stream-операции — ошибка. oidckit, hubkit/sso: `Module` не кладёт
-  `httpkit.AuthExtractor` — схемы с extractor'ом (hubkit — cookie своего контура). authntest: хэшер — `&DeterministicHasher{}`.
-  logkit: `FxLogger` — логгер из `logkit.Config` графа, не из `*slog.Logger` (тест с логгером графа — свой `fx.WithLogger`).
-  logtest — боевой логгер в память: типы JSON, маски (сверять поля, не подстроку); ошибка или panic `fn` у pgtest откатывает записи
-  outboxtest и audittest; фейк таймера clockkit — как `time.Timer` Go 1.23: дренаж `if !t.Stop() { <-t.C() }` виснет — убрать.
-- **Поведение.** ENV: `KEY=` — дефолт (киты и `config.Env`), пустое — `-` (`PG_MIGRATIONS_PATH=-`, `HTTP_HSTS=-`,
-  `HTTP_QUIET_PATHS=-`); `<P>_HTTPCLIENT_BREAKER_*` читается, теневых имён нет; список из одних разделителей (`JWT_AUDIENCE=,`) —
-  `ErrConfig`; целые — десятичные; ошибка — `<kit>.ErrConfig` с переменной (и у `tzkit.NewZone`). Литерал с нулями — `ErrConfig`
-  (httpclient: таймаут, ретрай, SSE, `MaxRedirects 0` — без редиректов; natskit: таймауты, drain, потолки, JetStream у
-  включённого, `NakMaxBackoff 0` — постоянная задержка; `JWTConfig.AccessTTL`, `Leeway 0` — без допуска); формат telemetry и
-  JetStream — и у выключенного; невалидный `Config` у `storagekit.Module` и тик outbox ≥ `PG_IDLE_IN_TX_SESSION_TIMEOUT` — ошибка
-  графа; nil-опции — без эффекта; hook'и `WithBeforeAttempt` складываются, второй `WithTransport` — `ErrConfig`. Проба natskit —
-  `natskit` или `natskit:<name>`; cleanup bruteforcekit и сессий, drain outbox — после миграций; префиксы ошибок — `<kit>/<sub>:`
-  (воркер outbox — `outboxkit:`, `telemetry: shutdown`, `telemetry: otel sdk error`). pgkit: хранилища китов (аудит, bruteforce,
-  сессии, outbox и инстансы) без своих миграций — `pgkit.ErrSchema` на старте; дедлайн миграций прерывает идущий оператор,
-  блокировку он ждёт ≤ `PG_MIGRATE_LOCK_TIMEOUT` (отказ — `dirty`); занятое соединение на остановке пула — WARN и `nil` через 2/3
-  бюджета. outbox: `ordered` — по моменту вставки, а не началу транзакции; предел тела — по JSONB-тексту; метрики — без label
-  `subject` (шаблон — `WithMetricSubject` инстанса), backlog-gauge'и — серия на инстанс (пустая очередь — 0) от старта до остановки
-  (и `pg_pool_*`); producer-спан natskit без шаблона — `natskit.publish`, `destination.template` — только шаблон; доставка события
-  — в трассе записавшего его запроса. cachekit: `SetNX`, `GetDel`, `CompareAndDelete` без повторов — на сбое связи ошибка вместо
-  ложного «нет» (`REDIS_MAX_RETRIES` — `Get`, `Set`, `Delete`, теги, `Ping`), соединений — до 2×`REDIS_POOL_SIZE`; `MemoryCache` и
-  `httpkit.MemoryStore` — до 100 000 ключей (новый сверх — ошибка, без вытеснения). httpclient: breaker и label `host` — у первых
-  1024 хостов (`HTTPCLIENT_MAX_HOSTS`), прочие — `host="other"` без breaker'а. httpkit: тело сверх лимита в huma — 413 (лимит
-  операции выше общего поднимает транспортный, и у скрытой); идемпотентность не хранит 408/409/425/429, запросы без credentials и
-  ответ дольше `HTTP_IDEMPOTENCY_RESERVE_TTL` (WARN, `skipped`); 401 — с `WWW-Authenticate`; HEAD на GET-маршрутах; ответ, не
-  начатый к `HTTP_REQUEST_TIMEOUT`, — целый `503 REQUEST_TIMEOUT` с `Connection: close`, ответ хендлера после него отбрасывается
-  (идемпотентность его хранит); без дедлайна — только GET-поток (SSE, `Upgrade`), POST-поток обрывается; `REQUEST_TIMEOUT` — в
-  описании `code` `openapi.json` (`make gen`); CORS пускает `Idempotency-Key` (свой `HTTP_CORS_HEADERS` — дописать); panic после
-  заголовка обрывает соединение; операцию открывает альтернатива её схем целиком, `{}` — без credentials, последней (отказ бэкенда
-  — 503); идемпотентность — после `HumaAuth`; trace-context клиента — ссылкой на новый корень, baggage — с
-  `HTTP_TRUST_TRACE_CONTEXT`; `ip:port` в X-Forwarded-For — его IP. Секреты URL (natskit, cachekit, storagekit, telemetry): в
-  ошибках, логах и спанах — `xxxxx` от схемы до последнего `@` (и при `#`, `?`, `/` в пароле); у httpclient — userinfo, путь до
-  последнего `@` и значения query; разбор URL и `OTEL_EXPORTER_OTLP_HEADERS` не цитируется; спан попытки httpclient — свой, не
-  otelhttp; креды в `STORAGE_PUBLIC_BASE_URL` и `@` после хоста в `NATS_URL`, публичном URL и OTLP — `ErrConfig`. logkit:
-  ключи-секреты — и `pass`, `pw`, `creds`, `sid`, `refresh`, `signature`, `tokens`, `secrets`, `api_keys`, `code_verifier`,
-  `passcode`, `code` после `verification`/`auth`/`sms`… (`otp_attempts` — счётчик, не код) — и в полях структур, за указателями, в
-  `MarshalJSON`, в JSON из `RawMessage`/`[]byte` и внутри строк; маски значений — base64url-токен ≥ 20, пароль userinfo URL, пара
-  `ключ = значение` с ключом-секретом (и `password='…'`). bruteforcekit: бюджет субъекта — 20 попыток со всех адресов, блокировка
-  1m (`LockState.Scope`); успех снимает её и обнуляет строку субъекта (её уберёт cleanup, занятые попыткой строки он пропускает);
-  `Retry-After` — `LockState.RetryAfter` по часам базы; subject длиннее 255 байт — ключ SHA-256, с NUL или не в UTF-8 —
-  `ErrInvalidKey`; `bruteforce_locks_total{scope}`. Входы: `Verify` пароля длиннее 1024 байт — за время `VerifyDummy`;
-  `auditkit/pgstore.Module` даёт и `*Store`. Старт: flagkit, natskit, cachekit, tzkit, storagekit проверяют конфиг и связь и без
-  потребителя; `Stop` telemetry — в ⅔ бюджета остановки, сбой экспорта — ERROR `telemetry: shutdown`; `FxLogger` без OTel, при
-  `LOG_SILENT` ERROR его и логгера ошибок telemetry — в stderr; go-redis — WARN `redis`, текст мостов — `detail`; WARN grpcclient —
-  `grpcclient: token over plaintext transport`. Сигналы (панели и алерты — переписать): ключ ошибки логов — `error` вместо `err`;
-  cachekit — `db.system.name`, `db.operation.name`, `db.operation.batch.size` вместо `db.system`, `db.operation`,
-  `db.redis.batch_size`; спан otelpgx — `query <имя sqlc или операция>` вместо текста SQL (он — в `db.query.text`); httpkit — 429,
-  preflight и 405 под маршрутом (`path`, `route`, `http.route`), `unmatched` — только путь без маршрута, без `http.route`; нет
-  ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов; otelhttp у anthropickit без метрик. natskit: пустой токен,
-  wildcard в публикации и `>` не последним в фильтре — `nats.ErrBadSubject` сразу; фейки testkit — правила шины и JSONB; authntest:
-  хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге переживает ключ (до `InvalidateByTag` или конца набора).
-  Сборка: x/net 0.60 и `toolchain go1.26.9` модуля — уязвимости HTTP/2 и stdlib; сервис собирать на Go ≥ 1.26.9 (`go` — 1.26.6).
-- **Изменения.** Новое API, env и метрики — по `make release-diff PREV=v1.3.0` (apidiff, env, метрики); сверх них — ридер ENV без
-  envconfig, миграция outbox 0003, `testkit/idempotencytest`, срок хранения аудита (opt-in: `auditkit/pgstore.RetentionModule`,
-  `AUDIT_RETENTION_DAYS`, `audit_log_retention_deleted_total`). `archkit` — правила раскладки сервиса из его теста
-  (`archkit.Check` с опциями). Строже прежнего archtest шаблона: корень домена не видит пакет `internal/platform/*` и обёртку над
-  ним в `pkg/` с транспортом, драйвером или I/O (исключение — запись `WithUncheckedPackages`); identity-closure ловится с лишним
-  параметром и кодом после `return`; dot-импорт `time` — и рядом с другим dot-импортом; пакет в корне модуля закрыт домену, `pkg`
-  и platform; пакет в каталоге на точку и в каталоге-ссылке читается по импорту; Go-файл в каталоге на точку прямо под
-  `internal/` — нарушение правила каталогов. Закрывается правкой или записью `WithKnownViolations` с ID находки.
-- **Гейт.** `make gate-clean` и `make test-full`; `make release-diff PREV=v1.3.0` — каждая несовместимая строка API, снятая
-  переменная и имя метрики — в Breaking, сменившийся дефолт — в Поведении; сборка шаблона через `replace` (и archkit на нём:
-  инъекции AC7), `go test -race ./archkit/`; эксперименты S13. Контрибьютору: гейт отказывает на `golangci-lint` или `govulncheck`
-  не из пина — `make tools` (ставит и apidiff); `make hooks` включает и `commit-msg` (Conventional Commits, `!` только с футером
-  `BREAKING CHANGE:`); forbidigo не пускает в киты `fmt.Print*`, `log`, `slog` по умолчанию и `http.DefaultClient`.

@@ -33,3 +33,7 @@
 - **guard-template-parity** — guard сессии (`.claude/hooks/guard-bash.sh`) не видит формы, которые закрыл guard шаблона: код для
   интерпретатора (`bash -c`, `eval`, heredoc), имя `git` в кавычках, алиасы и `include` конфига git, запись в `.git/config`,
   `git send-pack`; README § Гейт называет их. Триггер: повторный аудит угла 8 или общий guard двух репо.
+- **authnkit-maxlength-runes** — доки authnkit (`README.md`, `docs/usage.md`, doc-comment `MaxPasswordLen`) обещают DTO с
+  `maxLength:"1024"` отказ 4xx до usecase; huma считает `maxLength` в символах, предел кита — байты: пароль не из ASCII короче
+  1024 символов доходит до `Hash` (`ErrPasswordTooLong`). Правка — точность доков или хелпер проверки длины в байтах для DTO.
+  Триггер: правка доков authnkit, повторный аудит угла доков или 500 у потребителя на длинном пароле.
