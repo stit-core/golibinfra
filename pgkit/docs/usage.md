@@ -264,11 +264,10 @@ func ReplicaProbe(rw *ReadWriteDB) healthkit.Probe // Name "pgkit/replica": SELE
 
 ```go
 fx.New(
-    pgkit.Module,
-    httpkit.Module,
-    fx.Provide(pgkit.NewPoolConfig, httpkit.NewConfig),
+    logkit.Module, pgkit.Module, httpkit.Module,
+    fx.Provide(logkit.NewConfig, pgkit.NewPoolConfig, httpkit.NewConfig),
 
-    healthkit.ProvideProbe(pgkit.Probe),      // /ready → 503, если SELECT 1 не проходит
+    healthkit.ProvideProbe(pgkit.Probe),        // /ready → 503, если SELECT 1 не проходит
     healthkit.ProvideProbe(pgkit.ReplicaProbe), // без PG_REPLICA_DSN проходит без запроса
 )
 ```

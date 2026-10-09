@@ -29,7 +29,7 @@ import "git.stit.tech/stit-core/golibinfra/cachekit"
 type Profile struct{ Name string }
 
 fx.New(
-    fx.Provide(logkit.NewConfig, logkit.New),   // logkit.Logger в графе
+    fx.Provide(logkit.NewConfig), logkit.Module, // logkit.Logger в графе
     fx.Provide(cachekit.NewConfig),             // REDIS_* из ENV (caller провайдит явно)
     cachekit.Module,                            // Cache на старте (и без потребителя): Ping, Close на стопе
     healthkit.ProvideProbe(cachekit.Probe),          // /ready через httpkit

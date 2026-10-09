@@ -53,12 +53,12 @@ import (
 func app() *fx.App {
     return fx.New(
         fx.Provide(
-            logkit.NewConfig,
-            logkit.New,
+            logkit.NewConfig,             // LOG_*
             pgkit.NewPoolConfig,          // PG_*
             pgkit.NewMigrateRunnerConfig, // PG_MIGRATIONS_PATH, PG_MIGRATE_TIMEOUT
             bruteforcekit.NewConfig,      // BRUTEFORCE_*
         ),
+        logkit.Module, // logkit.Logger: маски LOG_REDACT_* и OTel-sink графа
         pgkit.Module,
         pgkit.MigrateModule, // применяет pgstore.Migrations
         timerkit.Module,     // запускает cleanup-job кита

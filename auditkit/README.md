@@ -76,11 +76,11 @@ func (s *UserService) Create(ctx context.Context, actorID, userID string) error 
 func app() *fx.App {
     return fx.New(
         fx.Provide(
-            logkit.NewConfig,
-            logkit.New,
+            logkit.NewConfig,             // LOG_*
             pgkit.NewPoolConfig,          // PG_*
             pgkit.NewMigrateRunnerConfig, // PG_MIGRATIONS_PATH, PG_MIGRATE_TIMEOUT
         ),
+        logkit.Module, // logkit.Logger: маски LOG_REDACT_* и OTel-sink графа
         pgkit.Module,
         pgkit.MigrateModule, // применяет pgstore.Migrations (+ миграции приложения)
         pgstore.Module,      // provides auditkit.Logger (== *pgstore.Store)
@@ -244,7 +244,7 @@ type Logger interface {
   `RequestID` и `IP` — из `ctx` (`Entry.Enrich`). Невалидная
   `Entry` отвергается до запроса (`ErrInvalidEntry`). Пустые строковые поля и
   пустая `Metadata` пишутся как `NULL`; нулевой `At` подставляется как `NOW()`
-  на стороне базы (`COALESCE`). Ошибки — с префиксом `auditkit:`.
+  на стороне базы (`COALESCE`). Ошибки — с префиксом `auditkit/pgstore:`.
 - `(*Store).DeleteExpired(ctx, RetentionConfig) error` — удаляет записи старше
   `Days` дней по часам базы батчами по 5000 строк до конца отставания; невалидный
   конфиг — `auditkit.ErrConfig` без запроса.
@@ -334,7 +334,7 @@ err := s.Log(ctx, auditkit.Entry{Action: "user.create", Resource: "user"})
 
 Покрытие: полная запись и `NULL`-поля, `At` из часов базы, участие в транзакции
 (`pg.Transactor(t).WithTx` — откат оставляет 0 строк, коммит 1, вне транзакции
-строка пишется сразу), ошибка `INSERT` с префиксом `auditkit:`, отказ на
+строка пишется сразу), ошибка `INSERT` с префиксом `auditkit/pgstore: insert:`, отказ на
 невалидной `Entry` (NUL, не-UTF-8, `Metadata` сверх предела — до базы, `result=invalid`),
 граничная `Metadata`, которую база хранит, retention (только записи старше срока, батчи
 до конца отставания, метрика), сборка `Module` и `RetentionModule` (`fx.ValidateApp` +

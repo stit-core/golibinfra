@@ -277,9 +277,22 @@ Refresh — не JWT, а непрозрачный токен в сессии `au
 `testkit/sessiontest`.
 
 ```go
-// Вход: пароль проверен → access-JWT и refresh-сессия.
+// Вход — одной транзакцией под блокировкой строки пользователя: проверка пароля и статуса и
+// Issue видят одно состояние. Без блокировки вход, прочитавший пользователя до COMMIT смены
+// пароля, выдал бы сессию уже после RevokeAll — и она пережила бы «выйти везде».
+var refresh session.Token
+err := tx.WithTx(ctx, func(ctx context.Context) error {
+	u, err := users.LockByLogin(ctx, login) // SELECT … FOR SHARE: ждёт COMMIT смены пароля и статуса
+	if err != nil {
+		return err
+	}
+	if ok, err := hasher.Verify(ctx, password, u.PasswordHash); err != nil || !ok || u.Blocked {
+		return errInvalidCredentials
+	}
+	refresh, err = sessions.Issue(ctx, u.ID) // в транзакции из ctx; refresh.Value — клиенту (cookie)
+	return err
+})
 access, err := jwt.SignAccess(ctx, map[string]any{"sub": u.ID, "role": u.Role})
-refresh, err := sessions.Issue(ctx, u.ID) // refresh.Value — клиенту (cookie)
 
 // Обновление: ротация вне транзакции, затем проверка, что пользователь ещё может входить.
 next, err := sessions.Rotate(ctx, refreshCookie)
@@ -301,7 +314,8 @@ if err == nil && owner != "" {
 	err = audit.Log(ctx, auditkit.Entry{ActorID: owner, Action: "logout", Resource: "session"})
 }
 
-// Отзыв всех сессий — в транзакции смены статуса пользователя.
+// Отзыв всех сессий — в транзакции смены пароля или статуса: UPDATE строки пользователя
+// конфликтует с FOR SHARE входа, и параллельный вход ждёт её COMMIT.
 err = tx.WithTx(ctx, func(ctx context.Context) error {
 	if err := users.Block(ctx, userID); err != nil {
 		return err
@@ -309,6 +323,11 @@ err = tx.WithTx(ctx, func(ctx context.Context) error {
 	return sessions.RevokeAll(ctx, userID) // откат блокировки откатит и отзыв
 })
 ```
+
+Вход держит соединение пула на время Argon2id (≈100 мс) — это цена порядка: проверка пароля
+под блокировкой строки и `Issue` в той же транзакции. Вход без неё оставляет окно длиной в
+проверку пароля, в котором `RevokeAll` смены пароля уже прошёл, а сессия по старому паролю ещё
+выдаётся и живёт до `SESSION_ABSOLUTE_TTL`.
 
 В fx — `pgstore.Module` (нужны `pgkit.Module`, `timerkit.Module` и
 `fx.Provide(session.NewConfig)`); его миграции — источник `pgstore.Migrations`

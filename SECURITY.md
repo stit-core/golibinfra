@@ -22,8 +22,10 @@
 golibinfra — общая lib, на которую завязаны бизнес-сервисы. В скоупе всё, что
 делает консьюмера уязвимым из коробки:
 
-- **`authnkit`** — Argon2id-хэширование и разбор PHC, HS256 JWT (подпись, `iss`/`aud`,
-  тип токена access/refresh), TOTP (окно, replay), RBAC-реестр.
+- **`authnkit`** — Argon2id-хэширование и разбор PHC, HS256 access-JWT (подпись, `iss`/`aud`,
+  тип токена, ротация секрета), TOTP (окно, replay), одноразовые токены (`NewToken`,
+  `HashToken`), сессии refresh `authnkit/session` (ротация, отзыв сессии при повторе токена,
+  абсолютный срок, `RevokeAll`), RBAC-реестр.
 - **`bruteforcekit`** — обход счётчика попыток: канонизация IP, границы окна,
   снятие блокировки.
 - **`httpkit`** — слабые дефолты и обходы middleware: SecurityHeaders, CORS,

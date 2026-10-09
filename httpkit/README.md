@@ -40,15 +40,16 @@ import "git.stit.tech/stit-core/golibinfra/httpkit"
 вешает хук, — до него или внутри `fx.Module`. `Config` регистрирует caller.
 
 ```go
-var userErrors = httpkit.NewErrorMap(
+userErrors := httpkit.NewErrorMap(
     httpkit.ErrorRule{Err: ErrUserNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "user not found"},
 )
 
 app := fx.New(
-    logkit.Module,                                  // logkit.Logger
-    fx.Provide(logkit.NewConfig, logkit.NewRedactConfig, httpkit.NewConfig), // LOG_*/HTTP_* из ENV
-    healthkit.ProvideProbe(pgkit.Probe),                 // проба в /ready
-    fx.Invoke(func(api huma.API) {                  // корневой Invoke — до httpkit.Module
+    logkit.Module, // logkit.Logger
+    fx.Provide(logkit.NewConfig, logkit.NewRedactConfig, httpkit.NewConfig, pgkit.NewPoolConfig), // LOG_*, HTTP_* и PG_* из ENV
+    pgkit.Module,                        // *pgkit.DB — её берёт проба
+    healthkit.ProvideProbe(pgkit.Probe), // проба в /ready
+    fx.Invoke(func(api huma.API) { // корневой Invoke — до httpkit.Module
         huma.Register(api, userErrors.Declare(huma.Operation{ // коды — в openapi.json
             OperationID: "getUser", Method: http.MethodGet, Path: "/users/{id}",
         }), func(ctx context.Context, in *GetUserInput) (*GetUserOutput, error) {
@@ -56,10 +57,10 @@ app := fx.New(
             if err != nil {
                 return nil, userErrors.Map(err) // несопоставленная → 500 без причины + лог
             }
-            // ...
+            return &GetUserOutput{Body: u}, nil
         })
     }),
-    httpkit.Module,                                 // *Server + huma.API; HTTP стартует последним
+    httpkit.Module, // *Server + huma.API; HTTP стартует последним
 )
 app.Run()
 ```

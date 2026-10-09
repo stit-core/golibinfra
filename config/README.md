@@ -70,10 +70,12 @@ var Module = fx.Module("appconfig",
 
 ```go
 fx.New(
-	config.Module, // env → []config.Source
-	appconfig.Module,
-	pgkit.Module,
-	httpkit.Module,
+    config.Module, // env → []config.Source
+    appconfig.Module,
+    fx.Provide(logkit.NewConfig), // конфиг кита вне App — его конструктором
+    logkit.Module,
+    pgkit.Module,
+    httpkit.Module,
 )
 ```
 

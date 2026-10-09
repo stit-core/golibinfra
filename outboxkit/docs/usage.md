@@ -77,7 +77,7 @@ func outboxkit.WithSubjects(filters ...string) outboxkit.InstanceOption
 
 ```go
 fx.New(
-    fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, natskit.NewConfig,
+    fx.Provide(logkit.NewConfig, pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, natskit.NewConfig,
         pgstore.NewConfig, outboxkit.NewConfig),
     logkit.Module, pgkit.Module, pgkit.MigrateModule, natskit.Module(""), timerkit.Module,
 
