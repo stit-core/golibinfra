@@ -100,7 +100,8 @@ server-span и извлекает входящий `traceparent`, а все по
   маршрута, как label `path`; `duration_ms` — миллисекунды, float.
 - `handler error` — клиенту уходит только статус, код и `request_id`; причина — в `error`.
 - `idempotency store failed` — `op`: `get`, `reserve`, `set`, `release`; тот же отказ считает
-  `http_idempotency_total{result="error"}`.
+  `http_idempotency_total{result="error"}`. `op=reserve` с текстом `key budget of the client is
+  exhausted` — клиент исчерпал бюджет ключей (store исправен).
 - `idempotency reservation expired before the response` — handler шёл дольше
   `HTTP_IDEMPOTENCY_RESERVE_TTL`, ответ не сохранён (`http_idempotency_total{result="skipped"}`).
 - `request deadline exceeded` — ответ не начат, клиенту ушёл `503 REQUEST_TIMEOUT`

@@ -307,10 +307,10 @@ func TestModule_RequestDeadlineKeepsIdempotencyReservation(t *testing.T) {
 	var calls atomic.Int32
 	done := make(chan struct{})
 	srv := startApp(t,
-		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
+		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }), withBearer,
 		fx.Provide(func() httpkit.IdempotencyStore { return httpkit.NewMemoryStore() }),
 		fx.Invoke(func(api huma.API) {
-			huma.Register(api, huma.Operation{OperationID: "charge", Method: http.MethodPost, Path: "/charge", DefaultStatus: http.StatusCreated},
+			huma.Register(api, huma.Operation{OperationID: "charge", Method: http.MethodPost, Path: "/charge", DefaultStatus: http.StatusCreated, Security: bearerOnly},
 				func(context.Context, *struct{}) (*struct{ Body map[string]string }, error) {
 					calls.Add(1)
 					time.Sleep(300 * time.Millisecond)
@@ -353,7 +353,7 @@ func TestModule_RequestDeadlineLateErrorIsNotAPanic(t *testing.T) {
 	before := metrictest.Collect(t)
 	var calls atomic.Int32
 	srv := startApp(t,
-		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }),
+		fx.Decorate(func(logkit.Logger) logkit.Logger { return log }), withBearer,
 		fx.Provide(func() httpkit.IdempotencyStore { return httpkit.NewMemoryStore() }),
 		fx.Invoke(func(api huma.API) {
 			huma.Register(api, httpkit.Public(huma.Operation{OperationID: "query", Method: http.MethodGet, Path: "/query"}),
@@ -361,7 +361,7 @@ func TestModule_RequestDeadlineLateErrorIsNotAPanic(t *testing.T) {
 					<-ctx.Done()
 					return nil, fmt.Errorf("db: %w", ctx.Err())
 				})
-			huma.Register(api, huma.Operation{OperationID: "reserve", Method: http.MethodPost, Path: "/reserve"},
+			huma.Register(api, huma.Operation{OperationID: "reserve", Method: http.MethodPost, Path: "/reserve", Security: bearerOnly},
 				func(ctx context.Context, _ *struct{}) (*struct{ Body string }, error) {
 					calls.Add(1)
 					<-ctx.Done()

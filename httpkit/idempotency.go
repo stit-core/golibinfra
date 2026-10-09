@@ -78,6 +78,72 @@ const memoryStoreMaxKeys = 100_000
 
 var errMemoryStoreFull = errors.New("httpkit: idempotency memory store is full")
 
+const (
+	// scopeMaxKeys — сколько ответов одного scope middleware сохраняет за окно TTL: один клиент
+	// не занимает store целиком (MemoryStore — десятая часть предела) и не растит Redis без границы.
+	scopeMaxKeys = 10_000
+	// budgetMaxScopes — предел таблицы бюджетов (≈100 B на scope); scope сверх него не учитывается.
+	budgetMaxScopes = 100_000
+)
+
+var errScopeBudget = fmt.Errorf("httpkit: idempotency key budget of the client is exhausted (%d keys per TTL)", scopeMaxKeys)
+
+type scopeWindow struct {
+	stored int
+	until  time.Time
+}
+
+// keyBudget считает сохранённые ответы на scope за окно TTL — в памяти процесса: у реплик счёт
+// свой, на стыке окон живых записей scope — до двух бюджетов.
+type keyBudget struct {
+	mu        sync.Mutex
+	now       func() time.Time
+	window    time.Duration
+	limit     int
+	maxScopes int
+	scopes    map[[sha256.Size]byte]scopeWindow
+	lastSweep time.Time
+}
+
+func newKeyBudget(window time.Duration) *keyBudget {
+	return &keyBudget{
+		now: time.Now, window: window, limit: scopeMaxKeys, maxScopes: budgetMaxScopes,
+		scopes: map[[sha256.Size]byte]scopeWindow{},
+	}
+}
+
+func (b *keyBudget) exhausted(scope string) bool {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	w, ok := b.scopes[sha256.Sum256([]byte(scope))]
+	return ok && b.now().Before(w.until) && w.stored >= b.limit
+}
+
+func (b *keyBudget) add(scope string) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	id, t := sha256.Sum256([]byte(scope)), b.now()
+	w, ok := b.scopes[id]
+	if !ok || !t.Before(w.until) {
+		if !ok {
+			if t.Sub(b.lastSweep) >= memorySweepEvery {
+				for k, v := range b.scopes {
+					if !t.Before(v.until) {
+						delete(b.scopes, k)
+					}
+				}
+				b.lastSweep = t
+			}
+			if len(b.scopes) >= b.maxScopes {
+				return
+			}
+		}
+		w = scopeWindow{until: t.Add(b.window)}
+	}
+	w.stored++
+	b.scopes[id] = w
+}
+
 type memoryEntry struct {
 	reserved  bool
 	token     string
@@ -207,11 +273,18 @@ func storeCtx(parent context.Context, timeout time.Duration) (context.Context, c
 
 // Idempotency воспроизводит ответ на повтор POST/PUT/PATCH с тем же ключом. Сервер кита ставит
 // её в цепочку huma после HumaAuth: replay получает только запрос, прошедший аутентификацию
-// операции, а ключ scope'ится его субъектом (ContextWithSubject), иначе Authorization и Cookie
-// клиента; запрос без них идёт без дедупликации. Повтор с другим телом, путём, query или методом
-// — 422, параллельный повтор — 409. Кэшируются только ответы < 500, кроме 408, 409, 425 и 429.
-// Ошибка store — строка лога и fail-open, если не задан FailClosed.
+// операции. Ключ scope'ится личностью: субъектом (ContextWithSubject), без него — credentials,
+// проверенными схемой операции (HumaAuth). Запрос без личности — аноним, в том числе с
+// Authorization или Cookie, которые никто не проверял, — идёт без дедупликации. Повтор с другим
+// телом, путём, query или методом — 422, параллельный повтор — 409. Кэшируются только ответы
+// < 500, кроме 408, 409, 425 и 429, и не больше scopeMaxKeys на scope за окно TTL: новый ключ
+// сверх бюджета — как отказ store. Ошибка store — строка лога и fail-open, если не задан
+// FailClosed.
 func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger) func(http.Handler) http.Handler {
+	return idempotency(cfg, store, log, newKeyBudget(cfg.TTL))
+}
+
+func idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger, budget *keyBudget) func(http.Handler) http.Handler {
 	instr := newInstruments()
 	outcome := func(ctx context.Context, result string) {
 		instr.idempotency.Add(ctx, 1, metric.WithAttributes(attribute.String("result", result)))
@@ -243,8 +316,10 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				return
 			}
 			ctx := r.Context()
-			// Без credentials scope ключа у всех анонимов общий: сохранённый ответ одного получил бы другой.
-			if SubjectFrom(ctx) == "" && r.Header.Get("Authorization") == "" && r.Header.Get("Cookie") == "" {
+			// Без личности scope ключа общий: сохранённый ответ одного анонима получил бы другой, а
+			// записи анонимов заняли бы store.
+			scope := scopeOf(ctx)
+			if scope == "" {
 				outcome(ctx, "skipped")
 				next.ServeHTTP(w, r)
 				return
@@ -265,7 +340,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				return
 			}
 			fp := fingerprint(r, body)
-			skey := scopedKey(r, key)
+			skey := scopedKey(scope, key)
 
 			getCtx, cancelGet := storeCtx(ctx, cfg.StoreTimeout)
 			rec, found, err := loadRecord(getCtx, store, skey)
@@ -282,9 +357,13 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				return
 			}
 
-			reserveCtx, cancelReserve := storeCtx(ctx, cfg.StoreTimeout)
-			token, ok, err := store.Reserve(reserveCtx, skey, cfg.ReserveTTL)
-			cancelReserve()
+			// Бюджет исчерпан — как store, который не берёт новый ключ этого клиента.
+			token, ok, err := "", false, errScopeBudget
+			if !budget.exhausted(scope) {
+				reserveCtx, cancelReserve := storeCtx(ctx, cfg.StoreTimeout)
+				token, ok, err = store.Reserve(reserveCtx, skey, cfg.ReserveTTL)
+				cancelReserve()
+			}
 			if err != nil {
 				if unavailable(ctx, w, "reserve", err) {
 					return
@@ -353,6 +432,7 @@ func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				log.Warn(ctx, "idempotency reservation expired before the response", "reserve_ttl", cfg.ReserveTTL.String())
 				outcome(ctx, "skipped")
 			default:
+				budget.add(scope)
 				outcome(ctx, "stored")
 			}
 		})
@@ -436,22 +516,23 @@ func fingerprint(r *http.Request, body []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// scopedKey привязывает ключ к клиенту: чужой ключ не отдаёт чужой ответ.
-// Аутентифицированный субъект устойчивее сырых credentials — ротация токена
-// между попытками не превращает ретрай в новую операцию.
-func scopedKey(r *http.Request, key string) string {
-	h := sha256.New()
-	if sub := SubjectFrom(r.Context()); sub != "" {
-		h.Write([]byte("sub"))
-		h.Write([]byte{0})
-		h.Write([]byte(sub))
-	} else {
-		h.Write([]byte("cred"))
-		h.Write([]byte{0})
-		h.Write([]byte(r.Header.Get("Authorization")))
-		h.Write([]byte{0})
-		h.Write([]byte(r.Header.Get("Cookie")))
+// scopeOf — чей ключ: субъект (ContextWithSubject) устойчив к ротации токена между попытками,
+// без него — credentials, проверенные схемой операции (HumaAuth). Пусто — личности нет: заголовок,
+// который никто не проверял, клиента не различает.
+func scopeOf(ctx context.Context) string {
+	if sub := SubjectFrom(ctx); sub != "" {
+		return "sub\x00" + sub
 	}
+	if cred := credentialFrom(ctx); cred != "" {
+		return "cred\x00" + cred
+	}
+	return ""
+}
+
+// scopedKey привязывает ключ к scope клиента: чужой ключ не отдаёт чужой ответ.
+func scopedKey(scope, key string) string {
+	h := sha256.New()
+	h.Write([]byte(scope))
 	h.Write([]byte{0})
 	h.Write([]byte(key))
 	return hex.EncodeToString(h.Sum(nil))

@@ -26,10 +26,14 @@ func idemCfg() IdempotencyConfig {
 }
 
 func postWithKey(key, body string) *http.Request {
-	req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(body))
+	return postAs("alice", "/orders", key, body)
+}
+
+// postAs — запрос субъекта subject: так его оставляет extractor схемы (ContextWithSubject).
+func postAs(subject, target, key, body string) *http.Request {
+	req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(body))
 	req.Header.Set("Idempotency-Key", key)
-	req.Header.Set("Authorization", "Bearer alice")
-	return req
+	return req.WithContext(ContextWithSubject(req.Context(), subject))
 }
 
 func createdHandler(calls *atomic.Int32) http.Handler {
@@ -86,21 +90,26 @@ func TestIdempotency_DifferentBodySameKey_Conflict(t *testing.T) {
 	}
 }
 
-func TestIdempotency_KeyScopedToClient(t *testing.T) {
+// Регрессия RTST-01: scope ключа — субъект. Другой субъект с тем же ключом и телом исполняет свой
+// запрос, а не получает сохранённый ответ первого; повтор первого — replay.
+func TestIdempotency_KeyScopedToSubject(t *testing.T) {
 	var calls atomic.Int32
 	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 
-	h.ServeHTTP(httptest.NewRecorder(), postWithKey("k1", `{"a":1}`))
-	other := postWithKey("k1", `{"a":1}`)
-	other.Header.Set("Authorization", "Bearer bob")
+	h.ServeHTTP(httptest.NewRecorder(), postAs("alice", "/orders", "k1", `{"a":1}`))
 	rec := httptest.NewRecorder()
-	h.ServeHTTP(rec, other)
+	h.ServeHTTP(rec, postAs("bob", "/orders", "k1", `{"a":1}`))
 
 	if calls.Load() != 2 {
-		t.Fatalf("another client with the same key must execute its own request, calls=%d", calls.Load())
+		t.Fatalf("another subject with the same key must execute its own request, calls=%d", calls.Load())
 	}
-	if rec.Header().Get("Idempotent-Replayed") != "" {
-		t.Error("must not replay another client's response")
+	if rec.Header().Get(HeaderIdempotentReplayed) != "" {
+		t.Error("must not replay another subject's response")
+	}
+	again := httptest.NewRecorder()
+	h.ServeHTTP(again, postAs("alice", "/orders", "k1", `{"a":1}`))
+	if again.Header().Get(HeaderIdempotentReplayed) != "true" || calls.Load() != 2 {
+		t.Fatalf("the first subject's retry: replayed=%q calls=%d; want a replay", again.Header().Get(HeaderIdempotentReplayed), calls.Load())
 	}
 }
 
@@ -323,9 +332,9 @@ func TestIdempotency_StoresResultAfterClientDisconnect(t *testing.T) {
 		_, _ = w.Write([]byte(`{"id":1}`))
 	}))
 
-	ctx, cancel := context.WithCancel(context.Background())
-	req := postWithKey("k1", `{"a":1}`).WithContext(context.WithValue(ctx, cancelKey{}, cancel))
-	h.ServeHTTP(httptest.NewRecorder(), req)
+	req := postWithKey("k1", `{"a":1}`)
+	ctx, cancel := context.WithCancel(req.Context())
+	h.ServeHTTP(httptest.NewRecorder(), req.WithContext(context.WithValue(ctx, cancelKey{}, cancel)))
 	cancel()
 
 	if err := store.ctxErrs["set"]; err != nil {
@@ -346,10 +355,7 @@ func TestIdempotency_QueryIsPartOfFingerprint(t *testing.T) {
 	var calls atomic.Int32
 	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 
-	dry := httptest.NewRequest(http.MethodPost, "/orders?dry_run=true", strings.NewReader(`{"a":1}`))
-	dry.Header.Set("Idempotency-Key", "k1")
-	dry.Header.Set("Authorization", "Bearer alice")
-	h.ServeHTTP(httptest.NewRecorder(), dry)
+	h.ServeHTTP(httptest.NewRecorder(), postAs("alice", "/orders?dry_run=true", "k1", `{"a":1}`))
 
 	real := httptest.NewRecorder()
 	h.ServeHTTP(real, postWithKey("k1", `{"a":1}`))
@@ -366,10 +372,7 @@ func TestIdempotency_QueryOrderDoesNotMatter(t *testing.T) {
 	var calls atomic.Int32
 	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
 	for _, target := range []string{"/orders?b=2&a=1", "/orders?a=1&b=2"} {
-		req := httptest.NewRequest(http.MethodPost, target, strings.NewReader(`{}`))
-		req.Header.Set("Idempotency-Key", "k1")
-		req.Header.Set("Authorization", "Bearer alice")
-		h.ServeHTTP(httptest.NewRecorder(), req)
+		h.ServeHTTP(httptest.NewRecorder(), postAs("alice", target, "k1", `{}`))
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("query order must not change the fingerprint, calls=%d", calls.Load())
@@ -476,7 +479,7 @@ func TestIdempotency_ExpiredReservationIsNotOverwritten(t *testing.T) {
 	var skey, retry string
 	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now = now.Add(cfg.ReserveTTL + time.Second)
-		skey = scopedKey(r, "k1")
+		skey = scopedKey(scopeOf(r.Context()), "k1")
 		var ok bool
 		if retry, ok, _ = store.Reserve(r.Context(), skey, time.Minute); !ok {
 			t.Error("retry could not reserve the expired key")
@@ -529,45 +532,127 @@ func TestIdempotency_NotExecutedResponsesAreNotStored(t *testing.T) {
 	}
 }
 
-// Регрессия KSEC-14 (H16): запрос без credentials идёт без дедупликации — у анонимов общий scope
-// ключа, и сохранённый ответ одного получил бы другой.
-func TestIdempotency_AnonymousRequestsAreNotDeduplicated(t *testing.T) {
-	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
-	for _, remote := range []string{"198.51.100.1:1000", "203.0.113.2:2000"} {
-		req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{}`))
-		req.RemoteAddr = remote
-		req.Header.Set("Idempotency-Key", "1")
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		if rec.Header().Get(HeaderIdempotentReplayed) != "" {
-			t.Fatalf("anonymous client %s got a replayed response", remote)
-		}
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("handler calls = %d, want 2", calls.Load())
+// Регрессия KSEC-14 (H16) и RSEC-01: запрос без личности идёт без дедупликации и в store не
+// пишет — и с Authorization или Cookie, которые никто не проверял: заголовок клиента не
+// различает, а записи анонимов заняли бы store.
+func TestIdempotency_RequestsWithoutIdentityAreNotDeduplicated(t *testing.T) {
+	for name, header := range map[string][2]string{
+		"no credentials":        {},
+		"unverified cookie":     {"Cookie", "lang=ru"},
+		"unverified authorized": {"Authorization", "Bearer anything"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			store := NewMemoryStore()
+			h := Idempotency(idemCfg(), store, logkit.Nop())(createdHandler(&calls))
+			before := metrictest.Collect(t)
+			for _, remote := range []string{"198.51.100.1:1000", "203.0.113.2:2000"} {
+				req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{}`))
+				req.RemoteAddr = remote
+				req.Header.Set("Idempotency-Key", "1")
+				if header[0] != "" {
+					req.Header.Set(header[0], header[1])
+				}
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, req)
+				if rec.Header().Get(HeaderIdempotentReplayed) != "" {
+					t.Fatalf("client %s without identity got a replayed response", remote)
+				}
+			}
+			if calls.Load() != 2 {
+				t.Fatalf("handler calls = %d, want 2", calls.Load())
+			}
+			if len(store.m) != 0 {
+				t.Fatalf("store holds %d keys of clients without identity, want 0", len(store.m))
+			}
+			if n := metrictest.Collect(t).Sub(before).Value("http_idempotency_total", "result", "skipped"); n != 2 {
+				t.Fatalf("http_idempotency_total{result=skipped} = %v, want 2", n)
+			}
+		})
 	}
 }
 
-// Клиент с одной cookie-сессией — не аноним: его ключ scope'ится cookie, повтор — replay, а
-// чужая cookie с тем же ключом выполняет свой запрос.
-func TestIdempotency_CookieClientIsDeduplicated(t *testing.T) {
-	var calls atomic.Int32
-	h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(createdHandler(&calls))
-	send := func(cookie string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(http.MethodPost, "/orders", strings.NewReader(`{}`))
-		req.Header.Set("Idempotency-Key", "1")
-		req.Header.Set("Cookie", cookie)
-		rec := httptest.NewRecorder()
-		h.ServeHTTP(rec, req)
-		return rec
+// Регрессия RSEC-01: один scope сохраняет не больше бюджета ответов за окно TTL. Новый ключ сверх
+// него — как отказ store этому клиенту (fail-open: без дедупликации, с записью лога; FailClosed —
+// 503), сохранённые ответы воспроизводятся, чужой scope не задет; окно истекло — бюджет новый.
+func TestIdempotency_ScopeKeyBudget(t *testing.T) {
+	for _, failClosed := range []bool{false, true} {
+		t.Run("fail_closed="+strconv.FormatBool(failClosed), func(t *testing.T) {
+			var calls atomic.Int32
+			var buf bytes.Buffer
+			log, err := logkit.New(logkit.Config{Level: "info"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg := idemCfg()
+			cfg.FailClosed = failClosed
+			store := NewMemoryStore()
+			now := time.Unix(1_700_000_000, 0)
+			budget := newKeyBudget(cfg.TTL)
+			budget.limit, budget.now = 2, func() time.Time { return now }
+			h := idempotency(cfg, store, log, budget)(createdHandler(&calls))
+			send := func(subject, key string) *httptest.ResponseRecorder {
+				rec := httptest.NewRecorder()
+				h.ServeHTTP(rec, postAs(subject, "/orders", key, `{}`))
+				return rec
+			}
+			send("alice", "k1")
+			send("alice", "k2")
+			before := metrictest.Collect(t)
+
+			over := send("alice", "k3")
+			again := send("alice", "k3")
+			switch {
+			case failClosed && (over.Code != http.StatusServiceUnavailable || calls.Load() != 2):
+				t.Fatalf("over budget, fail-closed: %d, calls=%d; want 503 without execution", over.Code, calls.Load())
+			case !failClosed && (over.Code != http.StatusCreated || again.Header().Get(HeaderIdempotentReplayed) != "" || calls.Load() != 4):
+				t.Fatalf("over budget, fail-open: %d replayed=%q calls=%d; want two executions without a replay",
+					over.Code, again.Header().Get(HeaderIdempotentReplayed), calls.Load())
+			}
+			if len(store.m) != 2 {
+				t.Fatalf("store holds %d keys, want the 2 of the budget", len(store.m))
+			}
+			if out := buf.String(); !strings.Contains(out, `"msg":"idempotency store failed"`) || !strings.Contains(out, "key budget of the client is exhausted") {
+				t.Errorf("an exhausted budget must be logged as a store refusal: %s", out)
+			}
+			if n := metrictest.Collect(t).Sub(before).Value("http_idempotency_total", "result", "error"); n != 2 {
+				t.Errorf("http_idempotency_total{result=error} = %v, want 2", n)
+			}
+
+			executed := calls.Load()
+			if rec := send("alice", "k1"); rec.Header().Get(HeaderIdempotentReplayed) != "true" || calls.Load() != executed {
+				t.Fatalf("a stored response must still be replayed over budget: replayed=%q", rec.Header().Get(HeaderIdempotentReplayed))
+			}
+			send("bob", "k1")
+			if rec := send("bob", "k1"); rec.Header().Get(HeaderIdempotentReplayed) != "true" || calls.Load() != executed+1 {
+				t.Fatalf("another subject must keep its own budget: replayed=%q calls=%d", rec.Header().Get(HeaderIdempotentReplayed), calls.Load())
+			}
+
+			now = now.Add(cfg.TTL)
+			send("alice", "k4")
+			if rec := send("alice", "k4"); rec.Header().Get(HeaderIdempotentReplayed) != "true" {
+				t.Fatalf("a new window must give a new budget: replayed=%q", rec.Header().Get(HeaderIdempotentReplayed))
+			}
+		})
 	}
-	send("sid=alice")
-	if rec := send("sid=alice"); rec.Header().Get(HeaderIdempotentReplayed) != "true" || calls.Load() != 1 {
-		t.Fatalf("cookie client retry: replayed=%q calls=%d; want a replay", rec.Header().Get(HeaderIdempotentReplayed), calls.Load())
+}
+
+// Таблица бюджетов ограничена: истёкшие окна выметаются, scope сверх предела таблицы не
+// учитывается — память процесса не растёт с числом клиентов.
+func TestKeyBudget_TableIsBounded(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	b := newKeyBudget(time.Hour)
+	b.limit, b.maxScopes, b.now = 1, 2, func() time.Time { return now }
+	b.add("a")
+	b.add("b")
+	b.add("c")
+	if len(b.scopes) != 2 || b.exhausted("c") || !b.exhausted("a") {
+		t.Fatalf("table: %d scopes, c exhausted=%v, a exhausted=%v; want 2, false, true", len(b.scopes), b.exhausted("c"), b.exhausted("a"))
 	}
-	if rec := send("sid=bob"); rec.Header().Get(HeaderIdempotentReplayed) != "" || calls.Load() != 2 {
-		t.Fatalf("another cookie with the same key: replayed=%q calls=%d; want its own execution", rec.Header().Get(HeaderIdempotentReplayed), calls.Load())
+	now = now.Add(time.Hour)
+	b.add("c")
+	if len(b.scopes) != 1 || !b.exhausted("c") || b.exhausted("a") {
+		t.Fatalf("after the window: %d scopes, c exhausted=%v, a exhausted=%v; want 1, true, false", len(b.scopes), b.exhausted("c"), b.exhausted("a"))
 	}
 }
 

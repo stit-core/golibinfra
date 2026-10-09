@@ -102,6 +102,10 @@ func contractRoutes(api huma.API) {
 		OperationID: "me", Method: http.MethodGet, Path: "/me",
 		Security: []map[string][]string{{"Bearer": {}}},
 	}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
+	huma.Register(api, huma.Operation{
+		OperationID: "create-order", Method: http.MethodPost, Path: "/orders",
+		Security: []map[string][]string{{"Bearer": {}}},
+	}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) //nolint:nilnil // тело ответа не нужно
 }
 
 type contractCase struct {
@@ -197,8 +201,7 @@ func TestErrorContract(t *testing.T) {
 			status: http.StatusServiceUnavailable, code: "AUTH_UNAVAILABLE", logged: true, check: noDetail,
 		},
 		{
-			name: "store идемпотентности недоступен", method: http.MethodPost, path: "/signup",
-			body:    `{"email":"a@b.co","password":"long-enough-password"}`,
+			name: "store идемпотентности недоступен", method: http.MethodPost, path: "/orders",
 			headers: []string{"Authorization: Bearer ok", "Idempotency-Key: k-1"},
 			status:  http.StatusServiceUnavailable, code: "IDEMPOTENCY_UNAVAILABLE", logged: true, check: noDetail,
 		},
