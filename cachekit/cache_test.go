@@ -3,6 +3,7 @@ package cachekit_test
 import (
 	"context"
 	"fmt"
+	"sync"
 	"testing"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/cachetest"
 	"git.stit.tech/stit-core/golibinfra/testkit/idempotencytest"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 type redisFixture struct {
@@ -385,4 +387,35 @@ func TestIdempotencyStore_ContractOnRedis(t *testing.T) {
 	idempotencytest.RunContract(t, func(t *testing.T) httpkit.IdempotencyStore {
 		return cachekit.NewIdempotencyStore(newCache(t, url, t.Name()+":"))
 	})
+}
+
+// Регрессия ROBS-04: исправный Redis не даёт сигналов ошибки на рукопожатии. go-redis в режиме
+// maintnotifications auto шлёт `CLIENT MAINT_NOTIFICATIONS`, обычный Redis отвечает на неё
+// ошибкой — каждое новое соединение давало `cache_commands_total{cmd="client",result="error"}` и
+// спан со статусом Error: алерт на result=error срабатывал на каждом старте каждой реплики.
+func TestRedisCache_HandshakeHasNoErrorSignals(t *testing.T) {
+	url := testkit.StartRedis(t).URL
+	before := metrictest.Collect(t)
+	cache := newCache(t, url, "handshake:")
+	ctx := context.Background()
+	if err := cache.Ping(ctx); err != nil {
+		t.Fatalf("ping: %v", err)
+	}
+	// Несколько соединений пула разом — у обоих клиентов кита (с повторами и без).
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Go(func() {
+			_ = cache.Set(ctx, "k", []byte("v"), time.Minute)
+			_, _ = cache.SetNX(ctx, "nx", []byte("v"), time.Minute)
+		})
+	}
+	wg.Wait()
+	d := metrictest.Collect(t).Sub(before)
+	if failed := d.Find("cache_commands_total", "result", "error"); len(failed) != 0 {
+		t.Fatalf("a healthy Redis produced error series: %v", failed)
+	}
+	// Set и SetNX — одна команда `set`.
+	if d.Value("cache_commands_total", "cmd", "set", "result", "ok") != 16 {
+		t.Fatalf("commands of the test are not counted: %v", d.Find("cache_commands_total"))
+	}
 }

@@ -37,14 +37,16 @@ blocked-by: —
 - [ ] **AC4** — угол 4 (fx): обработчик шины и job в полёте оставляют бюджет остановки хукам
   после себя, `Stop` — `nil`. Проверка: `M/reaudit/fxobs/ra-run.sh HEAD fx fx-docker` → RX01, RX02 PASS
 - [ ] **AC5** — угол 5 (тесты): scope идемпотентности по субъекту и `CleanupJob.Run` закреплены
-  тестами. Проверка: мутанты hk2-06 и sess-11 руками → тесты красные
+  тестами, контрактные наборы testkit проваливают сломанную реализацию, фейки не расходятся с
+  боевыми молча, фикстуры живут под `-count>1`. Проверка: мутанты аудитора hk2-06, sess-11, tk3-01…03 (`M/reaudit/tg/scripts/rmutate.py`) → убиты; `go test -race -count=3 ./tzkit/` → PASS
 - [ ] **AC6** — угол 6 (observability): занятый пул не стопорит экспорт метрик, выключенный SDK не
   меняет решение о сэмплировании, текст ошибки в спане — под масками, рукопожатие Redis — без
   `result=error`. Проверка: `M/reaudit/fxobs/ra-run.sh HEAD tel tel-docker obs-unit obs` → RT02, RT02b, RT05, RO2 PASS, RO3 — маски
 - [ ] **AC7** — угол 7 (доки): каждый полный граф `fx.New` в доках объёма собирается как написан и
   закреплён тестом. Проверка: `go test -short -run 'TestDocGraphs' .` → PASS
-- [ ] **AC8** — угол 8 (гейт): `make -i check MAKECMDGOALS=x` не запускается, envdoc видит
-  анонимную структуру с тегом, `//nolint` невключённого линтера — отказ. Проверка: `go test ./scripts/...` → PASS
+- [ ] **AC8** — угол 8 (гейт): ни одна из 34 форм запуска аудитора не даёт `✓ check clean` на
+  красном дереве — и через pre-push; envdoc видит анонимную структуру с тегом, `//nolint`
+  невключённого линтера — отказ, проводку guard держит тест. Проверка: `go test ./scripts/...` → PASS; `M/reaudit/tg/scripts/gate_forge.sh` на HEAD → честных 34 из 34
 - [ ] **AC9** — релиз готов: гейт на чистом дереве зелёный, аннотация и Handoff шаблону лежат в
   `M/`, тег стоит локально. Проверка: `make gate-clean` → `✓ check clean (./...)`; `git tag -l 'v1.*' | tail -1`
 
@@ -82,15 +84,25 @@ blocked-by: —
   доставке (RCOR-03, RCOR-05)
   - Проверка: `go test -race ./outboxkit/... ./natskit/` → PASS · Закрывает: AC2
   - Сделано: `truncErr` и `pgstore.RecordFailures` убирают NUL и битые руны (`TestWorker_BinaryErrorTextDoesNotStallTheTick`, до правки — откат тика `22021`); с DLQ предел доставок консьюмера на сервере — `2 × MaxDeliver` (`TestStreamBus_DLQFailureOnLastDeliveryIsRetried`, до правки копия в оживший DLQ не доходила)
-- [ ] **S9** — logkit, cachekit: маски ключей на оборванном JSON, рукопожатие go-redis без
+- [x] **S9** — logkit, cachekit: маски ключей на оборванном JSON, рукопожатие go-redis без
   `result=error` (RSEC-02, ROBS-04)
   - Проверка: `go test -race ./logkit/ ./cachekit/` → PASS · Закрывает: AC3, AC6
+  - Сделано: `maskJSONKeys` маскирует до места обрыва, `[]byte` — тем же сканером, что строка (`TestRedact_TruncatedJSONStaysMasked`, до правки 26 подтестов красные); `MaintNotificationsConfig{Mode: disabled}` у обоих клиентов (`TestRedisCache_HandshakeHasNoErrorSignals`, до правки `cmd=client,result=error` = 2)
 - [ ] **S10** — остальные дешёвые minor четырёх отчётов: правка в несколько строк — здесь,
   остальное — строкой в бэклог
   - Проверка: `make test-full` → PASS · Закрывает: AC2, AC3, AC6
-- [ ] **S11** — тесты и гейт: `CleanupJob.Run` исполняется тестом, самозащита `make check` без
-  `MAKECMDGOALS`, envdoc и анонимная структура, `//nolint` невключённых линтеров (RTST-02, RGATE-01…03)
-  - Проверка: `go test ./scripts/... ./authnkit/session/pgstore/` → PASS · Закрывает: AC5, AC8
+- [ ] **S11** — гейт: самозащита `make check` без условия на `MAKECMDGOALS`, pre-push с окружением
+  без make-переменных, 34 формы аудитора — в тесте; envdoc и анонимная структура, `//nolint`
+  невключённых линтеров, ложные отказы guard на имени ветки, проводка guard в `settings.json`
+  (RGATE-01…05)
+  - Проверка: `go test ./scripts/...` → PASS; `M/reaudit/tg/scripts/gate_forge.sh` → зелёного вердикта на красном дереве нет · Закрывает: AC8
+- [ ] **S15** — тесты: scope идемпотентности по субъекту на `Module`, `CleanupJob.Run` исполняется,
+  негативные самотесты контрактных наборов testkit, фикстуры testkit под `-count>1`
+  (RTST-01, RTST-02, RTST-04, RTST-05)
+  - Проверка: `go test -race -count=3 ./tzkit/` → PASS; мутанты hk2-06, sess-11, tk3-01…03 → убиты · Закрывает: AC5
+- [ ] **S16** — natskit и фейки testkit: один durable с двумя фильтрами — отказ, а не молчаливая
+  потеря сообщений; расхождения фейков с боевыми выровнены или названы в доках (RTST-03)
+  - Проверка: `go test -race ./natskit/ ./testkit/...` → PASS; зонд `M/reaudit/tg/probes/fakes2_probe_test.go` → неназванных расхождений нет · Закрывает: AC5
 
 ### Доки
 - [ ] **S12** — графы `fx.New` доков собираются и закреплены тестом; логгер в графе — `logkit.Module`;
@@ -101,7 +113,7 @@ blocked-by: —
 ### Релиз
 - [ ] **S13** — пробы и группы экспериментов аудиторов на HEAD чисты; бэклог дополнен (FX-12,
   RAPI-01, отложенные minor)
-  - Проверка: `ra-run.sh HEAD`, пробы `zzra` в worktree → FAIL только у отложенных в бэклог · Закрывает: AC2, AC3, AC4, AC6 · Зависит от: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12
+  - Проверка: `ra-run.sh HEAD`, пробы `zzra` в worktree → FAIL только у отложенных в бэклог · Закрывает: AC2, AC3, AC4, AC6 · Зависит от: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S15, S16
 - [ ] **S14** — релиз: `make tools`, `make test-full`, `make gate-clean`, `make release-diff
   PREV=v1.4.0`, аннотация и Handoff шаблону в `M/`, тег локально
   - Проверка: `make gate-clean` → `✓ check clean (./...)` · Закрывает: AC9 · Зависит от: S13
@@ -148,4 +160,6 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S8 закрыты. Следующий шаг — S9 (маски ключей logkit на оборванном JSON, рукопожатие go-redis).
+S1–S9 закрыты. Дирижёр переслал окончательный отчёт аудитора тестов и гейта: RGATE-01 и RTST-01
+— medium, добавлены RTST-03…05 и RGATE-04, RGATE-05 — шаги S11 (гейт), S15 (тесты), S16 (natskit и
+фейки). Следующий шаг — S11.

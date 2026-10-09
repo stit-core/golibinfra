@@ -103,7 +103,8 @@ Instrumentation-scope `git.stit.tech/stit-core/golibinfra/cachekit`, глоба�
 `unlink` (`Delete`), `evalsha`/`eval` (`SetWithTags`, `CompareAndDelete`,
 `CompareAndSet`, `InvalidateByTag` — `SPOP`+`UNLINK` внутри скрипта отдельными
 командами не видны), `ping`, `info` (проверка версии на старте),
-`hello`/`client`/`pipeline` при открытии соединения. Первый `evalsha` на новом сервере отвечает `NOSCRIPT`
+`hello`/`pipeline` при открытии соединения (уведомления о maintenance go-redis выключены:
+исправный Redis не даёт `result=error` на рукопожатии). Первый `evalsha` на новом сервере отвечает `NOSCRIPT`
 (`result=error`) — go-redis тут же загружает скрипт через `eval`; на алертах это
 единичный datapoint на инстанс Redis, а не ошибка кита.
 

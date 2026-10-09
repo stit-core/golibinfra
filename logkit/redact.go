@@ -661,7 +661,8 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 	case json.RawMessage:
 		return h.jsonAttr(key, h.maskJSONKeys(t))
 	case []byte:
-		if json.Valid(t) {
+		// Как у строки: JSON может быть оборван или лежать внутри текста (дамп запроса).
+		if bytes.IndexByte(t, '"') >= 0 && hasKeyTrigger(t) {
 			t = h.maskJSONKeys(t)
 		}
 		return slog.Any(key, h.bytes(t))
@@ -682,7 +683,9 @@ func (h *redactHandler) anyAttr(key string, x any) slog.Attr {
 // maskJSONKeys прячет значения под ключами-секретами JSON-документа b на любой глубине — у map,
 // полей структур, за указателями и в выводе своего MarshalJSON: строку, объект и массив —
 // заменой, число — под ключом-кодом. По JSON, а не по Go-значению: имена полей — как их видит
-// encoding/json. Без таких ключей и у неразбираемого b отдаёт b как есть, не копируя.
+// encoding/json. Без таких ключей отдаёт b как есть, не копируя. Оборванный или битый b (тело,
+// обрезанное по лимиту, цитата JSON в тексте ошибки) маскируется до места обрыва: найденные
+// маски остаются, а значение под ключом-секретом, которое не закрыто, прячется до конца ввода.
 func (h *redactHandler) maskJSONKeys(b []byte) []byte {
 	var out []byte
 	last := 0
@@ -694,7 +697,7 @@ func (h *redactHandler) maskJSONKeys(b []byte) []byte {
 		i += q
 		end := jsonStringEnd(b, i)
 		if end < 0 {
-			return b
+			break
 		}
 		colon := skipJSONSpace(b, end)
 		if colon >= len(b) || b[colon] != ':' {
@@ -718,7 +721,10 @@ func (h *redactHandler) maskJSONKeys(b []byte) []byte {
 		}
 		stop := jsonValueEnd(b, start)
 		if stop < 0 {
-			return b
+			if start >= len(b) {
+				break
+			}
+			stop = len(b)
 		}
 		if maskableJSON(b[start], class) {
 			out = append(out, b[last:start]...)

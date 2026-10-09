@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/redis/go-redis/v9"
+	"github.com/redis/go-redis/v9/maintnotifications"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/internal/redact"
@@ -184,6 +185,10 @@ func newRedisCache(cfg Config, log logkit.Logger) (*redisCache, error) {
 	// Иначе go-redis ставит на сокет только ReadTimeout, и команда переживает
 	// бюджет запроса: дедлайн ctx до соединения не доходит.
 	opts.ContextTimeoutEnabled = true
+	// Уведомления о maintenance — режим Redis Enterprise и кластера, которых кит не поддерживает.
+	// В режиме auto go-redis шлёт CLIENT MAINT_NOTIFICATIONS на каждом новом соединении, обычный
+	// Redis отвечает ошибкой, и исправный сервер давал бы result=error и спан с ошибкой.
+	opts.MaintNotificationsConfig = &maintnotifications.Config{Mode: maintnotifications.ModeDisabled}
 
 	hook := newObserveHook()
 	client := redis.NewClient(opts)

@@ -1125,3 +1125,51 @@ func TestRedact_JSONInStrings(t *testing.T) {
 		t.Errorf("otp_ttl_seconds = %v, want a counter kept", m["otp_ttl_seconds"])
 	}
 }
+
+// Регрессия RSEC-02: маски ключей-секретов действуют и на оборванном или битом JSON — теле,
+// обрезанном по лимиту, цитате в тексте ошибки, документе с лишней кавычкой — в строке, []byte,
+// RawMessage и msg. Найденные маски не отбрасываются, а незакрытое значение под ключом-секретом
+// прячется до конца ввода; []byte с JSON внутри текста маскируется как строка.
+func TestRedact_TruncatedJSONStaysMasked(t *testing.T) {
+	const secret = "Hunter2xx"
+	full := `{"email":"bob@example.com","password":"` + secret + `","profile":{"bio":"` + strings.Repeat("x", 300) + `"}}`
+	bodies := map[string]string{
+		"cut inside a later string":   full[:120],
+		"cut inside the secret":       `{"password":"Hunter2`,
+		"cut inside a secret object":  `{"credentials":{"password":"` + secret + `","na`,
+		"cut inside a key":            `{"password":"` + secret + `","na`,
+		"stray quote in the tail":     `{"password":"` + secret + `"} trailing "`,
+		"quoted in an error text":     `decode body {"password":"` + secret + `","age":"x"}: unexpected token near "ag`,
+		"whole document":              `{"password":"` + secret + `"}`,
+		"whole document inside text":  `got body {"password":"` + secret + `"} from client`,
+		"secret key without a value":  `{"page":2,"password":`,
+		"secret key before the colon": `{"page":2,"password"`,
+	}
+	for name, body := range bodies {
+		for path, write := range map[string]func(Logger){
+			"string attr": func(l Logger) { l.Info(context.Background(), "request body", "body", body) },
+			"bytes attr":  func(l Logger) { l.Info(context.Background(), "request body", "body", []byte(body)) },
+			"raw message": func(l Logger) { l.Info(context.Background(), "request body", "body", json.RawMessage(body)) },
+			"msg":         func(l Logger) { l.Info(context.Background(), "bad request: "+body) },
+		} {
+			t.Run(name+"/"+path, func(t *testing.T) {
+				var buf bytes.Buffer
+				write(newRedacted(t, &buf, RedactConfig{}))
+				out := buf.String()
+				// []byte в JSON-sink'е — base64: содержимое проверяется раскодированным.
+				if s, ok := decodeLine(t, buf.Bytes())["body"].(string); ok {
+					if raw, err := base64.StdEncoding.DecodeString(s); err == nil {
+						out += string(raw)
+					}
+				}
+				if strings.Contains(out, "Hunter2") {
+					t.Fatalf("the value under a secret key leaked: %s", out)
+				}
+				// RawMessage, который не JSON, sink не печатает вовсе (!ERROR кодировщика).
+				if strings.Contains(body, "Hunter2") && !strings.Contains(out, "[REDACTED]") && !strings.Contains(out, "!ERROR") {
+					t.Fatalf("the secret is gone without a mask in its place: %s", out)
+				}
+			})
+		}
+	}
+}
