@@ -345,9 +345,9 @@ makefile в обычных формах (`-f`, в том числе `Makefile` �
 makefile — правка гейта, а вердикт для remote — pre-push. Кеш golangci-lint — свой у каждого
 checkout'а (`.cache/`), у `gate-clean` — холодный.
 
-Гейт идёт на toolchain из директивы `toolchain` в `go.mod` (с `GOTOOLCHAIN=auto` он скачивается
-сам): по нему `govulncheck` судит stdlib. Потребителя она не касается — его минимум задаёт
-директива `go`.
+Гейт идёт на toolchain не старше директивы `toolchain` в `go.mod`: с `GOTOOLCHAIN=auto` локальный
+Go старше неё скачивает названный в ней, Go новее — остаётся; по toolchain гейта `govulncheck`
+судит stdlib. Потребителя директива не касается — его минимум задаёт директива `go`.
 
 Версии `golangci-lint` и `govulncheck` — пины `Makefile`: шаги `fmt-check`, `lint` и `vuln`
 сверяют с ними бинарь из PATH и на другой версии отказывают (ставит `make tools`). `make lint` до

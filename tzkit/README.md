@@ -61,6 +61,7 @@ fx.New(
 type Service struct {
 	clock clockkit.Clock
 	zone  tzkit.Zone
+	repo  Repo // хранилище сервиса: Between(start, end time.Time) ([]Row, error)
 }
 
 // Просрочено ли — вопрос про день, а не про момент: задача со сроком

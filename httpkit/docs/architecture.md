@@ -87,7 +87,7 @@ fx выполняет `OnStart` в порядке добавления хуко�
   `Security`, выставленный хуком потребителя.
 - `WithPublicRoutes(paths...)` / значение `httpkit.PublicRoutes` в графе — пути chi
   маршрутов мимо `huma.Register`, открытых без аутентификации (§ Аутентификация).
-- `HTTP_DOCS_ENABLED=true` — `/docs`, `/openapi.*` и `/schemas` (по умолчанию их нет: это карта
+- `HTTP_DOCS_ENABLED=true` — `/docs`, `/openapi.*` и `/schemas/*` (по умолчанию их нет: это карта
   всех операций без аутентификации).
 
 ## Конвейер middleware и порядок
@@ -264,7 +264,7 @@ Debug), `*APIError` от extractor'а сохраняет свой статус �
 мимо `huma.Register` (`Router().Get`, `Mount`, `api.Adapter().Handle` — middleware API huma, а с
 ним `HumaAuth`, вешает только `huma.Register`), путь которого не в `PublicRoutes`, и строка
 `PublicRoutes` без такого маршрута. Маршруты документации huma (`/docs`, `/openapi.*`,
-`/schemas`) — свои у кита. Маршрут, добавленный после проверки — в `OnStart` позже хука
+`/schemas/*`) — свои у кита. Маршрут, добавленный после проверки — в `OnStart` позже хука
 сервера или из хендлера, — она не видит: маршруты регистрируют в Invoke или конструкторе.
 Схема в `Security` вне `components` — ошибка проверки и без схем в графе (OpenAPI был бы
 невалиден). Затем, если у схемы операции нет `Extract`, `Module` не стартует с

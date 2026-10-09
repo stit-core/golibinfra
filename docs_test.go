@@ -9,27 +9,33 @@ import (
 	"testing"
 )
 
-// Пакет без строки индекса потребитель и агент не найдут: корневой README и карта CLAUDE.md
-// называют каждый кит, сабпакет testkit и пакет internal, README testkit — каждый свой сабпакет.
+// Пакет без строки индекса потребитель и агент не найдут: кит — строка таблицы корневого README
+// и имя в карте CLAUDE.md, пакет internal назван в обоих индексах, сабпакет testkit — в их
+// записях testkit и строкой таблицы README testkit. Упоминание вне индекса не в счёт: имя,
+// названное в другом разделе, строку индекса не заменяет.
 func TestDocsNameEveryPackage(t *testing.T) {
-	readme, claude, testkitReadme := readDoc(t, "README.md"), readDoc(t, "CLAUDE.md"), readDoc(t, "testkit/README.md")
+	readme := docSection(t, "README.md", "## Пакеты")
+	claude := docSection(t, "CLAUDE.md", "## Карта пакетов")
+	testkitReadme := docSection(t, "testkit/README.md", "## Сабпакеты")
+	readmeTestkit := indexEntry(readme, "[`testkit`](testkit/)", "\n")
+	claudeTestkit := indexEntry(claude, "`testkit`", "\n- ")
 	named := func(doc, text, mention, pkg string) {
 		t.Helper()
 		if !strings.Contains(text, mention) {
-			t.Errorf("%s: пакет %s не назван (%s)", doc, pkg, mention)
+			t.Errorf("%s: пакет %s не назван (%s)", doc, pkg, strings.TrimSpace(mention))
 		}
 	}
 	for _, kit := range goDirs(t, ".") {
 		if kit == "internal" || kit == "scripts" {
 			continue
 		}
-		named("README.md § Пакеты", readme, "[`"+kit+"`]("+kit+"/)", kit)
+		named("README.md § Пакеты", readme, "\n| [`"+kit+"`]("+kit+"/) |", kit)
 		named("CLAUDE.md § Карта пакетов", claude, "`"+kit+"`", kit)
 	}
 	for _, sub := range goDirs(t, "testkit") {
-		named("README.md, строка testkit", readme, "`"+sub+"`", "testkit/"+sub)
-		named("CLAUDE.md § Карта пакетов", claude, "`"+sub+"`", "testkit/"+sub)
-		named("testkit/README.md § Сабпакеты", testkitReadme, "[`"+sub+"`]("+sub+"/)", "testkit/"+sub)
+		named("README.md § Пакеты, строка testkit", readmeTestkit, "`"+sub+"`", "testkit/"+sub)
+		named("CLAUDE.md § Карта пакетов, запись testkit", claudeTestkit, "`"+sub+"`", "testkit/"+sub)
+		named("testkit/README.md § Сабпакеты", testkitReadme, "\n| [`"+sub+"`]("+sub+"/) |", "testkit/"+sub)
 	}
 	for _, pkg := range goDirs(t, "internal") {
 		named("README.md § Пакеты", readme, "`internal/"+pkg+"`", "internal/"+pkg)
@@ -64,6 +70,31 @@ func readDoc(t *testing.T, path string) string {
 		t.Fatal(err)
 	}
 	return string(data)
+}
+
+// docSection — текст раздела доки: от строки заголовка до следующего заголовка второго уровня.
+func docSection(t *testing.T, path, heading string) string {
+	t.Helper()
+	_, rest, ok := strings.Cut(readDoc(t, path), "\n"+heading+"\n")
+	if !ok {
+		t.Fatalf("%s: нет раздела %q", path, heading)
+	}
+	section, _, _ := strings.Cut(rest, "\n## ")
+	return section
+}
+
+// indexEntry — запись индекса с упоминанием mention: от разделителя записей sep перед ним до
+// следующего. Без упоминания записи нет — пустая строка.
+func indexEntry(index, mention, sep string) string {
+	before, after, ok := strings.Cut(index, mention)
+	if !ok {
+		return ""
+	}
+	if start := strings.LastIndex(before, sep); start >= 0 {
+		before = before[start:]
+	}
+	after, _, _ = strings.Cut(after, sep)
+	return before + mention + after
 }
 
 // goDirs — подкаталоги dir с Go-кодом на любой глубине (у hubkit код только в сабпакетах), без

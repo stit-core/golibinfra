@@ -20,7 +20,7 @@
 | `HTTP_SHUTDOWN_TIMEOUT` | `ShutdownTimeout` | `time.Duration` | `10s` | сколько после паузы дорабатывают запросы в полёте; на дедлайне их ctx отменяется, соединения закрываются; `> 0` (§ Остановка) |
 | `HTTP_API_TITLE` | `APITitle` | `string` | `API` | title в OpenAPI; не пуст |
 | `HTTP_API_VERSION` | `APIVersion` | `string` | `0.1.0` | version в OpenAPI; не пуст |
-| `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `false` | `true` отдаёт `/docs`, `/openapi.json`, `/openapi.yaml` (и `/openapi-3.0.json`, `/openapi-3.0.yaml`), `/schemas` без аутентификации — карта всех операций; для dev и внутреннего контура |
+| `HTTP_DOCS_ENABLED` | `DocsEnabled` | `bool` | `false` | `true` отдаёт `/docs`, `/openapi.json`, `/openapi.yaml` (и `/openapi-3.0.json`, `/openapi-3.0.yaml`), `/schemas/<Тип>.json` без аутентификации — карта всех операций; для dev и внутреннего контура |
 | `HTTP_READY_PROBE_TIMEOUT` | `ReadyProbeTimeout` | `time.Duration` | `5s` | потолок одной пробы `/ready`; `> 0` |
 | `HTTP_QUIET_PATHS` | `QuietPaths` | `[]string` | `/health,/ready` | пути без Info-строки access-log и без server-спана; `-` — таких путей нет |
 | `HTTP_TRUST_PROXY_HOPS` | `TrustProxyHops` | `int` | `0` | сколько доверенных прокси перед сервисом дописывают `X-Forwarded-For` (§ IP клиента); `>= 0` |

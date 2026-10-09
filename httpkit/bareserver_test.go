@@ -3,8 +3,10 @@ package httpkit_test
 import (
 	"context"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -13,9 +15,9 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
 
-	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
 // Регрессия (NF1): нейтрализация 5xx — свойство пакета, а не логгера: документированный путь
@@ -121,31 +123,56 @@ func TestNewServer_AssemblesKitChain(t *testing.T) {
 	}
 }
 
-// Сниппет README § Быстрый старт → «Без fx» проходит проверку старта как написан: при схеме в
-// WithSecuritySchemes операция без Security и без Public — отказ CheckRoutes.
+// readmeWithoutFx — сниппет README § Быстрый старт → «Без fx»: тело до `return nil` равно блоку
+// README байт в байт (TestReadme_WithoutFx).
+func readmeWithoutFx(cfg httpkit.Config, log logkit.Logger, bearer httpkit.SecuritySchemeEntry, db *pgkit.DB, handler func(context.Context, *struct{}) (*struct{}, error)) error {
+	s, err := httpkit.NewServer(cfg, log, httpkit.WithSecuritySchemes(bearer)) // bearer — SecuritySchemeEntry с Extract
+	if err != nil {
+		return err
+	}
+	api := s.BindAPI()
+	httpkit.RegisterHealth(api, cfg.ReadyProbeTimeout, log, pgkit.Probe(db))
+	huma.Register(api, httpkit.Public(huma.Operation{Method: http.MethodGet, Path: "/ping"}), handler) // при схеме — Security или Public
+	if err := s.CheckRoutes(); err != nil {
+		return err
+	}
+	_ = s.Serve()
+	return nil
+}
+
+// Блок README § Быстрый старт → «Без fx» — тело readmeWithoutFx байт в байт (отступ README —
+// четыре пробела): сниппет правится только вместе с кодом и проходит проверку старта как написан —
+// при схеме в WithSecuritySchemes операция без Security и без Public — отказ CheckRoutes.
 func TestReadme_WithoutFx(t *testing.T) {
-	cfg := testConfig(t, "127.0.0.1:0")
-	log := logkit.Nop()
+	_, rest, _ := strings.Cut(readFile(t, "bareserver_test.go"), "\nfunc readmeWithoutFx(")
+	_, rest, _ = strings.Cut(rest, " error {\n")
+	body, _, ok := strings.Cut(rest, "\treturn nil\n}\n")
+	snippet := strings.ReplaceAll(strings.ReplaceAll("\n"+body, "\n\t", "\n"), "\t", "    ")[1:]
+	if !ok || !strings.Contains(readFile(t, "README.md"), "```go\n"+snippet+"```\n") {
+		t.Fatalf("README.md quick start: the block under «Без fx» is not the body of readmeWithoutFx; edit both:\n%s", snippet)
+	}
+
+	// Порт занят: Serve сниппета возвращается сразу, а не обслуживает до Stop.
+	busy, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = busy.Close() })
 	bearer := httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme, Extract: func(r *http.Request) (context.Context, error) {
 		return r.Context(), nil
 	}}
-	handler := noBody
+	if err := readmeWithoutFx(testConfig(t, busy.Addr().String()), logkit.Nop(), bearer, nil, noBody); err != nil {
+		t.Fatalf("snippet as written: %v", err)
+	}
+}
 
-	s, err := httpkit.NewServer(cfg, log, httpkit.WithSecuritySchemes(bearer))
+func readFile(t *testing.T, name string) string {
+	t.Helper()
+	data, err := os.ReadFile(name)
 	if err != nil {
-		t.Fatalf("NewServer: %v", err)
+		t.Fatal(err)
 	}
-	api := s.BindAPI()
-	httpkit.RegisterHealth(api, cfg.ReadyProbeTimeout, log, healthkit.New("pgkit", func(context.Context) error { return nil }))
-	huma.Register(api, httpkit.Public(huma.Operation{Method: http.MethodGet, Path: "/ping"}), handler)
-	if err := s.CheckRoutes(); err != nil {
-		t.Fatalf("CheckRoutes: %v", err)
-	}
-	rec := httptest.NewRecorder()
-	s.Router().ServeHTTP(rec, httptest.NewRequest(http.MethodGet, "/ping", nil))
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("GET /ping = %d, want 204", rec.Code)
-	}
+	return string(data)
 }
 
 // Регрессия KCOR-12: BindAPI из нескольких горутин собирает один huma.API (под -race — без гонки).

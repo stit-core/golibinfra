@@ -116,12 +116,12 @@ blocked-by: —
 - **Эксперименты.** Контракты сигналов (`expected-signals*.json`) — заново из доков HEAD; инструменты — с поправками N4 валидатора
   A `harden-gate-defaults` (L3 через `make lint`, G21 по тексту отказа); правка эксперимента под API или доки — со смыслом, оригинал
   рядом (`M/exs8/orig/`); S12: docsym без `testdata`, `archkit` в статике, B1 и H51 — под доки, P7 — задокументирован (`*.p2s12`).
-- **S12.** Поведение китов не менялось: доки, doc-comment'ы, тесты. `logkit.New` с `WithRedact` и `Disabled` паттерны не
-  проверяет — названо в README, правка (смена поведения) — бэклог `logkit-redact-disabled-literal`; `internal/httpdoer` — правка
-  package-doc, а не алиас в oidckit (кит вне объёма; только под API правлены и доки amocrmkit, hubkit); теги образов Postgres и
-  Redis — мажорная линия: README testkit это говорит. Машина держит перечни пакетов и состав `make check` в корневых доках
-  (`docs_test.go`) и сниппеты README, падавшие на запуске (httpkit, authnkit): docex их только собирает. Гейт покраснел на шаге
-  `vuln` без правок кода (уязвимости stdlib go1.26.6 и x/net 0.59) — `7f7b626`: `toolchain go1.26.9`, минимум `go 1.26.6` прежний.
+- **S12.** Поведение китов не менялось: доки, doc-comment'ы, тесты. `logkit.New` с `WithRedact` и `Disabled` паттерны не проверяет:
+  названо в README, правка поведения — бэклог `logkit-redact-disabled-literal`; `internal/httpdoer` — правка package-doc, а не
+  алиас в oidckit (вне объёма; под API — и доки amocrmkit, hubkit); образы Postgres и Redis — мажорная линия, как в README testkit.
+  Шаг `vuln` покраснел без правок кода (stdlib go1.26.6, x/net 0.59) — `7f7b626`: `toolchain go1.26.9`, `go 1.26.6` прежний.
+  `docs_test.go` держит состав `make check` и перечни пакетов — по разделу-индексу; блок README authnkit и httpkit побайтно равен
+  коду теста (блок через `go run` — код мимо vet и lint гейта); копии logkit и корневого графа — бэклог `readme-snippet-copies`.
 
 ## Handoff
 **Шаблон, `repair-harness` S7 — bump v1.4.0** (места — по сборке шаблона `e2f3dd2` через `replace`; на bump — сверить сборкой):
@@ -182,7 +182,7 @@ blocked-by: —
   из 111, исполнением (`guard_exec_fuzz.py 2500 11`) хук портят 459 команд. Образец — guard golibinfra и его `guard-cases.txt`.
 
 ## Где мы сейчас
-S1–S12 закрыты; S1–S11 приняты валидаторами A, B и C, S12 ждёт валидатора шага. Дальше S13, S14. S13: эксперименты под API и доки
+S1–S12 закрыты и приняты валидаторами (S12 — шага, мелочи закрыты); идёт S13, за ним S14. S13: эксперименты под API и доки
 (`M/exs8/orig/*.v130`, `*.s12`, `*.p2*`), H15 `[{}]` не адаптирован, сигналы — из доков HEAD, KX64 — FX-12; ложные срабатывания
 статики доков и пересчёт ✗ — `M/s12docs/recount.md`; apidiff пина — `M/kits-audit/api-docs/bin`, в PATH его ставит `make tools`.
 
@@ -275,6 +275,7 @@ S1–S12 закрыты; S1–S11 приняты валидаторами A, B �
   ключа у `Get`/`Stat` — `result="not_found"`; TOTP — запись на вызов; otelhttp у anthropickit без метрик. natskit: пустой токен,
   wildcard в публикации и `>` не последним в фильтре — `nats.ErrBadSubject` сразу; фейки testkit — правила шины и JSONB; authntest:
   хеш без `hash:` — `ErrInvalidHash`; `MemoryCache`: членство в теге переживает ключ (до `InvalidateByTag` или конца набора).
+  Сборка: x/net 0.60 и `toolchain go1.26.9` модуля — уязвимости HTTP/2 и stdlib; сервис собирать на Go ≥ 1.26.9 (`go` — 1.26.6).
 - **Изменения.** Новое API, env и метрики — по `make release-diff PREV=v1.3.0` (apidiff, env, метрики); сверх них — ридер ENV без
   envconfig, миграция outbox 0003, `testkit/idempotencytest`, срок хранения аудита (opt-in: `auditkit/pgstore.RetentionModule`,
   `AUDIT_RETENTION_DAYS`, `audit_log_retention_deleted_total`). `archkit` — правила раскладки сервиса из его теста
@@ -287,5 +288,4 @@ S1–S12 закрыты; S1–S11 приняты валидаторами A, B �
   переменная и имя метрики — в Breaking, сменившийся дефолт — в Поведении; сборка шаблона через `replace` (и archkit на нём:
   инъекции AC7), `go test -race ./archkit/`; эксперименты S13. Контрибьютору: гейт отказывает на `golangci-lint` или `govulncheck`
   не из пина — `make tools` (ставит и apidiff); `make hooks` включает и `commit-msg` (Conventional Commits, `!` только с футером
-  `BREAKING CHANGE:`); forbidigo не пускает в киты `fmt.Print*`, `log`, `slog` по умолчанию и `http.DefaultClient`. Зависимости:
-  x/net 0.60 и `toolchain go1.26.9` модуля — уязвимости HTTP/2 и stdlib; сервис собирать на Go ≥ 1.26.9 (`go` модуля — 1.26.6).
+  `BREAKING CHANGE:`); forbidigo не пускает в киты `fmt.Print*`, `log`, `slog` по умолчанию и `http.DefaultClient`.
