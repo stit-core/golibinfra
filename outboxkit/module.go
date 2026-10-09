@@ -33,7 +33,7 @@ var Module = fx.Module(
 		func(o *Outbox, _ pgkit.Migrated) timerkit.Job { return o.Job() },
 		fx.ParamTags(``, `optional:"true"`),
 	),
-	fx.Invoke(registerInstanceGauges),
+	fx.Invoke(fx.Annotate(registerInstanceGauges, fx.ParamTags(``, ``, `optional:"true"`))),
 	fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) { checkStreams(lc, sb, DefaultInstance, nil) }),
 )
 

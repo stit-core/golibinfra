@@ -188,7 +188,7 @@ func Instance(name, table string, opts ...InstanceOption) fx.Option {
 			fx.ParamTags(tag, `optional:"true"`),
 		),
 		fx.Invoke(fx.Annotate(checkSchema, fx.ParamTags(``, tag, `optional:"true"`))),
-		fx.Invoke(fx.Annotate(registerInstanceGauges, fx.ParamTags(``, tag))),
+		fx.Invoke(fx.Annotate(registerInstanceGauges, fx.ParamTags(``, tag, `optional:"true"`))),
 		fx.Invoke(func(lc fx.Lifecycle, sb natskit.StreamBus) { checkStreams(lc, sb, name, o.subjects) }),
 	)
 }
@@ -237,8 +237,9 @@ func checkSchema(lc fx.Lifecycle, o *Outbox, _ pgkit.Migrated) {
 }
 
 // registerInstanceGauges подключает backlog-gauge'и от OnStart до OnStop: callback, зарегистрированный
-// при сборке графа, остался бы в MeterProvider у графа, не дошедшего до старта.
-func registerInstanceGauges(lc fx.Lifecycle, o *Outbox) {
+// при сборке графа, остался бы в MeterProvider у графа, не дошедшего до старта. Зависимость от
+// pgkit.Migrated ставит хук после миграций: первый снимок очереди берётся при регистрации.
+func registerInstanceGauges(lc fx.Lifecycle, o *Outbox, _ pgkit.Migrated) {
 	var reg metric.Registration
 	lc.Append(fx.Hook{
 		OnStart: func(context.Context) (err error) {
