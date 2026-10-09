@@ -59,6 +59,8 @@ func TestHealthProbeTimeoutIsIndependentOfInterval(t *testing.T) {
 		t.Fatalf("overall flipped after %s: the probe deadline is tied to GRPC_HEALTH_INTERVAL", elapsed)
 	}
 
+	// Статус меняется раньше, чем цикл пишет запись: остановка наблюдения ждёт конца переоценки.
+	srv.stopHealthWatch()
 	e, ok := rec.Find(slog.LevelWarn, "grpckit: health not serving")
 	if !ok || e.Str("probe") != "dep" || !strings.Contains(e.Str("error"), probeTimeout.String()) {
 		t.Fatalf("log record must name the probe and its deadline, got %+v ok=%v", e, ok)

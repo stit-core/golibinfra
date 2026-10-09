@@ -272,7 +272,7 @@ func TestAccessLogLevelByCode(t *testing.T) {
 // codes.Internal и request_id должен быть и для неё. request_id в записи есть
 // без импорта httpkit — атрибут регистрирует сам grpckit.
 func TestPanicIsRecoveredAndLoggedWithRequestID(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	log, err := logkit.New(logkit.Config{Level: "debug"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
 	if err != nil {
 		t.Fatalf("logkit.New: %v", err)
@@ -288,7 +288,7 @@ func TestPanicIsRecoveredAndLoggedWithRequestID(t *testing.T) {
 		t.Fatalf("stream code = %v, want Internal", status.Code(err))
 	}
 
-	records := decodeLogLines(t, buf.Bytes())
+	records := buf.records(t)
 	for _, method := range []string{echoUnary, echoStream} {
 		accessLog := findRecord(records, "grpc call failed", method)
 		if accessLog == nil {
@@ -313,7 +313,7 @@ func TestPanicIsRecoveredAndLoggedWithRequestID(t *testing.T) {
 // Успешный вызов тоже несёт request_id: поле в JSON появляется от атрибута
 // grpckit, а не от httpkit — этот тест-бинарь его не импортирует.
 func TestRequestIDReachesJSONLog(t *testing.T) {
-	var buf bytes.Buffer
+	var buf syncBuffer
 	log, err := logkit.New(logkit.Config{Level: "debug"}, logkit.WithWriter(&buf), logkit.WithoutOTel())
 	if err != nil {
 		t.Fatalf("logkit.New: %v", err)
@@ -324,7 +324,7 @@ func TestRequestIDReachesJSONLog(t *testing.T) {
 		t.Fatalf("call: %v", err)
 	}
 
-	rec := findRecord(decodeLogLines(t, buf.Bytes()), "grpc call", echoUnary)
+	rec := findRecord(buf.records(t), "grpc call", echoUnary)
 	if rec == nil {
 		t.Fatal("access-log record is missing")
 	}
@@ -333,10 +333,25 @@ func TestRequestIDReachesJSONLog(t *testing.T) {
 	}
 }
 
-func decodeLogLines(t *testing.T, raw []byte) []map[string]any {
+// syncBuffer — sink лога, который тест читает при живом сервере: мост grpclog пишет в логгер
+// сервера из горутин grpc-go и после ответа на вызов (смена состояния канала).
+type syncBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *syncBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *syncBuffer) records(t *testing.T) []map[string]any {
 	t.Helper()
+	b.mu.Lock()
+	defer b.mu.Unlock()
 	var out []map[string]any
-	for line := range strings.SplitSeq(strings.TrimSpace(string(raw)), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(b.buf.String()), "\n") {
 		if line == "" {
 			continue
 		}
