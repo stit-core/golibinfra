@@ -108,7 +108,7 @@ blocked-by: —
   `replace` в своём worktree (каждая ошибка — строкой Breaking); тег `v1.4.0` локально с разделами Breaking, Поведение, Изменения,
   Гейт. Push `main` и тега — дирижёр после PASS валидатора партии; затем план удаляется отдельным `chore(plan)`
   - Проверка: AC13 → выполнен · Закрывает: AC13 · Зависит от: S13 · Сделано: `08b7c8a` (тесты grpckit), гейт и
-    `release-diff` на нём, репетиция bump шаблона; журнал — `M/s14rel/progress.md`
+    `release-diff`, репетиция bump шаблона, доки authnkit о пределе пароля; журнал — `M/s14rel/progress.md`
 
 ## Решения
 - **S1–S11** — причины в телах коммитов, `M/archkit/README.md` и `M/gate/plan-patch.md` (коммиты гейта там — `c0daf37`, `64a0834`,
@@ -130,7 +130,9 @@ blocked-by: —
   а мост grpclog пишет в буфер теста из горутин grpc-go. Аннотация: каждый символ apidiff — по имени; пункты футеров, которые
   требуют правки у потребителя (`KEY=`, литерал с нулями, список из разделителей, схема китов на старте, label `subject`,
   POST-поток под дедлайном), — в Breaking, а не в «Поведении». `maxLength` DTO huma считает в символах, предел пароля — байты:
-  названо в аннотации и Handoff, доки authnkit — бэклог `authnkit-maxlength-runes`.
+  доки и doc-comment'ы authnkit говорят это прямо — `maxLength` — ранний отказ, `ErrPasswordTooLong` — ошибка ввода (422 у
+  потребителя); предел в байтах держит `TestPasswordLengthLimit_CountsBytes` (мутант «счёт в символах» выживал). Поведение
+  кита то же; в аннотации и Handoff — шагом миграции.
 
 ## Handoff
 **Шаблон, `repair-harness` S7 — bump v1.4.0.** Полный список с местами по `e2f3dd2`, порядком действий и открытым —
@@ -155,9 +157,10 @@ blocked-by: —
   `lock.RetryAfter`; длинный subject — ключ SHA-256, NUL — `ErrInvalidKey`: `guard_test.go:40` — случай с NUL вместо 255.
 - **auth и logkit.** `Revoke` → `(subject, err)`: `internal/domain/auth/usecase.go:199,213` (Logout — аудит `logout` с
   `ActorID: subject`, если не `""`), обёртки `usecase_test.go:235,240`, `TestLogout` (`:674`) — одна запись аудита с автором; DTO
-  пароля — `maxLength:"1024"`: `auth/delivery/http/dto.go:8,38,39`, `user/…/dto.go:11`, `verification/…/dto.go:12`; huma считает его
-  в символах, кит — в байтах: `ErrPasswordTooLong` из `Hash` перевести в 4xx (открыто, сейчас 500). Маски шире: тест, который
-  ищет в логе `password=…`, base64url-токен или пароль URL, — на маркер.
+  пароля — `maxLength:"1024"`: `auth/delivery/http/dto.go:8,38,39`, `user/…/dto.go:11`, `verification/…/dto.go:12` — ранний отказ: huma считает
+  символы, кит — байты. Правило домена на `ErrPasswordTooLong` из `Hash` → 422 (регистрация, смена и сброс пароля), из `Verify`
+  старого пароля — как неверный; тест — не-ASCII пароль в 1024 символа → 422, не 500. Маски шире: тест, который ищет в логе
+  `password=…`, base64url-токен или пароль URL, — на маркер.
 - **env для INFRA-HANDOFF:** `PG_MIGRATE_LOCK_TIMEOUT` (5 с), `HTTPCLIENT_MAX_HOSTS`, `HTTP_REQUEST_TIMEOUT`,
   `HTTP_TRUST_TRACE_CONTEXT`, `BRUTEFORCE_SUBJECT_MAX_FAILURES` (20), `BRUTEFORCE_SUBJECT_LOCK_DURATION` (1m); старт падает, если
   `HTTP_REQUEST_TIMEOUT` ≥ `HTTP_WRITE_TIMEOUT` или `RESERVE_TTL`, а `BRUTEFORCE_CLEANUP_RETENTION` < `LOCK_DURATION` или
@@ -196,14 +199,15 @@ blocked-by: —
   из 111, исполнением (`guard_exec_fuzz.py 2500 11`) хук портят 459 команд. Образец — guard golibinfra и его `guard-cases.txt`.
 
 ## Где мы сейчас
-S1–S14 закрыты. Тег `v1.4.0` создан локально на коммите этой записи (`chore(plan): S14`, поверх `08b7c8a`) и ждёт валидатора
+S1–S14 закрыты. Тег `v1.4.0` создан локально на коммите этой записи (`docs(authnkit)`, поверх `f25d530`) и ждёт валидатора
 партии и push дирижёра (`main` и тег); затем план удаляется отдельным `chore(plan)`. Аннотация — в теге
 (`git tag -l --format='%(contents)' v1.4.0`, копия — `M/annotation-v1.4.0.txt`); заготовка, из которой она собрана, —
 `git show 08b7c8a:.claude/plans/harden-tests-archkit-release.md`. Журнал и логи S14 — `M/s14rel/`: `progress.md`,
 `release-diff-v1.3.0-08b7c8a.txt`, `breaking-footers.md`, `annotation-breaking-cover.tsv`, `template-bump.patch`.
 
 S13: кандидат — `01eda05`; на `84a39be` — прогоны по коду вне диффа `84a39be..01eda05` и FAIL из «Решений» S13; archkit — 4 из 4;
-логи, адаптации — `M/s13/table.md`. После кандидата в `main` — тесты grpckit (`08b7c8a`) и план.
+логи, адаптации — `M/s13/table.md`. После кандидата в `main` — тесты grpckit (`08b7c8a`), доки и тест предела пароля authnkit
+(эта запись) и план: поведение китов то же.
 
 | Группа | Всего | Чисто | FAIL | Адаптировано (`M/exs8/orig/*.p2s13`) | Хеш прогона |
 |---|---|---|---|---|---|

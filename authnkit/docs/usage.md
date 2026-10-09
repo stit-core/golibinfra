@@ -98,12 +98,12 @@ if err != nil {
 
 encoded, err := hasher.Hash(ctx, plainPassword) // храни encoded целиком, он самоописывающий
 if err != nil {
-	return err
+	return err // errors.Is(err, ErrPasswordTooLong) — ошибка ввода: ответ 422, а не 500
 }
 
 ok, err := hasher.Verify(ctx, submittedPassword, encoded)
 // errors.Is(err, ErrInvalidHash) — encoded битый/чужого формата/вне окна (не «пароль неверен»)
-// errors.Is(err, ErrPasswordTooLong) — пароль длиннее MaxPasswordLen
+// errors.Is(err, ErrPasswordTooLong) — пароль длиннее MaxPasswordLen (в байтах)
 // ok == false — пароль не совпал
 
 if ok && hasher.NeedsRehash(encoded) {
@@ -116,8 +116,14 @@ if ok && hasher.NeedsRehash(encoded) {
 
 Пароль длиннее `MaxPasswordLen` (1024 байта) в Argon2id не попадает: `Hash` отказывает
 сразу, `Verify` — после холостого вычисления (`VerifyDummy`), поэтому длина не выдаёт
-учётную запись таймингом. DTO берёт тот же предел (`maxLength:"1024"`): отказ — понятный
-4xx до usecase, а не `ErrPasswordTooLong` из `Hash` на регистрации или смене пароля.
+учётную запись таймингом. `ErrPasswordTooLong` — ошибка ввода, а не сбой сервиса: на
+регистрации, смене и сбросе пароля потребитель отвечает на неё 422, на входе — тем же, что
+на неверный пароль.
+
+`maxLength:"1024"` у поля DTO — ранний отказ, а не замена этой обработки: huma считает
+`maxLength` в символах, предел кита — в байтах. Пароль не из ASCII короче 1024 символов
+бывает длиннее 1024 байт (кириллица — 2 байта на символ): DTO его пропускает, `Hash`
+отвергает.
 
 ## Логин без timing-оракула
 
@@ -361,6 +367,10 @@ App-структуры — отдельный `fx.Provide` не нужен. Не
   длиннее `MaxPasswordLen` и `(false, nil)` при несовпадении пароля. Логируй `err`, но
   пользователю всегда отдавай одинаковый «неверные учётные данные» (не выдавай, какой
   именно случай).
+- **`maxLength` DTO не заменяет обработку `ErrPasswordTooLong`.** Предел
+  `MaxPasswordLen` — в байтах, `maxLength` huma — в символах: пароль не из ASCII проходит
+  DTO и получает `ErrPasswordTooLong` из `Hash`. Без правила ошибки на него регистрация,
+  смена и сброс пароля отвечают 500 на ввод пользователя — нужен ответ 422.
 - **Окно параметров Argon2id.** PHC-строка вне окна (`t` вне `1..64`, `p` вне
   `1..16`, `m` вне `8 МиБ..1 ГиБ`, произведение `t*m` больше
   `MaxCostKiBPasses` = 786432 КиБ·прохода, соль/хэш вне `8..64`/`16..128`

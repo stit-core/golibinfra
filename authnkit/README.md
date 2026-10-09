@@ -42,7 +42,7 @@ func main() {
 	if err != nil {
 		panic(err) // ErrConfig: параметры вне окна
 	}
-	// Пароль длиннее authnkit.MaxPasswordLen — ErrPasswordTooLong: DTO берёт тот же предел.
+	// Пароль длиннее authnkit.MaxPasswordLen (байты) — ErrPasswordTooLong: ошибка ввода, ответ 422.
 	encoded, _ := hasher.Hash(ctx, "s3cr3t")       // $argon2id$v=19$m=...$salt$hash
 	ok, _ := hasher.Verify(ctx, "s3cr3t", encoded) // true
 	if ok && hasher.NeedsRehash(encoded) {

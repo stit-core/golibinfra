@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 )
 
 func defaultHasher(t *testing.T) *Argon2idHasher {
@@ -376,6 +377,29 @@ func TestPasswordLengthLimit(t *testing.T) {
 	}
 	if len(derived) != 1 || string(derived[0]) != string(dummyPassword) {
 		t.Fatalf("Verify of a too long password: argon2id inputs %q, want one dummy computation", derived)
+	}
+}
+
+// Предел — в байтах, а не в символах: пароль не из ASCII короче MaxPasswordLen символов его превышает.
+// maxLength у поля DTO считает символы и такой пароль до Hash пропускает.
+func TestPasswordLengthLimit_CountsBytes(t *testing.T) {
+	ctx := t.Context()
+	h := defaultHasher(t)
+	fits := strings.Repeat("п", MaxPasswordLen/2)
+	encoded, err := h.Hash(ctx, fits)
+	if err != nil {
+		t.Fatalf("Hash of %d runes in %d bytes: %v", utf8.RuneCountInString(fits), len(fits), err)
+	}
+
+	tooLong := fits + "п"
+	if runes := utf8.RuneCountInString(tooLong); runes >= MaxPasswordLen || len(tooLong) <= MaxPasswordLen {
+		t.Fatalf("fixture: %d runes in %d bytes, want fewer runes and more bytes than %d", runes, len(tooLong), MaxPasswordLen)
+	}
+	if _, err := h.Hash(ctx, tooLong); !errors.Is(err, ErrPasswordTooLong) {
+		t.Fatalf("Hash of %d runes in %d bytes = %v, want ErrPasswordTooLong", utf8.RuneCountInString(tooLong), len(tooLong), err)
+	}
+	if ok, err := h.Verify(ctx, tooLong, encoded); ok || !errors.Is(err, ErrPasswordTooLong) {
+		t.Fatalf("Verify of %d runes in %d bytes: ok=%v err=%v, want ErrPasswordTooLong", utf8.RuneCountInString(tooLong), len(tooLong), ok, err)
 	}
 }
 

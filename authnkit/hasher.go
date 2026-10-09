@@ -25,12 +25,14 @@ var ErrInvalidHash = errors.New("authnkit: invalid argon2id hash")
 // ErrInvalidHash, поэтому errors.Is по нему тоже истинен.
 var ErrHashParams = fmt.Errorf("%w: parameters out of window", ErrInvalidHash)
 
-// ErrPasswordTooLong — пароль длиннее MaxPasswordLen: в Argon2id он не попадает.
+// ErrPasswordTooLong — пароль длиннее MaxPasswordLen: в Argon2id он не попадает. Это ошибка ввода:
+// на регистрации, смене и сбросе пароля потребитель отвечает 422, на входе — как на неверный пароль.
 var ErrPasswordTooLong = errors.New("authnkit: password too long")
 
 // MaxPasswordLen — предел длины пароля в байтах, длиннее любой парольной фразы: Argon2id над
-// мегабайтами чужого ввода — лишняя работа. DTO берёт тот же предел (maxLength): отказ — понятный
-// 4xx до usecase, а не ErrPasswordTooLong из Hash.
+// мегабайтами чужого ввода — лишняя работа. maxLength у поля DTO считает символы и предела не
+// гарантирует — пароль не из ASCII короче 1024 символов бывает длиннее 1024 байт: maxLength —
+// ранний отказ, а ErrPasswordTooLong из Hash потребитель обрабатывает как ошибку ввода.
 const MaxPasswordLen = 1024
 
 // Окно параметров Argon2id, принимаемых и при Hash, и при Verify: параметры
