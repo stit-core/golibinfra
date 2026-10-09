@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
-	tclog "github.com/testcontainers/testcontainers-go/log"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
@@ -35,7 +34,7 @@ func StartRedis(t testing.TB, opts ...Option) *RedisFixture {
 			).WithStartupTimeoutDefault(startupTimeout),
 		},
 		Started: true,
-		Logger:  tclog.TestLogger(t),
+		Logger:  newTestLogger(t),
 	})
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {

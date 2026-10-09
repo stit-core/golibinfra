@@ -8,7 +8,6 @@ import (
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/testcontainers/testcontainers-go"
-	tclog "github.com/testcontainers/testcontainers-go/log"
 	tcpostgres "github.com/testcontainers/testcontainers-go/modules/postgres"
 
 	"git.stit.tech/stit-core/golibinfra/pgkit"
@@ -46,7 +45,7 @@ func StartPostgres(t testing.TB, opts ...Option) *PostgresFixture {
 		tcpostgres.WithUsername("test"),
 		tcpostgres.WithPassword("test"),
 		tcpostgres.BasicWaitStrategies(),
-		testcontainers.WithLogger(tclog.TestLogger(t)),
+		testcontainers.WithLogger(newTestLogger(t)),
 	)
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {

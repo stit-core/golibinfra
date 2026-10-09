@@ -4,7 +4,6 @@ import (
 	"testing"
 
 	"github.com/testcontainers/testcontainers-go"
-	tclog "github.com/testcontainers/testcontainers-go/log"
 	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
 )
 
@@ -28,7 +27,7 @@ func StartMinIO(t testing.TB, opts ...Option) *MinIOFixture {
 	RequireDocker(t)
 	o := newOptions(t, support{helper: "StartMinIO"}, MinIOImage, opts)
 
-	c, err := tcminio.Run(t.Context(), o.image, testcontainers.WithLogger(tclog.TestLogger(t)))
+	c, err := tcminio.Run(t.Context(), o.image, testcontainers.WithLogger(newTestLogger(t)))
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
 		t.Fatalf("testkit: start minio: %v", err)

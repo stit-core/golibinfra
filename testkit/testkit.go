@@ -97,3 +97,32 @@ func RequireDocker(t testing.TB) {
 		t.Fatalf("testkit: Docker is unavailable (go test -short skips integration tests): %v", err)
 	}
 }
+
+// testLogger — лог testcontainers в t.Log, пока тест идёт. Жнец контейнеров (ryuk) один на
+// процесс и держит логгер первой фикстуры: под -count>1 он писал бы в t завершённого теста, а
+// такая запись — panic «Log in goroutine after … has completed».
+type testLogger struct {
+	mu   sync.RWMutex
+	t    testing.TB
+	done bool
+}
+
+func newTestLogger(t testing.TB) *testLogger {
+	l := &testLogger{t: t}
+	t.Cleanup(func() {
+		l.mu.Lock()
+		l.done = true
+		l.mu.Unlock()
+	})
+	return l
+}
+
+// Printf — метод логгера testcontainers.
+func (l *testLogger) Printf(format string, v ...any) {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	if !l.done {
+		l.t.Helper()
+		l.t.Logf(format, v...)
+	}
+}

@@ -614,7 +614,7 @@ func TestModule_SchemeFromHumaConfigsGuards(t *testing.T) {
 
 // Регрессия KFX-11 (HX07), KOBS-12: Idempotency — после HumaAuth. Extractor зовётся один раз и при
 // отказе бэкенда, отозванная сессия получает 401, а не replay, ротация токена того же субъекта —
-// replay, и он учтён по маршруту.
+// replay, и он учтён по маршруту; другой субъект с тем же ключом — свой запрос.
 func TestModule_IdempotencyAfterAuth(t *testing.T) {
 	var calls, extracts atomic.Int32
 	extract := func(r *http.Request) (context.Context, error) {
@@ -622,6 +622,8 @@ func TestModule_IdempotencyAfterAuth(t *testing.T) {
 		switch r.Header.Get("Authorization") {
 		case "Bearer old", "Bearer new":
 			return httpkit.ContextWithSubject(r.Context(), "user-1"), nil
+		case "Bearer other":
+			return httpkit.ContextWithSubject(r.Context(), "user-2"), nil
 		case "Bearer down":
 			return nil, errors.Join(errors.New("jwks"), httpkit.ErrAuthUnavailable)
 		}
@@ -655,6 +657,12 @@ func TestModule_IdempotencyAfterAuth(t *testing.T) {
 	}
 	if n := metrictest.Collect(t).Sub(before).Value("http_requests_total", "path", "/orders", "status", "201"); n != 1 {
 		t.Fatalf("replay counted under the route %v times, want 1", n)
+	}
+	// Регрессия RTST-01: scope ключа — субъект. Другой субъект с тем же ключом исполняет свой
+	// запрос и не получает сохранённый ответ первого.
+	resp = do(t, srv, http.MethodPost, "/orders", nil, "Authorization: Bearer other", key)
+	if resp.StatusCode != http.StatusCreated || resp.Header.Get(httpkit.HeaderIdempotentReplayed) != "" || calls.Load() != 2 {
+		t.Fatalf("another subject with the same key: %d replayed=%q calls=%d, want its own execution", resp.StatusCode, resp.Header.Get(httpkit.HeaderIdempotentReplayed), calls.Load())
 	}
 	extracts.Store(0)
 	if resp := do(t, srv, http.MethodPost, "/orders", nil, "Authorization: Bearer down", key); resp.StatusCode != http.StatusServiceUnavailable || extracts.Load() != 1 {

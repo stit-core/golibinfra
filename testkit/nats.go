@@ -6,7 +6,6 @@ import (
 	"time"
 
 	"github.com/testcontainers/testcontainers-go"
-	tclog "github.com/testcontainers/testcontainers-go/log"
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
@@ -43,7 +42,7 @@ func StartNATS(t testing.TB, opts ...Option) *NATSFixture {
 	c, err := testcontainers.GenericContainer(t.Context(), testcontainers.GenericContainerRequest{
 		ContainerRequest: req,
 		Started:          true,
-		Logger:           tclog.TestLogger(t),
+		Logger:           newTestLogger(t),
 	})
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {

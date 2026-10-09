@@ -157,9 +157,10 @@ func TestStore_CleanupDeletesExpiredSessions(t *testing.T) {
 	}
 	clock.Advance(40 * time.Minute) // абсолютный срок первой сессии прошёл, у свежей токен жив
 
+	// Очистку зовёт job модуля (RTST-02): Run, который ничего не удаляет, тест обязан заметить.
 	before := metrictest.Collect(t)
-	if err := s.Cleanup(ctx); err != nil {
-		t.Fatalf("Cleanup: %v", err)
+	if err := pgstore.CleanupJob(s, testConfig).Run(ctx); err != nil {
+		t.Fatalf("CleanupJob.Run: %v", err)
 	}
 	if got := metrictest.Collect(t).Sub(before).Value("authn_session_cleanup_deleted_total"); got != 1 {
 		t.Errorf("authn_session_cleanup_deleted_total delta = %v, want 1", got)

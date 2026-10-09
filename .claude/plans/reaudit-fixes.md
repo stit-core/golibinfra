@@ -96,10 +96,11 @@ blocked-by: —
   невключённых линтеров, проводка guard в `settings.json` (RGATE-01, RGATE-02, RGATE-03, RGATE-05)
   - Проверка: `go test ./scripts/...` → PASS; `M/reaudit/tg/scripts/gate_forge.sh` → зелёного вердикта на красном дереве нет · Закрывает: AC8
   - Сделано: `MAKECMDGOALS` и `MAKEFILE_LIST` от вызывающего — отказ make для любой цели, отказы `check` и `gate-clean` стоят ещё и первой строкой рецепта; pre-push снимает из окружения все `MAKE*`; `TestMakeCheckCannotBeForged` держит 34 формы аудитора и алиас цели (F09 на прежнем Makefile — `✓ check clean`), `TestPrePushGatesPushedCommit` — окружение пушащего; envdoc читает теги анонимных структур; 30 директив `//nolint` невключённых линтеров сняты, `scripts/lint.sh` такие отвергает; `TestSettingsWireTheGuard`
-- [ ] **S15** — тесты: scope идемпотентности по субъекту на `Module`, `CleanupJob.Run` исполняется,
+- [x] **S15** — тесты: scope идемпотентности по субъекту на `Module`, `CleanupJob.Run` исполняется,
   негативные самотесты контрактных наборов testkit, фикстуры testkit под `-count>1`
   (RTST-01, RTST-02, RTST-04, RTST-05)
   - Проверка: `go test -race -count=3 ./tzkit/` → PASS; мутанты hk2-06, sess-11, tk3-01…03 (`M/reaudit/tg/scripts/rmutate.py`) → убиты · Закрывает: AC5
+  - Сделано: `TestModule_IdempotencyAfterAuth` — другой субъект с тем же ключом; очистку сессий в тесте зовёт `CleanupJob.Run`; `TestRunContract_Broken…Fails` у четырёх наборов — сломанная реализация проваливает свой кейс в дочернем процессе; логгер фикстур молчит после конца теста. Мутанты руками: hk2-06 (по смыслу), sess-11, tk3-01…03 — убиты (`M/fixround1/logs/mutants-*.log`); `go test -race -count=3 ./tzkit/` → ok
 - [ ] **S16** — natskit и фейки testkit: один durable с двумя фильтрами — отказ, а не молчаливая
   потеря сообщений; расхождения фейков с боевыми выровнены или названы в доках (RTST-03)
   - Проверка: `go test -race ./natskit/ ./testkit/...` → PASS; зонд `M/reaudit/tg/probes/fakes2_probe_test.go` → DIVERGE только названные в доках · Закрывает: AC5
@@ -165,7 +166,6 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S9 и S11 закрыты. Цель круга по решению владельца — девятка по каждому углу (запасной
-исход — 8). Следующие шаги: S15 (тесты: RTST-01 на `Module`, RTST-02, RTST-04, RTST-05), S16
-(durable с двумя фильтрами и расхождения фейков), S12 (графы доков), S10 (дешёвые minor и
+S1–S9, S11 и S15 закрыты. Цель круга по решению владельца — девятка по каждому углу (запасной
+исход — 8). Следующие шаги: S16 (durable с двумя фильтрами и расхождения фейков), S12 (графы доков), S10 (дешёвые minor и
 бэклог), S13 (пробы на HEAD), S14 (релиз).

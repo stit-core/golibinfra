@@ -15,9 +15,6 @@
   `storagekit.ProbeOnStart`, `pgkit.OTelTrace`, `natskit.StreamManaged`) в литерале с нулями выключаются — расходится с «ноль
   литерала — значение доки» (по нему снят `STORAGE_S3_USE_SSL`); у `pgstore.Config{}` снят tx-guard. Триггер: повторный аудит
   угла 1 или потребитель на литерале конфига.
-- **testkit-reaper-test-logger** — фикстуры testkit отдают жнецу testcontainers `tclog.TestLogger(t)` (`testkit/postgres.go:49`,
-  nats, redis, minio): под `-count>1` контейнер прошлого прогона снимается логгером завершённого теста, `tzkit` `TestPgxInterop`
-  паникует «Log in goroutine after … has completed». Триггер: прогоны с `-count>1` (stress, flaky) или падение в pre-push.
 - **logkit-redact-disabled-literal** — конструктор логгера с `WithRedact(RedactConfig{Disabled: true, …})` не зовёт `Validate`:
   невалидный паттерн или замена у выключенного redact проходит (путь ENV — `NewRedactConfig` — отвергает), против «формат
   проверяется и у выключенного»; README logkit это называет. Правка — отказ конструктора: смена поведения, строка аннотации.
