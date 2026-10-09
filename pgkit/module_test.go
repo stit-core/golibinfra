@@ -345,7 +345,8 @@ func TestMigrateModule_FailedMigrationFailsStart(t *testing.T) {
 	_ = app.Stop(ctx)
 }
 
-// Быстрый старт из README кита собирается: caller провайдит только конфиги.
+// Быстрый старт из README кита собирается: caller провайдит только конфиги, хук запроса берёт из
+// графа pgkit.Migrated — очередь после миграций.
 func TestQuickStartGraphValidates(t *testing.T) {
 	t.Parallel()
 	err := fx.ValidateApp(
@@ -356,7 +357,7 @@ func TestQuickStartGraphValidates(t *testing.T) {
 		pgkit.MigrateModule,
 		healthkit.ProvideProbe(pgkit.Probe),
 		healthkit.ProvideProbe(pgkit.ReplicaProbe),
-		fx.Invoke(func(*pgkit.DB, pgkit.Transactor) {}),
+		fx.Invoke(func(fx.Lifecycle, *pgkit.DB, pgkit.Transactor, pgkit.Migrated) {}),
 	)
 	if err != nil {
 		t.Fatalf("быстрый старт README не собирается: %v", err)

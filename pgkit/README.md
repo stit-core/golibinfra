@@ -31,16 +31,23 @@ fx.New(
     fx.Provide(pgkit.NewPoolConfig, pgkit.NewMigrateRunnerConfig, logkit.NewConfig),
     healthkit.ProvideProbe(pgkit.Probe), // SELECT 1 в /ready
 
-    fx.Invoke(func(db *pgkit.DB, tx pgkit.Transactor) {
-        _ = tx.WithTx(context.Background(), func(ctx context.Context) error {
-            _, err := db.Exec(ctx, `INSERT INTO users(email) VALUES ($1)`, "a@b.c")
-            return err // ошибка или panic → Rollback, nil → Commit
-        })
+    // Запрос — в OnStart: Invoke идёт при сборке графа, когда миграции ещё не применены.
+    // Зависимость от pgkit.Migrated ставит хук после них.
+    fx.Invoke(func(lc fx.Lifecycle, db *pgkit.DB, tx pgkit.Transactor, _ pgkit.Migrated) {
+        lc.Append(fx.Hook{OnStart: func(ctx context.Context) error {
+            return tx.WithTx(ctx, func(ctx context.Context) error {
+                _, err := db.Exec(ctx, `INSERT INTO users(email) VALUES ($1)`, "a@b.c")
+                return err // ошибка или panic → Rollback, nil → Commit
+            })
+        }})
     }),
 )
 ```
 
-Минимальный ENV: `PG_DSN`. `Module` сам Config'и не provide'ит — их регистрирует
+Минимальный ENV: `PG_DSN`; каталог миграций приложения — `PG_MIGRATIONS_PATH` (default
+`/migrations`, без своих миграций — `-`; каталога нет — ошибка старта). Таблицу `users` создаёт
+миграция из него: хук сниппета идёт после миграций и на пустой базе, его ошибка — ошибка старта.
+`Module` сам Config'и не provide'ит — их регистрирует
 caller (`NewPoolConfig`/`NewMigrateRunnerConfig` или App-структура) и каждый из
 них валидирует прочитанное (`errors.Is(err, pgkit.ErrConfig)`).
 `fx.Provide(pgkit.NewReplicaConfig)` нужен только там, где есть реплика:

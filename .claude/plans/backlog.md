@@ -22,8 +22,9 @@
   невалидный паттерн или замена у выключенного redact проходит (путь ENV — `NewRedactConfig` — отвергает), против «формат
   проверяется и у выключенного»; README logkit это называет. Правка — отказ конструктора: смена поведения, строка аннотации.
   Триггер: повторный аудит угла 1 или правка `logkit/build.go`.
-- **readme-snippet-copies** — `TestReadme_*` logkit и `TestReadmeFlagshipExample` держат копию сниппета, а не блок README: правку
-  блока в README гейт не видит (у authnkit и httpkit блок побайтно равен коду теста). Графам fx нужна сверка опций, сниппеты
+- **readme-snippet-copies** — `TestReadme_*` logkit, `TestReadmeFlagshipExample` и `TestQuickStartGraphValidates` pgkit держат
+  копию сниппета, а не блок README, быстрый старт archkit тест не держит: правку блока в README гейт не видит (у authnkit и
+  httpkit блок побайтно равен коду теста). Графам fx нужна сверка опций и старт на пустой базе, сниппеты
   logkit «Без fx» — три фрагмента без проверки ошибок: кодом теста они не собираются, сверка — после их правки. Триггер: правка
   этих сниппетов или повторный аудит угла доков.
 - **hubkit-sync-callback-lifecycle** — `hubkit/sync.NewEngine` регистрирует observable-callback движка в конструкторе, снимает его
@@ -33,3 +34,14 @@
 - **guard-template-parity** — guard сессии (`.claude/hooks/guard-bash.sh`) не видит формы, которые закрыл guard шаблона: код для
   интерпретатора (`bash -c`, `eval`, heredoc), имя `git` в кавычках, алиасы и `include` конфига git, запись в `.git/config`,
   `git send-pack`; README § Гейт называет их. Триггер: повторный аудит угла 8 или общий guard двух репо.
+- **pgkit-query-name-hyphen** — имя запроса для спана и `db.operation.name` (`queryName`, `pgkit/pool.go`) — ведущее слово
+  комментария `-- name:` из букв, цифр и `_`: имя с дефисом (`-- name: get-user :one`) обрезается до `get`. Через sqlc
+  недостижимо — имя запроса там имя Go-метода; путь — рукописный комментарий. Триггер: запросы с `-- name:` не от sqlc у
+  потребителя или правка `queryName`.
+- **envconf-anonymous-app-name** — ошибка ридера ENV называет поле как `<тип>.<поле>` (`internal/envconf`): у анонимной
+  App-структуры имя типа пустое — `field .DB: envconfig tag on a nested struct`. Поле названо, структура — нет. Триггер:
+  правка текстов ошибок `internal/envconf` или потребитель с анонимной App.
+- **outbox-backlog-group-by-subject** — снимок очереди outbox (`outboxkit/pgstore.Store.Backlog`) — `GROUP BY subject`: при
+  идентификаторе сущности в subject запрос отдаёт строку на сущность за каждый сбор метрик, хотя gauge'и несут серию на
+  инстанс (с `WithMetricSubject` — на шаблон). Триггер: потребитель с id в subject и заметной ценой сбора или правка
+  `Backlog`.

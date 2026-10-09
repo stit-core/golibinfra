@@ -34,9 +34,7 @@ func TestLayout(t *testing.T) {
 	t.Parallel()
 	archkit.Check(
 		t,
-		archkit.WithInternalDirs("internal/archtest", "internal/testkit"),
-		archkit.WithPurePackages("internal/platform/identity", "pkg/policy"),
-		archkit.WithUncheckedPackages("internal/platform/identity"),
+		archkit.WithInternalDirs("internal/archtest"),
 		archkit.WithRootLibs(
 			"git.stit.tech/stit-core/golibinfra/clockkit",
 			"git.stit.tech/stit-core/golibinfra/logkit",
@@ -46,6 +44,9 @@ func TestLayout(t *testing.T) {
 	)
 }
 ```
+
+`WithInternalDirs` называет каталог самого теста, `WithRootLibs` — внешние пакеты, которые видит
+корень домена; остальное — по коду сервиса, § Настройки потребителя.
 
 Нарушение — строка отказа теста `archkit: <нарушение>: <правило>`:
 
@@ -119,6 +120,21 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 
 Опции складываются; `nil` и пустой список ничего не меняют. Пути пакетов модуля — без module path,
 поэтому настройки не меняются при его смене.
+
+Сервис, у которого `internal/platform/identity` берёт IP клиента из httpkit, а личность и
+`pkg/policy` видят чистые слои, дописывает к вызову быстрого старта:
+
+```go
+archkit.WithPurePackages("internal/platform/identity", "pkg/policy"),
+archkit.WithUncheckedPackages("internal/platform/identity"),
+```
+
+Запись `WithUncheckedPackages` — только если такой пакет есть и его берёт корень домена: запись про
+запас — отказ (случаи — в таблице выше), и у сервиса без этого пакета тот же вызов красный:
+
+```
+archkit: unchecked package "internal/platform/identity" sees nothing the domain root does not: remove it from WithUncheckedPackages
+```
 
 ## Известные нарушения
 
