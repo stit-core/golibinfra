@@ -107,7 +107,7 @@ chi применяет middleware в порядке регистрации: пе
 | 8 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
 | 9 | `RateLimit` | если `RateLimit.RPS > 0` | bucket на клиента (IPv6 — по `/64`); дешёвый отказ до тяжёлой работы |
 | 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом; лимит фиксируется на первом чтении — операция huma ставит свой `MaxBodyBytes` |
-| 11 | дедлайн запроса | если `RequestTimeout > 0`; GET-поток (SSE, upgrade) — без него | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ, запись хендлера после него отбрасывается; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
+| 11 | дедлайн запроса | если `RequestTimeout > 0`; GET-поток (операция SSE, upgrade мимо huma) — без него | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ, запись хендлера после него отбрасывается; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
 | 12 | HEAD как GET | всегда | HEAD без своего маршрута идёт в GET-маршрут (RFC 9110 §9.1), тело net/http не отправляет |
 | 13 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 

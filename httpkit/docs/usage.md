@@ -399,8 +399,10 @@ func stream(w http.ResponseWriter, r *http.Request) {
 
 Для долгих стримов задайте `HTTP_WRITE_TIMEOUT=0` (или продлевайте дедлайн через
 `ResponseController.SetWriteDeadline`). Дедлайн запроса `HTTP_REQUEST_TIMEOUT` не получает
-GET с `Accept: text/event-stream` (`EventSource` шлёт) или `Upgrade` (WebSocket); поток без
-этого заголовка и поток на POST ctx отменит на дедлайне — поток делают GET-операцией. На
+GET с `Accept: text/event-stream` (`EventSource` шлёт) или `Upgrade` (WebSocket) к маршруту
+потока — операции `sse.Register` (ответ `text/event-stream` в её описании) или маршруту мимо
+huma; обычной операции huma заголовок клиента дедлайна не снимает. Поток без этого заголовка и
+поток на POST ctx отменит на дедлайне — поток делают GET-маршрутом. На
 остановке поток держит соединение до дедлайна `HTTP_SHUTDOWN_TIMEOUT`, затем ctx
 запроса отменяется — и у WebSocket на захваченном соединении: обработчик, который
 слушает `r.Context()`, завершается сам.

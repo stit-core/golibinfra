@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"github.com/danielgtaylor/huma/v2"
+
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -21,8 +23,9 @@ const codeRequestTimeout = "REQUEST_TIMEOUT"
 // — 503 problem+json сразу, до WriteTimeout, иначе клиент получил бы обрыв; запись хендлера после
 // этого молча отбрасывается: huma паникует на ошибке записи, а ответ хендлера ещё нужен
 // Idempotency. Middleware выше ждут возврата хендлера: резерв идемпотентности и учёт запросов в
-// полёте его переживают. Потоки — GET с Accept: text/event-stream (SSE) или Upgrade — идут без
-// дедлайна.
+// полёте его переживают. Запрос потока (streaming) идёт дальше без дедлайна, с отметкой: поток
+// определяет маршрут, а не заголовок клиента, и операции без потока дедлайн ставит её хендлер
+// (operationDeadline).
 func deadline(timeout time.Duration, log logkit.Logger) func(http.Handler) http.Handler {
 	if timeout <= 0 {
 		return func(next http.Handler) http.Handler { return next }
@@ -30,24 +33,32 @@ func deadline(timeout time.Duration, log logkit.Logger) func(http.Handler) http.
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			if streaming(r) {
-				next.ServeHTTP(w, r)
+				next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), streamClaimKey{}, true)))
 				return
 			}
-			ctx, cancel := context.WithTimeout(r.Context(), timeout)
-			defer cancel()
-			dw := &deadlineWriter{w: w, h: w.Header().Clone(), ctx: ctx, timeout: timeout, log: log}
-			timer := time.AfterFunc(timeout, dw.expire)
-			defer func() {
-				timer.Stop()
-				dw.finish()
-			}()
-			next.ServeHTTP(dw, r.WithContext(ctx))
+			serveWithDeadline(timeout, log, next, w, r)
 		})
 	}
 }
 
-// streaming — запрос потока: GET с SSE или upgrade (WebSocket); дедлайн оборвал бы его. Заголовок
-// шлёт клиент, поэтому запись (POST, PUT, PATCH, DELETE) им дедлайна не снимает.
+func serveWithDeadline(timeout time.Duration, log logkit.Logger, next http.Handler, w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), timeout)
+	defer cancel()
+	dw := &deadlineWriter{w: w, h: w.Header().Clone(), ctx: ctx, timeout: timeout, log: log}
+	timer := time.AfterFunc(timeout, dw.expire)
+	defer func() {
+		timer.Stop()
+		dw.finish()
+	}()
+	next.ServeHTTP(dw, r.WithContext(ctx))
+}
+
+// streamClaimKey — отметка ctx: deadline пропустил запрос как поток по заголовку клиента.
+type streamClaimKey struct{}
+
+// streaming — запрос называет себя потоком: GET с SSE или upgrade (WebSocket); дедлайн оборвал бы
+// поток. Заголовок шлёт клиент, поэтому запись (POST, PUT, PATCH, DELETE) им дедлайна не снимает,
+// а у GET-операции huma решает её описание (operationDeadline).
 func streaming(r *http.Request) bool {
 	if r.Method != http.MethodGet {
 		return false
@@ -57,6 +68,31 @@ func streaming(r *http.Request) bool {
 	}
 	for _, accept := range r.Header.Values("Accept") {
 		if strings.Contains(strings.ToLower(accept), "text/event-stream") {
+			return true
+		}
+	}
+	return false
+}
+
+// operationDeadline — хендлер операции huma под дедлайном, который deadline отложил из-за
+// заголовка клиента: поток — только операция с ответом text/event-stream (так её объявляет
+// sse.Register), у остальных `Accept: text/event-stream` и `Upgrade` дедлайна не снимают.
+func operationDeadline(timeout time.Duration, log logkit.Logger, op *huma.Operation, serve http.HandlerFunc) http.HandlerFunc {
+	if timeout <= 0 || eventStream(op) {
+		return serve
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		if claimed, _ := r.Context().Value(streamClaimKey{}).(bool); claimed {
+			serveWithDeadline(timeout, log, serve, w, r)
+			return
+		}
+		serve(w, r)
+	}
+}
+
+func eventStream(op *huma.Operation) bool {
+	for _, resp := range op.Responses {
+		if resp != nil && resp.Content["text/event-stream"] != nil {
 			return true
 		}
 	}

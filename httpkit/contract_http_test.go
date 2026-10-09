@@ -17,6 +17,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
+	"github.com/danielgtaylor/huma/v2/sse"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
@@ -182,22 +183,36 @@ func TestModule_HeadOnGetRoutes(t *testing.T) {
 	}
 }
 
-// Регрессия KSEC-15 (H35): хендлер дольше HTTP_REQUEST_TIMEOUT — у ctx дедлайн, клиент получает
-// 503 problem+json к дедлайну, а не обрыв по WriteTimeout; поток SSE (GET) идёт без дедлайна, а
-// Accept: text/event-stream на записи дедлайна не снимает.
+// Регрессия KSEC-15 (H35) и RSEC-05: хендлер дольше HTTP_REQUEST_TIMEOUT — у ctx дедлайн, клиент
+// получает 503 problem+json к дедлайну, а не обрыв по WriteTimeout. Поток определяет маршрут, а не
+// заголовок клиента: без дедлайна идут операция SSE (sse.Register) и маршрут мимо huma, а у
+// обычной операции Accept: text/event-stream и Upgrade дедлайна не снимают — ни у GET, ни у записи.
 func TestModule_RequestDeadline(t *testing.T) {
 	t.Setenv("HTTP_WRITE_TIMEOUT", "2s")
 	t.Setenv("HTTP_REQUEST_TIMEOUT", "200ms")
 	var hasDeadline atomic.Bool
-	slow := func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+	work := func(ctx context.Context) {
 		_, ok := ctx.Deadline()
 		hasDeadline.Store(ok)
 		time.Sleep(600 * time.Millisecond)
+	}
+	slow := func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+		work(ctx)
 		return &struct{}{}, nil
 	}
-	srv := startApp(t, fx.Invoke(func(api huma.API) {
+	srv := startApp(t, fx.Invoke(func(api huma.API, s *httpkit.Server) {
 		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "slow", Method: http.MethodGet, Path: "/slow"}), slow)
 		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "slow-write", Method: http.MethodPost, Path: "/slow"}), slow)
+		sse.Register(api, httpkit.Public(huma.Operation{OperationID: "events", Method: http.MethodGet, Path: "/events"}),
+			map[string]any{"tick": struct{}{}},
+			func(ctx context.Context, _ *struct{}, send sse.Sender) {
+				work(ctx)
+				_ = send.Data(struct{}{})
+			})
+		s.Router().Get("/ws", func(w http.ResponseWriter, r *http.Request) {
+			work(r.Context())
+			w.WriteHeader(http.StatusNoContent)
+		})
 	}))
 
 	start := time.Now()
@@ -216,13 +231,20 @@ func TestModule_RequestDeadline(t *testing.T) {
 		t.Error("the handler ctx has no deadline")
 	}
 
-	resp = do(t, srv, http.MethodGet, "/slow", nil, "Accept: text/event-stream")
-	if resp.StatusCode != http.StatusNoContent || hasDeadline.Load() {
-		t.Errorf("SSE request: %d, ctx deadline %v; want the handler's 204 without a deadline", resp.StatusCode, hasDeadline.Load())
+	for _, c := range []struct{ path, header string }{{"/events", "Accept: text/event-stream"}, {"/ws", "Upgrade: websocket"}} {
+		hasDeadline.Store(true)
+		if resp := do(t, srv, http.MethodGet, c.path, nil, c.header); resp.StatusCode >= http.StatusBadRequest || hasDeadline.Load() {
+			t.Errorf("stream route %s with %q: %d, ctx deadline %v; want the handler's response without a deadline", c.path, c.header, resp.StatusCode, hasDeadline.Load())
+		}
 	}
-	for _, h := range []string{"Accept: text/event-stream", "Upgrade: websocket"} {
-		if resp := do(t, srv, http.MethodPost, "/slow", nil, h); resp.StatusCode != http.StatusServiceUnavailable || !hasDeadline.Load() {
-			t.Errorf("POST with %q: %d, ctx deadline %v; want 503 with a deadline", h, resp.StatusCode, hasDeadline.Load())
+	for _, method := range []string{http.MethodGet, http.MethodPost} {
+		for _, h := range []string{"Accept: text/event-stream", "Accept: application/json, text/event-stream;q=0.1", "Upgrade: websocket"} {
+			hasDeadline.Store(false)
+			start := time.Now()
+			resp := do(t, srv, method, "/slow", nil, h)
+			if elapsed := time.Since(start); resp.StatusCode != http.StatusServiceUnavailable || !hasDeadline.Load() || elapsed >= 550*time.Millisecond {
+				t.Errorf("%s of a plain operation with %q: %d after %s, ctx deadline %v; want 503 at the deadline", method, h, resp.StatusCode, elapsed, hasDeadline.Load())
+			}
 		}
 	}
 }

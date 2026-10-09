@@ -9,10 +9,13 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/adapters/humachi"
 	"github.com/go-chi/chi/v5"
+
+	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
 // ErrRoutes — операции и маршруты сервера не прошли проверку старта (CheckRoutes).
@@ -96,6 +99,9 @@ type opAdapter struct {
 	huma.Adapter
 	router chi.Router
 	reg    *registry
+	// timeout и log — дедлайн запроса операции, отложенный deadline (operationDeadline).
+	timeout time.Duration
+	log     logkit.Logger
 }
 
 // Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в replaced.
@@ -112,7 +118,7 @@ func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
 			a.reg.replaced = append(a.reg.replaced, fmt.Sprintf("route %s is registered before operation %s, which replaces it", route, operationName(documented)))
 		}
 	}
-	a.router.Method(op.Method, op.Path, opHandler{serve})
+	a.router.Method(op.Method, op.Path, opHandler{operationDeadline(a.timeout, a.log, op, serve)})
 }
 
 // SanitizeInternalContext — опциональный интерфейс адаптера humachi (autopatch huma).
