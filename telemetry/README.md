@@ -26,7 +26,11 @@ W3C-propagator и runtime-инструментация. Корневой obs-к�
   `contrib/instrumentation/runtime`.
 - **TextMap-propagator** — `TraceContext` + `Baggage`, в том числе при
   `OTEL_SDK_DISABLED=true`: сквозной trace-контекст между сервисами не зависит
-  от экспорта.
+  от экспорта. Выключенный SDK ставит процессу no-op-провайдер трасс: спан поверх
+  входящего контекста несёт его вниз как пришёл (тот же `trace_id` и то же решение о
+  сэмплировании), а вызов без входящего контекста `traceparent` не несёт — нижестоящий
+  сервис начинает и сэмплирует свою трассу сам. `trace_id` в логах такого сервиса есть
+  только у запросов с входящим контекстом; сквозной идентификатор — `request_id`.
 
 ## Импорт
 
@@ -75,7 +79,7 @@ func (s *Service) Do(ctx context.Context) (err error) {
 
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `OTEL_SDK_DISABLED` | `Disabled` | `bool` | `false` | `true` → провайдеры без экспортёров: сигналы дропаются, сети нет; propagator и глобальные провайдеры выставляются |
+| `OTEL_SDK_DISABLED` | `Disabled` | `bool` | `false` | `true` → провайдеры без экспортёров: сигналы дропаются, сети нет; propagator и глобальные провайдеры выставляются, провайдер трасс процесса — no-op (trace-context соседей не меняется) |
 | `OTEL_SERVICE_NAME` | `ServiceName` | `string` | — (**required**, если не `OTEL_SDK_DISABLED`) | `service.name` |
 | `OTEL_SERVICE_VERSION` | `ServiceVersion` | `string` | `dev` | `service.version` — semver / git short-sha |
 | `APP_ENV` | `Environment` | `string` | `dev` | `deployment.environment.name` — `prod` / `staging` / `smoke` |
@@ -212,7 +216,7 @@ stderr — так их печатает SDK по умолчанию.
 Юнит-тесты пакета: сборка per-signal URL, `Validate`/`NewConfig`, парсинг и мерж
 заголовков; resource-атрибуты (с `OTEL_TENANT` и без) и терпимость к
 `ErrSchemaURLConflict`; `Init` с `OTEL_SDK_DISABLED` (propagator, глобальный
-logger provider, спаны без записи); `Init` против `httptest`-коллектора — все три
+logger provider, спаны без записи, trace-context уходит вниз как пришёл); `Init` против `httptest`-коллектора — все три
 сигнала приходят на `<base>/v1/{traces,metrics,logs}` с Bearer- и env-заголовками;
 `Module` под `fxtest` (Shutdown на OnStop сливает очередь логов, недоступный коллектор
 на остановке — запись `ERROR`, а `Stop` без ошибки, SDK поднимается и без потребителя

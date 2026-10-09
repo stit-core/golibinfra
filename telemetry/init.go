@@ -22,9 +22,12 @@ import (
 	"go.opentelemetry.io/otel/sdk/resource"
 	sdktrace "go.opentelemetry.io/otel/sdk/trace"
 	semconv "go.opentelemetry.io/otel/semconv/v1.41.0"
+	tracenoop "go.opentelemetry.io/otel/trace/noop"
 )
 
-// Providers — поднятые SDK-провайдеры трёх сигналов.
+// Providers — поднятые SDK-провайдеры трёх сигналов. При Config.Disabled они без экспортёров, а
+// провайдер трасс процесса (otel.GetTracerProvider) — no-op: TracerProvider в глобальные не
+// ставится.
 type Providers struct {
 	TracerProvider *sdktrace.TracerProvider
 	MeterProvider  *sdkmetric.MeterProvider
@@ -109,6 +112,11 @@ func Init(ctx context.Context, cfg Config, opts ...Option) (*Providers, error) {
 			exportTimeout:  cfg.ExportTimeout,
 		}
 		setGlobals(p)
+		// Провайдер трасс процесса — no-op: спан несёт контекст родителя как есть. SDK-провайдер
+		// и с NeverSample выдаёт спану свой контекст с sampled=0 — он ушёл бы вниз в traceparent,
+		// и нижестоящий сервис перестал бы писать трассу, которую сэмплировал вышестоящий или
+		// которую начал бы сам.
+		otel.SetTracerProvider(tracenoop.NewTracerProvider())
 		return p, nil
 	}
 

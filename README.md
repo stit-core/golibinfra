@@ -169,7 +169,7 @@ grpclog → logkit) наружу не экспортируются.
 | `STORAGE_S3_ENDPOINT` | `storagekit` | — (обязателен) | S3 / MinIO: `host[:port]` (TLS) или `scheme://host[:port]`, plaintext — только `http://` |
 | `STORAGE_PUBLIC_BASE_URL` | `storagekit` | — (опц.) | база публичных ссылок на объекты (CDN или публичный хост бакета); пусто → `URLBuilder` отдаёт относительный `/<bucket>/<key>` |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `telemetry` | `http://localhost:4318` | OTLP HTTP-коллектор, полный URL по спецификации; токен — `OTEL_TOKEN`, по `http://` не на loopback — только с `OTEL_ALLOW_INSECURE_TOKEN=true` |
-| `OTEL_SDK_DISABLED` | `telemetry` | `false` | общий выключатель SDK: `true` → провайдеры no-op, экспортёры не поднимаются |
+| `OTEL_SDK_DISABLED` | `telemetry` | `false` | общий выключатель SDK: `true` → провайдеры no-op, экспортёры не поднимаются, trace-context соседних сервисов уходит вниз как пришёл |
 
 ### Адреса самого сервиса
 

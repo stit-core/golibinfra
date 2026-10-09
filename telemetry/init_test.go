@@ -18,6 +18,7 @@ import (
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
 	"go.opentelemetry.io/otel/log/global"
+	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
 	"go.opentelemetry.io/otel/sdk/resource"
@@ -365,6 +366,40 @@ func TestInit_ExportsAllSignalsToSpecPaths(t *testing.T) {
 // восстанавливается тоже: иначе следующие тесты пакета отправляли бы ошибки
 // SDK в буфер уже завершившегося теста. Симметричного Get у otel.SetLogger нет,
 // поэтому канал внутренних сообщений просто глушится.
+// Регрессия ROBS-02: выключенный SDK не трогает trace-context. Спан поверх входящего контекста
+// несёт его вниз как пришёл — с тем же решением о сэмплировании, — а спан без родителя
+// контекста не порождает: нижестоящий сервис не получает traceparent с sampled=0 и пишет свою
+// трассу сам.
+func TestInitDisabled_LeavesTraceContextToNeighbours(t *testing.T) {
+	restoreGlobals(t)
+	if _, err := Init(t.Context(), Config{Disabled: true}); err != nil {
+		t.Fatalf("Init(disabled) error: %v", err)
+	}
+	const sampled, dropped = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00"
+	for name, c := range map[string]struct{ in, out string }{
+		"sampled parent":   {in: sampled, out: sampled},
+		"unsampled parent": {in: dropped, out: dropped},
+		"no parent":        {},
+	} {
+		t.Run(name, func(t *testing.T) {
+			prop := otel.GetTextMapPropagator()
+			ctx := t.Context()
+			if c.in != "" {
+				ctx = prop.Extract(ctx, propagation.MapCarrier{"traceparent": c.in})
+			}
+			ctx, handle := otel.Tracer("kit").Start(ctx, "handle")
+			defer handle.End()
+			ctx, call := otel.Tracer("kit").Start(ctx, "call")
+			defer call.End()
+			carrier := propagation.MapCarrier{}
+			prop.Inject(ctx, carrier)
+			if got := carrier["traceparent"]; got != c.out {
+				t.Fatalf("outgoing traceparent = %q, want %q: a disabled SDK must not rewrite the trace context", got, c.out)
+			}
+		})
+	}
+}
+
 func restoreGlobals(t *testing.T) {
 	t.Helper()
 	tp, mp, lp, prop := otel.GetTracerProvider(), otel.GetMeterProvider(), global.GetLoggerProvider(), otel.GetTextMapPropagator()

@@ -47,8 +47,8 @@ func (h *Headers) Decode(value string) error {
 
 // Config — конфигурация OTel-bootstrap'а; поля и envconfig-теги — public API.
 type Config struct {
-	// Propagator ставится и при Disabled: сквозной trace-контекст между сервисами
-	// не зависит от того, экспортирует ли этот сервис сигналы.
+	// Propagator ставится и при Disabled, а провайдер трасс процесса — no-op: сквозной
+	// trace-контекст между сервисами не зависит от того, экспортирует ли этот сервис сигналы.
 	Disabled bool `envconfig:"OTEL_SDK_DISABLED" default:"false"`
 
 	ServiceName    string `envconfig:"OTEL_SERVICE_NAME"`
