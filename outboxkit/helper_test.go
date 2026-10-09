@@ -98,6 +98,8 @@ type fakeRepo struct {
 
 	backlog    []outboxkit.SubjectBacklog
 	backlogErr error
+	// backlogHook зовётся в начале Backlog вне мьютекса: тест держит в нём снимок.
+	backlogHook func(context.Context)
 
 	revived      int64
 	reviveFilter outboxkit.ReviveFilter
@@ -154,7 +156,13 @@ func (r *fakeRepo) RecordFailures(_ context.Context, failures []outboxkit.Failur
 	return nil
 }
 
-func (r *fakeRepo) Backlog(context.Context) ([]outboxkit.SubjectBacklog, error) {
+func (r *fakeRepo) Backlog(ctx context.Context) ([]outboxkit.SubjectBacklog, error) {
+	r.mu.Lock()
+	hook := r.backlogHook
+	r.mu.Unlock()
+	if hook != nil {
+		hook(ctx)
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.backlogErr != nil {

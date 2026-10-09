@@ -233,4 +233,6 @@ reporter)` берёт `BacklogReporter` явным аргументом.
 Это включает `outbox_lag_seconds{instance,subject}` и
 `outbox_pending_count{instance,subject}` (см.
 [observability.md](observability.md)). `Store.Backlog(ctx)` отдаёт по каждому
-subject'у возраст самого старого и число неопубликованных (не-dead) событий.
+subject'у возраст самого старого и число неопубликованных (не-dead) событий. Запрос идёт
+вне сбора метрик: первый снимок — при регистрации, следующий заказывает каждый сбор, gauge'и
+отдают последний готовый; `Unregister` прерывает идущий запрос.

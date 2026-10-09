@@ -2,6 +2,7 @@ package outboxkit
 
 import (
 	"context"
+	"sync"
 	"time"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -91,10 +92,68 @@ func (in *outboxInstruments) template(subject string) string {
 	return in.metricSubject(subject)
 }
 
+// backlogTimeout — срок одного снимка очереди: при занятом пуле или зависшей БД запрос
+// заканчивается сбоем снимка, а не ждёт вечно.
+const backlogTimeout = 5 * time.Second
+
+// backlogSnapshots держит последний снимок очереди. Запрос к хранилищу идёт вне пути сбора
+// метрик: callback отдаёт готовый снимок и заказывает следующий, поэтому занятый пул не
+// останавливает экспорт остальных метрик процесса. После сбоя снимка серий нет до следующего
+// удачного — «нет данных», а не устаревшее «очередь пуста».
+type backlogSnapshots struct {
+	reporter BacklogReporter
+	errors   metric.Int64Counter
+	instance attribute.KeyValue
+	// ctx живёт от регистрации до Unregister.
+	ctx context.Context
+
+	mu      sync.Mutex
+	rows    []SubjectBacklog
+	ok      bool
+	loading bool
+}
+
+func (b *backlogSnapshots) load() {
+	ctx, cancel := context.WithTimeout(b.ctx, backlogTimeout)
+	defer cancel()
+	rows, err := b.reporter.Backlog(ctx)
+	b.mu.Lock()
+	b.rows, b.ok, b.loading = rows, err == nil, false
+	b.mu.Unlock()
+	// Сбой снимка не должен пропадать молча: без счётчика алерт на lag не отличит «нет
+	// отставания» от «снимок не берётся». Снимок, прерванный Unregister, — не сбой.
+	if err != nil && b.ctx.Err() == nil {
+		b.errors.Add(ctx, 1, metric.WithAttributes(b.instance))
+	}
+}
+
+// last отдаёт последний снимок и заказывает следующий, если он ещё не идёт.
+func (b *backlogSnapshots) last() ([]SubjectBacklog, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if !b.loading && b.ctx.Err() == nil {
+		b.loading = true
+		go b.load()
+	}
+	return b.rows, b.ok
+}
+
+// backlogRegistration — регистрация callback'а вместе со снимками: Unregister прерывает идущий.
+type backlogRegistration struct {
+	metric.Registration
+	stop context.CancelFunc
+}
+
+func (r backlogRegistration) Unregister() error {
+	r.stop()
+	return r.Registration.Unregister()
+}
+
 // RegisterBacklogGauges регистрирует ObservableGauge'и `outbox_lag_seconds{instance}` и
 // `outbox_pending_count{instance}` поверх BacklogReporter: самое старое событие и число
-// неопубликованных по всей очереди инстанса. Возвращает Registration — вызвать Unregister на
-// shutdown.
+// неопубликованных по всей очереди инстанса. Первый снимок берётся здесь же (не дольше
+// backlogTimeout), следующие — вне сбора метрик: gauge'и отдают снимок, заказанный прошлым
+// сбором. Возвращает Registration — вызвать Unregister на shutdown.
 func RegisterBacklogGauges(instance string, reporter BacklogReporter) (metric.Registration, error) {
 	return registerBacklogGauges(instance, reporter, nil)
 }
@@ -114,14 +173,13 @@ func registerBacklogGauges(instance string, reporter BacklogReporter, fold func(
 		metric.WithDescription("Failed backlog snapshots behind outbox_lag_seconds/outbox_pending_count"),
 	))
 	inst := attribute.String("instance", instance)
-	return m.RegisterCallback(func(ctx context.Context, o metric.Observer) error {
-		backlog, err := reporter.Backlog(ctx)
-		if err != nil {
-			// Сбой снимка не должен валить экспорт метрик процесса, но и
-			// пропадать молча: без счётчика алерт на lag не отличит «нет
-			// отставания» от «снимок не берётся».
-			backlogErrors.Add(ctx, 1, metric.WithAttributes(inst))
-			return nil //nolint:nilerr // сбой снимка учтён метрикой, экспорт процесса не валим
+	ctx, stop := context.WithCancel(context.Background())
+	snapshots := &backlogSnapshots{reporter: reporter, errors: backlogErrors, instance: inst, ctx: ctx, loading: true}
+	snapshots.load()
+	reg, err := m.RegisterCallback(func(_ context.Context, o metric.Observer) error {
+		backlog, ok := snapshots.last()
+		if !ok {
+			return nil
 		}
 		type series struct {
 			oldest  time.Duration
@@ -152,4 +210,9 @@ func registerBacklogGauges(instance string, reporter BacklogReporter, fold func(
 		}
 		return nil
 	}, lag, pending)
+	if err != nil {
+		stop()
+		return nil, err
+	}
+	return backlogRegistration{Registration: reg, stop: stop}, nil
 }
