@@ -750,7 +750,7 @@ func TestStreamBus_DLQPublishFailureKeepsMessage(t *testing.T) {
 // Регрессия RCOR-05: отказ DLQ на последней доставке не теряет сообщение. Копия в DLQ
 // публикуется на доставке номер MaxDeliver; при том же пределе у консьюмера на сервере NAK после
 // её отказа сервер не исполнял — сообщение не доходило ни до DLQ, ни до обработчика, хотя лог
-// обещал ределивери. С DLQ серверный предел вдвое выше клиентского: DLQ ожил — копия дошла.
+// обещал ределивери. С DLQ серверного предела нет: сообщение переотправляется, пока DLQ не оживёт.
 func TestStreamBus_DLQFailureOnLastDeliveryIsRetried(t *testing.T) {
 	url := natsURL(t)
 	stream := nameFor(t)
@@ -799,9 +799,10 @@ func TestStreamBus_DLQFailureOnLastDeliveryIsRetried(t *testing.T) {
 		t.Fatalf("publish: %v", err)
 	}
 
-	// Вторая доставка — последняя по MaxDeliver: копия в полный DLQ не проходит.
-	eventually(t, 10*time.Second, "failed DLQ publish on the last delivery", func() bool {
-		return deliveries.Load() >= 2 && log.has("error", "natskit: jetstream dlq publish failed, message kept for redelivery")
+	// Вторая доставка — последняя по MaxDeliver: копия в полный DLQ не проходит, и сообщение
+	// переотправляется дальше — втрое дольше предела, пока DLQ лежит.
+	eventually(t, 15*time.Second, "redeliveries past MaxDeliver while the DLQ is down", func() bool {
+		return deliveries.Load() >= 6 && log.has("error", "natskit: jetstream dlq publish failed, message kept for redelivery")
 	})
 	if err := dlq.Purge(ctx); err != nil {
 		t.Fatalf("purge dlq stream: %v", err)
@@ -809,14 +810,6 @@ func TestStreamBus_DLQFailureOnLastDeliveryIsRetried(t *testing.T) {
 	eventually(t, 10*time.Second, "the dead letter in the revived DLQ", func() bool {
 		info, err := dlq.Info(ctx)
 		return err == nil && info.State.Msgs == 1 && log.has("error", "natskit: jetstream message dead")
-	})
-
-	// DLQ не ожил и за запас доставок: сервер больше не переотправит — лог говорит об этом прямо.
-	if err := sb.PublishStream(ctx, subject, []byte(`{"id":8}`)); err != nil {
-		t.Fatalf("publish: %v", err)
-	}
-	eventually(t, 15*time.Second, "the exhausted redelivery budget in the log", func() bool {
-		return log.has("error", "natskit: jetstream dlq publish failed, redelivery budget exhausted: message stays in the stream")
 	})
 }
 
