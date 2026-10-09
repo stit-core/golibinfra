@@ -3,13 +3,13 @@ package pgkit
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
 	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/internal/stopbudget"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -106,7 +106,7 @@ func openPool(lc fx.Lifecycle, cfg PoolConfig, role string, log logkit.Logger) (
 				pool.Close()
 				close(closed)
 			}()
-			wait, stop := stopShare(ctx)
+			wait, stop := stopbudget.Share(ctx)
 			defer stop()
 			select {
 			case <-closed:
@@ -118,13 +118,4 @@ func openPool(lc fx.Lifecycle, cfg PoolConfig, role string, log logkit.Logger) (
 		},
 	})
 	return pool, nil
-}
-
-// stopShare — две трети остатка бюджета остановки: треть остаётся хукам после этого.
-func stopShare(ctx context.Context) (context.Context, context.CancelFunc) {
-	deadline, ok := ctx.Deadline()
-	if !ok {
-		return context.WithCancel(ctx)
-	}
-	return context.WithTimeout(ctx, time.Until(deadline)*2/3)
 }

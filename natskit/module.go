@@ -7,6 +7,7 @@ import (
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/internal/stopbudget"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -84,9 +85,10 @@ func ProvideProbe(name string) fx.Option {
 // SubscribeOnStart вешает подписку на жизненный цикл fx: subscribe вызывается в
 // OnStart — после старта зависимостей, объявленных раньше, — с ctx хука (он
 // ограничивает только сам вызов); ошибка подписки, включая ErrJetStreamDisabled,
-// валит старт. OnStop дренит подписку в пределах своего ctx — до остановки
-// этих зависимостей. Вызывается из fx.Invoke или конструктора: хук, добавленный
-// из чужого OnStart, fx не запускает.
+// валит старт. OnStop дренит подписку до остановки этих зависимостей — за две трети
+// остатка бюджета остановки: обработчикам, не уложившимся в них, отменяется ctx, а
+// остановка идёт дальше (WARN, не ошибка). Вызывается из fx.Invoke или конструктора:
+// хук, добавленный из чужого OnStart, fx не запускает.
 func SubscribeOnStart(lc fx.Lifecycle, subscribe func(ctx context.Context) (Subscription, error)) {
 	var sub Subscription
 	lc.Append(fx.Hook{
@@ -102,7 +104,7 @@ func SubscribeOnStart(lc fx.Lifecycle, subscribe func(ctx context.Context) (Subs
 			if sub == nil {
 				return nil
 			}
-			return sub.Drain(ctx)
+			return drainOnStop(ctx, sub)
 		},
 	})
 }
@@ -118,6 +120,9 @@ func newClient(lc fx.Lifecycle, name string, cfg Config, log logkit.Logger) (*Cl
 	}
 	lc.Append(fx.Hook{
 		OnStop: func(ctx context.Context) error {
+			// Треть остатка бюджета остановки — хукам после шины (пул, telemetry).
+			ctx, cancel := stopbudget.Share(ctx)
+			defer cancel()
 			c.CloseContext(ctx)
 			return nil
 		},

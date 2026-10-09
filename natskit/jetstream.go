@@ -493,7 +493,7 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 	sc := streamConsumer{stream: stream, durable: durable, filter: subject}
 
 	return b.c.subscribe(func() (*subscription, error) {
-		s := &subscription{conn: b.c, subject: subject}
+		s := newSubscription(b.c, subject)
 		cc, err := cons.Consume(func(msg jetstream.Msg) {
 			// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
 			_ = b.sem.Acquire(context.Background(), 1)
@@ -505,7 +505,7 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 			go func() {
 				defer untrack()
 				defer b.sem.Release(1)
-				b.handleStreamOne(sc, msg, handler)
+				b.handleStreamOne(s.ctx, sc, msg, handler)
 			}()
 		}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
 			b.log.Warn(context.Background(), "natskit: jetstream consume error",
@@ -527,14 +527,14 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 	})
 }
 
-func (b *jsBus) handleStreamOne(sc streamConsumer, msg jetstream.Msg, handler Handler) {
+func (b *jsBus) handleStreamOne(parent context.Context, sc streamConsumer, msg jetstream.Msg, handler Handler) {
 	subject := msg.Subject()
 
 	// jetstream.Msg хранит header в nats.Header-форме — переиспользуем.
 	natsMsg := &nats.Msg{Subject: subject, Data: msg.Data(), Header: msg.Headers()}
 	// Метрики пишутся с ctx обработчика: он несёт consumer-span, без которого
 	// у гистограммы нет exemplar'а в трейс этой обработки.
-	ctx, span := b.instr.startConsumerSpan(b.c.handlerContext(), natsMsg, sc.filter)
+	ctx, span := b.instr.startConsumerSpan(parent, natsMsg, sc.filter)
 	ctx, cancel := context.WithTimeout(ctx, b.handlerTimeout)
 	defer cancel()
 	filterAttr := b.instr.subjectAttrs(sc.filter)

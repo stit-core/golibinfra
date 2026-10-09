@@ -9,6 +9,7 @@ import (
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/healthkit"
+	"git.stit.tech/stit-core/golibinfra/internal/stopbudget"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -106,6 +107,9 @@ func newServer(p serverParams) (*Server, error) {
 			return nil
 		},
 		OnStop: func(ctx context.Context) error {
+			// Треть остатка бюджета остановки — хукам после gRPC: стрим в полёте её не съедает.
+			ctx, cancel := stopbudget.Share(ctx)
+			defer cancel()
 			srv.Stop(ctx)
 			return nil
 		},

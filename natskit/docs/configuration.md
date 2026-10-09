@@ -232,8 +232,9 @@ health-проба отдают `natskit.ErrConnectionClosed` — состоян�
 соединение закрывается принудительно; незавершённые JetStream-сообщения сервер
 переотправит после `AckWait`.
 
-`OnStop`-хук `Module` вызывает `Client.CloseContext(ctx)`: бюджет —
-`min(DrainTimeout, дедлайн ctx)`, поэтому shutdown укладывается в `StopTimeout`
+`OnStop`-хук `Module` вызывает `Client.CloseContext(ctx)` с двумя третями остатка
+бюджета остановки: бюджет закрытия — `min(DrainTimeout, ⅔ остатка)`, треть остаётся хукам
+после шины, поэтому shutdown укладывается в `StopTimeout`
 приложения, даже если `NATS_DRAIN_TIMEOUT` больше.
 
 ## Несколько инстансов

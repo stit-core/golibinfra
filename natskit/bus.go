@@ -121,7 +121,7 @@ func (b *natsBus) subscribe(ctx context.Context, subject, queue string, handler 
 		return nil, fmt.Errorf("natskit: subscribe: %w", err)
 	}
 	return b.c.subscribe(func() (*subscription, error) {
-		s := &subscription{conn: b.c, subject: subject}
+		s := newSubscription(b.c, subject)
 		cb := func(msg *nats.Msg) {
 			// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
 			_ = b.sem.Acquire(context.Background(), 1)
@@ -133,7 +133,7 @@ func (b *natsBus) subscribe(ctx context.Context, subject, queue string, handler 
 			go func() {
 				defer untrack()
 				defer b.sem.Release(1)
-				b.handleOne(msg, subject, handler)
+				b.handleOne(s.ctx, msg, subject, handler)
 			}()
 		}
 
@@ -164,10 +164,10 @@ func (b *natsBus) subscribe(ctx context.Context, subject, queue string, handler 
 	})
 }
 
-func (b *natsBus) handleOne(msg *nats.Msg, subject string, handler Handler) {
+func (b *natsBus) handleOne(parent context.Context, msg *nats.Msg, subject string, handler Handler) {
 	// Метрики пишутся с ctx обработчика: он несёт consumer-span, без которого
 	// у гистограммы нет exemplar'а в трейс этой обработки.
-	ctx, span := b.instr.startConsumerSpan(b.c.handlerContext(), msg, subject)
+	ctx, span := b.instr.startConsumerSpan(parent, msg, subject)
 	if b.handlerTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, b.handlerTimeout)

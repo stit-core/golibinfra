@@ -104,7 +104,8 @@ RPC (`rpc.server.*`), читая meter/tracer из глобальных OTel-п�
   (не блокирует fx-старт). Ошибка listen — фатальна для старта.
 - **OnStop** — `srv.Stop(ctx)`: health-loop останавливается, health →
   `NOT_SERVING` (`health.Shutdown`), `GracefulStop` в пределах `ShutdownGrace`,
-  по таймауту или отмене `ctx` — форс `Stop`.
+  по таймауту или отмене `ctx` — форс `Stop`. `ctx` хука — две трети остатка
+  бюджета остановки: треть остаётся хукам после gRPC.
 
 ## Ключевые решения (WHY)
 

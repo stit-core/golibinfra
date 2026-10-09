@@ -102,7 +102,9 @@ make-окружения вызывающего и с холодным кешем
 - **Служебное:** `internal/otelkit` (scope, версия инструментации, `Must`,
   две шкалы бакетов — `DurationBuckets` и `LongDurationBuckets`),
   `internal/envconf` (ридер ENV — `New*Config` китов и `config.Env`),
-  `internal/requestid` (ctx-ключ request-id), `internal/clientip` (ctx-ключ IP клиента — httpkit
+  `internal/requestid` (ctx-ключ request-id), `internal/stopbudget` (две трети остатка бюджета
+  остановки fx — `OnStop`, который ждёт: HTTP, gRPC, пул pgkit, подписка и шина natskit, job'ы
+  timerkit, telemetry), `internal/clientip` (ctx-ключ IP клиента — httpkit
   и `handlertest`, свёртка IPv6 — у лимитера httpkit и bruteforcekit),
   `internal/jwks` (кэш JWKS с троттлингом), `internal/httpdoer` (общий `Doer`), `internal/redact`
   (URL без секретов — ошибки, логи и спаны natskit, cachekit, storagekit, telemetry, httpclient),
@@ -152,6 +154,10 @@ make-окружения вызывающего и с холодным кешем
   `<kit>`, `<kit>/<sub>`, у инстанса — `<kit>:<instance>`); в `/ready` и в health-loop `grpckit`
   попадает через `healthkit.ProvideProbe(ctor)`, у инстанса — `<kit>.ProvideProbe(name)`
   (fx-группа `healthkit.ProbesGroup` = `healthkit.probes`).
+- `OnStop`, который ждёт (запросы, обработчики, job'ы, соединения, экспорт), берёт две трети
+  остатка бюджета остановки — `stopbudget.Share(ctx)` — и по их исчерпании пишет WARN и
+  возвращает `nil`: fx на истёкшем ctx пропускает хуки после, и один ждущий хук отнял бы
+  остановку у остальных. Держат тесты китов (`…LeavesStopBudget`) и ревью.
 - Имя fx-группы кита — `<kit>.<thing>`, константа — `<Thing>Group` (`healthkit.ProbesGroup`,
   `timerkit.JobsGroup`, `grpckit.ServicesGroup`, `pgkit.MigrationsGroup`,
   `httpkit.SecuritySchemeGroup`); имя `fx.Module` — `<kit>` или `<kit>/<sub>` (у

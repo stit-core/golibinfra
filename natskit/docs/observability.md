@@ -108,6 +108,7 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | `warn` | `natskit: dlq stream lookup` | Не удалось выяснить, накрыт ли DLQ-subject стримом; копии уйдут Core-публикацией. |
 | `warn` | `natskit: stream config drift` | Конфиг существующего стрима расходится с ENV (поля `stream`, `field`, `want`, `have`); кит стрим не переписывает. |
 | `warn` | `natskit: subscription drain` | Подписка не додренилась в бюджет `Close` / ошибка снятия интереса. |
+| `warn` | `natskit: subscription drain timeout, handlers cancelled` | Drain подписки `SubscribeOnStart` исчерпал две трети бюджета остановки: обработчикам подписки отменён `ctx` (поля `subject`, `inflight`). |
 | `warn` | `natskit: drain timeout, handlers still in flight` | `Close` исчерпал `DrainTimeout`, обработчики ещё работают (поле `inflight`). |
 | `warn` | `natskit: drain timeout, closing connection` | Flush публикаций не уложился в остаток бюджета — соединение закрыто принудительно. |
 | `warn` | `natskit: jetstream consume error` | Ошибка pull-консьюмера (нет heartbeat, консьюмер удалён, соединение закрыто); поля `stream`, `subject`, `durable`. |

@@ -7,12 +7,12 @@ import (
 	"reflect"
 	"slices"
 	"strings"
-	"time"
 
 	"github.com/danielgtaylor/huma/v2"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/internal/stopbudget"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -183,11 +183,8 @@ func serve(in serveIn) {
 		OnStop: func(ctx context.Context) error {
 			// Треть остатка бюджета остановки — хукам после HTTP (подписки, пул, телеметрия): долгий
 			// запрос или поток её не съедает.
-			if deadline, ok := ctx.Deadline(); ok {
-				var cancel context.CancelFunc
-				ctx, cancel = context.WithTimeout(ctx, time.Until(deadline)*2/3)
-				defer cancel()
-			}
+			ctx, cancel := stopbudget.Share(ctx)
+			defer cancel()
 			return s.Stop(ctx)
 		},
 	})

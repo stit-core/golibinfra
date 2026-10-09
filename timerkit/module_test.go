@@ -3,7 +3,10 @@ package timerkit
 import (
 	"context"
 	"errors"
+	"fmt"
+	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -11,6 +14,7 @@ import (
 
 	"git.stit.tech/stit-core/golibinfra/clockkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 )
 
 func newApp(t *testing.T, opts ...fx.Option) *fx.App {
@@ -83,24 +87,55 @@ func TestModule_InvalidJobFailsOnStart(t *testing.T) {
 	}
 }
 
-func TestModule_StopHonoursDeadline(t *testing.T) {
+// Регрессия RFX-02: job, не свернувшийся по отмене ctx, не съедает бюджет остановки. OnStop ждёт
+// две трети остатка, называет job в WARN и не валит остановку: хук после timerkit (шина, пул,
+// telemetry) выполнен на живом ctx.
+func TestModule_StuckJobLeavesStopBudget(t *testing.T) {
 	release := make(chan struct{})
-	app := newApp(t, supplyJob(Job{
-		Name: "stuck", Interval: time.Hour, RunOnStart: true,
-		Run: func(context.Context) error {
-			<-release
-			return nil
-		},
-	}))
+	started := make(chan struct{}, 1)
+	log := logtest.Capture()
+	var later atomic.Bool
+	app := fx.New(fx.NopLogger,
+		// Хук, зарегистрированный раньше Module, останавливается после него.
+		fx.Invoke(func(lc fx.Lifecycle) {
+			lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+				later.Store(ctx.Err() == nil)
+				return nil
+			}})
+		}),
+		fx.Supply(fx.Annotate(log, fx.As(new(logkit.Logger)))),
+		Module,
+		supplyJob(Job{
+			Name: "stuck", Interval: time.Hour, RunOnStart: true,
+			Run: func(context.Context) error {
+				started <- struct{}{}
+				<-release
+				return nil
+			},
+		}),
+		supplyJob(Job{Name: "polite", Interval: time.Hour, Run: func(context.Context) error { return nil }}),
+	)
 	if err := app.Start(context.Background()); err != nil {
 		t.Fatalf("Start: %v", err)
 	}
 	t.Cleanup(func() { close(release) })
+	<-started
 
-	ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
 	defer cancel()
-	if err := app.Stop(ctx); !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("Stop err = %v, want DeadlineExceeded while the job ignores ctx", err)
+	begin := time.Now()
+	if err := app.Stop(ctx); err != nil {
+		t.Fatalf("Stop = %v, want nil: a stuck job is not a stop failure", err)
+	}
+	if elapsed := time.Since(begin); elapsed > 280*time.Millisecond {
+		t.Errorf("Stop took %s of a 300ms budget: nothing is left to later hooks", elapsed)
+	}
+	if !later.Load() {
+		t.Error("the hook after timerkit did not run on a live ctx")
+	}
+	e, ok := log.Find(slog.LevelWarn, "timerkit: jobs are still running after the stop budget")
+	if jobs, _ := e.Value("jobs"); !ok || fmt.Sprint(jobs) != "[stuck]" {
+		t.Errorf("the stuck job must be named in a WARN: found=%v jobs=%v", ok, jobs)
 	}
 }
 

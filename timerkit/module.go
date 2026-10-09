@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"sync"
 
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/clockkit"
+	"git.stit.tech/stit-core/golibinfra/internal/stopbudget"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -75,6 +77,8 @@ type params struct {
 func startJobs(lc fx.Lifecycle, p params, log logkit.Logger) {
 	ctx, cancel := context.WithCancel(context.Background())
 	var wg sync.WaitGroup
+	// running — имена job'ов, чьи горутины ещё не вернулись.
+	var running sync.Map
 	r := newRunner(log, p.Clock)
 
 	lc.Append(fx.Hook{
@@ -84,7 +88,11 @@ func startJobs(lc fx.Lifecycle, p params, log logkit.Logger) {
 				return err
 			}
 			for _, j := range p.Jobs {
-				wg.Go(func() { r.run(ctx, j) })
+				running.Store(j.Name, struct{}{})
+				wg.Go(func() {
+					defer running.Delete(j.Name)
+					r.run(ctx, j)
+				})
 			}
 			return nil
 		},
@@ -95,12 +103,22 @@ func startJobs(lc fx.Lifecycle, p params, log logkit.Logger) {
 				wg.Wait()
 				close(done)
 			}()
+			// Треть остатка бюджета остановки — хукам после job'ов (шина, пул, telemetry): job,
+			// не свернувшийся по отмене ctx, остановку остальных не отнимает.
+			wait, stop := stopbudget.Share(stopCtx)
+			defer stop()
 			select {
 			case <-done:
-				return nil
-			case <-stopCtx.Done():
-				return fmt.Errorf("timerkit: stop: jobs still running: %w", stopCtx.Err())
+			case <-wait.Done():
+				var names []string
+				running.Range(func(name, _ any) bool {
+					names = append(names, fmt.Sprint(name))
+					return true
+				})
+				slices.Sort(names)
+				log.Warn(stopCtx, "timerkit: jobs are still running after the stop budget", "jobs", names)
 			}
+			return nil
 		},
 	})
 }

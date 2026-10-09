@@ -3,12 +3,12 @@ package telemetry
 import (
 	"context"
 	"fmt"
-	"time"
 
 	"go.opentelemetry.io/otel/log"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
+	"git.stit.tech/stit-core/golibinfra/internal/stopbudget"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 )
 
@@ -65,11 +65,8 @@ func newProvidersWithLifecycle(p providerParams) (*Providers, error) {
 	p.LC.Append(fx.Hook{OnStop: func(ctx context.Context) error {
 		// Треть бюджета остановки — в запасе: хук, вернувшийся на самом дедлайне, fx считает
 		// просроченным — молчащий коллектор дал бы ошибку остановки.
-		if deadline, ok := ctx.Deadline(); ok {
-			var cancel context.CancelFunc
-			ctx, cancel = context.WithTimeout(ctx, time.Until(deadline)*2/3)
-			defer cancel()
-		}
+		ctx, cancel := stopbudget.Share(ctx)
+		defer cancel()
 		// Ошибка остановки — код выхода 1: Job без коллектора упал бы, хотя работа сделана.
 		if err := providers.Shutdown(ctx); err != nil {
 			l.ErrorContext(ctx, "telemetry: shutdown", "error", err)
