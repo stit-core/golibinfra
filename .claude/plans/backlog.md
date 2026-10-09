@@ -45,3 +45,16 @@
   идентификаторе сущности в subject запрос отдаёт строку на сущность за каждый сбор метрик, хотя gauge'и несут серию на
   инстанс (с `WithMetricSubject` — на шаблон). Триггер: потребитель с id в subject и заметной ценой сбора или правка
   `Backlog`.
+- **archkit-rule-gaps** — формы нарушений, которые правила `archkit` не видят (правила синтаксические — README кита § Инварианты):
+  порт между доменами через `return (uc)`, `return Port(uc)`, переменную, именованный результат, alias типа и dot-импорт чужого
+  домена; `time.Now` за обёрткой в `pkg/`; `io/ioutil`, `path/filepath` и `embed` в корне домена; в SQL — `public . users`,
+  `FROM (a CROSS JOIN b)`, `CREATE UNLOGGED TABLE`, схема не `public`, представление над чужой таблицей; запись
+  `WithUncheckedPackages` о пакете под другим доверенным. Триггер: повторный аудит archkit или такая форма у потребителя.
+- **natskit-empty-durable** — `SubscribeStream` с пустым `durable` шина принимает и создаёт эфемерный консьюмер, хотя контракт
+  метода — durable: позиция между переподключениями и раздел нагрузки между инстансами (`natskit/docs/architecture.md`);
+  `natstest` такой вызов отвергает (README testkit: «строже шины» — как и фильтр вне subject'ов стрима, с которым подписка шины
+  молчит). Правка — отказ кита: смена поведения, строка аннотации. Триггер: правка `SubscribeStream` или потребитель с пустым
+  durable.
+- **grpckit-health-test-time-bound** — `TestHealthProbeTimeoutIsIndependentOfInterval` (`grpckit/health_test.go`) отличает дедлайн
+  пробы (50 мс) от `GRPC_HEALTH_INTERVAL` (400 мс) по часам процесса: запас 350 мс — допуск по времени, под тяжёлой нагрузкой тест
+  может покраснеть без дефекта кита. Триггер: падение этого теста в гейте или pre-push.
