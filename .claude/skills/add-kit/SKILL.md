@@ -63,7 +63,11 @@ description: Завести в golibinfra новый kit по конвенция
 4. **Логирование и observability.** Логгер — `logkit.Logger` из fx-графа.
    Метрики/спаны — через `internal/otelkit` (`otelkit.Meter("<kit>")`,
    `otelkit.Must(...)`) в конструкторе, не в `var` пакета: инертны без провайдера
-   у потребителя, пишут в провайдер, текущий на момент сборки. Имена —
+   у потребителя, пишут в провайдер, текущий на момент сборки. Callback
+   observable-инструмента (`RegisterCallback`) `Module` регистрирует в `OnStart` и снимает в
+   `OnStop` того же хука: зарегистрированный в конструкторе или Invoke остался бы в
+   `MeterProvider` у графа, не дошедшего до старта (образцы: `pgkit/module.go`,
+   `outboxkit/instance.go`). Имена —
    `<kit_prefix>_<what>_<unit|total>`, label'ы — конечные множества. Гистограмма
    длительности — `metric.WithUnit("s")` + `otelkit.DurationBuckets()`, своих
    границ не заводим. Кит с инфраструктурной зависимостью (БД, брокер, кэш,

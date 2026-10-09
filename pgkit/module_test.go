@@ -20,6 +20,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func TestModule_WiresGraphAndClosesPoolOnStop(t *testing.T) {
@@ -75,6 +76,34 @@ func TestModule_WiresGraphAndClosesPoolOnStop(t *testing.T) {
 
 	if _, err := db.Exec(ctx, `SELECT 1`); err == nil || !strings.Contains(err.Error(), "closed pool") {
 		t.Fatalf("после Stop Exec err = %v, want closed pool", err)
+	}
+}
+
+// Регрессия: callback pg_pool_* живёт от OnStart до OnStop — пул графа, который собран и не
+// стартовал, не оставляет его в MeterProvider.
+func TestModule_PoolMetricsLiveFromStartToStop(t *testing.T) {
+	pg := testkit.StartPostgres(t)
+	// Своя роль: серии primary и replica в провайдере процесса делят все тесты пакета.
+	const role = "start-to-stop"
+	lc := fxtest.NewLifecycle(t)
+	pool, err := pgkit.OpenPool(lc, pg.PoolConfig(), role, logkit.Nop())
+	if err != nil {
+		t.Fatalf("openPool: %v", err)
+	}
+	// Хук остановки графа, не дошедшего до старта, не выполняется: пул закрывает тест.
+	t.Cleanup(pool.Close)
+	points := func() int { return len(metrictest.Collect(t).Find("pg_pool_max_conns", "role", role)) }
+
+	if n := points(); n != 0 {
+		t.Fatalf("built, not started: %d points observed, want 0", n)
+	}
+	lc.RequireStart()
+	if n := points(); n != 1 {
+		t.Fatalf("started: %d points observed, want 1", n)
+	}
+	lc.RequireStop()
+	if n := points(); n != 0 {
+		t.Fatalf("stopped: %d points observed, want 0", n)
 	}
 }
 

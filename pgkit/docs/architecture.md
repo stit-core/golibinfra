@@ -289,9 +289,11 @@ WHY роутинг — explicit, а не автоматический: kit не 
 
 `Module` provide'ит граф:
 
-- `newPoolWithLifecycle` — primary `*pgxpool.Pool`: `NewPool` + `InstrumentPool(pool,
-  RolePrimary)` + `OnStop`-хук (снимает регистрацию метрик, закрывает пул и
-  отменяет его контекст). `Close` ждёт возврата каждого занятого соединения, поэтому хук
+- `newPoolWithLifecycle` — primary `*pgxpool.Pool`: `NewPool` и хук — `OnStart` регистрирует
+  метрики (`InstrumentPool(pool, RolePrimary)`), `OnStop` снимает регистрацию, закрывает пул и
+  отменяет его контекст. WHY метрики в хуке, а не в конструкторе: `OnStop` fx зовёт только у
+  хуков, до которых дошёл старт, и callback графа, который собран и не стартовал, остался бы в
+  `MeterProvider`. `Close` ждёт возврата каждого занятого соединения, поэтому хук
   ждёт его две трети остатка бюджета остановки, затем пишет WARN `pgkit: pool close is still
   waiting for acquired connections` (`role`, `acquired_conns`) и возвращает `nil`. WHY:
   забытая транзакция не должна съесть бюджет хуков после пула — fx не зовёт хук, когда ctx

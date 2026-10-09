@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"go.opentelemetry.io/otel/metric"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/internal/envconf"
@@ -88,9 +89,13 @@ func openPool(lc fx.Lifecycle, cfg PoolConfig, role string, log logkit.Logger) (
 		cancel()
 		return nil, err
 	}
-	reg := InstrumentPool(pool, role)
-
+	// Callback регистрирует OnStart: пул графа, не дошедшего до старта, не оставляет его в MeterProvider.
+	var reg metric.Registration
 	lc.Append(fx.Hook{
+		OnStart: func(context.Context) error {
+			reg = InstrumentPool(pool, role)
+			return nil
+		},
 		OnStop: func(ctx context.Context) error {
 			defer cancel()
 			err := reg.Unregister()

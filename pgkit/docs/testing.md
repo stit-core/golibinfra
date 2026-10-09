@@ -100,6 +100,9 @@ snap := metrictest.Collect(t)
 _ = snap.Find("pg_pool_total_conns", "role", pgkit.RolePrimary) // серии pg_pool_*{role="primary"}
 ```
 
+`Module` регистрирует тот же callback в `OnStart` и снимает в `OnStop`: серии пула графа есть
+между `app.Start` и `app.Stop`, после `fx.New` без старта их нет (`module_test.go`).
+
 ## Рецепт: домен без Postgres
 
 Фейки `pgkit.Transactor` живут в `testkit/pgtest`: `pgtest.Identity` прогоняет

@@ -91,6 +91,75 @@ func TestModule_WiresPublisherWorkerAndJob(t *testing.T) {
 	}
 }
 
+// Регрессия: callback backlog-gauge'ей живёт от OnStart до OnStop. Граф, собранный без старта, и
+// старт, упавший раньше хука кита, не оставляют его в MeterProvider: серию инстанса наблюдал бы
+// callback приложения, которого нет.
+func TestOutbox_BacklogGaugesLiveFromStartToStop(t *testing.T) {
+	collect := metricsSince(t)
+	boom := errors.New("boom")
+	failStart := func(lc fx.Lifecycle) {
+		lc.Append(fx.Hook{OnStart: func(context.Context) error { return boom }})
+	}
+	graphs := map[string]struct {
+		graph    fx.Option
+		instance string
+	}{
+		"Module": {
+			fx.Options(deps(&fakeRepo{}, &capturingBus{}, valid(outboxkit.Config{})), outboxkit.Module),
+			outboxkit.DefaultInstance,
+		},
+		"Instance": {
+			fx.Options(instanceDeps(&fakeRepo{}, &capturingBus{}), outboxkit.Instance("gauges", "outbox_gauges")),
+			"gauges",
+		},
+	}
+	ctx := context.Background()
+	for name, tc := range graphs {
+		t.Run(name, func(t *testing.T) {
+			points := func() int { return len(collect().Find("outbox_pending_count", "instance", tc.instance)) }
+
+			if err := fx.New(fx.NopLogger, tc.graph, scheduler()).Err(); err != nil {
+				t.Fatalf("fx.New: %v", err)
+			}
+			if n := points(); n != 0 {
+				t.Fatalf("built, not started: %d points observed, want 0", n)
+			}
+
+			// Модуль раньше модуля кита: его хук добавлен раньше, старт падает, не дойдя до хука кита.
+			early := fx.New(fx.NopLogger, fx.Module("fails-first", fx.Invoke(failStart)), tc.graph, scheduler())
+			if err := early.Start(ctx); !errors.Is(err, boom) {
+				t.Fatalf("start err = %v, want boom", err)
+			}
+			if n := points(); n != 0 {
+				t.Fatalf("start failed before the kit's hook: %d points observed, want 0", n)
+			}
+
+			// Invoke корня идёт после Invoke модулей: старт падает после хука кита, откат его снимает.
+			late := fx.New(fx.NopLogger, tc.graph, scheduler(), fx.Invoke(failStart))
+			if err := late.Start(ctx); !errors.Is(err, boom) {
+				t.Fatalf("start err = %v, want boom", err)
+			}
+			if n := points(); n != 0 {
+				t.Fatalf("start rolled back: %d points observed, want 0", n)
+			}
+
+			app := fx.New(fx.NopLogger, tc.graph, scheduler())
+			if err := app.Start(ctx); err != nil {
+				t.Fatalf("Start: %v", err)
+			}
+			if n := points(); n != 1 {
+				t.Fatalf("started: %d points observed, want 1", n)
+			}
+			if err := app.Stop(ctx); err != nil {
+				t.Fatalf("Stop: %v", err)
+			}
+			if n := points(); n != 0 {
+				t.Fatalf("stopped: %d points observed, want 0", n)
+			}
+		})
+	}
+}
+
 // Репозиторий без BacklogReporter — модуль поднимается, gauge'ей просто нет.
 func TestModule_WithoutBacklogReporter(t *testing.T) {
 	cfg := valid(outboxkit.Config{BatchSize: 10, Interval: time.Second, PublishMode: outboxkit.PublishBatch})

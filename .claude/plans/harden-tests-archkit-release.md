@@ -119,9 +119,9 @@ blocked-by: —
 - **S12.** Поведение китов не менялось: доки, doc-comment'ы, тесты. `logkit.New` с `WithRedact` и `Disabled` паттерны не проверяет:
   названо в README, правка поведения — бэклог `logkit-redact-disabled-literal`; `internal/httpdoer` — правка package-doc, а не
   алиас в oidckit (вне объёма; под API — и доки amocrmkit, hubkit); образы Postgres и Redis — мажорная линия, как в README testkit.
-  Шаг `vuln` покраснел без правок кода (stdlib go1.26.6, x/net 0.59) — `7f7b626`: `toolchain go1.26.9`, `go 1.26.6` прежний.
   `docs_test.go` держит состав `make check` и перечни пакетов — по разделу-индексу; блок README authnkit и httpkit побайтно равен
   коду теста (блок через `go run` — код мимо vet и lint гейта); копии logkit и корневого графа — бэклог `readme-snippet-copies`.
+- **S13.** Находка `-count>1`: callback observable-инструментов outboxkit и pgkit — от `OnStart` до `OnStop`; hubkit/sync — бэклог.
 
 ## Handoff
 **Шаблон, `repair-harness` S7 — bump v1.4.0** (места — по сборке шаблона `e2f3dd2` через `replace`; на bump — сверить сборкой):
@@ -241,10 +241,10 @@ S1–S12 закрыты и приняты валидаторами (S12 — ша
   сессии, outbox и инстансы) без своих миграций — `pgkit.ErrSchema` на старте; дедлайн миграций прерывает идущий оператор,
   блокировку он ждёт ≤ `PG_MIGRATE_LOCK_TIMEOUT` (отказ — `dirty`); занятое соединение на остановке пула — WARN и `nil` через 2/3
   бюджета. outbox: `ordered` — по моменту вставки, а не началу транзакции; предел тела — по JSONB-тексту; метрики — без label
-  `subject` (шаблон — `WithMetricSubject` инстанса), backlog-gauge'и — серия на инстанс (пустая очередь — 0); producer-спан
-  natskit без шаблона — `natskit.publish`, `destination.template` — только шаблон; доставка события — в трассе записавшего его
-  запроса. cachekit: `SetNX`, `GetDel`, `CompareAndDelete` без повторов — на сбое связи ошибка вместо ложного «нет»
-  (`REDIS_MAX_RETRIES` — `Get`, `Set`, `Delete`, теги, `Ping`), соединений — до 2×`REDIS_POOL_SIZE`; `MemoryCache` и
+  `subject` (шаблон — `WithMetricSubject` инстанса), backlog-gauge'и — серия на инстанс (пустая очередь — 0) от старта до остановки
+  (и `pg_pool_*`); producer-спан natskit без шаблона — `natskit.publish`, `destination.template` — только шаблон; доставка события
+  — в трассе записавшего его запроса. cachekit: `SetNX`, `GetDel`, `CompareAndDelete` без повторов — на сбое связи ошибка вместо
+  ложного «нет» (`REDIS_MAX_RETRIES` — `Get`, `Set`, `Delete`, теги, `Ping`), соединений — до 2×`REDIS_POOL_SIZE`; `MemoryCache` и
   `httpkit.MemoryStore` — до 100 000 ключей (новый сверх — ошибка, без вытеснения). httpclient: breaker и label `host` — у первых
   1024 хостов (`HTTPCLIENT_MAX_HOSTS`), прочие — `host="other"` без breaker'а. httpkit: тело сверх лимита в huma — 413 (лимит
   операции выше общего поднимает транспортный, и у скрытой); идемпотентность не хранит 408/409/425/429, запросы без credentials и

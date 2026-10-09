@@ -236,13 +236,15 @@ func checkSchema(lc fx.Lifecycle, o *Outbox, _ pgkit.Migrated) {
 	}})
 }
 
-func registerInstanceGauges(lc fx.Lifecycle, o *Outbox) error {
-	reg, err := o.RegisterBacklogGauges()
-	if err != nil || reg == nil {
-		return err
-	}
+// registerInstanceGauges подключает backlog-gauge'и от OnStart до OnStop: callback, зарегистрированный
+// при сборке графа, остался бы в MeterProvider у графа, не дошедшего до старта.
+func registerInstanceGauges(lc fx.Lifecycle, o *Outbox) {
+	var reg metric.Registration
 	lc.Append(fx.Hook{
+		OnStart: func(context.Context) (err error) {
+			reg, err = o.RegisterBacklogGauges()
+			return err
+		},
 		OnStop: func(context.Context) error { return reg.Unregister() },
 	})
-	return nil
 }

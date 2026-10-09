@@ -4,8 +4,9 @@
 `pg_pool_*`, а соединения — спанами через `otelpgx`. Метрики
 регистрирует `InstrumentPool(pool, role)` через глобальный OTel Meter
 (`otel.Meter("git.stit.tech/stit-core/golibinfra/pgkit")`); в fx-графе это
-делает `Module` для primary и replica, привязывая отписку
-(`Registration.Unregister`) к `OnStop`.
+делает `Module` для primary и replica: регистрация — в `OnStart`, отписка
+(`Registration.Unregister`) — в `OnStop`. Серии `pg_pool_*` есть от старта до остановки
+приложения; пул графа, который собран и не стартовал, callback в `MeterProvider` не оставляет.
 
 Kit **не выставляет** resource-атрибуты
 (`service.name`/`service.version`/`deployment.environment.name`) — их несёт

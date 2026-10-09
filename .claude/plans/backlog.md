@@ -26,6 +26,10 @@
   блока в README гейт не видит (у authnkit и httpkit блок побайтно равен коду теста). Графам fx нужна сверка опций, сниппеты
   logkit «Без fx» — три фрагмента без проверки ошибок: кодом теста они не собираются, сверка — после их правки. Триггер: правка
   этих сниппетов или повторный аудит угла доков.
+- **hubkit-sync-callback-lifecycle** — `hubkit/sync.NewEngine` регистрирует observable-callback движка в конструкторе, снимает его
+  `Engine.Close` (`Module` — в `OnStop`): движок графа, не дошедшего до старта, оставляет callback в `MeterProvider` (у pgkit и
+  outboxkit callback живёт от `OnStart` до `OnStop`). Кит вне объёма аудита; правка — контракт `NewEngine`/`Close`. Триггер:
+  правка `hubkit/sync` или его тесты под `-count>1`.
 - **guard-template-parity** — guard сессии (`.claude/hooks/guard-bash.sh`) не видит формы, которые закрыл guard шаблона: код для
   интерпретатора (`bash -c`, `eval`, heredoc), имя `git` в кавычках, алиасы и `include` конфига git, запись в `.git/config`,
   `git send-pack`; README § Гейт называет их. Триггер: повторный аудит угла 8 или общий guard двух репо.

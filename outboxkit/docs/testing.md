@@ -49,7 +49,8 @@ in-memory фейках (`testkit/pgtest.Identity` / `Recorder` как транз
 `fx`-сборки (`outboxkit.Module`, `outboxkit.Instance`) поднимаются через
 `fxtest`: резолвятся `Publisher`/`Worker`, в группе `timerkit.JobsGroup` лежат
 drain- и maintenance-job'ы, backlog-gauge'и появляются на старте и исчезают
-после `Unregister` на стопе. Проверка старта: выключенный JetStream (заглушка
+после `Unregister` на стопе, а у графа, который собран без старта или упал на старте раньше
+хука кита, их нет. Проверка старта: выключенный JetStream (заглушка
 `natskit.NewStreamBus` с `Config{}`) валит старт `Module` и `Instance`, фейк с
 `natskit.StreamChecker` получает фильтры `WithSubjects` и его `ErrNoStream` валит старт с
 именем инстанса; `Publish` вне объявленных subject'ов — `ErrSubjectNotDeclared`, тело сверх

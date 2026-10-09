@@ -133,6 +133,11 @@ make-окружения вызывающего и с холодным кешем
   структуры, провайдер логов (`otel/log/global`), присваивание пакетной переменной из функции.
   Запись в тестах проверяет `testkit/metrictest` — кит через провайдер процесса (`Collect`), код
   с переданным `Meter` — через `NewProvider`; глобальный `MeterProvider` тест не ставит.
+- Callback observable-инструмента (`RegisterCallback`) `Module` регистрирует в `OnStart` и снимает
+  в `OnStop` того же хука (`pg_pool_*` pgkit, backlog-gauge'и outboxkit), а не в конструкторе или
+  Invoke: `OnStop` fx зовёт только у хуков, до которых дошёл старт, и граф, собранный без старта,
+  оставил бы callback в `MeterProvider`. Держат тесты китов и ревью; у `hubkit/sync` callback
+  движка живёт от `NewEngine` до `Close`.
 - Ключ ошибки в записи лога — `error` (так пишет и `FxLogger`): запрос по одному ключу видит все
   киты; `TestLogErrorKeyIsError` (`logkit`) ловит литерал `"err"` аргументом вызова, в `[]any` и
   полем составного литерала (`slog.Attr{Key: …}`); ключ из константы, переменной или функции и

@@ -70,8 +70,10 @@ label дал бы серию на сущность. Гистограммы `_sec
 callback зарегистрирован:
 
 - **`outboxkit.Module` и `outboxkit.Instance`** — автоматически: fx проверяет,
-  реализует ли `Repository` интерфейс. Без reporter'а — no-op. `Unregister`
-  вешается на `OnStop`.
+  реализует ли `Repository` интерфейс. Без reporter'а — no-op. Callback регистрируется в
+  `OnStart` и снимается в `OnStop`: серии есть от старта до остановки приложения, а граф,
+  который собран и не стартовал или упал на старте раньше хука кита, callback в
+  `MeterProvider` не оставляет.
 - **Вручную** — `Outbox.RegisterBacklogGauges()` (или
   `RegisterBacklogGauges(name, reporter)` для голого `Repository`); сохранить
   вернувшийся `metric.Registration` и вызвать `Unregister()` на shutdown. Метод
