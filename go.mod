@@ -2,6 +2,8 @@ module git.stit.tech/stit-core/golibinfra
 
 go 1.26.6
 
+toolchain go1.26.9
+
 require (
 	github.com/anthropics/anthropic-sdk-go v1.71.0
 	github.com/danielgtaylor/huma/v2 v2.39.1
@@ -115,7 +117,7 @@ require (
 	go.uber.org/zap v1.28.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.5 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/net v0.59.0 // indirect
+	golang.org/x/net v0.60.0 // indirect
 	golang.org/x/sys v0.48.0 // indirect
 	golang.org/x/text v0.42.0 // indirect
 	google.golang.org/genproto/googleapis/api v0.0.0-20260908043556-f8649ddbbfe6 // indirect
