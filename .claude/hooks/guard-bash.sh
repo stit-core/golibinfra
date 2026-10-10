@@ -3,10 +3,13 @@
 # exit 2 блокирует вызов, stderr уходит Claude.
 #
 # Блокирует: git commit с -n; git с --no-veri… (любая подкоманда; флаг в кавычках — тот же флаг);
-# core.hooksPath в команде с git (прочитать — git config --list); команду с путём git-hooks,
-# pre-push или commit-msg, в которой не узнал чтение, и запись туда перенаправлением. Команда
-# проверяется построчно; тела heredoc и строки в кавычках — данные (сообщение коммита может
-# упоминать флаги). Это страховка от «удобного» обхода, а не от обфускации: формы, которые guard
+# core.hooksPath в команде с git; алиасы и include конфига git в команде (-c alias.…, git config
+# include.path …, и значением в кавычках: -c 'alias.c=commit -n'; прочитать — git config --list);
+# команду с путём git-hooks, pre-push или commit-msg, в которой не узнал чтение, и запись туда
+# перенаправлением. Команда проверяется построчно; тела heredoc и строки в кавычках — данные
+# (сообщение коммита может упоминать флаги), но у оболочки-интерпретатора (bash -e -c, sh -s, eval,
+# | bash -x, bash <<EOF, sh<<<'…') — код, как и текст echo и printf рядом с ней. Это страховка от
+# «удобного» обхода, а не от обфускации: формы, которые guard
 # держит, — TestGuardBash (scripts/gate_test.go), чего не видит — README § Гейт. Окружение команды
 # guard не разбирает: переменные make (`MAKEFLAGS=i make check`) и оболочки (`BASH_ENV=… git push`,
 # экспортированные функции, SHELLOPTS) отвергает или снимает сам гейт — make check, хуки и
@@ -30,10 +33,39 @@ text=$(printf '%s\n' "$cmd" | awk '
         body = substr($0, RSTART, RLENGTH); sub(/^[^<]*<<-?[ \t]*["'\'']?/, "", body)
     }')
 
-# Ключ конфига опасен только рядом с git: grep по нему не блокируется.
+# Кавычки без пробела внутри ($'…', $"…" тоже) и `\` перед буквой слово не меняют: $'bash' и \bash — bash.
+unquote() { sed -E -e "s/\\\$?'([^' ]*)'/\\1/g" -e 's/\$?"([^" \\]*)"/\1/g' -e 's/\\([[:alnum:]_.-])/\1/g'; }
+# Строка с `\` в конце и следующая — одна команда.
+join_lines() { sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}'; }
+
+# Интерпретатор вне тел heredoc исполняет строку в кавычках или тело heredoc — это код, а не данные.
+# Оболочку узнаём по имени (и с каталогом, и в кавычках): с кластером -c или -s среди слов своей команды
+# (bash -e -c, env bash -euc), справа от `|` (| bash -x, | sudo bash) и с `<<` (bash -e <<EOF, sh<<<'…').
+nl=$'\n'
+shell='(ba|da|z|k|a|mk|c|tc|fi)?sh'
+start='(^|[;&|(`[:space:]])'
+before='(^|[;&|(`[:space:]/])'
+rest="([[:space:]]+[^;&|${nl}]*)?"
+re_interp="${before}(${shell})${rest}[[:space:]]+-[[:alnum:]]*[cs][[:alnum:]]*([[:space:]]|\$)"
+re_interp+="|${start}eval([[:space:]]|\$)"
+re_interp+="|\\|&?([^;&|)${nl}]*[[:space:]/(])?(${shell})([[:space:];&|)<>]|\$)"
+re_interp+="|${before}(${shell})${rest}[[:space:]]*<<"
+norm=$(printf '%s' "$text" | join_lines | unquote)
+interp=0
+if [[ $norm =~ $re_interp ]]; then
+    interp=1
+    text=$(printf '%s' "$cmd" | tr -d "\"'")
+    norm=$(printf '%s' "$text" | join_lines | unquote)
+fi
+
+# Ключевые слова ищем без кавычек вовсе: кавычка с пробелом внутри слово не прячет
+# (-c 'alias.c=commit -n'). Ключ конфига опасен только рядом с git: grep по нему не блокируется.
+keys=$(printf '%s' "$norm" | tr '[:upper:]' '[:lower:]' | sed -E "s/\\\$?[\"']//g")
 re_git='(^|[^[:alnum:]_.-])git([[:space:]]|$)'
-[[ $(printf '%s' "$text" | tr '[:upper:]' '[:lower:]') == *core.hookspath* && $text =~ $re_git ]] &&
-    block "core.hooksPath"
+[[ $keys == *core.hookspath* && $norm =~ $re_git ]] && block "core.hooksPath"
+# Алиас и подключаемый конфиг прячут флаг от проверок ниже: git -c alias.c='commit -n' c.
+re_cfg='(-c[[:space:]]*|config[^;&|]*)(alias|include(if)?)\.'
+[[ $norm =~ $re_git && $keys =~ $re_cfg ]] && block "алиас или include конфига git"
 
 # Слова команды с учётом кавычек. Вне кавычек `\x` — буква, пробел — граница слова (код 037); в
 # кавычках и после `\` разделители команд прячутся в коды 001–006 и возвращаются, когда строка уже
@@ -208,16 +240,21 @@ while IFS= read -r seg; do
                 continue
             fi
             ;;
-        *) [[ $name =~ ^($readers)$ || $cmd =~ $run_hook ]] && continue ;;
+        *)
+            [[ $cmd =~ $run_hook ]] && continue
+            # Текст echo и printf рядом с интерпретатором — его код (echo '…' | bash), а не чтение.
+            [[ $name =~ ^($readers)$ ]] && ! { ((interp)) && [[ $name =~ ^(echo|printf)$ ]]; } && continue
+            ;;
     esac
     block "${name:-команда} по scripts/git-hooks"
-done <<<"$(printf '%s' "$text" | tr -d '\001-\007\037' | sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' | split_words |
+done <<<"$(printf '%s' "$text" | tr -d '\001-\007\037' | join_lines | split_words |
     sed -e 's/>|/>/g' -e 's/>&/>/g' | tr ';&|()`' '\n\n\n\n\n\n' | tr '\001\002\003\004\005\006' ';&|()`')"
 
 # Флаги git ищем вне кавычек, по сегментам: строки (с учётом `\` в конце) и части между
-# ; & | ( ) и обратными кавычками. Слово-флаг в кавычках ("--no-verify", '-n') — тот же флаг.
-segments=$(printf '%s' "$text" | sed -e ':a' -e '/\\$/{N;s/\\\n//;ba' -e '}' | tr '\n' ';' |
-    sed -E -e "s/(^|[[:space:]])[\"'](-[^\"'[:space:]]*)[\"']/\1\2/g" -e 's/"([^"\\]|\\.)*"//g' -e "s/'[^']*'//g" |
+# ; & | ( ) и обратными кавычками. Слово-флаг в кавычках ("--no-verify", '-n') — тот же флаг;
+# слово после `<<<` — текст для команды (sh<<<git).
+segments=$(printf '%s' "$text" | join_lines | tr '\n' ';' |
+    sed -E -e "s/(^|[[:space:]])[\"'](-[^\"'[:space:]]*)[\"']/\1\2/g" -e 's/"([^"\\]|\\.)*"//g' -e "s/'[^']*'//g" -e 's/<<</ /g' |
     tr ';&|()`' '\n\n\n\n\n\n')
 while read -r -a words; do
     git=0 sub="" skip=0

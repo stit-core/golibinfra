@@ -234,6 +234,75 @@ B echo "x\\" ; chmod -x scripts/git-hooks/pre-push
 B echo don\'t; git commit -n -m x
 B echo \" ; git commit -n -m x
 
+# --- отказ: код для оболочки-интерпретатора — строка в кавычках, тело heredoc и текст echo рядом с ней
+B bash -c 'git commit -n -m x'
+B sh -c "git commit -n -m x"
+B eval "git commit -n -m x"
+B printf 'git commit -n -m x' | bash
+B bash -e -c 'git commit -n -m x'
+B bash -euo pipefail -c 'git add -A && git commit -n -m x'
+B bash --norc -c 'git commit -n -m x'
+B bash --rcfile 'my rc' -c 'git commit -n -m x'
+B bash -cx 'git commit -n -m x'
+B bash -e \⏎  -c 'git commit -n -m x'
+B bash \⏎  -e -c 'git commit -n -m x'
+B bash -c 'git commit \⏎  -n -m x'
+B echo start⏎bash -e -c 'git commit -n -m x'⏎echo done
+B "bash" -c 'git commit -n -m x'
+B ba""sh -c 'git commit -n -m x'
+B \bash -c 'git commit -n -m x'
+B $'bash' -c 'git commit -n -m x'
+B bash "-c" 'git commit -n -m x'
+B /bin/bash -c 'git commit -n -m x'
+B env bash -euc 'git commit -n -m x'
+B zsh -c 'git commit -n -m x'
+B dash -c 'git commit -n -m x'
+B ksh -c 'git commit -n -m x'
+B "eval" 'git commit -n -m x'
+B bash -c 'git push --no-verify'
+B bash -e -c 'git -c core.hooksPath=/dev/null push'
+B printf 'git commit -n -m x' | bash -x
+B printf 'git commit -n -m x' | sh -e
+B printf 'git commit -n -m x' | bash -
+B printf 'git commit -n -m x' | bash /dev/stdin
+B printf 'git commit -n -m x' | sudo bash
+B echo 'git commit -n -m x' | bash⏎echo done
+B echo 'git commit -n -m x' | bash >/dev/null
+B echo 'git commit -n -m x' | bash>/dev/null
+B cat <<'EOF' | bash -x⏎git commit -n -m x⏎EOF
+B bash -e <<'EOF'⏎git commit -n -m x⏎EOF
+B sh<<<'git commit -n -m x'
+B bash -e -c 'chmod -x scripts/git-hooks/pre-push'
+B echo 'chmod -x scripts/git-hooks/pre-push' | bash
+B echo 'chmod -x scripts/git-hooks/pre-push' | bash -x
+B printf 'rm scripts/git-hooks/commit-msg\n' | sh
+
+# --- отказ: алиасы и include конфига git — и значением в кавычках с пробелом
+B git -c alias.c='commit -n' c -m x
+B git config alias.p 'push --no-verify'
+B git -c include.path=/tmp/x.cfg push
+B git config --global include.path /tmp/x.cfg
+B git -c 'alias.c=commit -n' c -m x
+B git -c "alias.c=commit -n" c -m x
+B git -c $'alias.c=commit -n' c -m x
+B git -c 'alias.c=!git commit -n' c -m x
+B git  -c  'alias.c=commit -n'  c -m x
+B git -c'alias.c=commit -n' c -m x
+B git -c \⏎  'alias.c=commit -n' c -m x
+B git -C . -c 'alias.c=commit -n' c -m x
+B git -c 'include.path=/tmp/my cfg' push
+B git -c "includeIf.gitdir:/.path=/tmp/my cfg" push
+B git --config-env=alias.c=X c -m x
+B GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=alias.c GIT_CONFIG_VALUE_0='commit -n' git c -m x
+B GIT_CONFIG_PARAMETERS="'alias.c=commit -n'" git c -m x
+B git -c ALIAS.c='commit -n' c -m x
+
+# --- отказ по замыслу, цена правил: интерпретатор в команде снимает кавычки со всей строки
+B git commit -m "fix: -n flag" && bash -c 'make check'
+B echo "pre-push ok" && bash -c 'make check'
+B grep -n "x | sh -e" scripts/git-hooks/pre-push
+B git config --get alias.co
+
 # --- пропуск: чтение хуков, текст о них и обычная работа
 A git push origin main
 A git log -n 5
@@ -373,3 +442,19 @@ A git show --stat HEAD -n 1
 A git commit -m x -- file-n.go
 A git rev-list -n 1 HEAD
 A sed -n 1,20p scripts/git-hooks/pre-push
+
+# --- пропуск: интерпретатор без обхода, текст об алиасах и интерпретаторах
+A python3 - <<'EOF'⏎print('bash -c and alias. here are data')⏎EOF
+A grep -rn alias. README.md
+A git log --grep 'alias.'
+A bash -c 'make check'
+A bash -e -c 'make check'
+A echo 'refs/heads/main abc refs/heads/main 000' | bash scripts/git-hooks/pre-push
+A ssh -c aes256-ctr host uptime
+A git commit -m "docs: bash -e -c в примере"
+A git commit -F - <<'EOF'⏎fix(gate): guard видит bash -c 'git commit -n' и алиасы⏎EOF
+A make check | tee /tmp/check.log
+A go test ./... | grep -v '^ok'
+A docker exec db sh -c 'pg_isready'
+A git config --list
+A git config user.name
