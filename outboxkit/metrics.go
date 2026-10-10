@@ -25,7 +25,9 @@ type SubjectBacklog struct {
 // BacklogReporter — опциональный интерфейс Repository: реализующие его store'ы
 // (см. outboxkit/pgstore) экспонируют backlog по subject'ам. Через
 // RegisterBacklogGauges это становится `outbox_lag_seconds` и
-// `outbox_pending_count` (ObservableGauge).
+// `outbox_pending_count` (ObservableGauge). Backlog обязан уважать ctx: срок снимка действует
+// через него, и реализация, которая ctx не читает, на зависшем хранилище оставляет gauge'и на
+// последнем значении — следующий снимок не начнётся, пока идёт этот.
 type BacklogReporter interface {
 	Backlog(ctx context.Context) ([]SubjectBacklog, error)
 }

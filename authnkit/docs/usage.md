@@ -280,10 +280,12 @@ Refresh — не JWT, а непрозрачный токен в сессии `au
 // Вход — одной транзакцией под блокировкой строки пользователя: проверка пароля и статуса и
 // Issue видят одно состояние. Без блокировки вход, прочитавший пользователя до COMMIT смены
 // пароля, выдал бы сессию уже после RevokeAll — и она пережила бы «выйти везде».
-var refresh session.Token
-err := tx.WithTx(ctx, func(ctx context.Context) error {
-	u, err := users.LockByLogin(ctx, login) // SELECT … FOR SHARE: ждёт COMMIT смены пароля и статуса
-	if err != nil {
+var (
+	refresh session.Token
+	u       User
+)
+err := tx.WithTx(ctx, func(ctx context.Context) (err error) {
+	if u, err = users.LockByLogin(ctx, login); err != nil { // SELECT … FOR SHARE: ждёт COMMIT смены пароля и статуса
 		return err
 	}
 	if ok, err := hasher.Verify(ctx, password, u.PasswordHash); err != nil || !ok || u.Blocked {
@@ -292,8 +294,13 @@ err := tx.WithTx(ctx, func(ctx context.Context) error {
 	refresh, err = sessions.Issue(ctx, u.ID) // в транзакции из ctx; refresh.Value — клиенту (cookie)
 	return err
 })
+if err != nil {
+	return err
+}
 access, err := jwt.SignAccess(ctx, map[string]any{"sub": u.ID, "role": u.Role})
+```
 
+```go
 // Обновление: ротация вне транзакции, затем проверка, что пользователь ещё может входить.
 next, err := sessions.Rotate(ctx, refreshCookie)
 var reused *session.ReusedError

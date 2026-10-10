@@ -211,7 +211,9 @@ func (s *pgstore.Store) RecordFailures(ctx context.Context, failures []outboxkit
 ## BacklogReporter (lag / pending)
 
 `pgstore.Store` реализует `outboxkit.BacklogReporter`. `outboxkit.Module` и
-`outboxkit.Instance` подключают gauge'и автоматически. Вручную:
+`outboxkit.Instance` подключают gauge'и автоматически. Свой `BacklogReporter` обязан уважать
+`ctx` метода `Backlog`: срок снимка (5 с) действует через него, и реализация, которая `ctx` не
+читает, на зависшем хранилище оставляет gauge'и на последнем значении. Вручную:
 
 ```go
 func (o *outboxkit.Outbox) RegisterBacklogGauges() (metric.Registration, error)
