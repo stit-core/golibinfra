@@ -2,6 +2,7 @@ package testkit_test
 
 import (
 	"bytes"
+	"net/http"
 	"testing"
 
 	miniogo "github.com/minio/minio-go/v7"
@@ -14,6 +15,16 @@ func TestStartMinIO(t *testing.T) {
 	fix := testkit.StartMinIO(t)
 	if fix.Endpoint == "" || fix.AccessKey == "" || fix.SecretKey == "" || fix.Container == nil {
 		t.Fatalf("fixture = %+v", fix)
+	}
+	// Фикстура отдаёт сервер с поднятым слоем объектов: до него запросы S3 получают отказ
+	// «Server not initialized yet», а клиент без повторов (STORAGE_S3_MAX_RETRIES=0) — ошибку.
+	resp, err := http.Get("http://" + fix.Endpoint + "/minio/health/cluster")
+	if err != nil {
+		t.Fatalf("cluster health: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("cluster health right after StartMinIO = %d, want 200: the server is not ready for writes", resp.StatusCode)
 	}
 
 	client, err := miniogo.New(fix.Endpoint, &miniogo.Options{

@@ -5,6 +5,7 @@ import (
 
 	"github.com/testcontainers/testcontainers-go"
 	tcminio "github.com/testcontainers/testcontainers-go/modules/minio"
+	"github.com/testcontainers/testcontainers-go/wait"
 )
 
 // MinIOImage — образ StartMinIO по умолчанию; переопределяется WithImage.
@@ -19,15 +20,18 @@ type MinIOFixture struct {
 	Container *tcminio.MinioContainer
 }
 
-// StartMinIO поднимает MinIO (S3-совместимое хранилище для storagekit).
-// Под -short пропускает тест, без Docker обрывает (RequireDocker); контейнер
+// StartMinIO поднимает MinIO (S3-совместимое хранилище для storagekit) и ждёт, пока сервер
+// готов к записи. Под -short пропускает тест, без Docker обрывает (RequireDocker); контейнер
 // снимается в t.Cleanup.
 func StartMinIO(t testing.TB, opts ...Option) *MinIOFixture {
 	t.Helper()
 	RequireDocker(t)
 	o := newOptions(t, support{helper: "StartMinIO"}, MinIOImage, opts)
 
-	c, err := tcminio.Run(t.Context(), o.image, testcontainers.WithLogger(newTestLogger(t)))
+	c, err := tcminio.Run(t.Context(), o.image, testcontainers.WithLogger(newTestLogger(t)),
+		// /minio/health/live отвечает 200 раньше, чем поднят слой объектов: под нагрузкой первый
+		// запрос теста получал «Server not initialized yet». /minio/health/cluster ждёт его.
+		testcontainers.WithWaitStrategy(wait.ForHTTP("/minio/health/cluster").WithPort("9000/tcp")))
 	testcontainers.CleanupContainer(t, c)
 	if err != nil {
 		t.Fatalf("testkit: start minio: %v", err)

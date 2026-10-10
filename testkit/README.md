@@ -272,7 +272,7 @@ huma-хендлеры поверх `httpkit`, `idempotencytest` — хранил
 | `(*PostgresFixture).PoolConfig()` | `pgkit.PoolConfig` пула фикстуры — для собственной проводки поверх DSN. |
 | `StartNATS(t, opts...) *NATSFixture` | Контейнер NATS; `NATSFixture{URL, Container}`. |
 | `StartRedis(t, opts...) *RedisFixture` | Контейнер Redis; `RedisFixture{URL, Container}`. |
-| `StartMinIO(t, opts...) *MinIOFixture` | Контейнер MinIO; `MinIOFixture{Endpoint, AccessKey, SecretKey, Container}`. |
+| `StartMinIO(t, opts...) *MinIOFixture` | Контейнер MinIO, готовый к записи (ждёт `/minio/health/cluster`); `MinIOFixture{Endpoint, AccessKey, SecretKey, Container}`. |
 | `MigrationLadder(t, opts...)` | Лесенка источников из `WithMigrations`/`WithMigrationsDir` (up → down → up по версиям, down до нуля и up) со сверкой схемы; `WithImage` — образ Postgres. |
 | `WithImage(ref)` | Подмена образа для любого `Start*`. |
 | `WithMigrations(sources...)` / `WithMigrationsDir(path)` | Источники миграций (`pgkit.Source`) / каталог приложения (источник `pgkit.AppSourceName`); только `StartPostgres` и `MigrationLadder`. |
