@@ -56,11 +56,13 @@ blocked-by: —
   красном дереве — и через pre-push; envdoc видит анонимную структуру с тегом, `//nolint`
   невключённого линтера — отказ, проводку guard держит тест. Проверка: `go test ./scripts/...` → PASS; `M/reaudit/tg/scripts/gate_forge.sh` на HEAD → честных 34 из 34
   - Подтверждено: `gate_forge.sh` на HEAD — 34 формы из 34 честные (`M/fixround1/logs/forge/`); инъекции RG31, RG54, RG55 пойманы (`M/fixround1/logs/inject/`); `go test ./scripts/...` → PASS
-- [ ] **AC10** — блокирующие валидатора закрыты: недоверенный trace-context не идёт дальше OTel
+- [x] **AC10** — блокирующие валидатора закрыты: недоверенный trace-context не идёт дальше OTel
   при любом провайдере трасс, окружение оболочки не подделывает вердикт гейта и не обходит
   pre-push, сообщение, роняющее процесс, с DLQ останавливается на `MaxDeliver`. Проверка: пробы валидатора `otelearly`, `oteluntrusted`, `prepush`, `TestV_DLQ_1` (`M/val-fr1/probes/`) в worktree HEAD → PASS
-- [ ] **AC9** — релиз готов: гейт на чистом дереве зелёный, аннотация и Handoff шаблону лежат в
+  - Подтверждено: на `8a934db` в `M/wt-fr1b-probes` — `otelearly` PASS ×4, `oteluntrusted` PASS с выключенным SDK и без telemetry, `prepush` — формы окружения оболочки PASS ×5 (форма «подставной make в PATH» — названный остаток README § Гейт, бэклог `gate-path-forgery`), `BASH_ENV` и `SHELLOPTS=noexec` на канарейке lint — `make check` красный на lint, `TestV_DLQ_1` — три падения, копия в DLQ, `AckPending` 0 (`M/fixround1/logs2/`)
+- [x] **AC9** — релиз готов: гейт на чистом дереве зелёный, аннотация и Handoff шаблону лежат в
   `M/`, тег стоит локально. Проверка: `make gate-clean` → `✓ check clean (./...)`; `git tag -l 'v1.*' | tail -1`
+  - Подтверждено: `make gate-clean` на `2c5155d` → `✓ check clean (./...)`, 72 пакетов `ok`; `make release-diff PREV=v1.4.0` — четыре раздела пусты; аннотация `M/annotation-v1.5.0.txt`, Handoff `M/handoff-golibinfra-v1.5.0.md` и патч шаблона `M/fixround1/template-bump-v1.5.0.patch` лежат в `M/`; тег `v1.5.0` ставится на коммите закрытия плана
 
 ## Шаги
 ### Medium
@@ -149,10 +151,11 @@ blocked-by: —
   RAPI-01, отложенные minor)
   - Проверка: `ra-run.sh HEAD`, пробы `zzra` в worktree → FAIL только у отложенных в бэклог · Закрывает: AC2, AC3, AC4, AC6 · Зависит от: S1, S2, S3, S4, S5, S6, S7, S8, S9, S10, S11, S12, S15, S16
   - Сделано: эксперименты fx и observability (RX01, RX02 ×4, RX15, RT01, RT02, RT02b, RT05, RO2 — PASS, RO3 — секретов в спане нет; RO4 — ROBS-05 в бэклоге), базовые группы `correctness-security`, `httpkit-a`, `fx-observability`, `httpkit-b exp` — чисты (KX64 — FX-12, красный по построению; H37 и KX69 поправлены под новые правила в копиях `M/fixround1/`), контракты сигналов пересобраны генераторами — 0 расхождений; пробы `zzra`: C03, C05, C07, C12, S01, S06, S10, S10b, S10c — PASS, FAIL — только отложенные (C01, C06, S04, S05, S05b, S08, S13, S18, S19); 34 формы `gate_forge.sh` — честные; мутанты hk2-06, sess-11, tk3-01…03 — убиты; RCOR-05 доведён (проба C07 показала, что запас 2× теряет сообщение)
-- [ ] **S14** — релиз `v1.5.0`: `make tools`, `make test-full`, `make gate-clean`, `make
+- [x] **S14** — релиз `v1.5.0`: `make tools`, `make test-full`, `make gate-clean`, `make
   release-diff PREV=v1.4.0`, пробы на HEAD, шаблон через `replace`, аннотация и Handoff в `M/`,
   тег локально
   - Проверка: `make gate-clean` → `✓ check clean (./...)` · Закрывает: AC9 · Зависит от: S13, S17, S18, S19, S20
+  - Сделано: `make tools`, `make test-full` и `make gate-clean` на `2c5155d` — зелёные (72 пакетов); `make release-diff PREV=v1.4.0` пуст; пробы валидатора и аудиторов и штатные группы экспериментов на `8a934db` (после него в коде — только `oidckit/bff.go` и `testkit/minio.go`, пакеты вне проб) — красные только отложенные в бэклог (zzra: C01, C06, S04, S05, S05b, S08, S13, S18, S19; RO4; KX64), 34 формы подделки гейта аудитора и 34 валидатора — без зелёного вердикта на красном дереве, зонд фейков — DIVERGE 23, все названы в доках; `make check` шаблона с `replace` — зелёный без правок кода; аннотация, Handoff и патч шаблона — в `M/`; хвосты валидации — в бэклоге
 
 ## Решения
 - Решение владельца (по ходу круга): цель — девятка по каждому углу, запасной исход — 8.
@@ -248,8 +251,7 @@ blocked-by: —
 —
 
 ## Где мы сейчас
-S1–S13, S15–S20 закрыты, AC1–AC8 подтверждены. Блокирующие валидатора круга (B1–B3) и его
-неблокирующие закрыты. Остался S14 — релиз `v1.5.0`: `make tools`, `make test-full`, пробы
-валидатора и аудиторов на HEAD в своих worktree (AC10), `make release-diff PREV=v1.4.0`, шаблон
-через `replace`, аннотация `M/annotation-v1.5.0.txt`, Handoff и патч шаблона, закрытие плана,
-`make gate-clean`, тег локально. Точка продолжения — `M/fixround1/progress-2.md`.
+Все шаги и критерии закрыты: находки повторного аудита и валидатора круга закрыты или лежат в
+бэклоге с ID, релиз `v1.5.0` готов — гейт на чистом дереве зелёный, аннотация, Handoff шаблону
+и патч его правок лежат в `M/`. Остаётся закрытие плана: его удаление отдельным коммитом и тег
+`v1.5.0` на нём (локально; push — после независимой проверки). Журнал — `M/fixround1/progress-2.md`.
