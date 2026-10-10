@@ -371,23 +371,46 @@ func TestModule_ValidationErrorKeepsDetails(t *testing.T) {
 	}
 }
 
-// Module вешает Idempotency на операции huma после HumaAuth. Личность запроса — субъект
-// extractor'а, без него — credentials, проверенные схемой операции: повтор — replay, тот же ключ
-// с другими credentials — свой запрос. Регрессия RSEC-01: публичная операция личности не имеет —
-// Cookie и Authorization, которые никто не проверял, дедупликации не включают.
+// reserveCounter считает резервы store: запрос, который их не делает, в store не пишет.
+type reserveCounter struct {
+	httpkit.IdempotencyStore
+	reserves atomic.Int32
+}
+
+func (s *reserveCounter) Reserve(ctx context.Context, key string, ttl time.Duration) (string, bool, error) {
+	s.reserves.Add(1)
+	return s.IdempotencyStore.Reserve(ctx, key, ttl)
+}
+
+// Module вешает Idempotency на операции huma после HumaAuth. Личность запроса — субъект, который
+// кладёт extractor схемы: повтор — replay, тот же ключ у другого субъекта — свой запрос. Регрессия
+// RSEC-01: без субъекта дедупликации нет — ни у публичной операции с Cookie и Authorization,
+// которые никто не проверял, ни у запроса, чей extractor проверил credentials, но субъекта не
+// положил: scope по credentials менялся бы с каждым токеном, и клиент, меняющий токены, получал
+// бы новый бюджет ключей на каждый — десяток токенов занимал store.
 func TestModule_IdempotencyStoreWiring(t *testing.T) {
 	var calls atomic.Int32
 	created := func(context.Context, *struct{}) (*struct{ Body int32 }, error) {
 		return &struct{ Body int32 }{Body: calls.Add(1)}, nil
 	}
-	store := httpkit.NewMemoryStore()
+	store := &reserveCounter{IdempotencyStore: httpkit.NewMemoryStore()}
 	srv := startApp(t,
 		httpkit.ProvideSecurityScheme(func() []httpkit.SecuritySchemeEntry {
-			accept := func(r *http.Request) (context.Context, error) { return r.Context(), nil }
+			bearer := func(r *http.Request) (context.Context, error) {
+				return httpkit.ContextWithSubject(r.Context(), strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")), nil
+			}
+			session := func(r *http.Request) (context.Context, error) {
+				c, err := r.Cookie("sid")
+				if err != nil {
+					return nil, err
+				}
+				return httpkit.ContextWithSubject(r.Context(), c.Value), nil
+			}
+			noSubject := func(r *http.Request) (context.Context, error) { return r.Context(), nil }
 			return []httpkit.SecuritySchemeEntry{
-				{Name: "Bearer", Scheme: bearerScheme, Extract: accept},
-				{Name: "Session", Scheme: &huma.SecurityScheme{Type: "apiKey", In: "cookie", Name: "sid"}, Extract: accept},
-				{Name: "Key", Scheme: &huma.SecurityScheme{Type: "apiKey", In: "header", Name: "X-Api-Key"}, Extract: accept},
+				{Name: "Bearer", Scheme: bearerScheme, Extract: bearer},
+				{Name: "Session", Scheme: &huma.SecurityScheme{Type: "apiKey", In: "cookie", Name: "sid"}, Extract: session},
+				{Name: "Key", Scheme: &huma.SecurityScheme{Type: "apiKey", In: "header", Name: "X-Api-Key"}, Extract: noSubject},
 			}
 		}),
 		fx.Provide(func() httpkit.IdempotencyStore { return store }),
@@ -411,37 +434,47 @@ func TestModule_IdempotencyStoreWiring(t *testing.T) {
 		}
 		return resp.Header.Get(httpkit.HeaderIdempotentReplayed) == "true"
 	}
-	// Служебный Cookie (язык) у клиентов общий и между попытками меняется: scope — проверенное
-	// значение по месту схемы, а не заголовки целиком.
+	// Служебный Cookie (язык) у клиентов общий и между попытками меняется: scope — субъект, а не
+	// заголовки запроса.
 	for _, c := range []struct {
 		path                string
 		first, retry, other []string
 	}{
 		{"/bearer", []string{"Authorization: Bearer alice", "Cookie: lang=ru"}, []string{"Authorization: Bearer alice", "Cookie: lang=en"}, []string{"Authorization: Bearer bob", "Cookie: lang=ru"}},
-		{"/session", []string{"Cookie: sid=alice; lang=ru"}, []string{"Cookie: lang=en; sid=alice", "Authorization: Bearer noise"}, []string{"Cookie: sid=bob; lang=ru"}},
-		{"/key", []string{"X-Api-Key: alice", "Cookie: lang=ru"}, []string{"X-Api-Key: alice"}, []string{"X-Api-Key: bob", "Cookie: lang=ru"}},
+		{"/session", []string{"Cookie: sid=carol; lang=ru"}, []string{"Cookie: lang=en; sid=carol", "Authorization: Bearer noise"}, []string{"Cookie: sid=dave; lang=ru"}},
 	} {
 		before := calls.Load()
 		if post(c.path, c.first...) || !post(c.path, c.retry...) {
-			t.Fatalf("%s: the retry of a verified client must be the only replay", c.path)
+			t.Fatalf("%s: the retry of a subject must be the only replay", c.path)
 		}
-		// Регрессия KSEC-14: тот же ключ и общий Cookie у клиента с другими credentials.
+		// Регрессия KSEC-14: тот же ключ и общий Cookie у другого субъекта.
 		if post(c.path, c.other...) {
-			t.Fatalf("%s: another client with the same key got a replayed response", c.path)
+			t.Fatalf("%s: another subject with the same key got a replayed response", c.path)
 		}
 		if n := calls.Load() - before; n != 2 {
-			t.Fatalf("%s: handler calls = %d, want 2 (one per client)", c.path, n)
+			t.Fatalf("%s: handler calls = %d, want 2 (one per subject)", c.path, n)
 		}
 	}
 
-	before := calls.Load()
-	for _, headers := range [][]string{{"Cookie: lang=ru"}, {"Cookie: lang=ru"}, {"Authorization: Bearer alice"}, nil} {
-		if post("/public", headers...) {
-			t.Fatalf("/public %v: a request without identity got a replayed response", headers)
+	before, reserved := calls.Load(), store.reserves.Load()
+	for _, c := range []struct {
+		path    string
+		headers []string
+	}{
+		{"/public", []string{"Cookie: lang=ru"}},
+		{"/public", []string{"Cookie: lang=ru"}},
+		{"/public", []string{"Authorization: Bearer alice"}},
+		{"/public", nil},
+		{"/key", []string{"X-Api-Key: token-1"}},
+		{"/key", []string{"X-Api-Key: token-1"}},
+		{"/key", []string{"X-Api-Key: token-2"}},
+	} {
+		if post(c.path, c.headers...) {
+			t.Fatalf("%s %v: a request without a subject got a replayed response", c.path, c.headers)
 		}
 	}
-	if n := calls.Load() - before; n != 4 {
-		t.Fatalf("/public: handler calls = %d, want 4 — no deduplication without identity", n)
+	if n, r := calls.Load()-before, store.reserves.Load()-reserved; n != 7 || r != 0 {
+		t.Fatalf("requests without a subject: handler calls = %d, store reserves = %d; want 7 and 0 — no deduplication and no store writes", n, r)
 	}
 }
 

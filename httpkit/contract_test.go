@@ -141,7 +141,7 @@ func TestErrorContract(t *testing.T) {
 	extract := func(r *http.Request) (context.Context, error) {
 		switch r.Header.Get("Authorization") {
 		case "Bearer ok":
-			return r.Context(), nil
+			return httpkit.ContextWithSubject(r.Context(), "user-1"), nil
 		case "Bearer backend-down":
 			return nil, fmt.Errorf("jwks: %w", httpkit.ErrAuthUnavailable)
 		}

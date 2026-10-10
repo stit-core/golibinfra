@@ -7,6 +7,7 @@ import (
 	"net/http"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 )
 
 // SessionTokenType — значение claim'а authnkit.ClaimTokenType у cookie-сессии
@@ -36,7 +37,8 @@ func NewExtractor(parser authnkit.JWTParser, cookie CookieConfig) *Extractor {
 	return &Extractor{parser: parser, cookie: cookie}
 }
 
-// Extract читает session-cookie и кладёт Identity в контекст запроса.
+// Extract читает session-cookie и кладёт в контекст запроса Identity и субъекта httpkit (sub) —
+// личность запроса для идемпотентности.
 func (e *Extractor) Extract(r *http.Request) (context.Context, error) {
 	c, err := r.Cookie(e.cookie.SessionCookieName())
 	if err != nil || c.Value == "" {
@@ -55,7 +57,7 @@ func (e *Extractor) Extract(r *http.Request) (context.Context, error) {
 		return r.Context(), fmt.Errorf("%w: no subject", ErrInvalidSession)
 	}
 
-	return WithIdentity(r.Context(), id), nil
+	return httpkit.ContextWithSubject(WithIdentity(r.Context(), id), id.Subject), nil
 }
 
 func identityFromClaims(claims map[string]any) Identity {

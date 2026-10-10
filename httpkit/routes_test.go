@@ -44,7 +44,10 @@ func schemeEntry(name string, scheme *huma.SecurityScheme) fx.Option {
 var (
 	bearerScheme = &huma.SecurityScheme{Type: "http", Scheme: "bearer"}
 	withBearer   = httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
-		return httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme, Extract: func(r *http.Request) (context.Context, error) { return r.Context(), nil }}
+		// Субъект — предъявленный токен: личность запроса для идемпотентности.
+		return httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: bearerScheme, Extract: func(r *http.Request) (context.Context, error) {
+			return httpkit.ContextWithSubject(r.Context(), r.Header.Get("Authorization")), nil
+		}}
 	})
 	bearerOnly = []map[string][]string{{"Bearer": {}}}
 )

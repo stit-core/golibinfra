@@ -479,7 +479,7 @@ func TestIdempotency_ExpiredReservationIsNotOverwritten(t *testing.T) {
 	var skey, retry string
 	slow := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		now = now.Add(cfg.ReserveTTL + time.Second)
-		skey = scopedKey(scopeOf(r.Context()), "k1")
+		skey = scopedKey(SubjectFrom(r.Context()), "k1")
 		var ok bool
 		if retry, ok, _ = store.Reserve(r.Context(), skey, time.Minute); !ok {
 			t.Error("retry could not reserve the expired key")
@@ -532,9 +532,9 @@ func TestIdempotency_NotExecutedResponsesAreNotStored(t *testing.T) {
 	}
 }
 
-// Регрессия KSEC-14 (H16) и RSEC-01: запрос без личности идёт без дедупликации и в store не
-// пишет — и с Authorization или Cookie, которые никто не проверял: заголовок клиента не
-// различает, а записи анонимов заняли бы store.
+// Регрессия KSEC-14 (H16) и RSEC-01: запрос без субъекта идёт без дедупликации и в store не
+// пишет — с любыми Authorization и Cookie: credentials запроса — не личность, клиент менял бы
+// их вместе со scope, а записи таких запросов заняли бы store.
 func TestIdempotency_RequestsWithoutIdentityAreNotDeduplicated(t *testing.T) {
 	for name, header := range map[string][2]string{
 		"no credentials":        {},
@@ -632,6 +632,12 @@ func TestIdempotency_ScopeKeyBudget(t *testing.T) {
 			send("alice", "k4")
 			if rec := send("alice", "k4"); rec.Header().Get(HeaderIdempotentReplayed) != "true" {
 				t.Fatalf("a new window must give a new budget: replayed=%q", rec.Header().Get(HeaderIdempotentReplayed))
+			}
+			// Новое окно — новый бюджет, а не его отсутствие: третий ключ окна снова сверх него.
+			send("alice", "k5")
+			send("alice", "k6")
+			if rec := send("alice", "k6"); rec.Header().Get(HeaderIdempotentReplayed) != "" {
+				t.Fatalf("the budget must hold in the next window too: the key over it was stored and replayed")
 			}
 		})
 	}

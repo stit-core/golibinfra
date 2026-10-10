@@ -2,8 +2,6 @@ package httpkit
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"maps"
@@ -48,8 +46,9 @@ func ContextWithRequestID(ctx context.Context, id string) context.Context {
 
 type subjectCtxKey struct{}
 
-// ContextWithSubject кладёт идентификатор аутентифицированного субъекта в ctx: по нему
-// scope'ится идемпотентность — он не меняется с ротацией токена, в отличие от credentials схемы.
+// ContextWithSubject кладёт идентификатор аутентифицированного субъекта в ctx — его зовёт
+// extractor схемы. Субъект — личность запроса для идемпотентности: запрос без него не
+// дедуплицируется, а сам он не меняется с ротацией токена.
 func ContextWithSubject(ctx context.Context, subject string) context.Context {
 	return context.WithValue(ctx, subjectCtxKey{}, subject)
 }
@@ -58,57 +57,6 @@ func ContextWithSubject(ctx context.Context, subject string) context.Context {
 func SubjectFrom(ctx context.Context) string {
 	s, _ := ctx.Value(subjectCtxKey{}).(string)
 	return s
-}
-
-type credentialCtxKey struct{}
-
-// credentialFrom — отпечаток credentials, проверенных схемами операции (HumaAuth): scope ключа
-// идемпотентности у запроса без субъекта.
-func credentialFrom(ctx context.Context) string {
-	s, _ := ctx.Value(credentialCtxKey{}).(string)
-	return s
-}
-
-// withCredential кладёт в ctx отпечаток credentials прошедшей альтернативы: значение каждой её
-// схемы — по месту схемы в запросе. Схема без места в запросе (mutualTLS) клиента не различает —
-// отпечатка нет.
-func withCredential(ctx context.Context, r *http.Request, schemes map[string]*huma.SecurityScheme, alt map[string][]string) context.Context {
-	h := sha256.New()
-	for _, name := range slices.Sorted(maps.Keys(alt)) {
-		value := presented(r, schemes[name])
-		if value == "" {
-			return ctx
-		}
-		h.Write([]byte(name))
-		h.Write([]byte{0})
-		h.Write([]byte(value))
-		h.Write([]byte{0})
-	}
-	return context.WithValue(ctx, credentialCtxKey{}, hex.EncodeToString(h.Sum(nil)))
-}
-
-// presented — credentials схемы в запросе по её описанию в OpenAPI: http, oauth2 и openIdConnect
-// — заголовок Authorization, apiKey — заголовок, cookie или query-параметр с именем схемы.
-func presented(r *http.Request, s *huma.SecurityScheme) string {
-	if s == nil {
-		return ""
-	}
-	switch s.Type {
-	case "http", "oauth2", "openIdConnect":
-		return r.Header.Get("Authorization")
-	case "apiKey":
-		switch s.In {
-		case "header":
-			return r.Header.Get(s.Name)
-		case "cookie":
-			if c, err := r.Cookie(s.Name); err == nil {
-				return c.Value
-			}
-		case "query":
-			return r.URL.Query().Get(s.Name)
-		}
-	}
-	return ""
 }
 
 // RequestID принимает X-Request-ID клиента только печатным ASCII до 128 байт,
@@ -218,7 +166,8 @@ func AccessLog(log logkit.Logger, quietPaths ...string) func(http.Handler) http.
 }
 
 // AuthExtractor проверяет credentials своей схемы безопасности (SecuritySchemeEntry.Extract) и
-// возвращает ctx с личностью; ошибка → 401, обёрнутый ErrAuthUnavailable → 503.
+// возвращает ctx с личностью; ошибка → 401, обёрнутый ErrAuthUnavailable → 503. Субъекта
+// запроса кладёт ContextWithSubject: без него идемпотентность запрос не дедуплицирует.
 type AuthExtractor func(r *http.Request) (context.Context, error)
 
 // ErrAuthUnavailable — зависимость аутентификации недоступна (JWKS, хаб,
@@ -246,11 +195,9 @@ func HumaAuth(schemes []SecuritySchemeEntry, log logkit.Logger) func(huma.Contex
 		log = logkit.Nop()
 	}
 	extractors := make(map[string]AuthExtractor, len(schemes))
-	defs := make(map[string]*huma.SecurityScheme, len(schemes))
 	for _, e := range schemes {
 		if e.Extract != nil {
 			extractors[e.Name] = e.Extract
-			defs[e.Name] = e.Scheme
 		}
 	}
 	return func(ctx huma.Context, next func(huma.Context)) {
@@ -266,13 +213,12 @@ func HumaAuth(schemes []SecuritySchemeEntry, log logkit.Logger) func(huma.Contex
 				optional = true
 				continue
 			}
-			r := requestFrom(ctx)
-			authCtx, configured, err := authenticate(r, extractors, alt)
+			authCtx, configured, err := authenticate(requestFrom(ctx), extractors, alt)
 			if !configured {
 				continue
 			}
 			if err == nil {
-				next(huma.WithContext(ctx, withCredential(authCtx, r, defs, alt)))
+				next(huma.WithContext(ctx, authCtx))
 				return
 			}
 			failures = append(failures, err)

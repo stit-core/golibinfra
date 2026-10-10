@@ -79,7 +79,7 @@ const memoryStoreMaxKeys = 100_000
 var errMemoryStoreFull = errors.New("httpkit: idempotency memory store is full")
 
 const (
-	// scopeMaxKeys — сколько ответов одного scope middleware сохраняет за окно TTL: один клиент
+	// scopeMaxKeys — сколько ответов одного субъекта middleware сохраняет за окно TTL: один клиент
 	// не занимает store целиком (MemoryStore — десятая часть предела) и не растит Redis без границы.
 	scopeMaxKeys = 10_000
 	// budgetMaxScopes — предел таблицы бюджетов (≈100 B на scope); scope сверх него не учитывается.
@@ -273,13 +273,12 @@ func storeCtx(parent context.Context, timeout time.Duration) (context.Context, c
 
 // Idempotency воспроизводит ответ на повтор POST/PUT/PATCH с тем же ключом. Сервер кита ставит
 // её в цепочку huma после HumaAuth: replay получает только запрос, прошедший аутентификацию
-// операции. Ключ scope'ится личностью: субъектом (ContextWithSubject), без него — credentials,
-// проверенными схемой операции (HumaAuth). Запрос без личности — аноним, в том числе с
-// Authorization или Cookie, которые никто не проверял, — идёт без дедупликации. Повтор с другим
-// телом, путём, query или методом — 422, параллельный повтор — 409. Кэшируются только ответы
-// < 500, кроме 408, 409, 425 и 429, и не больше scopeMaxKeys на scope за окно TTL: новый ключ
-// сверх бюджета — как отказ store. Ошибка store — строка лога и fail-open, если не задан
-// FailClosed. nil-логгер — logkit.Nop().
+// операции. Ключ scope'ится субъектом, которого кладёт extractor схемы (ContextWithSubject).
+// Запрос без субъекта — аноним или клиент, чей extractor субъекта не положил, — идёт без
+// дедупликации и в store не пишет. Повтор с другим телом, путём, query или методом — 422,
+// параллельный повтор — 409. Кэшируются только ответы < 500, кроме 408, 409, 425 и 429, и не
+// больше scopeMaxKeys на субъекта за окно TTL: новый ключ сверх бюджета — как отказ store.
+// Ошибка store — строка лога и fail-open, если не задан FailClosed. nil-логгер — logkit.Nop().
 func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger) func(http.Handler) http.Handler {
 	if log == nil {
 		log = logkit.Nop()
@@ -319,9 +318,10 @@ func idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				return
 			}
 			ctx := r.Context()
-			// Без личности scope ключа общий: сохранённый ответ одного анонима получил бы другой, а
-			// записи анонимов заняли бы store.
-			scope := scopeOf(ctx)
+			// Без субъекта scope ключа общий: сохранённый ответ одного клиента получил бы другой, а
+			// их записи заняли бы store. Credentials запроса — не scope: с ротацией токена клиент
+			// получал бы новый бюджет ключей.
+			scope := SubjectFrom(ctx)
 			if scope == "" {
 				outcome(ctx, "skipped")
 				next.ServeHTTP(w, r)
@@ -519,23 +519,10 @@ func fingerprint(r *http.Request, body []byte) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
-// scopeOf — чей ключ: субъект (ContextWithSubject) устойчив к ротации токена между попытками,
-// без него — credentials, проверенные схемой операции (HumaAuth). Пусто — личности нет: заголовок,
-// который никто не проверял, клиента не различает.
-func scopeOf(ctx context.Context) string {
-	if sub := SubjectFrom(ctx); sub != "" {
-		return "sub\x00" + sub
-	}
-	if cred := credentialFrom(ctx); cred != "" {
-		return "cred\x00" + cred
-	}
-	return ""
-}
-
-// scopedKey привязывает ключ к scope клиента: чужой ключ не отдаёт чужой ответ.
-func scopedKey(scope, key string) string {
+// scopedKey привязывает ключ к субъекту: чужой ключ не отдаёт чужой ответ.
+func scopedKey(subject, key string) string {
 	h := sha256.New()
-	h.Write([]byte(scope))
+	h.Write([]byte("sub\x00" + subject))
 	h.Write([]byte{0})
 	h.Write([]byte(key))
 	return hex.EncodeToString(h.Sum(nil))

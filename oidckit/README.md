@@ -152,7 +152,8 @@ Zero value `CookieConfig{}` безопасен: `Secure`, `SameSite=Lax`.
 - `Hooks{SessionClaims, OnLogin}` — доп-claims сессии / JIT-провижининг (ошибка
   `OnLogin` отменяет вход; служебный `typ` хук переопределить не может).
 - `NewExtractor(authnkit.JWTParser, CookieConfig) *Extractor`; `Extract` совместим
-  с `httpkit.AuthExtractor` (`Extract` схемы); `Identity` + `WithIdentity`/`IdentityFrom`/`MustIdentityFrom`.
+  с `httpkit.AuthExtractor` (`Extract` схемы) и кладёт в ctx `Identity` и субъекта `httpkit`
+  (`sub` — личность запроса для идемпотентности); `Identity` + `WithIdentity`/`IdentityFrom`/`MustIdentityFrom`.
 - `SecuritySchemeName` (`"Cookie"`), `NewSecurityScheme(CookieConfig)`, `SessionCookie`,
   `StateCookie`, `ExpiredSessionCookies`, `RegisterIdentityLogAttr`, `SessionTokenType`.
 - Sentinel'ы: `ErrConfig`, `ErrRPConfig`, `ErrIssuerMismatch`, `ErrNoJWKS`,

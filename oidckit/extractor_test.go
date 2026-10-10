@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
+	"git.stit.tech/stit-core/golibinfra/httpkit"
 )
 
 func sessionToken(t *testing.T, claims map[string]any) string {
@@ -47,6 +48,10 @@ func TestExtractor(t *testing.T) {
 	want := Identity{Subject: "u-1", Username: "j.doe", Name: "Jane Doe", Email: "j.doe@example.test", Role: "admin"}
 	if id != want {
 		t.Fatalf("identity=%+v, ожидали %+v", id, want)
+	}
+	// Без субъекта httpkit запрос сессии шёл бы мимо идемпотентности.
+	if sub := httpkit.SubjectFrom(ctx); sub != "u-1" {
+		t.Fatalf("субъект httpkit = %q, ожидали sub сессии", sub)
 	}
 }
 
