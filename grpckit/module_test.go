@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -277,4 +278,59 @@ func TestModuleLogsServeFailure(t *testing.T) {
 	waitFor(t, "grpckit: serve stopped in the log", func() bool {
 		return rec.Has(slog.LevelError, "grpckit: serve stopped")
 	})
+}
+
+// Стрим в полёте не съедает бюджет остановки: OnStop ждёт две трети остатка stop-ctx и форсирует
+// остановку, а хук, зарегистрированный раньше Module (пул, telemetry), идёт на живом ctx. Без
+// доли gRPC ждал бы до дедлайна fx, и хуки после него fx пропустил бы.
+func TestModule_StreamInFlightLeavesStopBudget(t *testing.T) {
+	addr := freeAddr(t)
+	t.Setenv("GRPC_ADDR", addr)
+	t.Setenv("GRPC_SHUTDOWN_GRACE", "30s")
+	started := make(chan struct{}, 1)
+	var later atomic.Bool
+	app := fx.New(fx.NopLogger,
+		fx.Invoke(func(lc fx.Lifecycle) {
+			lc.Append(fx.Hook{OnStop: func(ctx context.Context) error {
+				later.Store(ctx.Err() == nil)
+				return nil
+			}})
+		}),
+		fx.Provide(logkit.Nop, grpckit.NewConfig),
+		grpckit.Module,
+		grpckit.ProvideService(func() grpckit.ServiceRegistrar {
+			return echoRegistrar(ok, func(ctx context.Context) error {
+				started <- struct{}{}
+				<-ctx.Done()
+				return nil
+			})
+		}),
+	)
+	if err := app.Start(testCtx(t)); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	conn, err := grpc.NewClient(addr, grpc.WithTransportCredentials(insecure.NewCredentials()))
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	go func() { _ = callStream(context.Background(), conn) }()
+	select {
+	case <-started:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the stream did not reach the handler")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	begin := time.Now()
+	if err := app.Stop(ctx); err != nil {
+		t.Fatalf("Stop = %v, want nil: a stream in flight is force-stopped", err)
+	}
+	if elapsed := time.Since(begin); elapsed > 2700*time.Millisecond {
+		t.Errorf("Stop took %s of a 3s budget: nothing is left to later hooks", elapsed)
+	}
+	if !later.Load() {
+		t.Error("the hook after gRPC did not run on a live ctx")
+	}
 }

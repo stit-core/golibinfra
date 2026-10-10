@@ -20,6 +20,8 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
+	"git.stit.tech/stit-core/golibinfra/testkit/natstest"
 	"git.stit.tech/stit-core/golibinfra/timerkit"
 )
 
@@ -412,5 +414,42 @@ func TestModule_KeeperJobsWaitForMigrations(t *testing.T) {
 	}
 	if !partitionExists(t, ctx, db, mustName(monthsFromNow(0))) {
 		t.Fatal("партиция текущего месяца не создана")
+	}
+}
+
+// Регрессия ROBS-01 (порядок хука): первый снимок очереди gauge'и берут после миграций — и в
+// графе, где outboxkit.Module стоит раньше pgkit.MigrateModule. На чистой БД снимок до миграций
+// шёл в базу без таблицы: outbox_backlog_errors_total на каждом старте и ни одной серии
+// gauge'ей на первом сборе.
+func TestModule_FirstBacklogSnapshotWaitsForMigrations(t *testing.T) {
+	fix := testkit.StartPostgres(t)
+	t.Setenv("OUTBOX_INTERVAL", "1h")
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	before := metrictest.Collect(t)
+
+	app := fx.New(
+		fx.NopLogger,
+		fx.Provide(logkit.Nop, outboxkit.NewConfig, pgstore.NewConfig, func() natskit.StreamBus { return natstest.New() }),
+		fx.Supply(
+			pgkit.PoolConfig{DSN: fix.DSN, MaxConns: 4, ConnectTimeout: 5 * time.Second},
+			pgkit.MigrateRunnerConfig{Timeout: time.Minute, LockTimeout: time.Minute},
+		),
+		pgkit.Module,
+		// outboxkit.Module — раньше хранилища, job'ов и миграций: порядок держит pgkit.Migrated.
+		outboxkit.Module,
+		pgstore.Module,
+		timerkit.Module,
+		pgkit.MigrateModule,
+	)
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	defer func() { _ = app.Stop(context.Background()) }()
+
+	d := metrictest.Collect(t).Sub(before)
+	if errs, series := d.Value("outbox_backlog_errors_total"), d.Find("outbox_pending_count"); errs != 0 || len(series) != 1 {
+		t.Fatalf("after the start on an empty database: %v failed snapshots, outbox_pending_count series %v; want 0 and the series of the instance",
+			errs, series)
 	}
 }

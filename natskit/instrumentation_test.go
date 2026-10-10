@@ -404,28 +404,50 @@ func TestConsumerSpan_HandlerErrorTextIsMasked(t *testing.T) {
 		recv(t, done, 10*time.Second, "handler")
 	}
 
-	texts := func() (out []string) {
+	// Тексты спанов с ошибкой — по subject'у сообщения: статус и exception.message нужны у каждого
+	// из трёх обработчиков, а не у любых трёх спанов (JetStream переотправляет своё сообщение).
+	subjects := []string{"core." + stream + ".fail", "core." + stream + ".panic", stream + ".fail"}
+	texts := func() map[string][]string {
+		out := map[string][]string{}
 		for _, s := range spans.Ended() {
 			if s.SpanKind() != trace.SpanKindConsumer || s.Status().Code != codes.Error {
 				continue
 			}
-			out = append(out, s.Status().Description)
+			subject := ""
+			for _, kv := range s.Attributes() {
+				if kv.Key == "messaging.destination.name" {
+					subject = kv.Value.AsString()
+				}
+			}
+			out[subject] = append(out[subject], s.Status().Description)
 			for _, e := range s.Events() {
 				for _, kv := range e.Attributes {
 					if e.Name == "exception" && kv.Key == "exception.message" {
-						out = append(out, kv.Value.AsString())
+						out[subject] = append(out[subject], kv.Value.AsString())
 					}
 				}
 			}
 		}
 		return out
 	}
-	for deadline := time.Now().Add(5 * time.Second); len(texts()) < 6 && time.Now().Before(deadline); {
+	complete := func(by map[string][]string) bool {
+		for _, subject := range subjects {
+			if len(by[subject]) < 2 {
+				return false
+			}
+		}
+		return true
+	}
+	for deadline := time.Now().Add(5 * time.Second); !complete(texts()) && time.Now().Before(deadline); {
 		time.Sleep(10 * time.Millisecond)
 	}
-	got := texts()
-	if len(got) < 6 {
-		t.Fatalf("consumer spans with an error carry %d texts, want status and exception.message of three spans: %q", len(got), got)
+	bySubject := texts()
+	if !complete(bySubject) {
+		t.Fatalf("every failed handler must leave a consumer span with an error status and exception.message: %q", bySubject)
+	}
+	var got []string
+	for _, subject := range subjects {
+		got = append(got, bySubject[subject]...)
 	}
 	for _, text := range got {
 		if strings.Contains(text, email) || strings.Contains(text, token) || !strings.Contains(text, "provider rejected") {

@@ -218,6 +218,23 @@ func TestWorkerPoisonGoesDeadAfterMaxAttempts(t *testing.T) {
 	}
 }
 
+// Регрессия RCOR-03 у своего Repository: текст ошибки транспорта воркер отдаёт хранилищу без NUL
+// и битых рун. pgstore чистит текст и сам, но чужому хранилищу этот слой единственный — NUL в
+// TEXT откатил бы у него транзакцию тика.
+func TestWorker_FailureTextIsCleanForAnyRepository(t *testing.T) {
+	repo := &fakeRepo{unpublished: []outboxkit.Message{msg(1, "boom")}}
+	tr := &fakeTransport{failOn: map[string]error{"boom": errors.New("upstream said: \x00\x01 binary \xff garbage")}}
+	w, _ := newWorker(t, repo, tr, outboxkit.Config{BatchSize: 10, PublishMode: outboxkit.PublishBatch, MaxAttempts: 5})
+
+	if err := w.Run(context.Background()); err == nil {
+		t.Fatal("expected error on publish failure")
+	}
+	fs := repo.recordedFailures()
+	if len(fs) != 1 || strings.ContainsRune(fs[0].Err, 0) || !utf8.ValidString(fs[0].Err) || !strings.Contains(fs[0].Err, "binary") {
+		t.Fatalf("failures = %+v, want one with the text without NUL and broken runes", fs)
+	}
+}
+
 // Литерал с MaxAttempts 0 или меньше -1 — ErrConfig, а не молча подставленный бюджет.
 func TestNewWorker_InvalidConfigIsErrConfig(t *testing.T) {
 	for name, cfg := range map[string]outboxkit.Config{
