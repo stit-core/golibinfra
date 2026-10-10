@@ -178,12 +178,14 @@ func (b *BFF) verifier(ctx context.Context) (*Verifier, error) {
 	if v := b.v.Load(); v != nil {
 		return v, nil
 	}
-	if err := b.discoveryBackoff(); err != nil {
-		return nil, err
-	}
 	attempt := b.group.DoChan("discovery", func() (any, error) {
 		if v := b.v.Load(); v != nil {
 			return v, nil
+		}
+		// Отрицательный кэш сверяется внутри попытки: вызов, опоздавший к уже упавшей, иначе
+		// начинал бы новую — второй запрос к лежащему idp.
+		if err := b.discoveryBackoff(); err != nil {
+			return nil, err
 		}
 		dctx, cancel := discoveryContext(ctx)
 		defer cancel()
