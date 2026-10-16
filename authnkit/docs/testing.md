@@ -16,6 +16,7 @@ import "git.stit.tech/stit-core/golibinfra/testkit/authntest"
 ```go
 type DeterministicHasher struct {
 	HashErr error // сбой хэширования: Hash отдаёт его вместо хеша
+	Busy    bool  // очередь полна: Hash, Verify и VerifyDummy отдают authnkit.ErrBusy
 }
 
 const HashPrefix = "hash:"
@@ -23,7 +24,7 @@ const HashPrefix = "hash:"
 func (*DeterministicHasher) Hash(ctx context.Context, plain string) (string, error)          // → "hash:" + plain
 func (*DeterministicHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) // encoded == "hash:"+plain
 func (*DeterministicHasher) NeedsRehash(encoded string) bool                                 // true — строка без "hash:"
-func (*DeterministicHasher) VerifyDummy(ctx context.Context)                                 // только счёт вызова
+func (*DeterministicHasher) VerifyDummy(ctx context.Context) error                           // счёт вызова; nil, при Busy — ErrBusy
 func (*DeterministicHasher) VerifyCalls() int                                                // сколько раз звали Verify
 func (*DeterministicHasher) VerifyDummyCalls() int                                           // сколько раз звали VerifyDummy
 func StripHashPrefix(encoded string) string                                                  // убирает префикс "hash:"
@@ -43,8 +44,10 @@ ok, _ := h.Verify(ctx, "secret", enc)   // true
 plain := authntest.StripHashPrefix(enc) // "secret"
 ```
 
-Сбой хэширования и число проверок пароля — поведение самого фейка, своя обёртка
-в тесте не нужна:
+Сбой хэширования, полная очередь (`Busy` — `authnkit.ErrBusy` в том же порядке
+исходов, что у боевого хэшера: длинный пароль у `Hash` — ошибка ввода до очереди,
+нечитаемый хеш у `Verify` — до очереди) и число проверок пароля — поведение самого
+фейка, своя обёртка в тесте не нужна:
 
 ```go
 uc := NewUsecase(&authntest.DeterministicHasher{HashErr: errHashing}) // Hash отдаёт errHashing
@@ -53,6 +56,10 @@ h := &authntest.DeterministicHasher{}
 _ = NewUsecase(h).Login(ctx, "nobody@example.com", "pw")
 // вход по неизвестному адресу — ровно одна холостая проверка: время ответа не выдаёт учётную запись
 if h.VerifyCalls() != 0 || h.VerifyDummyCalls() != 1 { … }
+
+busy := &authntest.DeterministicHasher{Busy: true}
+err := NewUsecase(busy).Login(ctx, "nobody@example.com", "pw")
+// перегрузка на пути без учётной записи — тот же отказ, что с ней: errors.Is(err, authnkit.ErrBusy)
 ```
 
 Хэш предсказуем и не секретен — только для тестов. Предохранитель на случай

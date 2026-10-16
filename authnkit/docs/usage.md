@@ -10,12 +10,13 @@ type Hasher interface {
 	Hash(ctx context.Context, plain string) (string, error)
 	Verify(ctx context.Context, plain, encoded string) (bool, error)
 	NeedsRehash(encoded string) bool
-	VerifyDummy(ctx context.Context)
+	VerifyDummy(ctx context.Context) error // ошибка — как у Verify: ErrBusy, отмена ctx
 }
 func NewArgon2idHasher(p Argon2idConfig) (*Argon2idHasher, error)
 func (p Argon2idConfig) Validate() error
 
 var ErrConfig, ErrInvalidHash, ErrHashParams, ErrPasswordTooLong error // ErrHashParams заворачивает ErrInvalidHash
+var ErrBusy error // очередь Argon2id полна; RetryAfter() time.Duration — секунда
 const MaxPasswordLen = 1024 // байт; длиннее — ErrPasswordTooLong у Hash и Verify
 
 // JWT
@@ -82,9 +83,9 @@ func NewTOTPConfig() (TOTPConfig, error)
 `ctx` принимают методы, которые эмитят метрики: он несёт baggage и exemplar'ы
 в записанные измерения. У `Hash`, `Verify` и `VerifyDummy` он ещё и прерывает
 ожидание слота вычислений (не больше `max(1, GOMAXPROCS/Threads)` Argon2id
-одновременно): `Hash`/`Verify` возвращают ошибку с `ctx.Err()`, `VerifyDummy`
-пропускает вычисление. `NeedsRehash` и `Generate` сигналов не пишут и ctx не
-берут.
+одновременно): все три возвращают ошибку с `ctx.Err()`. Слот ждут не больше
+восьми вызовов на слот — при полной очереди все три сразу отдают `ErrBusy`.
+`NeedsRehash` и `Generate` сигналов не пишут и ctx не берут.
 
 ## Хэш пароля
 
@@ -99,11 +100,13 @@ if err != nil {
 encoded, err := hasher.Hash(ctx, plainPassword) // храни encoded целиком, он самоописывающий
 if err != nil {
 	return err // errors.Is(err, ErrPasswordTooLong) — ошибка ввода: ответ 422, а не 500
+	//            errors.Is(err, ErrBusy) — очередь хэшера полна: ответ 503 с Retry-After
 }
 
 ok, err := hasher.Verify(ctx, submittedPassword, encoded)
 // errors.Is(err, ErrInvalidHash) — encoded битый/чужого формата/вне окна (не «пароль неверен»)
 // errors.Is(err, ErrPasswordTooLong) — пароль длиннее MaxPasswordLen (в байтах)
+// errors.Is(err, ErrBusy) — очередь хэшера полна: перегрузка, ответ 503 с Retry-After
 // ok == false — пароль не совпал
 
 if ok && hasher.NeedsRehash(encoded) {
@@ -134,14 +137,23 @@ if ok && hasher.NeedsRehash(encoded) {
 ```go
 user, err := repo.ByEmail(ctx, email)
 if errors.Is(err, ErrNotFound) {
-	hasher.VerifyDummy(ctx) // столько же CPU, сколько Verify
+	if err := hasher.VerifyDummy(ctx); err != nil { // столько же CPU, сколько Verify, в той же очереди
+		return err // ErrBusy, отмена ctx — тот же ответ, что на ошибку Verify ниже
+	}
 	return ErrInvalidCredentials
 }
 ok, err := hasher.Verify(ctx, submittedPassword, user.PasswordHash)
-if err != nil || !ok {
+switch {
+case errors.Is(err, authnkit.ErrBusy):
+	return err // перегрузка: 503 с Retry-After — как у VerifyDummy выше
+case err != nil || !ok:
 	return ErrInvalidCredentials // одинаковый ответ на оба случая
 }
 ```
+
+Отказ `ErrBusy` — не неверный пароль: ответ на него — 503 с `Retry-After` на обоих путях, а
+не «неверные учётные данные». Иначе под нагрузкой путь без учётной записи и путь с ней отвечали
+бы по-разному, а пользователь с верным паролем получал бы отказ входа.
 
 ## Sign / Verify JWT
 
@@ -392,7 +404,7 @@ App-структуры — отдельный `fx.Provide` не нужен. Не
   ErrInvalidHash)` при битой/чужой кодировке, `(false, ErrPasswordTooLong)` при пароле
   длиннее `MaxPasswordLen` и `(false, nil)` при несовпадении пароля. Логируй `err`, но
   пользователю всегда отдавай одинаковый «неверные учётные данные» (не выдавай, какой
-  именно случай).
+  именно случай). Исключение — `ErrBusy`: перегрузка, ответ 503 на всех путях пароля.
 - **`maxLength` DTO не заменяет обработку `ErrPasswordTooLong`.** Предел
   `MaxPasswordLen` — в байтах, `maxLength` huma — в символах: пароль не из ASCII проходит
   DTO и получает `ErrPasswordTooLong` из `Hash`. Без правила ошибки на него регистрация,
@@ -407,11 +419,15 @@ App-структуры — отдельный `fx.Provide` не нужен. Не
   отдельности. Строка должна быть канонической — пробелы, переводы строк,
   ведущие нули в числах и неканоничный хвост base64 отвергаются.
 - **Неизвестный пользователь — `VerifyDummy`.** Иначе время ответа перечисляет
-  учётные записи.
-- **Argon2id считается в слотах.** Одновременно — не больше
+  учётные записи. Его ошибка (`ErrBusy`, отмена `ctx`) — тот же ответ, что на ошибку
+  `Verify`: иначе под нагрузкой отказ различает учётные записи.
+- **Argon2id считается в слотах, очередь ограничена.** Одновременно — не больше
   `max(1, GOMAXPROCS/Threads)` вычислений на хэшер: наплыв анонимных логинов
-  ждёт в очереди, а не множит по `ARGON2_MEMORY_KIB` на запрос. Ожидание
-  ограничено `ctx` запроса — передавай его, а не `context.Background()`.
+  ждёт в очереди, а не множит по `ARGON2_MEMORY_KIB` на запрос. Слот ждут не больше
+  восьми вызовов на слот, следующий сразу получает `ErrBusy` — ответ 503 с
+  `Retry-After` (`RetryAfter()` ошибки; `httpkit.ErrorMap` ставит заголовок сам), а не
+  429: перегрузка общая, а не лимит клиента. Ожидание в очереди ограничено и `ctx`
+  запроса — передавай его, а не `context.Background()`.
 - **Стойкость Argon2id растёт со временем, безопасно для старых хэшей.** Параметры
   зашиты в PHC-строку, поэтому поднятие `Argon2idConfig` не ломает проверку ранее
   выданных хэшей. Перевыпуск под новую стойкость — `NeedsRehash` + `Hash` на

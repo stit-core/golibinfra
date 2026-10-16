@@ -12,6 +12,7 @@ import (
 type hashInstruments struct {
 	hashDuration   metric.Float64Histogram
 	verifyDuration metric.Float64Histogram
+	busy           metric.Int64Counter
 }
 
 func newHashInstruments() *hashInstruments {
@@ -26,6 +27,9 @@ func newHashInstruments() *hashInstruments {
 			metric.WithDescription("Time to verify a password against an argon2id hash"),
 			metric.WithUnit("s"),
 			otelkit.DurationBuckets(),
+		)),
+		busy: otelkit.Must(m.Int64Counter("authn_password_busy_total",
+			metric.WithDescription("Password hashing and verification refused with ErrBusy: the argon2id queue is full"),
 		)),
 	}
 }

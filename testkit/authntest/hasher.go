@@ -22,34 +22,42 @@ const HashPrefix = "hash:"
 type DeterministicHasher struct {
 	// HashErr — сбой хэширования: не nil — Hash отдаёт его вместо хеша.
 	HashErr error
+	// Busy — очередь хэшера полна: Hash, Verify и VerifyDummy отдают authnkit.ErrBusy, как боевой хэшер под нагрузкой.
+	Busy bool
 
 	verifies, dummies atomic.Int64
 }
 
-// Hash возвращает HashPrefix + plain; plain длиннее authnkit.MaxPasswordLen —
-// authnkit.ErrPasswordTooLong, как у боевого хэшера, затем HashErr, если он задан.
+// Hash возвращает HashPrefix + plain. Как у боевого хэшера: plain длиннее authnkit.MaxPasswordLen —
+// authnkit.ErrPasswordTooLong, затем Busy — authnkit.ErrBusy; затем HashErr, если он задан.
 func (h *DeterministicHasher) Hash(_ context.Context, plain string) (string, error) {
 	mustRunInTest(testing.Testing())
-	if len(plain) > authnkit.MaxPasswordLen {
+	switch {
+	case len(plain) > authnkit.MaxPasswordLen:
 		return "", authnkit.ErrPasswordTooLong
-	}
-	if h.HashErr != nil {
+	case h.Busy:
+		return "", authnkit.ErrBusy
+	case h.HashErr != nil:
 		return "", h.HashErr
 	}
 	return HashPrefix + plain, nil
 }
 
 // Verify сравнивает encoded с HashPrefix + plain. Как у боевого хэшера: plain длиннее
-// authnkit.MaxPasswordLen — authnkit.ErrPasswordTooLong, encoded без HashPrefix —
-// authnkit.ErrInvalidHash.
+// authnkit.MaxPasswordLen — authnkit.ErrPasswordTooLong (при Busy — authnkit.ErrBusy его холостого вычисления),
+// encoded без HashPrefix — authnkit.ErrInvalidHash, затем Busy — authnkit.ErrBusy.
 func (h *DeterministicHasher) Verify(_ context.Context, plain, encoded string) (bool, error) {
 	mustRunInTest(testing.Testing())
 	h.verifies.Add(1)
-	if len(plain) > authnkit.MaxPasswordLen {
+	switch {
+	case len(plain) > authnkit.MaxPasswordLen && h.Busy:
+		return false, authnkit.ErrBusy
+	case len(plain) > authnkit.MaxPasswordLen:
 		return false, authnkit.ErrPasswordTooLong
-	}
-	if !strings.HasPrefix(encoded, HashPrefix) {
+	case !strings.HasPrefix(encoded, HashPrefix):
 		return false, fmt.Errorf("%w: not a %q string", authnkit.ErrInvalidHash, HashPrefix)
+	case h.Busy:
+		return false, authnkit.ErrBusy
 	}
 	return encoded == HashPrefix+plain, nil
 }
@@ -61,10 +69,14 @@ func (h *DeterministicHasher) NeedsRehash(encoded string) bool {
 	return !strings.HasPrefix(encoded, HashPrefix)
 }
 
-// VerifyDummy ничего не считает, кроме самого вызова: выравнивать время нечему.
-func (h *DeterministicHasher) VerifyDummy(context.Context) {
+// VerifyDummy ничего не считает, кроме самого вызова: выравнивать время нечему; Busy — authnkit.ErrBusy.
+func (h *DeterministicHasher) VerifyDummy(context.Context) error {
 	mustRunInTest(testing.Testing())
 	h.dummies.Add(1)
+	if h.Busy {
+		return authnkit.ErrBusy
+	}
+	return nil
 }
 
 // VerifyCalls — сколько раз звали Verify.

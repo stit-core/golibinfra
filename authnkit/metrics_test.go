@@ -52,7 +52,9 @@ func TestMetricsEmitted(t *testing.T) {
 	if _, err := hasher.Verify(ctx, "password", hash); err != nil {
 		t.Fatalf("verify: %v", err)
 	}
-	hasher.VerifyDummy(ctx)
+	if err := hasher.VerifyDummy(ctx); err != nil {
+		t.Fatalf("verify dummy: %v", err)
+	}
 
 	totp, err := authnkit.NewTOTP(authnkit.TOTPConfig{Issuer: "t", Skew: 1})
 	if err != nil {

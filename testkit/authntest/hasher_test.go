@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"git.stit.tech/stit-core/golibinfra/authnkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/authntest"
@@ -120,10 +121,49 @@ func TestDeterministicHasher_CountsVerifyAndVerifyDummy(t *testing.T) {
 	_, _ = h.Verify(ctx, strings.Repeat("p", authnkit.MaxPasswordLen+1), "hash:secret")
 	cancelled, cancel := context.WithCancel(ctx)
 	cancel()
-	h.VerifyDummy(cancelled)
-	h.VerifyDummy(ctx)
+	for _, c := range []context.Context{cancelled, ctx} {
+		if err := h.VerifyDummy(c); err != nil {
+			t.Fatalf("VerifyDummy = %v, want nil: the fake has no queue to wait in", err)
+		}
+	}
 	if h.VerifyCalls() != 4 || h.VerifyDummyCalls() != 2 {
 		t.Fatalf("verify=%d dummy=%d, want every call counted: 4 and 2", h.VerifyCalls(), h.VerifyDummyCalls())
+	}
+}
+
+// Busy — полная очередь боевого хэшера: тест потребителя получает ErrBusy на каждом пути пароля, в том же порядке
+// исходов, что у боевого (длинный пароль у Hash — ошибка ввода до очереди, у Verify — ErrBusy холостого вычисления,
+// нечитаемый хеш — до очереди), и вызовы проверки по-прежнему считаются.
+func TestDeterministicHasher_Busy(t *testing.T) {
+	t.Parallel()
+	ctx := t.Context()
+	h := &authntest.DeterministicHasher{Busy: true}
+	tooLong := strings.Repeat("p", authnkit.MaxPasswordLen+1)
+	var retry interface{ RetryAfter() time.Duration }
+
+	if _, err := h.Hash(ctx, "secret"); !errors.Is(err, authnkit.ErrBusy) || !errors.As(err, &retry) {
+		t.Fatalf("Hash = %v, want ErrBusy with a retry hint", err)
+	}
+	if _, err := h.Hash(ctx, tooLong); !errors.Is(err, authnkit.ErrPasswordTooLong) {
+		t.Fatalf("Hash of a too long password = %v, want ErrPasswordTooLong before the queue", err)
+	}
+	for _, c := range []struct {
+		name, plain, encoded string
+		want                 error
+	}{
+		{"right password", "secret", "hash:secret", authnkit.ErrBusy},
+		{"too long password", tooLong, "hash:secret", authnkit.ErrBusy},
+		{"unreadable hash", "secret", "garbage", authnkit.ErrInvalidHash},
+	} {
+		if ok, err := h.Verify(ctx, c.plain, c.encoded); ok || !errors.Is(err, c.want) {
+			t.Errorf("Verify, %s = %v %v, want %v", c.name, ok, err, c.want)
+		}
+	}
+	if err := h.VerifyDummy(ctx); !errors.Is(err, authnkit.ErrBusy) {
+		t.Fatalf("VerifyDummy = %v, want ErrBusy", err)
+	}
+	if h.VerifyCalls() != 3 || h.VerifyDummyCalls() != 1 {
+		t.Fatalf("verify=%d dummy=%d, want refused calls counted too: 3 and 1", h.VerifyCalls(), h.VerifyDummyCalls())
 	}
 }
 

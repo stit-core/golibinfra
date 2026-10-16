@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"go.opentelemetry.io/otel/metric"
 	"golang.org/x/crypto/argon2"
 )
 
@@ -28,6 +29,19 @@ var ErrHashParams = fmt.Errorf("%w: parameters out of window", ErrInvalidHash)
 // ErrPasswordTooLong — пароль длиннее MaxPasswordLen: в Argon2id он не попадает. Это ошибка ввода:
 // на регистрации, смене и сбросе пароля потребитель отвечает 422, на входе — как на неверный пароль.
 var ErrPasswordTooLong = errors.New("authnkit: password too long")
+
+// ErrBusy — очередь вычислений Argon2id полна: Hash, Verify и VerifyDummy отказывают сразу, без ожидания слота и без
+// вычисления. Это перегрузка процесса, а не ошибка ввода: ответ на неё — 503 на любом пути проверки пароля, иначе отказ
+// под нагрузкой различал бы учётные записи; RetryAfter() ошибки (секунда) httpkit.ErrorMap ставит в Retry-After.
+var ErrBusy error = busyError{}
+
+// busyError — тип ErrBusy: значение сравнимо (errors.Is) и подсказывает, когда повторить.
+type busyError struct{}
+
+func (busyError) Error() string { return "authnkit: argon2id queue is full" }
+
+// RetryAfter — через сколько повторить: очередь проходит за queuePerSlot хэшей.
+func (busyError) RetryAfter() time.Duration { return time.Second }
 
 // MaxPasswordLen — предел длины пароля в байтах, длиннее любой парольной фразы: Argon2id над
 // мегабайтами чужого ввода — лишняя работа. maxLength у поля DTO считает символы и предела не
@@ -72,7 +86,8 @@ const (
 // валидных представлений, а неканоническое осталось бы в БД навсегда.
 var phcB64 = base64.RawStdEncoding.Strict()
 
-// Hasher — хэш пароля и проверка против сохранённой PHC-строки.
+// Hasher — хэш пароля и проверка против сохранённой PHC-строки. ErrBusy любого метода — перегрузка: ответ на неё
+// один на всех путях проверки пароля.
 type Hasher interface {
 	// Hash — самоописывающая PHC-строка для plain; plain длиннее MaxPasswordLen —
 	// ErrPasswordTooLong.
@@ -82,8 +97,9 @@ type Hasher interface {
 	Verify(ctx context.Context, plain, encoded string) (bool, error)
 	// NeedsRehash — параметры encoded отличаются от текущих параметров хэшера.
 	NeedsRehash(encoded string) bool
-	// VerifyDummy — холостая проверка для пути «пользователь не найден».
-	VerifyDummy(ctx context.Context)
+	// VerifyDummy — холостая проверка для пути «пользователь не найден»; её ошибка (ErrBusy, отмена ctx) — та же, что
+	// у Verify, и ответ на неё тот же.
+	VerifyDummy(ctx context.Context) error
 }
 
 // Argon2idConfig — параметры Argon2id и одновременно окно, в котором
@@ -124,13 +140,18 @@ func (p Argon2idConfig) check() (env string, err error) {
 	return "", nil
 }
 
+// queuePerSlot — сколько вычислений ждут на каждый слот хэшера: принятый вызов ждёт не дольше queuePerSlot хэшей
+// (0.4–2 с при калибровке 50–250 мс на хэш), а не до дедлайна запроса.
+const queuePerSlot = 8
+
 // Argon2idHasher — Hasher поверх argon2.IDKey с самоописывающей PHC-строкой.
-// Одновременно считает не больше max(1, GOMAXPROCS/Threads) хэшей (каждый
-// держит Memory КиБ); ожидание слота прерывает ctx.
+// Одновременно считает не больше max(1, GOMAXPROCS/Threads) хэшей (каждый держит Memory КиБ), слот ждут не больше
+// восьми вызовов на слот — следующий получает ErrBusy сразу; ожидание слота прерывает ctx.
 type Argon2idHasher struct {
 	p      Argon2idConfig
 	instr  *hashInstruments
-	slots  chan struct{}
+	queue  chan struct{} // вызовы в хэшере: считающие и ждущие слот
+	slots  chan struct{} // считающие вызовы
 	derive func(password, salt []byte, time, memory uint32, threads uint8, keyLen uint32) []byte
 }
 
@@ -139,30 +160,28 @@ func NewArgon2idHasher(p Argon2idConfig) (*Argon2idHasher, error) {
 	if err := p.Validate(); err != nil {
 		return nil, err
 	}
+	slots := max(1, runtime.GOMAXPROCS(0)/int(p.Threads))
 	return &Argon2idHasher{
 		p:      p,
 		instr:  newHashInstruments(),
-		slots:  make(chan struct{}, max(1, runtime.GOMAXPROCS(0)/int(p.Threads))),
+		queue:  make(chan struct{}, slots*(1+queuePerSlot)),
+		slots:  make(chan struct{}, slots),
 		derive: argon2.IDKey,
 	}, nil
 }
 
 // Hash считает Argon2id со случайной солью и кодирует результат в PHC-строку; plain длиннее
-// MaxPasswordLen — ErrPasswordTooLong без вычисления, отмена ctx в очереди — ошибка с ctx.Err().
+// MaxPasswordLen — ErrPasswordTooLong без вычисления, полная очередь — ErrBusy, отмена ctx в очереди — ошибка с
+// ctx.Err().
 func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error) {
 	if err := checkPasswordLen(plain); err != nil {
 		return "", err
 	}
-	start := time.Now()
-	defer func() {
-		h.instr.hashDuration.Record(ctx, time.Since(start).Seconds())
-	}()
-
 	salt := make([]byte, h.p.SaltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return "", fmt.Errorf("authnkit: salt: %w", err)
 	}
-	key, err := h.idKey(ctx, []byte(plain), salt, h.p)
+	key, err := h.idKey(ctx, h.instr.hashDuration, []byte(plain), salt, h.p)
 	if err != nil {
 		return "", err
 	}
@@ -177,23 +196,21 @@ func (h *Argon2idHasher) Hash(ctx context.Context, plain string) (string, error)
 
 // Verify сверяет plain с PHC-строкой encoded: (false, ErrInvalidHash) — encoded
 // битый или вне окна параметров; (false, ErrPasswordTooLong) — plain длиннее MaxPasswordLen:
-// вместо него считается холостой VerifyDummy, и время ответа не выдаёт учётную запись;
-// (false, nil) — пароль не совпал; отмена ctx в очереди вычислений — ошибка с ctx.Err().
+// вместо него считается холостой VerifyDummy, и время ответа не выдаёт учётную запись (его ошибка — вместо
+// ErrPasswordTooLong); (false, nil) — пароль не совпал; полная очередь вычислений — ErrBusy, отмена ctx в очереди —
+// ошибка с ctx.Err().
 func (h *Argon2idHasher) Verify(ctx context.Context, plain, encoded string) (bool, error) {
 	if err := checkPasswordLen(plain); err != nil {
-		h.VerifyDummy(ctx)
+		if dummyErr := h.VerifyDummy(ctx); dummyErr != nil {
+			return false, dummyErr
+		}
 		return false, err
 	}
-	start := time.Now()
-	defer func() {
-		h.instr.verifyDuration.Record(ctx, time.Since(start).Seconds())
-	}()
-
 	ph, err := parsePHC(encoded)
 	if err != nil {
 		return false, err
 	}
-	got, err := h.idKey(ctx, []byte(plain), ph.salt, ph.params)
+	got, err := h.idKey(ctx, h.instr.verifyDuration, []byte(plain), ph.salt, ph.params)
 	if err != nil {
 		return false, err
 	}
@@ -215,20 +232,27 @@ var (
 	dummySalt     = []byte("authnkit-dummy-salt-do-not-store-it-anywhere-0123456789abcdefghij")
 )
 
-// VerifyDummy тратит столько же CPU, сколько Verify, и ждёт ту же очередь
-// вычислений: вызывай на пути «пользователь не найден», иначе время ответа
-// выдаёт наличие учётной записи. Отмена ctx в очереди пропускает вычисление.
-func (h *Argon2idHasher) VerifyDummy(ctx context.Context) {
-	start := time.Now()
-	defer func() {
-		h.instr.verifyDuration.Record(ctx, time.Since(start).Seconds())
-	}()
-
-	_, _ = h.idKey(ctx, dummyPassword, dummySalt[:h.p.SaltLen], h.p)
+// VerifyDummy тратит столько же CPU, сколько Verify, в той же очереди вычислений: вызывай на пути «пользователь не
+// найден», иначе время ответа выдаёт наличие учётной записи. Ошибка — как у Verify: полная очередь — ErrBusy, отмена
+// ctx в очереди — ошибка с ctx.Err(); вычисления не было, и ответ на неё — тот же, что на ошибку Verify.
+func (h *Argon2idHasher) VerifyDummy(ctx context.Context) error {
+	_, err := h.idKey(ctx, h.instr.verifyDuration, dummyPassword, dummySalt[:h.p.SaltLen], h.p)
+	return err
 }
 
-// idKey считает Argon2id в одном из слотов хэшера.
-func (h *Argon2idHasher) idKey(ctx context.Context, password, salt []byte, p Argon2idConfig) ([]byte, error) {
+// idKey считает Argon2id в одном из слотов хэшера; полная очередь — ErrBusy без ожидания. dur получает время от допуска
+// в очередь до конца вычисления: отказ его не пишет.
+func (h *Argon2idHasher) idKey(ctx context.Context, dur metric.Float64Histogram, password, salt []byte, p Argon2idConfig) ([]byte, error) {
+	select {
+	case h.queue <- struct{}{}:
+	default:
+		h.instr.busy.Add(ctx, 1)
+		return nil, ErrBusy
+	}
+	defer func() { <-h.queue }()
+	start := time.Now()
+	defer func() { dur.Record(ctx, time.Since(start).Seconds()) }()
+
 	select {
 	case h.slots <- struct{}{}:
 	case <-ctx.Done():

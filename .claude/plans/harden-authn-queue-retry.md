@@ -39,12 +39,16 @@ blocked-by: —
 - Переменная глубины очереди хэшера и признак «повтор» у выданного `session.Token` — «Решения».
 
 ## Критерии приёмки
-- [ ] **AC1** — RSECT-01: при полной очереди Argon2id `Hash`, `Verify` и `VerifyDummy` отказывают сразу ошибкой
+- [x] **AC1** — RSECT-01: при полной очереди Argon2id `Hash`, `Verify` и `VerifyDummy` отказывают сразу ошибкой
   `ErrBusy` с `RetryAfter()`, а не ждут слот до дедлайна запроса; проверка под потоком сильнее ёмкости хэшера ждёт не
   дольше очереди (девять хэшей на слот) или получает отказ сразу. Проверка: `go test -race -run 'TestArgon2id_FullQueue' ./authnkit/` → PASS; проба `zz_gauth_hash_probe_test.go` при `GOMAXPROCS=4` — база: секунды до дедлайна, ветка: не дольше 0.5 с или `ErrBusy` сразу
-- [ ] **AC2** — отказ при полной очереди не выдаёт учётную запись: путь «учётной записи нет» (`VerifyDummy`) и пароль
+  - Подтверждено: `TestArgon2id_FullQueueFailsFast` → PASS (`-count=3 -race`); проба при `GOMAXPROCS=4` под потоком 40/с —
+    база: 1.3 с → 2.5 с → дедлайн 3 с, ветка: `ErrBusy` за 0 с, потоку отказано 161 из 239 (`N/g-auth/probe-hash-*.log`)
+- [x] **AC2** — отказ при полной очереди не выдаёт учётную запись: путь «учётной записи нет» (`VerifyDummy`) и пароль
   длиннее предела получают тот же `ErrBusy`, что `Verify`; фейк `authntest` даёт этот исход тестам потребителя.
   Проверка: `go test -race -run 'TestArgon2id_FullQueue|TestDeterministicHasher' ./authnkit/ ./testkit/authntest/` → PASS
+  - Подтверждено: → PASS; в `TestArgon2id_FullQueueFailsFast` `VerifyDummy` и `Verify` пароля длиннее предела — `ErrBusy`
+    (мутант «длинный пароль без ошибки холостого вычисления» убит), `TestDeterministicHasher_Busy` — тот же порядок исходов
 - [ ] **AC3** — RCOD-16: повтор `Rotate` тем же токеном не позже `SESSION_RETRY_WINDOW` (по умолчанию 30 с) после его
   ротации, пока преемник не использован, выдаёт нового преемника и гасит прежнего — сессия жива; повтор вне окна, после
   использования преемника и предъявление погашенного преемника — `*ReusedError` и отзыв сессии, как прежде. Проверка: `sessiontest.RunContract` на фейке и pgstore → PASS; проба `zz_gauth_session_probe_test.go` — база: повтор через 2 с — `ErrReused`, ветка: новый токен, три сценария кражи — `ErrReused`
@@ -57,10 +61,16 @@ blocked-by: —
   строки аннотации `v1.6.0` и шаги шаблона, сверенные с `make release-diff`. Проверка: `make envdoc-check` → OK; `make release-diff PREV=v1.5.0` — каждая строка в «Handoff»
 
 ## Шаги
-- [ ] **S1** — authnkit: очередь хэшера с отказом `ErrBusy` (RSECT-01) — вычисления ждут слот не дальше
+- [x] **S1** — authnkit: очередь хэшера с отказом `ErrBusy` (RSECT-01) — вычисления ждут слот не дальше
   `queuePerSlot` на слот, лишние — `ErrBusy` сразу; `VerifyDummy` отдаёт ошибку; `authn_password_busy_total`; фейк
   `authntest` (`VerifyDummy` с ошибкой, поле `Busy`); доки кита и testkit
   - Проверка: `go test -short -race ./authnkit/ ./testkit/authntest/` → PASS, регрессия на базе красная; проба H на ветке; `make check` → `✓ check clean (./...)` · Закрывает: AC1, AC2, AC6
+  - Сделано: слот ждут не больше 8 вызовов на слот, следующий — `ErrBusy` сразу (`RetryAfter()` — 1 с, ответ 503);
+    `VerifyDummy` отдаёт ошибку, `Verify` длинного пароля — ошибку холостого вычисления; `authn_password_busy_total`,
+    гистограммы — только допущенные вычисления; фейк — `VerifyDummy` с ошибкой и `Busy`; README и `docs/` кита, строки
+    testkit и корневого README. `TestArgon2id_FullQueueFailsFast` → PASS, мутант «ожидание вместо отказа» убит; на базе
+    регрессия красная — вызов ждал дедлайн 2 с (`N/g-auth/red-base.log`); `go test -short -race ./authnkit/...
+    ./testkit/authntest/` → PASS; `make check` → `✓ check clean (./...)`
 - [ ] **S2** — authnkit/session: окно повтора ротации (RCOD-16) — `Config.RetryWindow` (`SESSION_RETRY_WINDOW`),
   миграция `0002` (`successor_hash`), pgstore и фейк, кейсы `RunContract`, `result="retry"`, доки
   - Проверка: `go test -race ./authnkit/session/... ./testkit/sessiontest/` → PASS, регрессия на базе красная; проба R на ветке; `make check` → `✓ check clean (./...)` · Закрывает: AC3, AC4, AC6
@@ -147,5 +157,5 @@ Breaking:
    `.env.example` (`SESSION_RETRY_WINDOW`), якоря `scripts/tools/mutants.txt` у правленого кода.
 
 ## Где мы сейчас
-План заведён; пробы на базе воспроизводят оба дефекта (`N/g-auth/probe-*-base.log`). Следующий шаг — S1: очередь
-хэшера с отказом `ErrBusy`.
+S1 закрыт: хэшер отказывает при полной очереди (`ErrBusy`), AC1 и AC2 подтверждены. Следующий шаг — S2: окно повтора
+ротации refresh (`SESSION_RETRY_WINDOW`, миграция `0002`, pgstore, фейк, контракт, доки).

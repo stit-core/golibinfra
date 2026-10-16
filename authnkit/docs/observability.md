@@ -13,6 +13,7 @@ exemplar'ы вызывающего.
 | Метрика | Тип | Unit | Labels | Назначение |
 |---|---|---|---|---|
 | `authn_jwt_verifications_total` | Int64 Counter | — | `result` | Исход разбора JWT в `HS256JWT.Parse`/`ParseAccess`. |
+| `authn_password_busy_total` | Int64 Counter | — | — | Отказы `ErrBusy` у `Argon2idHasher.Hash`, `Verify` и `VerifyDummy`: очередь вычислений полна. |
 | `authn_password_hash_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Hash`. |
 | `authn_password_verify_duration_seconds` | Float64 Histogram | `s` | — | Время одного `Argon2idHasher.Verify` или `VerifyDummy`. |
 | `authn_totp_verifications_total` | Int64 Counter | — | `result` | Исход `TOTPGenerator.Verify`/`VerifyOnce`. |
@@ -65,11 +66,16 @@ Meter: `git.stit.tech/stit-core/golibinfra/authnkit/session`. Пишет хра�
 
 ## Что эмитится, а что нет
 
-- `Hash`, `Verify` и `VerifyDummy` пишут гистограмму **на каждый вызов**,
-  независимо от исхода (запись в `defer`). Метки исхода у них нет — гистограмма
-  меряет только время, включая ожидание слота вычислений (не больше
-  `max(1, GOMAXPROCS/Threads)` одновременно): рост времени при той же стоимости
-  одного хэша — очередь на наплыве логинов.
+- `Hash`, `Verify` и `VerifyDummy` пишут гистограмму **на каждое вычисление,
+  принятое в очередь**, — от допуска до результата, включая ожидание слота (не
+  больше `max(1, GOMAXPROCS/Threads)` вычислений одновременно) и исход отмены `ctx`
+  в очереди. Метки исхода у неё нет: рост времени при той же стоимости одного хэша —
+  очередь на наплыве логинов. Без записи — отказ до вычисления: пароль длиннее
+  предела у `Hash`, нечитаемая PHC-строка у `Verify` и отказ `ErrBusy`.
+- `authn_password_busy_total` — по одному на отказ `ErrBusy` (слот ждут восемь
+  вызовов на слот, очередь полна). Ненулевой темп — хэшеру не хватает ёмкости:
+  поток входов сильнее неё или мало ядер на `ARGON2_THREADS`; у `Verify` пароля
+  длиннее предела отказ считает его холостое вычисление.
 - `authn_jwt_verifications_total` инкрементится **только при разборе**; `Sign`
   и `SignAccess` метрик не пишут.
 - `authn_totp_verifications_total` инкрементится **только при проверке кода**

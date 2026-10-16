@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 	"unicode/utf8"
+
+	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
 func defaultHasher(t *testing.T) *Argon2idHasher {
@@ -336,7 +338,9 @@ func TestVerifyDummy(t *testing.T) {
 		verify := time.Since(start)
 
 		start = time.Now()
-		h.VerifyDummy(ctx)
+		if err := h.VerifyDummy(ctx); err != nil {
+			t.Fatalf("VerifyDummy: %v", err)
+		}
 		dummy := time.Since(start)
 
 		// Запас на шум загруженной машины: no-op отличается на три порядка.
@@ -407,12 +411,13 @@ var _ Hasher = (*Argon2idHasher)(nil)
 
 // Регрессия SEC-09: каждый Argon2id держит Memory КиБ, а логин анонимен —
 // одновременно считается не больше max(1, GOMAXPROCS/Threads) хэшей, лишние
-// ждут слот, и ожидание прерывает ctx.
+// ждут слот (не больше queuePerSlot на слот), и ожидание прерывает ctx.
 func TestArgon2id_Concurrency(t *testing.T) {
 	for _, threads := range []uint8{1, 2, MaxThreads} {
 		h := newHasherOrFail(t, Argon2idConfig{Time: 1, Memory: MinMemoryKiB, Threads: threads, KeyLen: 32, SaltLen: 16})
-		if want := max(1, runtime.GOMAXPROCS(0)/int(threads)); cap(h.slots) != want {
-			t.Fatalf("threads=%d: slots = %d, want max(1, GOMAXPROCS/threads) = %d", threads, cap(h.slots), want)
+		if want := max(1, runtime.GOMAXPROCS(0)/int(threads)); cap(h.slots) != want || cap(h.queue) != want*(1+queuePerSlot) {
+			t.Fatalf("threads=%d: slots = %d, queue = %d; want max(1, GOMAXPROCS/threads) = %d and %d more waiting per slot",
+				threads, cap(h.slots), cap(h.queue), want, queuePerSlot)
 		}
 	}
 
@@ -474,11 +479,87 @@ func TestArgon2id_Concurrency(t *testing.T) {
 	}
 	waitCanceled("Hash", func() error { _, err := h.Hash(ctx, "p"); return err })
 	waitCanceled("Verify", func() error { _, err := h.Verify(ctx, "p", encoded); return err })
-	waitCanceled("VerifyDummy", func() error { h.VerifyDummy(ctx); return ctx.Err() })
+	waitCanceled("VerifyDummy", func() error { return h.VerifyDummy(ctx) })
 
 	close(release)
 	wg.Wait()
 	if got := peak.Load(); got != int64(limit) {
 		t.Fatalf("peak concurrent argon2id = %d, want %d", got, limit)
+	}
+}
+
+// Регрессия RSECT-01: поток проверок пароля сильнее ёмкости хэшера не держит чужой вход до дедлайна запроса. При
+// занятых слотах и полной очереди Hash, Verify и VerifyDummy отказывают сразу ErrBusy с подсказкой повтора — и Verify
+// пароля длиннее предела: его холостое вычисление стоит в той же очереди, и отказ не отличает учётную запись. Отказ не
+// пишет время вычисления, а принятые в очередь вызовы досчитываются.
+func TestArgon2id_FullQueueFailsFast(t *testing.T) {
+	h := newHasherOrFail(t, Argon2idConfig{Time: 1, Memory: MinMemoryKiB, Threads: 2, KeyLen: 32, SaltLen: 16})
+	encoded, err := h.Hash(t.Context(), "p")
+	if err != nil {
+		t.Fatalf("Hash: %v", err)
+	}
+	limit, capacity := cap(h.slots), cap(h.queue)
+
+	var inFlight atomic.Int64
+	release := make(chan struct{})
+	h.derive = func(_, _ []byte, _, _ uint32, _ uint8, keyLen uint32) []byte {
+		inFlight.Add(1)
+		<-release
+		return make([]byte, keyLen)
+	}
+	var wg sync.WaitGroup
+	for range capacity {
+		wg.Go(func() {
+			if _, err := h.Verify(context.Background(), "p", encoded); err != nil {
+				t.Errorf("queued Verify: %v", err)
+			}
+		})
+	}
+	for deadline := time.Now().Add(5 * time.Second); len(h.queue) < capacity || inFlight.Load() < int64(limit); time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			close(release)
+			t.Fatalf("queue = %d of %d, in flight = %d of %d", len(h.queue), capacity, inFlight.Load(), limit)
+		}
+	}
+
+	before := metrictest.Collect(t)
+	ctx, cancel := context.WithTimeout(t.Context(), 5*time.Second)
+	defer cancel()
+	tooLong := strings.Repeat("p", MaxPasswordLen+1)
+	calls := []struct {
+		name string
+		call func() error
+	}{
+		{"Hash", func() error { _, err := h.Hash(ctx, "p"); return err }},
+		{"Verify", func() error { _, err := h.Verify(ctx, "p", encoded); return err }},
+		{"Verify of a too long password", func() error { _, err := h.Verify(ctx, tooLong, encoded); return err }},
+		{"VerifyDummy", func() error { return h.VerifyDummy(ctx) }},
+	}
+	for _, c := range calls {
+		start := time.Now()
+		err := c.call()
+		var retry interface{ RetryAfter() time.Duration }
+		if !errors.Is(err, ErrBusy) || !errors.As(err, &retry) || retry.RetryAfter() <= 0 {
+			t.Errorf("%s with a full queue = %v, want ErrBusy with a retry hint", c.name, err)
+		}
+		if took := time.Since(start); took > time.Second {
+			t.Errorf("%s with a full queue took %s, want an immediate refusal", c.name, took)
+		}
+	}
+	d := metrictest.Collect(t).Sub(before)
+	if got := d.Value("authn_password_busy_total"); got != float64(len(calls)) {
+		t.Errorf("authn_password_busy_total delta = %v, want %d", got, len(calls))
+	}
+	for _, name := range []string{"authn_password_hash_duration_seconds", "authn_password_verify_duration_seconds"} {
+		if got := d.Find(name); len(got) != 0 {
+			t.Errorf("%s recorded refused calls: %v", name, got)
+		}
+	}
+
+	close(release)
+	wg.Wait()
+	computed := inFlight.Load()
+	if _, err := h.Verify(ctx, "p", encoded); err != nil || inFlight.Load() != computed+1 {
+		t.Fatalf("Verify after the queue drained = %v, want a computation", err)
 	}
 }
