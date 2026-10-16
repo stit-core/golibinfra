@@ -44,8 +44,8 @@
   инстанс (с `WithMetricSubject` — на шаблон). Триггер: потребитель с id в subject и заметной ценой сбора или правка
   `Backlog`.
 - **archkit-rule-gaps** — формы нарушений, которые правила `archkit` не видят (правила синтаксические — README кита § Инварианты):
-  порт между доменами через `return (uc)`, `return Port(uc)`, переменную, именованный результат, alias типа и dot-импорт чужого
-  домена; `time.Now` за обёрткой в `pkg/`; `io/ioutil`, `path/filepath` и `embed` в корне домена; в SQL — `public . users`,
+  порт между доменами через поле параметра (структура `fx.In`), функцию-помощник и приведение к интерфейсу вне пакетов доменов;
+  `time.Now` за обёрткой в `pkg/`; `io/ioutil`, `path/filepath` и `embed` в корне домена; в SQL — `public . users`,
   `FROM (a CROSS JOIN b)`, `CREATE UNLOGGED TABLE`, схема не `public`, представление над чужой таблицей; запись
   `WithUncheckedPackages` о пакете под другим доверенным. Триггер: повторный аудит archkit или такая форма у потребителя.
 - **natskit-empty-durable** — `SubscribeStream` с пустым `durable` шина принимает и создаёт эфемерный консьюмер, хотя контракт

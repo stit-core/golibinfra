@@ -38,6 +38,12 @@ func (f goFile) domainCode() bool { return f.domain != "" && !f.test }
 // violation — нарушение правила: what — что и где (ключ известного нарушения), why — правило.
 type violation struct{ what, why string }
 
+// declared — объявление типа в пакете домена и файл, в чьих импортах читаются имена объявления.
+type declared struct {
+	spec *ast.TypeSpec
+	file goFile
+}
+
 // tree — модуль потребителя, каким его видят правила.
 type tree struct {
 	module     string
@@ -50,6 +56,7 @@ type tree struct {
 	ioChains   map[string][]string
 	seen       map[string]bool
 	found      []violation
+	types      map[string]map[string]declared // пакет домена → его типы по имени
 }
 
 var moduleLine = regexp.MustCompile(`(?m)^module[ \t]+"?([^\s"]+)`)
@@ -71,6 +78,7 @@ func load(fsys fs.FS, o options) (*tree, error) {
 		opts:       o,
 		pkgImports: map[string][]string{},
 		queries:    map[string]string{},
+		types:      map[string]map[string]declared{},
 		ioChains:   map[string][]string{},
 		seen:       map[string]bool{},
 	}
@@ -139,7 +147,28 @@ func (t *tree) read(fsys fs.FS, fset *token.FileSet, p string) error {
 	if !f.test {
 		t.pkgImports[f.pkg] = append(t.pkgImports[f.pkg], f.imports...)
 	}
+	if f.domainCode() {
+		t.declare(f)
+	}
 	return nil
+}
+
+// declare запоминает типы файла домена: по ним правило портов раскрывает алиасы и dot-импорт.
+func (t *tree) declare(f goFile) {
+	for _, d := range f.syntax.Decls {
+		gen, ok := d.(*ast.GenDecl)
+		if !ok || gen.Tok != token.TYPE {
+			continue
+		}
+		if t.types[f.pkg] == nil {
+			t.types[f.pkg] = map[string]declared{}
+		}
+		for _, spec := range gen.Specs {
+			if ts, ok := spec.(*ast.TypeSpec); ok {
+				t.types[f.pkg][ts.Name.Name] = declared{spec: ts, file: f}
+			}
+		}
+	}
 }
 
 // readImported дочитывает пакеты модуля, которые импортирует прочитанный код, а обход пропустил:
@@ -284,4 +313,15 @@ func (f goFile) importsByName() map[string]string {
 		byName[name] = f.imports[i]
 	}
 	return byName
+}
+
+// dotImports — пакеты, которые файл импортирует через точку: их имена он видит без пакета.
+func (f goFile) dotImports() []string {
+	var dots []string
+	for i, spec := range f.syntax.Imports {
+		if spec.Name != nil && spec.Name.Name == "." {
+			dots = append(dots, f.imports[i])
+		}
+	}
+	return dots
 }
