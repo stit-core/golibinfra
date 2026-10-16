@@ -312,7 +312,7 @@ func (s *Server) bindAPI() {
 		fn(&humaConfig)
 	}
 	// Описание ошибок и вызов 401 — после хуков потребителя: их Security тоже объявляет 401.
-	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors(s.cfg.RateLimit.RPS > 0), authChallenge)
+	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors(s.cfg, s.registered), authChallenge)
 	consumer := routeHandlers(s.router)
 	api := humachi.New(s.router, humaConfig)
 	s.docsRoutes = map[string]bool{}
@@ -332,6 +332,12 @@ func (s *Server) bindAPI() {
 func (s *Server) registry() *registry {
 	s.BindAPI()
 	return s.api
+}
+
+// registered — операция из huma.Register этого сервера: её тело читает huma, а не хендлер маршрута
+// мимо huma, описанного в OpenAPI руками.
+func (s *Server) registered(op *huma.Operation) bool {
+	return slices.Contains(s.api.ops, op)
 }
 
 // Router — chi-роутер сервера; middleware регистрируются только до BindAPI.

@@ -1,11 +1,14 @@
 package httpkit_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"mime/multipart"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
@@ -13,6 +16,7 @@ import (
 	"time"
 
 	"github.com/danielgtaylor/huma/v2"
+	"github.com/danielgtaylor/huma/v2/sse"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
@@ -25,8 +29,9 @@ var (
 	errConflict = errors.New("concurrent update")
 	errWeak     = errors.New("weak password")
 	errLocked   = errors.New("account locked")
-	// errRateLimited — отказ своего лимитера потребителя: его отдаёт middleware, правило лишь объявляет код.
+	// errRateLimited и errTooLarge — отказы своих middleware потребителя: правило лишь объявляет код.
 	errRateLimited = errors.New("rate limited")
+	errTooLarge    = errors.New("payload too large")
 )
 
 type forbiddenError struct{ action string }
@@ -332,14 +337,7 @@ func TestErrorMap_DescribesServerRateLimit(t *testing.T) {
 			cfg := testConfig(t, "127.0.0.1:0")
 			cfg.RateLimit = httpkit.RateLimitConfig{RPS: tc.rps, Burst: tc.rps}
 			api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), handlertest.WithSecuritySchemes(bearer))
-			ops := map[string]*huma.Operation{}
-			for _, item := range api.OpenAPI().Paths {
-				for _, op := range []*huma.Operation{item.Get, item.Post} {
-					if op != nil {
-						ops[op.OperationID] = op
-					}
-				}
-			}
+			ops := operations(api.OpenAPI())
 			for id, want := range tc.want {
 				op := ops[id]
 				if op == nil {
@@ -372,11 +370,7 @@ func TestErrorMap_DescribesServerRateLimit(t *testing.T) {
 			resp := api.Get("/ping")
 			got := handlertest.DecodeAPIError(t, resp)
 			handlertest.AssertAPIError(t, resp, http.StatusTooManyRequests, got.Code)
-			var codes []string
-			if described := ops["ping"].Responses["429"]; described != nil {
-				codes = strings.Split(strings.TrimPrefix(described.Description, "Too Many Requests: "), ", ")
-			}
-			if !slices.Contains(codes, got.Code) {
+			if codes := codesOf(ops["ping"], http.StatusTooManyRequests); !slices.Contains(codes, got.Code) {
 				t.Errorf("the limiter answers %s, the contract of ping lists %v", got.Code, codes)
 			}
 			if secs, err := strconv.Atoi(resp.Header().Get("Retry-After")); err != nil || secs < 1 {
@@ -384,6 +378,193 @@ func TestErrorMap_DescribesServerRateLimit(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Регрессия httpkit-kit-errors-contract: ответы, которые кит отдаёт на операции сам, — в контракте там и тогда, где он
+// их отдаёт: 413 — у операции huma с телом под лимитом (у multipart превышение — 422 валидации), 503 REQUEST_TIMEOUT —
+// при дедлайне запроса, кроме потока SSE, 401 HumaAuth — с WWW-Authenticate по схемам операции и только при
+// обязательной аутентификации; у маршрута мимо huma 401 и 413 — ответы его хендлера. 503 AUTH_UNAVAILABLE отдаёт
+// extractor схемы — его объявляет таблица владельца схемы, кит код не повторяет. Описание сверено с ответом кита.
+func TestErrorMap_DescribesKitResponses(t *testing.T) {
+	bearer := httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
+		Extract: func(r *http.Request) (context.Context, error) {
+			switch r.Header.Get("Authorization") {
+			case "":
+				return nil, errors.New("no credentials")
+			case "Bearer down":
+				return nil, fmt.Errorf("jwks: %w", httpkit.ErrAuthUnavailable)
+			}
+			return r.Context(), nil
+		},
+	}
+	backendErrors := httpkit.NewErrorMap( // таблица владельца схемы, чей extractor знает недоступный бэкенд
+		httpkit.ErrorRule{Err: httpkit.ErrAuthUnavailable, Status: http.StatusServiceUnavailable, Code: "AUTH_UNAVAILABLE"},
+	)
+	bodyErrors := httpkit.NewErrorMap(
+		httpkit.ErrorRule{Err: errTooLarge, Status: http.StatusRequestEntityTooLarge, Code: "BODY_TOO_LARGE"},
+	)
+	type named struct {
+		Body struct {
+			Name string `json:"name"`
+		}
+	}
+	type form struct {
+		RawBody huma.MultipartFormFiles[struct {
+			File huma.FormFile `form:"file"`
+		}]
+	}
+	noBody := func(context.Context, *struct{}) (*struct{}, error) { return nil, nil } // тело ответа не нужно
+	noOutput := func(context.Context, *named) (*struct{}, error) { return nil, nil }
+	secured := []map[string][]string{{"Bearer": {}}}
+	register := func(api huma.API) {
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "upload", Method: http.MethodPost, Path: "/upload"}), noOutput)
+		huma.Register(api, bodyErrors.Declare(httpkit.Public(huma.Operation{OperationID: "import", Method: http.MethodPost, Path: "/import"})), noOutput)
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "raw", Method: http.MethodPost, Path: "/raw"}),
+			func(context.Context, *struct{ RawBody []byte }) (*struct{}, error) { return nil, nil })
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "form", Method: http.MethodPost, Path: "/form"}),
+			func(context.Context, *form) (*struct{}, error) { return nil, nil })
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "slow", Method: http.MethodGet, Path: "/slow"}),
+			func(ctx context.Context, _ *struct{}) (*struct{}, error) {
+				<-ctx.Done()
+				return nil, nil
+			})
+		sse.Register(api, httpkit.Public(huma.Operation{OperationID: "events", Method: http.MethodGet, Path: "/events"}),
+			map[string]any{"tick": struct{}{}}, func(context.Context, *struct{}, sse.Sender) {})
+		huma.Register(api, huma.Operation{OperationID: "me", Method: http.MethodGet, Path: "/me", Security: secured}, noBody)
+		huma.Register(api, backendErrors.Declare(huma.Operation{OperationID: "hub", Method: http.MethodGet, Path: "/hub", Security: secured}), noBody)
+		huma.Register(api, huma.Operation{
+			OperationID: "maybe", Method: http.MethodGet, Path: "/maybe", Security: []map[string][]string{{"Bearer": {}}, {}},
+		}, noBody)
+		// Маршрут мимо huma с телом и Security, описанный в OpenAPI руками: HumaAuth его не проверяет, на
+		// тело сверх лимита отвечает его хендлер.
+		api.OpenAPI().AddOperation(&huma.Operation{
+			OperationID: "rawRoute", Method: http.MethodPost, Path: "/raw-route", Security: secured,
+			RequestBody: &huma.RequestBody{Content: map[string]*huma.MediaType{"application/json": {}}},
+		})
+	}
+	const (
+		tooLarge     = "Request Entity Too Large: BODY_TOO_LARGE"
+		timeout      = "Service Unavailable: REQUEST_TIMEOUT"
+		unauthorized = "Unauthorized: UNAUTHORIZED"
+	)
+	type described struct{ s413, s503, s401 string } // описания ответов; "" — ответа нет
+	for _, tc := range []struct {
+		name   string
+		limits bool
+		want   map[string]described
+	}{
+		{"limits on", true, map[string]described{
+			"upload": {tooLarge, timeout, ""}, "import": {tooLarge, timeout, ""}, "raw": {tooLarge, timeout, ""},
+			"form": {"", timeout, ""}, "slow": {"", timeout, ""}, "events": {}, "rawRoute": {"", timeout, ""},
+			"me": {"", timeout, unauthorized}, "maybe": {"", timeout, ""},
+			"hub": {"", "Service Unavailable: AUTH_UNAVAILABLE, REQUEST_TIMEOUT", unauthorized},
+		}},
+		{"limits off", false, map[string]described{
+			"upload": {}, "import": {tooLarge, "", ""}, "raw": {}, "form": {}, "slow": {}, "events": {}, "rawRoute": {},
+			"me": {"", "", unauthorized}, "maybe": {}, "hub": {"", "Service Unavailable: AUTH_UNAVAILABLE", unauthorized},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "127.0.0.1:0")
+			cfg.RateLimit.RPS, cfg.MaxBody.MaxBytes, cfg.RequestTimeout = 0, 0, -time.Second
+			if tc.limits {
+				cfg.MaxBody.MaxBytes, cfg.RequestTimeout = 64, 100*time.Millisecond
+			}
+			api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), handlertest.WithSecuritySchemes(bearer))
+			ops := operations(api.OpenAPI())
+			for id, want := range tc.want {
+				op := ops[id]
+				if op == nil {
+					t.Fatalf("operation %s is not in OpenAPI", id)
+				}
+				for status, desc := range map[int]string{
+					http.StatusRequestEntityTooLarge: want.s413, http.StatusServiceUnavailable: want.s503, http.StatusUnauthorized: want.s401,
+				} {
+					resp, got := op.Responses[strconv.Itoa(status)], ""
+					if resp != nil {
+						got = resp.Description
+					}
+					if got != desc {
+						t.Errorf("%s: %d = %q, want %q", id, status, got, desc)
+						continue
+					}
+					if resp != nil && !strings.HasSuffix(resp.Content[httpkit.ProblemContentType].Schema.Ref, "/APIError") {
+						t.Errorf("%s: %d is not an APIError", id, status)
+					}
+				}
+				if want.s401 == "" {
+					continue
+				}
+				h := op.Responses["401"].Headers["WWW-Authenticate"]
+				if h == nil || h.Required || h.Schema == nil || h.Schema.Type != huma.TypeString || h.Example != "Bearer" {
+					t.Errorf("%s: 401 must declare the optional WWW-Authenticate challenge Bearer, got %+v", id, h)
+				}
+			}
+			if !tc.limits {
+				return
+			}
+			// Описание — то, что кит отвечает на этой же операции.
+			answers := func(id string, status int, resp *httptest.ResponseRecorder) {
+				t.Helper()
+				got := handlertest.DecodeAPIError(t, resp)
+				handlertest.AssertAPIError(t, resp, status, got.Code)
+				if codes := codesOf(ops[id], status); !slices.Contains(codes, got.Code) {
+					t.Errorf("the kit answers %s %d %s, the contract lists %v", id, status, got.Code, codes)
+				}
+			}
+			answers("upload", http.StatusRequestEntityTooLarge, api.Post("/upload", strings.NewReader(`{"name":"`+strings.Repeat("x", 100)+`"}`)))
+			answers("slow", http.StatusServiceUnavailable, api.Get("/slow"))
+			answers("hub", http.StatusServiceUnavailable, api.Get("/hub", "Authorization: Bearer down"))
+			resp := api.Get("/me")
+			answers("me", http.StatusUnauthorized, resp)
+			var promised any
+			if h := ops["me"].Responses["401"].Headers["WWW-Authenticate"]; h != nil {
+				promised = h.Example
+			}
+			if got := resp.Header().Get("WWW-Authenticate"); got != promised {
+				t.Errorf("HumaAuth answers WWW-Authenticate %q, the contract of me promises %v", got, promised)
+			}
+			// Превышение у multipart — 422 валидации huma, поэтому 413 у формы в контракте нет.
+			var body bytes.Buffer
+			mw := multipart.NewWriter(&body)
+			fw, err := mw.CreateFormFile("file", "a.txt")
+			if err == nil {
+				_, err = fw.Write([]byte(strings.Repeat("y", 200)))
+			}
+			if err != nil || mw.Close() != nil {
+				t.Fatalf("multipart body: %v", err)
+			}
+			handlertest.AssertAPIError(t, api.Post("/form", "Content-Type: "+mw.FormDataContentType(), &body), http.StatusUnprocessableEntity, "VALIDATION_FAILED")
+			// Необязательная аутентификация: без credentials запрос идёт в хендлер, а не в 401.
+			if resp := api.Get("/maybe"); resp.Code >= http.StatusBadRequest {
+				t.Errorf("an optional-auth operation without credentials: %d, want the handler response", resp.Code)
+			}
+		})
+	}
+}
+
+// operations — операции OpenAPI по OperationID.
+func operations(oapi *huma.OpenAPI) map[string]*huma.Operation {
+	ops := map[string]*huma.Operation{}
+	for _, item := range oapi.Paths {
+		for _, op := range []*huma.Operation{item.Get, item.Post, item.Put, item.Patch, item.Delete} {
+			if op != nil {
+				ops[op.OperationID] = op
+			}
+		}
+	}
+	return ops
+}
+
+// codesOf — коды из описания ответа status операции (`<текст статуса>: A, B`); ответа нет — nil.
+func codesOf(op *huma.Operation, status int) []string {
+	resp := op.Responses[strconv.Itoa(status)]
+	if resp == nil {
+		return nil
+	}
+	_, list, _ := strings.Cut(resp.Description, ": ")
+	return strings.Split(list, ", ")
 }
 
 func TestErrorMap_InvalidRulePanics(t *testing.T) {

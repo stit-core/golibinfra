@@ -130,21 +130,32 @@ func (m ErrorMap) Declare(op huma.Operation) huma.Operation {
 	return op
 }
 
-// describeErrors — OnAddOperation сервера: коды Declare — в описание ответа своего
-// статуса (huma создаёт эти ответы раньше хука); 401 HumaAuth — у операции с Security,
-// 429 лимитера сервера (rateLimited) — у каждой операции; у ответа 429 — Retry-After.
-func describeErrors(rateLimited bool) huma.AddOpFunc {
+// describeErrors — OnAddOperation сервера: коды Declare — в описание ответа своего статуса (huma
+// создаёт эти ответы раньше хука), и ответы, которые кит отдаёт сам, — там, где он их отдаёт: 429
+// лимитера с Retry-After — у каждой операции, 503 дедлайна запроса — у каждой, кроме потока SSE; у
+// операции huma (registered, а не маршрута мимо huma) — 401 HumaAuth с WWW-Authenticate при
+// обязательной аутентификации и 413 при теле под лимитом.
+func describeErrors(cfg Config, registered func(*huma.Operation) bool) huma.AddOpFunc {
 	return func(oapi *huma.OpenAPI, op *huma.Operation) {
 		declared, _ := op.Metadata[errorCodesKey].(map[int][]string)
 		codes := maps.Clone(declared)
 		if codes == nil {
 			codes = map[int][]string{}
 		}
-		if len(op.Security) > 0 {
+		viaHuma := registered(op)
+		authRequired := viaHuma && len(op.Security) > 0 &&
+			!slices.ContainsFunc(op.Security, func(alt map[string][]string) bool { return len(alt) == 0 })
+		if authRequired {
 			kitResponse(oapi, op, codes, http.StatusUnauthorized, codeUnauthorized)
 		}
-		if rateLimited {
+		if cfg.RateLimit.RPS > 0 {
 			kitResponse(oapi, op, codes, http.StatusTooManyRequests, codeRateLimited)
+		}
+		if cfg.RequestTimeout > 0 && !eventStream(op) {
+			kitResponse(oapi, op, codes, http.StatusServiceUnavailable, codeRequestTimeout)
+		}
+		if viaHuma && readsLimitedBody(op) {
+			kitResponse(oapi, op, codes, http.StatusRequestEntityTooLarge, codeBodyTooLarge)
 		}
 		for status, list := range codes {
 			if resp := op.Responses[strconv.Itoa(status)]; resp != nil {
@@ -152,16 +163,34 @@ func describeErrors(rateLimited bool) huma.AddOpFunc {
 			}
 		}
 		if resp := op.Responses[strconv.Itoa(http.StatusTooManyRequests)]; resp != nil {
-			if resp.Headers == nil {
-				resp.Headers = map[string]*huma.Param{}
-			}
-			resp.Headers["Retry-After"] = &huma.Param{
+			setHeader(resp, "Retry-After", &huma.Param{
 				Description: "Seconds to wait before repeating the request",
 				Required:    true,
 				Schema:      &huma.Schema{Type: huma.TypeInteger, Minimum: new(1.0)},
-			}
+			})
+		}
+		if resp := op.Responses[strconv.Itoa(http.StatusUnauthorized)]; resp != nil && authRequired {
+			setHeader(resp, "WWW-Authenticate", &huma.Param{
+				Description: "Challenge of the operation's security schemes, sent with the 401 of the server authentication",
+				Schema:      &huma.Schema{Type: huma.TypeString},
+				Example:     challenge(oapi.Components.SecuritySchemes, op.Security),
+			})
 		}
 	}
+}
+
+// readsLimitedBody — тело операции huma читает под лимитом (MaxBodyBytes): превышение — 413.
+// Multipart-форму huma разбирает сама, и тело сверх лимита у неё — 422 валидации.
+func readsLimitedBody(op *huma.Operation) bool {
+	return op.RequestBody != nil && op.MaxBodyBytes > 0 && op.RequestBody.Content["multipart/form-data"] == nil
+}
+
+// setHeader описывает заголовок ответа: карту заголовков huma у ответа-ошибки не создаёт.
+func setHeader(resp *huma.Response, name string, h *huma.Param) {
+	if resp.Headers == nil {
+		resp.Headers = map[string]*huma.Param{}
+	}
+	resp.Headers[name] = h
 }
 
 // kitResponse объявляет у операции ответ status с кодом code, который кит отдаёт сам: код —

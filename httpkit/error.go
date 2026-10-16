@@ -207,7 +207,7 @@ func withoutEcho(msg string) string {
 func codeForStatus(status int) string {
 	switch status {
 	case http.StatusRequestEntityTooLarge:
-		return "BODY_TOO_LARGE"
+		return codeBodyTooLarge
 	case http.StatusUnprocessableEntity:
 		return "VALIDATION_FAILED"
 	case http.StatusTooManyRequests:

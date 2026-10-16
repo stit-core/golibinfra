@@ -42,6 +42,9 @@ func MaxBody(cfg MaxBodyConfig) func(http.Handler) http.Handler {
 	}
 }
 
+// codeBodyTooLarge — code 413 тела сверх лимита: его же объявляет в OpenAPI операция с телом под лимитом.
+const codeBodyTooLarge = "BODY_TOO_LARGE"
+
 type bodyLimitKey struct{}
 
 // limitedBody — тело запроса под http.MaxBytesReader с лимитом, который фиксируется на первом

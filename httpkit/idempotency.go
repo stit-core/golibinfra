@@ -331,7 +331,7 @@ func idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 			body, tooBig, err := bufferBody(r, cfg.MaxBodyBytes)
 			if err != nil {
 				if IsMaxBodyError(err) {
-					writeAPIError(ctx, w, Error("BODY_TOO_LARGE", http.StatusRequestEntityTooLarge, "request body too large"))
+					writeAPIError(ctx, w, Error(codeBodyTooLarge, http.StatusRequestEntityTooLarge, "request body too large"))
 					return
 				}
 				writeAPIError(ctx, w, BadRequest("BAD_BODY", "cannot read request body"))
