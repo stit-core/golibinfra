@@ -69,31 +69,72 @@ func (t *tree) ownTables() {
 	}
 }
 
+// Разбор списка WITH на уровне скобок: имя CTE, его столбцы и AS, тело в скобках, запятая к следующему.
+const (
+	cteNone = iota
+	cteName // после WITH [RECURSIVE] или запятой списка: имя CTE
+	cteAs   // после имени: (столбцы) или AS
+	cteBody // после AS: [NOT] MATERIALIZED и скобка тела
+	cteOpen // тело открыто: его скобка закроет CTE
+	cteNext // после тела: запятая — следующее имя
+)
+
+// sqlScope — уровень скобок запроса.
+type sqlScope struct {
+	query, from bool     // идёт запрос, открыт список FROM
+	ctes        []string // имена CTE, видимые на этом уровне и глубже
+	with        int      // разбор списка WITH этого уровня
+	cte         string   // имя CTE, которое разбирается
+	recursive   bool     // WITH RECURSIVE: имя CTE видно и в его теле
+}
+
 // queriedTables — имена в позиции таблицы: после FROM запроса, JOIN, INTO, UPDATE, USING и через
-// запятую в списке FROM, в том числе после JOIN … ON …. Колонка с именем таблицы (orders.notes),
-// FROM внутри выражения (TRIM(… FROM notes), IS DISTINCT FROM notes) и слово после FOR UPDATE и
-// DO UPDATE — не обращение к таблице.
+// запятую в списке FROM, в том числе после JOIN … ON … и в скобках соединения (a JOIN b). Колонка с
+// именем таблицы (orders.notes), FROM внутри выражения (TRIM(… FROM notes), IS DISTINCT FROM notes),
+// слово после FOR UPDATE и DO UPDATE, столбцы JOIN … USING (…) и имя CTE своего оператора — не обращение
+// к таблице; в теле CTE без RECURSIVE его имя — таблица.
 func queriedTables(sql string) []string {
-	type scope struct{ query, from bool } // уровень скобок: идёт запрос, открыт список FROM
-	scopes := []scope{{}}
+	scopes := []sqlScope{{}}
 	var names []string
 	table, prev := false, ""
 	for _, tok := range sqlToken.FindAllString(sql, -1) {
 		cur := &scopes[len(scopes)-1]
 		word := strings.ToLower(tok)
+		if cur.with != cteNone && cur.with != cteOpen && cur.withList(word) {
+			prev = word
+			continue
+		}
+		if table && (word == "select" || word == "values" || word == "with") {
+			table = false
+		}
 		switch {
 		case tok == "(":
-			scopes, table = append(scopes, scope{}), false
+			// Скобка в позиции таблицы — подзапрос или соединение (a JOIN b): тот же список FROM.
+			inFrom := table && prev != "using"
+			scopes, table = append(scopes, sqlScope{from: inFrom}), inFrom
 		case tok == ")":
 			scopes, table = scopes[:max(len(scopes)-1, 1)], false
+			if up := &scopes[len(scopes)-1]; up.with == cteOpen {
+				if !up.recursive {
+					up.ctes = append(up.ctes, up.cte)
+				}
+				up.with = cteNext
+			}
 		case tok == ";":
-			scopes, table = []scope{{}}, false
+			scopes, table = []sqlScope{{}}, false
 		case tok == ",":
 			table = cur.from
 		case table && word != "only" && word != "lateral":
-			names, table = append(names, strings.Trim(word[strings.LastIndex(word, ".")+1:], `"`)), false
+			if name := relName(word); strings.Contains(word, ".") || !slices.ContainsFunc(scopes, func(s sqlScope) bool { return slices.Contains(s.ctes, name) }) {
+				names = append(names, name)
+			}
+			table = false
+		case word == "with":
+			cur.with, cur.recursive = cteName, false
 		case word == "select" || word == "delete":
-			cur.query = true
+			cur.query, cur.from = true, false
+		case word == "values":
+			cur.from = false
 		case word == "from" && cur.query && prev != "distinct":
 			cur.from, table = true, true
 		case word == "join" || word == "into" || word == "using" || word == "update" && !slices.Contains(lockClauses, prev):
@@ -104,6 +145,39 @@ func queriedTables(sql string) []string {
 		prev = word
 	}
 	return names
+}
+
+// withList ведёт разбор списка WITH; false — слово не из списка или скобка тела и столбцов, которую
+// открывает общий разбор: слово идёт обычным путём.
+func (s *sqlScope) withList(word string) bool {
+	switch {
+	case s.with == cteName && word == "recursive":
+		s.recursive = true
+	case s.with == cteName && !strings.ContainsAny(word, "(),;"):
+		s.cte, s.with = strings.Trim(word, `"`), cteAs
+	case s.with == cteAs && word == "as":
+		s.with = cteBody
+	case s.with == cteBody && (word == "not" || word == "materialized"):
+	case s.with == cteBody && word == "(":
+		if s.recursive {
+			s.ctes = append(s.ctes, s.cte)
+		}
+		s.with = cteOpen
+		return false
+	case s.with == cteAs && word == "(":
+		return false
+	case s.with == cteNext && word == ",":
+		s.with = cteName
+	default:
+		s.with = cteNone
+		return false
+	}
+	return true
+}
+
+// relName — имя таблицы из слова SQL: без схемы и кавычек.
+func relName(word string) string {
+	return strings.Trim(word[strings.LastIndex(word, ".")+1:], `"`)
 }
 
 // sqlText — SQL файлов glob без комментариев и строк.

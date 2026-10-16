@@ -14,22 +14,26 @@ func TestOwnTables(t *testing.T) {
 	t.Parallel()
 	neighbour := []string{"table customers is queried by domains customer, order: " + whyTables}
 	for name, sql := range map[string]string{
-		"join":               "SELECT c.email FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = $1;",
-		"join without alias": "SELECT customers.email FROM orders JOIN customers ON customers.id = orders.customer_id;",
-		"comma":              "SELECT c.email FROM orders o, customers c WHERE c.id = o.customer_id;",
-		"comma after join":   "SELECT c.email FROM orders o JOIN order_items i ON i.order_id = o.id, customers c WHERE c.id = o.customer_id;",
-		"subquery":           "SELECT count(*) FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE name <> '');",
-		"quoted":             `SELECT c.email FROM orders o JOIN "customers" c ON c.id = o.customer_id;`,
-		"schema":             `SELECT c.email FROM orders o JOIN public."customers" c ON c.id = o.customer_id;`,
-		"upper case":         "SELECT C.EMAIL FROM ORDERS O JOIN CUSTOMERS C ON C.ID = O.CUSTOMER_ID;",
-		"using":              "DELETE FROM orders USING customers WHERE customers.id = orders.customer_id;",
-		"update":             "UPDATE customers SET name = $2 WHERE id = $1;",
-		"insert":             "INSERT INTO customers (id, email, name) VALUES ($1, $2, $3);",
-		"delete":             "DELETE FROM customers WHERE id = $1;",
-		"only":               "SELECT id FROM ONLY customers;",
-		"cte":                "WITH c AS (SELECT id FROM customers) SELECT o.id FROM orders o JOIN c ON c.id = o.customer_id;",
-		"after another":      "SELECT id FROM orders WHERE id = $1;\n\n-- name: Owner :one\nSELECT email FROM customers WHERE id = $1;",
-		"alias named set":    "SELECT c.email FROM orders AS set, customers c WHERE c.id = set.customer_id;",
+		"join":                     "SELECT c.email FROM orders o JOIN customers c ON c.id = o.customer_id WHERE o.id = $1;",
+		"join without alias":       "SELECT customers.email FROM orders JOIN customers ON customers.id = orders.customer_id;",
+		"comma":                    "SELECT c.email FROM orders o, customers c WHERE c.id = o.customer_id;",
+		"comma after join":         "SELECT c.email FROM orders o JOIN order_items i ON i.order_id = o.id, customers c WHERE c.id = o.customer_id;",
+		"subquery":                 "SELECT count(*) FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE name <> '');",
+		"quoted":                   `SELECT c.email FROM orders o JOIN "customers" c ON c.id = o.customer_id;`,
+		"schema":                   `SELECT c.email FROM orders o JOIN public."customers" c ON c.id = o.customer_id;`,
+		"upper case":               "SELECT C.EMAIL FROM ORDERS O JOIN CUSTOMERS C ON C.ID = O.CUSTOMER_ID;",
+		"using":                    "DELETE FROM orders USING customers WHERE customers.id = orders.customer_id;",
+		"update":                   "UPDATE customers SET name = $2 WHERE id = $1;",
+		"insert":                   "INSERT INTO customers (id, email, name) VALUES ($1, $2, $3);",
+		"delete":                   "DELETE FROM customers WHERE id = $1;",
+		"only":                     "SELECT id FROM ONLY customers;",
+		"cte":                      "WITH c AS (SELECT id FROM customers) SELECT o.id FROM orders o JOIN c ON c.id = o.customer_id;",
+		"cte of the same name":     "WITH customers AS (SELECT id FROM customers) SELECT o.id FROM orders o JOIN customers c ON c.id = o.customer_id;",
+		"cte and the table":        "WITH customers AS (SELECT 1 AS id) SELECT c.email FROM orders o JOIN public.customers c ON c.id = o.customer_id;",
+		"parenthesized join":       "SELECT c.email FROM (orders o JOIN customers c ON c.id = o.customer_id) WHERE o.id = $1;",
+		"parenthesized cross join": "SELECT c.email FROM (customers c CROSS JOIN orders o);",
+		"after another":            "SELECT id FROM orders WHERE id = $1;\n\n-- name: Owner :one\nSELECT email FROM customers WHERE id = $1;",
+		"alias named set":          "SELECT c.email FROM orders AS set, customers c WHERE c.id = set.customer_id;",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -90,6 +94,19 @@ GROUP BY customers
 HAVING count(*) > 1;
 `,
 			},
+		},
+		{
+			name: "cte named like a table of a neighbour",
+			edits: edits{orderQueries: `-- name: CountBuyers :one
+WITH customers AS (
+    SELECT DISTINCT customer_id AS id FROM orders WHERE note IS NOT NULL
+), recent AS NOT MATERIALIZED (SELECT id FROM customers)
+SELECT count(*) FROM customers JOIN recent USING (id);
+
+-- name: Chain :many
+WITH RECURSIVE customers (id) AS (SELECT id FROM orders UNION ALL SELECT id FROM customers WHERE false)
+SELECT id FROM customers;
+`},
 		},
 		{
 			name: "comments and strings",
@@ -160,6 +177,29 @@ func TestQueriedTables(t *testing.T) {
 		{"INSERT INTO t1 (a) SELECT a FROM t2 ON CONFLICT DO NOTHING RETURNING a, b", []string{"t1", "t2"}},
 		{"INSERT INTO t1 (a, b) SELECT a, b FROM t2 ON CONFLICT (a) DO UPDATE SET b = EXCLUDED.b, c = 1", []string{"t1", "t2"}},
 		{"SELECT a FROM t1) x JOIN t2 ON true", []string{"t1", "t2"}},
+		{"WITH c AS (SELECT id FROM t1) SELECT a FROM t2 JOIN c ON true", []string{"t1", "t2"}},
+		{"WITH t1 AS (SELECT id FROM t2) SELECT count(*) FROM t1", []string{"t2"}},
+		{"WITH t1 AS (SELECT id FROM t1) SELECT id FROM t1", []string{"t1"}},
+		{`WITH "T1" AS (SELECT 1) SELECT * FROM t1, public.t1`, []string{"t1"}},
+		{"WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT n FROM r", nil},
+		{"WITH RECURSIVE t1 AS (SELECT id FROM t1) SELECT id FROM t1", nil},
+		{"WITH a AS (SELECT 1), b AS (SELECT * FROM a, t1) SELECT * FROM b, a", []string{"t1"}},
+		{"WITH a AS (SELECT * FROM b), b AS (SELECT * FROM t1) SELECT * FROM a", []string{"b", "t1"}},
+		{"WITH c (a, b) AS (SELECT a, b FROM t1) SELECT a FROM c", []string{"t1"}},
+		{"WITH c AS MATERIALIZED (SELECT 1), d AS NOT MATERIALIZED (SELECT 2) SELECT * FROM c, d", nil},
+		{"WITH x AS (DELETE FROM t1 RETURNING id) SELECT count(*) FROM x", []string{"t1"}},
+		{"SELECT * FROM (WITH t1 AS (SELECT 1) SELECT * FROM t1) s, t1", []string{"t1"}},
+		{"WITH t1 AS (SELECT 1) SELECT 1; SELECT a FROM t1", []string{"t1"}},
+		{"INSERT INTO t1 WITH c AS (SELECT a FROM t2) SELECT a FROM c", []string{"t1", "t2"}},
+		{"SELECT a::timestamp with time zone, b FROM t1", []string{"t1"}},
+		{"SELECT * FROM unnest($1::text[]) WITH ORDINALITY AS u(x, n), t1", []string{"unnest", "t1"}},
+		{"SELECT a FROM t1 ORDER BY a FETCH FIRST 5 ROWS WITH TIES", []string{"t1"}},
+		{"SELECT a FROM (t1 CROSS JOIN t2)", []string{"t1", "t2"}},
+		{"SELECT a FROM (t1 x JOIN t2 y ON x.id = y.id) j, t3", []string{"t1", "t2", "t3"}},
+		{"SELECT a FROM ((t1 JOIN t2 ON true) JOIN t3 ON true)", []string{"t1", "t2", "t3"}},
+		{"SELECT a FROM (VALUES (1, 2), (3, 4)) v(a, b), t1", []string{"t1"}},
+		{"SELECT a FROM t1 JOIN t2 USING (id, t3)", []string{"t1", "t2"}},
+		{"SELECT a FROM t1, LATERAL (SELECT b, c FROM t2) s", []string{"t1", "t2"}},
 		{"SELECT 1", nil},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
