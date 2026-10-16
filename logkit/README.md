@@ -95,6 +95,17 @@ sink'а у логгера событий нет, а причина отказа 
 
 ### Без fx
 
+Команда вне fx (миграции, разовые задачи) получает логгер одной строкой:
+
+```go
+log, err := logkit.NewFromEnv() // LOG_* и LOG_REDACT_* — как граф с Module; негодное значение — ErrConfig
+```
+
+`NewFromEnv` читает `Config` (`NewConfig`) и `RedactConfig` (`NewRedactConfig`) тем же ридером ENV и с теми же
+дефолтами и проверками, что граф `fx.Provide(logkit.NewConfig, logkit.NewRedactConfig)` с `Module`. OTel-sink'а
+у этого логгера нет, поэтому при `LOG_SILENT=true` записи `ERROR` идут в stderr (`WithStderrFallback`): причина
+отказа команды не теряется. Свой конфиг или опции — `New`:
+
 ```go
 cfg, err := logkit.NewConfig() // или logkit.Config{Level: "debug"}
 log, err := logkit.New(cfg)    // Logger в stdout, маскирование — дефолтным набором
@@ -181,7 +192,7 @@ Zero-value валиден: `info`, JSON, stdout, без `source`.
 | `LOG_LEVEL` | `Level` | `string` | `info` | Минимальный уровень (`debug`/`info`/`warn`/`error`, регистр не важен; пустая строка = `info`). Невалидное значение → `ErrConfig`. |
 | `LOG_FORMAT` | `Format` | `string` | `json` | `json` — прод и сборщики логов; `text` — локальная разработка. Другое значение → `ErrConfig`. |
 | `LOG_SOURCE` | `Source` | `bool` | `false` | Добавляет `source` (файл/строка/функция вызывающего) в каждую запись. |
-| `LOG_SILENT` | `Silent` | `bool` | `false` | `true` — локальный sink отбрасывает записи (OTel-sink, если подключён, работает). `WithWriter` приоритетнее: явный writer пишет и при `LOG_SILENT=true`. Логгеры без OTel-sink'а — событий fx (`FxLogger`) и ошибок экспорта `telemetry` — пишут записи `ERROR` в stderr (`WithStderrFallback`). |
+| `LOG_SILENT` | `Silent` | `bool` | `false` | `true` — локальный sink отбрасывает записи (OTel-sink, если подключён, работает). `WithWriter` приоритетнее: явный writer пишет и при `LOG_SILENT=true`. Логгеры без OTel-sink'а — событий fx (`FxLogger`), команды (`NewFromEnv`) и ошибок экспорта `telemetry` — пишут записи `ERROR` в stderr (`WithStderrFallback`). |
 
 Поле `time` — RFC3339 с offset локальной зоны процесса: в JSON — до наносекунд
 (`2026-05-14T10:30:00.123456789+03:00`), в `text` — до миллисекунд; для UTC-времени
@@ -316,6 +327,7 @@ type Logger interface {
 }
 
 func New(cfg Config, opts ...Option) (Logger, error)
+func NewFromEnv() (Logger, error)               // команда вне fx: LOG_* и LOG_REDACT_*, как граф с Module; при LOG_SILENT ERROR — в stderr
 func NewSlog(cfg Config, opts ...Option) (*slog.Logger, error)
 func FromSlog(l *slog.Logger) Logger            // nil → Nop()
 func Nop() Logger
@@ -390,8 +402,8 @@ OTel-sink проверяется через `sdklog.NewLoggerProvider` с `Simpl
   regexp по каждой строке и по JSON-байтам структурных значений, что при
   высоком log-rate заметно.
 - **`LOG_SILENT=true` без OTel-sink'а = записи никуда не идут.** Исключение — логгеры,
-  у которых OTel-sink'а нет по построению: `FxLogger` и логгер ошибок экспорта
-  `telemetry.Module` пишут записи `ERROR` в stderr (`WithStderrFallback`).
+  у которых OTel-sink'а нет по построению: `FxLogger`, логгер команды `NewFromEnv` и логгер
+  ошибок экспорта `telemetry.Module` пишут записи `ERROR` в stderr (`WithStderrFallback`).
 - **`telemetry.Module` требует `telemetry.Config` в графе.** Он же поднимает
   OTLP-sink, который `logkit.Module` подхватывает опциональной зависимостью:
   без `telemetry.Module` логи идут только в локальный sink.

@@ -63,16 +63,22 @@ g-kits): 429 общего лимитера httpkit описан в контра�
   - Подтверждено: тот же тест — на `90adb36` у `logout` и `login` нет `Retry-After`, `login` без `RATE_LIMITED`; на
     ветке — PASS; шаблон на ветке (`go.work`): у `/api/auth/*` описание 429 прежнее, код не повторён
     (`N/g-kits/template-openapi-s1.diff`)
-- [ ] **AC3** — `logkit.NewFromEnv()` собирает `Logger` команды из `LOG_*` и `LOG_REDACT_*` тем же ридером ENV,
+- [x] **AC3** — `logkit.NewFromEnv()` собирает `Logger` команды из `LOG_*` и `LOG_REDACT_*` тем же ридером ENV,
   что граф `logkit.Module` с `NewConfig` и `NewRedactConfig`: при одном окружении записи двух логгеров совпадают
   (формат, уровень, маски, замена, `source`); негодные `LOG_LEVEL`, `LOG_FORMAT`, `LOG_SILENT`,
   `LOG_REDACT_PATTERNS` (и при `LOG_REDACT_DISABLED=true`), `LOG_REDACT_REPLACE_WITH` — `logkit.ErrConfig`; при
   `LOG_SILENT=true` stdout пуст, записи `ERROR` — в stderr. Проверка: `go test -race -run TestNewFromEnv
   ./logkit/` → PASS; на `90adb36` — не собирается (нет `NewFromEnv`)
-- [ ] **AC4** — Доки называют новое: README httpkit и `docs/` (контракт ошибок, `ErrorMap`, `RateLimitConfig`,
+  - Подтверждено: `TestNewFromEnv_ParsesLikeModule` (умолчания; text и debug; свои маски, замена, `source` и
+    уровень error; выключенный redact — записи двух логгеров равны, окружение в них видно),
+    `TestNewFromEnv_RejectsInvalidEnv` (8 случаев, в том числе паттерн у выключенного redact),
+    `TestNewFromEnv_SilentKeepsErrorsInStderr` → PASS (`N/g-kits/green-s2-logkit.log`); на `90adb36` `NewFromEnv`
+    нет (`git grep` пуст); правки без чтения `LOG_REDACT_*`, без stderr и без ошибки `NewRedactConfig` тесты ловят
+- [x] **AC4** — Доки называют новое: README httpkit и `docs/` (контракт ошибок, `ErrorMap`, `RateLimitConfig`,
   тестирование), README logkit (без fx, API, `LOG_SILENT`, инварианты), строки индекса корневого README; сниппет
   `NewFromEnv` держит `readme_test.go`. Проверка: `make envdoc-check` → OK; `go test -run TestReadme ./logkit/` →
   PASS
+  - Подтверждено: `make envdoc-check` → OK (254 переменных); `TestReadme_QuickStartWithoutFx` с `NewFromEnv` → PASS
 - [ ] **AC5** — Шаблон на ветке (временный `go.work` в `N/wt-g-kits-t` от `main` шаблона): `go build ./...` → OK;
   `openapi.json` по `make gen` (`go test ./cmd/api -run '^TestOpenAPISpec$' -args -update`) отличается от
   закоммиченного только 429: новые 429 `RATE_LIMITED` с `Retry-After` у операций без них, у `/api/auth/*` — прежнее
@@ -93,11 +99,15 @@ g-kits): 429 общего лимитера httpkit описан в контра�
     FAIL, на ветке → PASS; `TestErrorMap_Declare` — код кита после `AUTH_LOCKED`; доки — README httpkit,
     `docs/{architecture,usage,configuration,testing}.md`, строка индекса корневого README; `go test -short -race
     ./httpkit/... ./testkit/handlertest/...` → PASS; `make check` → `✓ check clean (./...)`
-- [ ] **S2** — logkit: `NewFromEnv` — тесты паритета с `Module`, ошибок конфига и `LOG_SILENT`; README logkit,
+- [x] **S2** — logkit: `NewFromEnv` — тесты паритета с `Module`, ошибок конфига и `LOG_SILENT`; README logkit,
   строка индекса корневого README
   - Проверка: `go test -short -race ./logkit/...` → PASS; `make envdoc-check` → OK; `flock N/gate.lock make
     check` → `✓ check clean (./...)`
   - Закрывает: AC3, AC4 · Зависит от: —
+  - Сделано: `logkit.NewFromEnv()` — `NewConfig`, `NewRedactConfig` и `New` с `WithRedact` и `WithStderrFallback`;
+    тесты `logkit/fromenv_test.go`; README logkit (без fx, `LOG_SILENT`, API, инварианты), сниппет в
+    `readme_test.go`, doc-comment `WithStderrFallback`, строка индекса корневого README; `go test -short -race
+    ./logkit/...` → PASS; `make envdoc-check` → OK; `make check` → `✓ check clean (./...)`
 ### Потребитель
 - [ ] **S3** — проверка на шаблоне через временный `go.work`; «Потребителю» и строки аннотации сверены с итогом,
   хвост — в бэклог
@@ -121,6 +131,12 @@ g-kits): 429 общего лимитера httpkit описан в контра�
   и вызов хука в `httpkit/server.go`; иначе ответ и описание держали бы два литерала.
 - S1 — `fix(httpkit)!`: контракт не описывал ответ сервера (дефект с регрессионным тестом), а перегенерация
   контракта и тестов потребителя — breaking.
+- `NewFromEnv` — без опций: команде нужна одна строка, свой конфиг или опции — `New`; имя — конструктор `New*` с
+  источником, рядом с `New` и `NewSlog` (`FromEnv` спутался бы с `FromSlog` — обёрткой готового логгера).
+  `ServiceConfig` он, как `Module`, не читает.
+- `NewFromEnv` ставит `WithStderrFallback`: у логгера команды OTel-sink'а нет по построению — правило кита для таких
+  логгеров (`FxLogger`, логгер ошибок экспорта telemetry); иначе при `LOG_SILENT=true` команда теряет причину отказа.
+  Разбор `LOG_*` тот же, что у графа с `Module`: `TestNewFromEnv_ParsesLikeModule` сверяет записи двух логгеров.
 
 ## Handoff
 ### Аннотация v1.6.0 — строки трека
@@ -143,10 +159,12 @@ Breaking:
    `requestPasswordResetErrors`) — вместе с `Declare`.
 3. `TestHTTPOperations`: проверку «429 `RATE_LIMITED` — ровно под `authlimit.Prefix`» снять — 429 у каждой
    операции держит тест кита; `authlimit_test.go` сверяет код отказа с кодом лимитера кита.
-4. `cmd/migrate`, `cmd/seed-admin`: `newLog()` → `logkit.NewFromEnv()`; `newLog` и оба `TestNewLog` удалить.
+4. `cmd/migrate`, `cmd/seed-admin`: `newLog()` → `logkit.NewFromEnv()`; `newLog` и оба `TestNewLog` удалить —
+   разбор `LOG_*`, `ErrConfig` и stderr держат тесты кита. Команды начинают читать `LOG_REDACT_*` и при
+   `LOG_SILENT=true` пишут записи `ERROR` в stderr.
 5. Доки и обвязка под пп. 2–4; бэклог — снять `golibinfra-httpkit-429` и `golibinfra-logkit-env`.
 
 ## Где мы сейчас
-S1 сделан: 429 лимитера и `Retry-After` в контракте операций. Шаблон на ветке (`go.work`): `openapi.json` меняется
-только в 429, `TestHTTPOperations` падает ровно на проверке «429 только под `/api/auth/`» (снимает g-upgrade).
-Следующий шаг — S2: `logkit.NewFromEnv`.
+S1 и S2 сделаны: 429 лимитера и `Retry-After` в контракте операций, `logkit.NewFromEnv`. Проба правок «Потребителю»
+на шаблоне (`N/g-kits/trial/apply.py`, патч `template-trial.patch`) зелёная на эксперименте с тем же кодом.
+Следующий шаг — S3: повторить пробу на ветке трека, сверить «Потребителю» и аннотацию, хвост — в бэклог.

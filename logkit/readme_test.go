@@ -57,6 +57,13 @@ func TestReadme_QuickStartWithoutFx(t *testing.T) {
 
 	ctx := context.Background()
 
+	t.Setenv("LOG_SILENT", "true")      // сниппет пишет в stdout; тесту он не нужен
+	fromEnv, err := logkit.NewFromEnv() // LOG_* и LOG_REDACT_* — как граф с Module; негодное значение — ErrConfig
+	if err != nil {
+		t.Fatalf("NewFromEnv: %v", err)
+	}
+	fromEnv.Info(ctx, "started")
+
 	cfg, err := logkit.NewConfig() // или logkit.Config{Level: "debug"}
 	if err != nil {
 		t.Fatalf("NewConfig: %v", err)

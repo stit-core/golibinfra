@@ -52,8 +52,8 @@ func WithWriter(w io.Writer) Option {
 }
 
 // WithStderrFallback оставляет канал логгеру без OTel-sink при Config.Silent: записи уровня ERROR
-// идут в stderr, а не отбрасываются. Для служебных логгеров — событий fx (FxLogger) и ошибок
-// экспорта telemetry: Silent рассчитан на OTel-sink, а у них его нет.
+// идут в stderr, а не отбрасываются. Для логгеров без OTel-sink по построению — событий fx
+// (FxLogger), команды (NewFromEnv) и ошибок экспорта telemetry: Silent рассчитан на OTel-sink.
 func WithStderrFallback() Option {
 	return func(o *options) { o.stderrFallback = true }
 }
@@ -65,6 +65,21 @@ func New(cfg Config, opts ...Option) (Logger, error) {
 		return nil, err
 	}
 	return FromSlog(l), nil
+}
+
+// NewFromEnv собирает Logger команды вне fx (миграции, разовые задачи) тем же разбором окружения,
+// что граф с Module: LOG_* — NewConfig, LOG_REDACT_* — NewRedactConfig. OTel-sink'а у логгера нет,
+// поэтому при LOG_SILENT записи ERROR идут в stderr (WithStderrFallback). Негодное значение — ErrConfig.
+func NewFromEnv() (Logger, error) {
+	cfg, err := NewConfig()
+	if err != nil {
+		return nil, err
+	}
+	redact, err := NewRedactConfig()
+	if err != nil {
+		return nil, err
+	}
+	return New(cfg, WithRedact(redact), WithStderrFallback())
 }
 
 // NewSlog собирает *slog.Logger с той же цепочкой handler'ов, что и New — для
