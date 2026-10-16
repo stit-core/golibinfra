@@ -71,10 +71,17 @@ blocked-by: —
     дедлайну; ветка: 340 мс, затем отказ за 0 с (500 — `ErrBusy` в шаблоне ещё без правила), поток отклонён сразу
     (`tpl-*-h2.log`). E3 — база: `AUTH_REFRESH_REUSED`, сессий 0, `refresh_reused` 1; ветка: 204, сессия открыта,
     `refresh_reused` 0, старый cookie после использования преемника — `AUTH_REFRESH_REUSED` (`tpl-base.log`, `tpl-branch.log`)
-- [ ] **AC7** — VGA-01: попытка, разрешённая guard'ом и не дошедшая до проверки секрета, возвращается
+- [x] **AC7** — VGA-01: попытка, разрешённая guard'ом и не дошедшая до проверки секрета, возвращается
   (`bruteforcekit.Guard.Refund`) — одинаково в pgstore и фейке, без гонок; на копии шаблона с правкой входа (возврат на
   `ErrBusy`) жертвы с верным паролем под потоком входят без блокировок, а перебор упирается в guard после
   `MaxFailures` проверенных попыток. Проверка: `bruteforcetest.RunContract` (фейк и pgstore), `TestStore_RefundConcurrent` → PASS; эксперимент валидатора `TestValExp_Lockout*` — база: блокировки, ветка: 0
+  - Подтверждено: контракт и `TestStore_RefundConcurrent` → PASS (S5). Копии `main` шаблона, пробы валидатора
+    (`TestValExp_Lockout*`, 10 жертв с верным паролем, повтор раз в секунду) и перебор под потоком
+    (`N/g-auth/probes/zz_gauth_vga01_test.go`), `GOMAXPROCS=4`, Argon2id 64 МиБ (`N/g-auth/vga01.log`):
+    `9d96d98` + правка валидатора (503 без возврата) — заблокированы 8, 8 и 9 из 10 (90/с 30 с, 40/с, 90/с 60 с), перебор
+    заблокирован после одной проверенной попытки и четырёх отказов; HEAD + возврат на `ErrBusy` — заблокированных 0,
+    вошли 7, 10 и 7 из 10 (p50 13.6 / 15.6 / 14.5 с; трое — без входа до конца потока: ёмкость хэшера, не guard),
+    перебор — `AUTH_ACCOUNT_LOCKED` ровно после 5 проверенных попыток. v1.5.0: вошли 10, 10 и 0 (в долгом — дедлайн)
 - [x] **AC8** — minor валидатора: два повтора подряд и срок токена повтора у конца сессии закреплены (мутанты V1, V3
   убиты), фейк при окне 0 и часах назад — как pgstore (V2 убит), параллельные повторы в окне фейк и pgstore проводят
   одинаково — все, живым остаётся один токен (VGA-04), пример «Логин» отвечает на отмену одинаково (VGA-05),
@@ -82,10 +89,16 @@ blocked-by: —
   - Подтверждено: → PASS; на `9d96d98` красные `StrictReuseAfterClockStepBack` (фейк), `ConcurrentRetriesKeepTheSession`
     и `TestStore_ConcurrentRetry` (pgstore), окно 6m проходит `Validate` (`N/g-auth/red-s6-base.log`, `red-s7-base.log`);
     мутанты V1–V5, M1–M7 убиты (`N/g-auth/mut/`); пример «Логин» — одна ветка на ошибку проверки у обоих путей (S5)
-- [ ] **AC6** — доки и сигналы китов по факту: README и `docs/` authnkit и bruteforcekit, строки testkit и корневого
+- [x] **AC6** — доки и сигналы китов по факту: README и `docs/` authnkit и bruteforcekit, строки testkit и корневого
   README, `ErrBusy` и ответ на него (503, `Retry-After`, возврат попытки guard'а), `authn_password_busy_total`,
   `result="retry"`, `SESSION_RETRY_WINDOW`; «Handoff» — строки аннотации `v1.6.0` и шаги шаблона, сверенные с
   `make release-diff`. Проверка: `make envdoc-check` → OK; `make release-diff PREV=v1.5.0` — каждая строка в «Handoff»
+  - Подтверждено: `make envdoc-check` → OK (255 переменных); `make release-diff PREV=v1.5.0`
+    (`N/g-auth/release-diff-s8.log`): четыре несовместимые строки API (`VerifyDummy` у `Hasher`, `*Argon2idHasher`,
+    `authntest.DeterministicHasher`; `bruteforcekit.Guard.Refund`) — в Breaking; новое (`ErrBusy`, `Config.RetryWindow`,
+    `MaxRetryWindow`, `Refund` у pgstore и фейков, `Recorder.Refunds`, `bruteforcetest.RunContract`,
+    `DeterministicHasher.Busy`), `+ SESSION_RETRY_WINDOW=30s`, `+ authn_password_busy_total` — в Изменениях и
+    Поведении; футеры `BREAKING CHANGE` коммитов S1, S2 и S5 — строки Breaking
 
 ## Шаги
 - [x] **S1** — authnkit: очередь хэшера с отказом `ErrBusy` (RSECT-01) — вычисления ждут слот не дальше
@@ -149,9 +162,14 @@ blocked-by: —
     `SESSION_RETRY_WINDOW` в `configuration.md` — держать секунды и почему; на `9d96d98` окно 6m `Validate` пропускал
     (`N/g-auth/red-s7-base.log`); `go test -race ./authnkit/session/ ./internal/envconf/` → PASS;
     `make check` → `✓ check clean (./...)`
-- [ ] **S8** — эксперимент VGA-01 на копии шаблона с правкой входа (возврат на `ErrBusy`), «Handoff», гейт на чистом
+- [x] **S8** — эксперимент VGA-01 на копии шаблона с правкой входа (возврат на `ErrBusy`), «Handoff», гейт на чистом
   дереве
   - Проверка: `TestValExp_Lockout*` на копиях; `make gate-clean` → `✓ check clean (./...)` · Закрывает: AC7, AC6 · Зависит от: S5, S6, S7
+  - Сделано: три копии шаблона (`N/g-auth/tpl-v-base`, `tpl-v-old`, `tpl-v-fix`, `run-vga01.sh`) — итог в AC7; правка
+    входа на `tpl-v-fix` — заготовка для g-upgrade: порт `LoginGuard.Refund`, адаптер, `refundOnBusy` на путях
+    `Login` и `ChangePassword` поверх эмуляции валидатора (`ErrBusy` → 503 `AUTH_BUSY`). «Handoff» дополнен возвратом
+    попытки и сверен с `release-diff`; строка покрытия README bruteforcekit; `make check` → `✓ check clean (./...)`;
+    `make gate-clean` на коммите шага → `✓ check clean (./...)`
 
 ## Решения
 - RSECT-01 — отказ по длине очереди, а не по сроку ожидания: при полной очереди отказ приходит сразу и освобождает
@@ -190,8 +208,7 @@ blocked-by: —
 - `Rotate` по-прежнему вне транзакции вызывающего (`ErrInTx`): отзыв при повторе не должен откатываться вместе с ней —
   поэтому потребитель и не может откатить ротацию при своём сбое. Окно — компенсация на стороне кита: повтор — отдельный
   атомарный оператор (гасит преемника, вставляет нового, переставляет указатель родителя), транзакции он не требует.
-- `successor_hash` у токена-родителя, а не `parent_hash` у преемника: преемник ищется по первичному ключу, нового
-  индекса нет, обновление `used_at` при ротации остаётся HOT.
+- `successor_hash` у родителя, а не `parent_hash` у преемника: преемник — по первичному ключу, нового индекса нет.
 - VGA-04 — параллельные повторы в окне проходят все, по очереди, в фейке и pgstore одинаково: оператор повтора,
   чей снимок видел преемника, которого после снимка погасил другой повтор, идёт заново (до 16 кругов) и гасит
   преемника победителя. Живым остаётся один токен — последний выданный; честные параллельные обновления (вкладки)
@@ -202,15 +219,11 @@ blocked-by: —
   (вариант валидатора) потребовала бы у `Store` `Transactor` — смену конструктора ради того же исхода.
 - `SESSION_RETRY_WINDOW` — 30 с по умолчанию, окно `0 ≤ … < SESSION_IDLE_TTL`: покрывает повтор после 5xx и обрыва
   соединения; ноль в литерале `Config` — строгий режим без окна, литералы потребителей поведения молча не меняют.
-- Повтор в окне у отозванной или истёкшей сессии — `*ReusedError`, как у любого использованного токена, а не
-  `ErrInvalid`/`ErrExpired`: порядок исходов прежний (использованный токен — первым), окно не меняет ничего, кроме
-  случая «сессия жива, преемник не использован». Честный повтор после «выйти везде» или на абсолютном сроке редок,
-  а исход контракт держит кейсами `RetryDoesNotReopenClosedSession` и `RetryDoesNotOutliveSession`.
-- Контракт `RunContract` берёт `Config` кейса: окно — минута, строгие кейсы (`StrictReuseRevokesSession`,
-  `ConcurrentRotateHasOneWinner`, `StrictReuseAfterClockStepBack`) — без окна; что живой токен после гонки ровно один,
-  pgstore держит своим тестом по базе (`TestStore_ConcurrentRetry`), контракт — что все параллельные повторы
-  получили токен и сессия жива.
-- Чужие файлы: строка authnkit в корневых `README.md` (§ Пакеты) и `SECURITY.md` (§ Что в скоупе) — описание своего кита.
+- Повтор в окне у отозванной или истёкшей сессии — `*ReusedError`, как у любого использованного токена: порядок исходов
+  прежний, окно меняет только случай «сессия жива, преемник не использован» (кейсы `RetryDoesNot…` контракта).
+- Контракт `RunContract` берёт `Config` кейса: окно — минута, строгие кейсы (`Strict…`, `ConcurrentRotateHasOneWinner`)
+  — без окна; «живой токен после гонки ровно один» pgstore держит тестом по базе (`TestStore_ConcurrentRetry`).
+- Чужие файлы: строки authnkit (корневые `README.md`, `SECURITY.md`) и bruteforcekit (`README.md`) — о своих китах.
 - VGA-01 — возврат попытки методом `Guard.Refund`, а не билетом из `Attempt`: билет меняет сигнатуру `Attempt` у
   каждого вызывающего, а возврат нужен одному пути — отказу проверки. Семантика: минус одна попытка окна пары и
   субъекта (не ниже нуля); блокировка снимается, только если счётчик упал ниже порога, — её поставила на пороге эта или
@@ -223,14 +236,13 @@ blocked-by: —
   `RecordSuccess`: откат оставляет попытку учтённой (fail-closed). Метрик возврат не заводит: его темп виден по
   `authn_password_busy_total`, блокировка, снятая возвратом, остаётся в `bruteforce_locks_total` — названо в доках.
 - `attemptRounds` pgstore — 16 (было 4): возврат на пороге снимает блокировку, и гонка «upsert видел блокировку, чтение
-  — уже нет» под потоком попыток и возвратов одной пары чаще (стресс-тест: пятый раунд — единицы из тысяч попыток,
-  `Attempt` падал `rows changed`). Ошибка guard'а — fail-closed (500), но это отказ честному клиенту; 16 раундов —
-  запас на порядки, предел цикла остаётся.
+  — уже нет» под потоком попыток и возвратов одной пары чаще (стресс: пятый раунд — единицы из тысяч, `Attempt` падал
+  `rows changed` — fail-closed 500 честному клиенту); 16 — запас на порядки, предел цикла остаётся.
 - Контракт `bruteforcetest.RunContract` — новый: возврат обязан вести себя одинаково в pgstore и фейке; кейсы без
   сдвига часов (pgstore считает время часами базы), истечение блокировки — тесты хранилищ.
 
 ## Handoff
-### Аннотация `v1.6.0` — authnkit
+### Аннотация `v1.6.0` — authnkit и bruteforcekit
 Breaking:
 - authnkit: `Hasher.VerifyDummy` и `(*Argon2idHasher).VerifyDummy`: `(ctx)` → `(ctx) error` — ошибку обработать как
   ошибку `Verify` (ответ тот же); своя реализация `Hasher` — новая сигнатура.
@@ -254,9 +266,10 @@ Breaking:
 
 Изменения:
 - authnkit: `ErrBusy` (`RetryAfter()` — 1 с), метрика `authn_password_busy_total`.
-- authnkit/session: `Config.RetryWindow` (`SESSION_RETRY_WINDOW`, не больше `MaxRetryWindow` — 5m).
+- authnkit/session: `Config.RetryWindow` (`SESSION_RETRY_WINDOW`), потолок `MaxRetryWindow` — 5m.
 - testkit/authntest: `DeterministicHasher.Busy` — `ErrBusy` у `Hash`, `Verify` и `VerifyDummy`.
-- testkit/bruteforcetest: `Refund` у фейков, `Recorder.Refunds()`, контракт `RunContract(t, newGuard)`.
+- bruteforcekit/pgstore: `(*Store).Refund`; testkit/bruteforcetest: `Refund` у фейков, `Recorder.Refunds()`, контракт
+  `RunContract(t, newGuard)`.
 
 ### Потребителю — шаблон (трек g-upgrade)
 1. `go get …/golibinfra@v1.6.0`; миграция `0002` кита идёт командой миграций (`cmd/migrate/sources`), без эффекта
@@ -268,17 +281,20 @@ Breaking:
    адресе. Возврат попытки: порт `LoginGuard` + `Refund` (адаптер `infra/bruteforce` зовёт `Guard.Refund`); `Login` —
    на `ErrBusy` известного (`Verify`), неизвестного и заблокированного адреса (`VerifyDummy`), `ChangePassword` — на
    `ErrBusy` проверки старого пароля: `Refund(ctx, email, ip)`, затем 503; тесты — `bruteforcetest.NewCounting`: пять
-   `ErrBusy` подряд пару не блокируют, `Recorder.Refunds()` — возврат с ключом клиента.
+   `ErrBusy` подряд пару не блокируют, `Recorder.Refunds()` — возврат с ключом клиента; `make gen` — мок `LoginGuard`.
 3. Повтор refresh: `TestSessions` (`cmd/api`) ждёт 401 на немедленный повтор и одного победителя параллельных обновлений,
-   smoke `test/smoke/test_auth.py` — 401 на повтор погашенного cookie: на окне по умолчанию это повтор в окне (204, прежний
-   преемник погашен). Кейсы — без окна (`SESSION_RETRY_WINDOW=0`) или повтор после использования преемника, плюс кейс
-   окна; `usecase_test.go` (`auth`) — литерал `session.Config` без окна, не меняется.
+   smoke `test/smoke/test_auth.py` — 401 на повтор погашенного cookie: на окне по умолчанию немедленный повтор — 204
+   (прежний преемник погашен), параллельные обновления — все 204 по очереди, сессия жива. Кейсы — без окна
+   (`SESSION_RETRY_WINDOW=0`) или повтор после использования преемника, плюс кейс окна (потерянный ответ → повтор 204 →
+   cookie потерянного ответа — `AUTH_REFRESH_REUSED`); `usecase_test.go` (`auth`) — литерал `session.Config` без окна,
+   не меняется.
 4. Описание операции `refreshToken`, `SECURITY.md` (лимит входа), `docs/stack/_templates/auth.md`,
    `docs/reference/architecture.md` (повтор refresh в окне — не кража; алерт `reused` на одиночный повтор не срабатывает),
-   `.env.example` (`SESSION_RETRY_WINDOW`), якоря `scripts/tools/mutants.txt` у правленого кода.
+   `.env.example` (`SESSION_RETRY_WINDOW`: секунды, потолок 5m), якоря `scripts/tools/mutants.txt` у правленого кода.
 
 ## Где мы сейчас
-Доводка по валидации (`N/validation-g-auth.md`, FAIL по VGA-01): S5 (возврат попытки `Guard.Refund`, VGA-05) и S6
-(VGA-02, VGA-03, VGA-04) и S7 (VGA-06) закрыты, AC8 подтверждён. Следующий шаг — S8: эксперимент VGA-01 валидатора
-на копиях шаблона (база и ветка с правкой входа — возврат на `ErrBusy`), «Handoff», `make release-diff`,
-`make gate-clean`.
+Все шаги и критерии закрыты, включая доводку по валидации (`N/validation-g-auth.md`): VGA-01 — возврат попытки
+`bruteforcekit.Guard.Refund`, на копии шаблона с возвратом блокировок жертв нет, перебор упирается в guard после пяти
+проверенных попыток; VGA-02…06 закрыты. Дальше — повторная проверка валидатором, затем дирижёр: слияние в `main`,
+удаление плана, тег `v1.6.0` с аннотацией из «Handoff» и трек g-upgrade шаблона (заготовка правки входа —
+`N/g-auth/tpl-v-fix/internal/domain/auth/`).
