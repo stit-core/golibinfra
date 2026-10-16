@@ -66,9 +66,13 @@ blocked-by: —
     дедлайну; ветка: 340 мс, затем отказ за 0 с (500 — `ErrBusy` в шаблоне ещё без правила), поток отклонён сразу
     (`tpl-*-h2.log`). E3 — база: `AUTH_REFRESH_REUSED`, сессий 0, `refresh_reused` 1; ветка: 204, сессия открыта,
     `refresh_reused` 0, старый cookie после использования преемника — `AUTH_REFRESH_REUSED` (`tpl-base.log`, `tpl-branch.log`)
-- [ ] **AC6** — доки и сигналы кита по факту: README и `docs/` authnkit, строки testkit и корневого README, `ErrBusy` и
+- [x] **AC6** — доки и сигналы кита по факту: README и `docs/` authnkit, строки testkit и корневого README, `ErrBusy` и
   ответ на него (503 и `Retry-After`), `authn_password_busy_total`, `result="retry"`, `SESSION_RETRY_WINDOW`; «Handoff» —
   строки аннотации `v1.6.0` и шаги шаблона, сверенные с `make release-diff`. Проверка: `make envdoc-check` → OK; `make release-diff PREV=v1.5.0` — каждая строка в «Handoff»
+  - Подтверждено: `make envdoc-check` → OK (255 переменных); `make release-diff PREV=v1.5.0` — три несовместимые строки
+    API (`VerifyDummy` у `Hasher`, `*Argon2idHasher`, `authntest.DeterministicHasher`) — в Breaking, новое (`ErrBusy`,
+    `Config.RetryWindow`, `DeterministicHasher.Busy`), `+ SESSION_RETRY_WINDOW=30s` и `+ authn_password_busy_total` — в
+    Изменениях и Поведении; футеры `BREAKING CHANGE` коммитов S1 и S2 — строки Breaking
 
 ## Шаги
 - [x] **S1** — authnkit: очередь хэшера с отказом `ErrBusy` (RSECT-01) — вычисления ждут слот не дальше
@@ -97,8 +101,11 @@ blocked-by: —
     правила `ErrBusy` известный адрес под нагрузкой — 500, неизвестный — 401 сразу (`VerifyDummy` с ошибкой шаблон пока
     не читает); guard входа учитывает попытку до хэша, и клиент, повторяющий отказ раз в секунду, на десятой попытке
     получил 429 — «Handoff», п. 2. Доки: `Retry-After` из `RetryAfter()` — пока `ErrBusy` в цепочке ошибки ответа
-- [ ] **S4** — «Handoff» сверен с `make release-diff PREV=v1.5.0`; гейт на чистом дереве
+- [x] **S4** — «Handoff» сверен с `make release-diff PREV=v1.5.0`; гейт на чистом дереве
   - Проверка: `make gate-clean` → `✓ check clean (./...)` · Закрывает: AC6 · Зависит от: S3
+  - Сделано: «Handoff» сверен с `release-diff` построчно; тексты кита и контракта — граница окна («меньше чем через»),
+    параллельные ротации в архитектуре; `make check` → `✓ check clean (./...)`; `make gate-clean` на коммите шага →
+    `✓ check clean (./...)`
 
 ## Решения
 - RSECT-01 — отказ по длине очереди, а не по сроку ожидания: при полной очереди отказ приходит сразу и освобождает
@@ -156,8 +163,8 @@ blocked-by: —
 ## Handoff
 ### Аннотация `v1.6.0` — authnkit
 Breaking:
-- authnkit: `Hasher.VerifyDummy(ctx)` → `VerifyDummy(ctx) error` — ошибку обработать как ошибку `Verify` (ответ тот же);
-  своя реализация `Hasher` — новая сигнатура.
+- authnkit: `Hasher.VerifyDummy` и `(*Argon2idHasher).VerifyDummy`: `(ctx)` → `(ctx) error` — ошибку обработать как
+  ошибку `Verify` (ответ тот же); своя реализация `Hasher` — новая сигнатура.
 - authnkit: `Hash`, `Verify`, `VerifyDummy` при полной очереди Argon2id — `ErrBusy` сразу (было: ожидание слота до
   дедлайна ctx) → правило `errors.Is(err, authnkit.ErrBusy)` → 503 на всех путях пароля (вход по известному и
   неизвестному адресу, регистрация, смена и сброс), `Retry-After` — из `RetryAfter()` ошибки в цепочке; без правила — 500.
@@ -196,6 +203,6 @@ Breaking:
    `.env.example` (`SESSION_RETRY_WINDOW`), якоря `scripts/tools/mutants.txt` у правленого кода.
 
 ## Где мы сейчас
-S1–S3 закрыты: хэшер отказывает при полной очереди (`ErrBusy`), повтор ротации в окне выдаёт нового преемника,
-эксперименты аудитора на копии шаблона: дефекты на базе, на ветке их нет; AC1–AC5 подтверждены. Следующий шаг — S4:
-сверка «Handoff» с `make release-diff PREV=v1.5.0` и `make gate-clean`.
+Все шаги и критерии закрыты: хэшер отказывает при полной очереди (`ErrBusy`), повтор ротации в окне выдаёт нового
+преемника, эксперименты аудитора на копии шаблона чисты, «Handoff» сверен с `release-diff`. Дальше — валидатор трека,
+затем дирижёр: слияние в `main`, удаление плана, тег `v1.6.0` с аннотацией из «Handoff» и трек g-upgrade шаблона.

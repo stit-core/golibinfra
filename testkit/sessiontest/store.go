@@ -108,7 +108,7 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	return s.next(tok, sess, now), nil
 }
 
-// retry — повтор использованного tok в окне: не позже RetryWindow после ротации, сессия жива, преемник не использован.
+// retry — повтор использованного tok в окне: меньше RetryWindow после ротации, сессия жива, преемник не использован.
 func (s *Store) retry(tok *fakeToken, sess *fakeSession, successor *fakeToken, now time.Time) bool {
 	return now.Sub(tok.usedAt) < s.cfg.RetryWindow && !sess.revoked && sess.expiresAt.After(now) &&
 		successor != nil && successor.usedAt.IsZero()
