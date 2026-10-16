@@ -187,11 +187,12 @@ type sqlScope struct {
 // USING и через запятую в списке FROM, в том числе после JOIN … ON … и в скобках соединения (a JOIN b), — и
 // функции, которые он вызывает. Колонка с именем таблицы (orders.notes), FROM внутри выражения (TRIM(… FROM
 // notes), IS DISTINCT FROM notes), слово после FOR UPDATE и DO UPDATE, столбцы JOIN … USING (…) и имя CTE
-// своего оператора — не обращение к таблице; в теле CTE без RECURSIVE его имя — таблица.
+// своего оператора — не обращение к таблице; в теле CTE без RECURSIVE его имя — таблица, цель INSERT, UPDATE,
+// DELETE и MERGE — таблица и под одноимённым CTE: её PostgreSQL ищет только в каталоге.
 func readRefs(tokens []sqlToken) sqlRefs {
 	scopes := []sqlScope{{}}
 	var refs sqlRefs
-	table, prev := false, ""
+	table, target, prev := false, false, ""
 	for _, tok := range tokens {
 		if tok.str {
 			continue
@@ -203,7 +204,7 @@ func readRefs(tokens []sqlToken) sqlRefs {
 			continue
 		}
 		if table && (word == "select" || word == "values" || word == "with") {
-			table = false
+			table, target = false, false
 		}
 		switch {
 		case word == "(":
@@ -212,9 +213,9 @@ func readRefs(tokens []sqlToken) sqlRefs {
 			}
 			// Скобка в позиции таблицы — подзапрос или соединение (a JOIN b): тот же список FROM.
 			inFrom := table && prev != "using"
-			scopes, table = append(scopes, sqlScope{from: inFrom}), inFrom
+			scopes, table, target = append(scopes, sqlScope{from: inFrom}), inFrom, false
 		case word == ")":
-			scopes, table = scopes[:max(len(scopes)-1, 1)], false
+			scopes, table, target = scopes[:max(len(scopes)-1, 1)], false, false
 			if up := &scopes[len(scopes)-1]; up.with == cteOpen {
 				if !up.recursive {
 					up.ctes = append(up.ctes, up.cte)
@@ -222,14 +223,14 @@ func readRefs(tokens []sqlToken) sqlRefs {
 				up.with = cteNext
 			}
 		case word == ";":
-			scopes, table = []sqlScope{{}}, false
+			scopes, table, target = []sqlScope{{}}, false, false
 		case word == ",":
-			table = cur.from
+			table, target = cur.from, false
 		case table && word != "only" && word != "lateral":
-			if name := relName(word); strings.Contains(word, ".") || !slices.ContainsFunc(scopes, func(s sqlScope) bool { return slices.Contains(s.ctes, name) }) {
+			if name := relName(word); target || strings.Contains(word, ".") || !slices.ContainsFunc(scopes, func(s sqlScope) bool { return slices.Contains(s.ctes, name) }) {
 				refs.tables = append(refs.tables, name)
 			}
-			table = false
+			table, target = false, false
 		case word == "with":
 			cur.with, cur.recursive = cteName, false
 		case word == "select" || word == "delete" || word == "perform":
@@ -237,9 +238,9 @@ func readRefs(tokens []sqlToken) sqlRefs {
 		case word == "values":
 			cur.from = false
 		case word == "from" && cur.query && prev != "distinct":
-			cur.from, table = true, true
+			cur.from, table, target = true, true, prev == "delete"
 		case word == "join" || word == "into" || word == "using" || word == "update" && !slices.Contains(lockClauses, prev):
-			cur.query, table = true, true
+			cur.query, table, target = true, true, word == "into" || word == "update"
 		case slices.Contains(fromEnds, word):
 			cur.from = false
 		}
