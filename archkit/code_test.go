@@ -244,6 +244,53 @@ var reader = func(uc *Usecase) order.CustomerReader { return uc }
 	plain = func(n int) int { return n }
 )`)},
 		},
+		// Имя идёт по областям видимости: тень параметра в блоке, литерале или цикле — другое имя.
+		{
+			name: "parameter shadowed in a block, a literal and a loop",
+			edits: edits{file: ports(`func firstOrEmpty(c *customer.Customer) *order.Order {
+	if c == nil {
+		c := &order.Order{}
+		return c
+	}
+	return &order.Order{CustomerID: c.ID}
+}
+
+func newReader(uc *customer.Usecase) func() order.CustomerReader {
+	return func() order.CustomerReader {
+		uc := &customerReader{}
+		return uc
+	}
+}
+
+func firstReader(uc *customer.Usecase, readers []order.CustomerReader) order.CustomerReader {
+	for _, uc := range readers {
+		return uc
+	}
+	return nil
+}`)},
+		},
+		{
+			name: "value through a block and an outer variable",
+			edits: edits{file: ports(`func newReader(uc *customer.Usecase, ok bool) order.CustomerReader {
+	var r order.CustomerReader
+	if ok {
+		r = uc
+	}
+	return r
+}
+
+func blockReader(uc *customer.Usecase) (order.Checker, bool) {
+	if uc != nil {
+		c := uc
+		return c, true
+	}
+	return nil, false
+}`)},
+			want: []string{
+				file + " returns *customer.Usecase as order.CustomerReader: " + whyClosure,
+				file + " returns *customer.Usecase as order.Checker: " + whyClosure,
+			},
+		},
 		// Значение того же типа — не привязка порта: помощник адаптера отдаёт его дальше как есть.
 		{
 			name: "same type",
