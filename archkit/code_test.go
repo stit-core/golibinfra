@@ -338,6 +338,76 @@ var (
 		},
 	})
 
+	// Поле структуры-параметра (fx.In) и поле литерала, которое значение отдаёт дальше (fx.Out, встроенное).
+	const fxPorts = `package module
+
+import (
+	"go.uber.org/fx"
+
+	"` + domains + `/customer"
+	"` + domains + `/order"
+)
+
+type (
+	deps struct {
+		fx.In
+
+		UC *customer.Usecase
+	}
+	embedded struct {
+		fx.In
+		*customer.Usecase
+	}
+	ports struct {
+		fx.Out
+
+		Reader order.CustomerReader
+	}
+	wrapper struct{ order.CustomerReader }
+)
+`
+	for name, decl := range map[string]string{
+		"field of fx.In":                 "var reader = func(d deps) order.CustomerReader { return d.UC }",
+		"field of an anonymous fx.In":    "var reader = func(d struct {\n\tfx.In\n\tUC *customer.Usecase\n}) order.CustomerReader {\n\treturn d.UC\n}",
+		"field through a variable":       "var reader = func(d deps) order.CustomerReader { r := d.UC; return r }",
+		"field converted to the port":    "var reader = func(d *deps) order.CustomerReader { return order.CustomerReader(d.UC) }",
+		"field of a copy of the struct":  "var reader = func(d deps) order.CustomerReader { c := d; return c.UC }",
+		"embedded field of fx.In":        "var reader = func(d embedded) order.CustomerReader { return d.Usecase }",
+		"field of fx.Out":                "var provide = func(uc *customer.Usecase) ports { return ports{Reader: uc} }",
+		"positional field of fx.Out":     "var provide = func(uc *customer.Usecase) ports { return ports{fx.Out{}, uc} }",
+		"fx.Out through a variable":      "var provide = func(uc *customer.Usecase) ports {\n\tp := ports{Reader: uc}\n\treturn p\n}",
+		"embedded port of a literal":     "var reader = func(uc *customer.Usecase) order.CustomerReader { return struct{ order.CustomerReader }{uc} }",
+		"embedded port of a module type": "var reader = func(uc *customer.Usecase) order.CustomerReader { return &wrapper{uc} }",
+		"field of the receiver":          "func (a *customerReader) port() order.CustomerReader { return a.uc }",
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			requireFailures(t, failures(t, edits{file: fxPorts + "\n" + decl + "\n"}), asReader("*customer.Usecase"))
+		})
+	}
+	// Адаптер из полей fx.In, тот же тип, поле чужого типа в fx.Out и именованное поле адаптера — не порт.
+	t.Run("fields that make no port", func(t *testing.T) {
+		t.Parallel()
+		requireFailures(t, failures(t, edits{file: fxPorts + `
+type (
+	same struct {
+		fx.Out
+
+		UC *customer.Usecase
+	}
+	customerAPI interface{ Get(id string) (*customer.Customer, error) }
+	named       struct{ api customerAPI }
+)
+
+var (
+	adapter  = func(d deps) order.CustomerReader { return newCustomerReader(d.UC) }
+	sameType = func(d deps) *customer.Usecase { return d.UC }
+	reExport = func(uc *customer.Usecase) same { return same{UC: uc} }
+	wrapped  = func(uc *customer.Usecase) *named { return &named{api: uc} }
+)
+`}), nil)
+	})
+
 	// Параметр, как бы функция его ни отдала: каждая форма — свой случай, одинаковые строки склеиваются.
 	for name, decl := range map[string]string{
 		"conversion to the port":           "var reader = func(uc *customer.Usecase) order.CustomerReader { return order.CustomerReader(uc) }",

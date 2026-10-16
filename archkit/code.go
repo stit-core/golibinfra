@@ -43,9 +43,9 @@ func (t *tree) wallClock() {
 	}
 }
 
-// identityClosures: функция module/, которая возвращает свой параметр чужого домена под типом не из
-// чужого домена (порт, any), привязывает порт без адаптера — потребитель получает чужие ошибки и типы мимо
-// маппинга.
+// identityClosures: функция module/, которая отдаёт значение чужого домена — свой параметр, его поле,
+// захваченное из объемлющей функции — под типом не из чужого домена (порт, any), привязывает порт без
+// адаптера — потребитель получает чужие ошибки и типы мимо маппинга.
 func (t *tree) identityClosures() {
 	for _, f := range t.files {
 		if !f.domainCode() || f.sub != "module" {
@@ -68,13 +68,15 @@ func (t *tree) identityClosures() {
 // passing — параметр чужого домена, который функция возвращает, и тип результата, под которым.
 type passing struct{ param, result ast.Expr }
 
-// binding — имя функции module/ (параметр, результат, переменная) в своей области: видно внутри scope с
-// позиции from. held — тип параметра чужого домена, чьё значение имя держит; nil — не держит.
+// binding — имя функции module/ (параметр, получатель, результат, переменная) в своей области: видно
+// внутри scope с позиции from. held — тип параметра чужого домена, чьё значение имя держит (nil — не
+// держит); fields — поля чужого домена, если имя — структура (fx.In и любая другая): поле → тип.
 type binding struct {
-	name  string
-	scope ast.Node
-	from  token.Pos
-	held  ast.Expr
+	name   string
+	scope  ast.Node
+	from   token.Pos
+	held   ast.Expr
+	fields map[string]ast.Expr
 }
 
 // assignment — значение, которое получает имя: to — объявленное тут же, иначе имя ищется в позиции pos.
@@ -100,6 +102,7 @@ type flow struct {
 	bindings []*binding
 	assigns  []assignment
 	returns  map[*ast.ReturnStmt]*fnScope
+	literals []*ast.CompositeLit
 }
 
 // scopeVisitor обходит функцию и раскладывает имена по областям: функция, блок, if, for, switch, case.
@@ -150,6 +153,8 @@ func (v scopeVisitor) Visit(n ast.Node) ast.Visitor {
 		}
 	case *ast.ReturnStmt:
 		v.fl.returns[x] = v.fn
+	case *ast.CompositeLit:
+		v.fl.literals = append(v.fl.literals, x)
 	}
 	return v
 }
@@ -159,12 +164,17 @@ func (v scopeVisitor) Visit(n ast.Node) ast.Visitor {
 func (fl *flow) function(n ast.Node) {
 	ft, body := funcParts(n)
 	fn := &fnScope{typ: ft}
-	for _, p := range ft.Params.List {
+	params := ft.Params.List
+	if decl, ok := n.(*ast.FuncDecl); ok && decl.Recv != nil {
+		params = append(slices.Clone(decl.Recv.List), params...)
+	}
+	for _, p := range params {
 		for _, name := range p.Names {
 			b := fl.declare(name.Name, n, n.Pos())
 			if fl.t.foreign(fl.f, fl.f.domain, p.Type, 0) {
 				b.held = p.Type
 			}
+			b.fields = fl.t.foreignFields(fl.f, p.Type)
 		}
 	}
 	if ft.Results != nil {
@@ -235,9 +245,10 @@ func (fl *flow) resolve(name string, pos token.Pos) *binding {
 	return found
 }
 
-// passed — значения чужого домена, которые функции потока возвращают под типом не из чужого домена: в
+// passed — значения чужого домена, которые функции потока отдают под типом не из чужого домена: в
 // любом return и любой позиции результата, как есть, в скобках, приведением к интерфейсу или чужому
-// типу, утверждением типа, через переменную или именованный результат.
+// типу, утверждением типа, через переменную или именованный результат, — и полем литерала (fx.Out,
+// встроенное поле).
 func (fl *flow) passed() []passing {
 	for changed := true; changed; {
 		changed = false
@@ -246,11 +257,14 @@ func (fl *flow) passed() []passing {
 			if to == nil {
 				to = fl.resolve(a.name, a.pos)
 			}
-			if to == nil || to.held != nil {
+			if to == nil {
 				continue
 			}
-			if param := fl.holds(a.value); param != nil {
+			if param := fl.holds(a.value); param != nil && to.held == nil {
 				to.held, changed = param, true
+			}
+			if src := fl.source(a.value); src != nil && src.fields != nil && to.fields == nil {
+				to.fields, changed = src.fields, true
 			}
 		}
 	}
@@ -282,7 +296,49 @@ func (fl *flow) passed() []passing {
 			}
 		}
 	}
+	for _, lit := range fl.literals {
+		found = append(found, fl.literalPassing(lit)...)
+	}
 	return found
+}
+
+// literalPassing — поля литерала, которым досталось значение чужого домена под типом не из чужого домена,
+// если поле отдаёт его дальше как есть: поле структуры с fx.Out (fx кладёт его в граф отдельным значением)
+// и встроенное поле (его методы — методы литерала).
+func (fl *flow) literalPassing(lit *ast.CompositeLit) []passing {
+	file, st := fl.t.structOf(fl.f, lit.Type, 0)
+	if st == nil {
+		return nil
+	}
+	out := fl.t.embedsFxOut(file, st)
+	var fields []structField
+	for _, field := range st.Fields.List {
+		for _, name := range fieldNames(field) {
+			fields = append(fields, structField{name: name, typ: field.Type, embedded: len(field.Names) == 0})
+		}
+	}
+	var found []passing
+	for i, elt := range lit.Elts {
+		value, at := elt, i
+		if kv, ok := elt.(*ast.KeyValueExpr); ok {
+			key, _ := kv.Key.(*ast.Ident)
+			value, at = kv.Value, slices.IndexFunc(fields, func(f structField) bool { return key != nil && f.name == key.Name })
+		}
+		if at < 0 || at >= len(fields) || !out && !fields[at].embedded {
+			continue
+		}
+		if param := fl.holds(value); param != nil && !fl.t.foreign(file, fl.f.domain, fields[at].typ, 0) {
+			found = append(found, passing{param: param, result: fields[at].typ})
+		}
+	}
+	return found
+}
+
+// structField — поле структуры: имя (у встроенного — имя типа) и тип.
+type structField struct {
+	name     string
+	typ      ast.Expr
+	embedded bool
 }
 
 // sortedReturns — return потока в порядке текста: строки отказа не зависят от обхода map.
@@ -301,13 +357,19 @@ func single(exprs []ast.Expr) ast.Expr {
 }
 
 // holds — тип параметра чужого домена, чьё значение выражение отдаёт как есть: имя, которое его держит,
-// скобки, *&, утверждение типа, приведение к интерфейсу или к чужому типу; nil — не отдаёт.
+// поле чужого домена у структуры (d.Users), скобки, *&, утверждение типа, приведение к интерфейсу или к
+// чужому типу; nil — не отдаёт.
 func (fl *flow) holds(e ast.Expr) ast.Expr {
 	for {
 		switch x := e.(type) {
 		case *ast.Ident:
 			if b := fl.resolve(x.Name, x.Pos()); b != nil {
 				return b.held
+			}
+			return nil
+		case *ast.SelectorExpr:
+			if b := fl.source(x.X); b != nil {
+				return b.fields[x.Sel.Name]
 			}
 			return nil
 		case *ast.ParenExpr:
@@ -331,6 +393,14 @@ func (fl *flow) holds(e ast.Expr) ast.Expr {
 	}
 }
 
+// source — объявление имени, которое называет выражение (в скобках); nil — не имя функции.
+func (fl *flow) source(e ast.Expr) *binding {
+	if id, ok := ast.Unparen(e).(*ast.Ident); ok {
+		return fl.resolve(id.Name, id.Pos())
+	}
+	return nil
+}
+
 // funcParts — сигнатура и тело функции или литерала функции; у другого узла — nil.
 func funcParts(n ast.Node) (*ast.FuncType, *ast.BlockStmt) {
 	switch f := n.(type) {
@@ -350,6 +420,75 @@ func (t *tree) keepsValue(f goFile, e ast.Expr) bool {
 		return t.foreign(f, f.domain, star.X, 0)
 	}
 	return t.foreign(f, f.domain, e, 0) || t.isInterface(f, e, 0)
+}
+
+// foreignFields — поля чужого домена у структуры e (литерал struct{…} или тип пакета домена): имя поля →
+// тип; nil — e не структура.
+func (t *tree) foreignFields(f goFile, e ast.Expr) map[string]ast.Expr {
+	file, st := t.structOf(f, e, 0)
+	if st == nil {
+		return nil
+	}
+	fields := map[string]ast.Expr{}
+	for _, field := range st.Fields.List {
+		if t.foreign(file, f.domain, field.Type, 0) {
+			for _, name := range fieldNames(field) {
+				fields[name] = field.Type
+			}
+		}
+	}
+	return fields
+}
+
+// structOf — структура, которую называет тип e (указатель, скобки и алиасы раскрываются), и файл, в
+// чьих импортах читаются типы её полей; nil — не структура или вне разобранных пакетов доменов.
+func (t *tree) structOf(f goFile, e ast.Expr, hops int) (goFile, *ast.StructType) {
+	if e == nil {
+		return f, nil
+	}
+	switch x := deref(e).(type) {
+	case *ast.StructType:
+		return f, x
+	default:
+		if _, decl, ok := t.typeDecl(f, x); ok && hops < maxTypeHops {
+			return t.structOf(decl.file, decl.spec.Type, hops+1)
+		}
+	}
+	return f, nil
+}
+
+// embedsFxOut — в структуре встроен fx.Out: fx кладёт каждое её поле в граф отдельным значением.
+func (t *tree) embedsFxOut(f goFile, st *ast.StructType) bool {
+	return slices.ContainsFunc(st.Fields.List, func(field *ast.Field) bool {
+		sel, ok := deref(field.Type).(*ast.SelectorExpr)
+		if !ok || len(field.Names) != 0 || sel.Sel.Name != "Out" {
+			return false
+		}
+		pkg, ok := sel.X.(*ast.Ident)
+		return ok && f.importsByName()[pkg.Name] == "go.uber.org/fx"
+	})
+}
+
+// fieldNames — имена поля; у встроенного — имя его типа (*user.Trusted → Trusted).
+func fieldNames(field *ast.Field) []string {
+	if len(field.Names) == 0 {
+		switch x := deref(field.Type).(type) {
+		case *ast.Ident:
+			return []string{x.Name}
+		case *ast.SelectorExpr:
+			return []string{x.Sel.Name}
+		case *ast.IndexExpr:
+			return fieldNames(&ast.Field{Type: x.X})
+		case *ast.IndexListExpr:
+			return fieldNames(&ast.Field{Type: x.X})
+		}
+		return nil
+	}
+	names := make([]string, 0, len(field.Names))
+	for _, name := range field.Names {
+		names = append(names, name.Name)
+	}
+	return names
 }
 
 // maxTypeHops — предел раскрытия алиасов: цикл алиасов не компилируется, но разбор его не ждёт.
