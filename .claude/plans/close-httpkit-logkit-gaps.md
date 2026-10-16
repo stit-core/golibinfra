@@ -38,8 +38,8 @@ g-kits): 429 общего лимитера httpkit описан в контра�
 ## Не входит
 - Правки шаблона (`go.mod`, `authlimit.Rule`, `TestHTTPOperations`, `newLog`, `openapi.json`, `mutants.txt`) —
   трек g-upgrade после тега; здесь — проверка на временном `go.work` (AC5) и раздел «Потребителю».
-- Прочие ответы кита вне таблиц операций — `413 BODY_TOO_LARGE`, `503 REQUEST_TIMEOUT`, `WWW-Authenticate` у 401
-  — не пункт шаблона: хвост в бэклог (S3).
+- Прочие ответы кита вне таблиц операций — `413 BODY_TOO_LARGE`, `503 REQUEST_TIMEOUT`, `503 AUTH_UNAVAILABLE`,
+  `WWW-Authenticate` у 401 — не пункт шаблона: хвост `httpkit-kit-errors-contract` в бэклоге (S3).
 - `httpkit.Healthcheck` остаётся на `logkit.Config{}`: его контракт — причина отказа в stdout при любом `LOG_*`.
 - Пункты бэклога golibinfra рядом с треком без пересечения: `httpkit-ratelimit-overflow-bucket` (поведение
   лимитера, а не контракт), `logkit-redact-disabled-literal` (путь литерала; помощник идёт путём ENV, где
@@ -55,7 +55,9 @@ g-kits): 429 общего лимитера httpkit описан в контра�
   TestErrorMap_DescribesServerRateLimit ./httpkit/` → PASS; на `90adb36` — FAIL (у операции без таблицы 429 нет)
   - Подтверждено: на `90adb36` тест красный — у `ping`, `getMe`, `stream`, `/health`, `/ready` 429 нет, лимитер
     отвечает `RATE_LIMITED` с `Retry-After: 1`, а контракт `ping` 429 не знает (`N/g-kits/red-s1-429.log`); на
-    ветке — PASS (`N/g-kits/green-s1-429.log`)
+    ветке — PASS (`N/g-kits/green-s1-429.log`); ручные мутации хука и лимитера M1–M9 (флаг лимитера, заголовок у 429
+    таблицы, повтор и порядок кода, `Responses == nil`, `Required`, минимум, код лимитера) тест убивает
+    (`N/g-kits/mutations.sh`, лог `mutations.log`)
 - [x] **AC2** — 429 не задваивается: таблица с 429 `RATE_LIMITED` (свой лимитер потребителя, как `authlimit.Rule`)
   при включённом лимитере даёт описание `Too Many Requests: RATE_LIMITED`, с другим кодом 429 — `Too Many Requests:
   AUTH_LOCKED, RATE_LIMITED` (коды таблицы — первыми); `Retry-After` — у каждого 429 операции. Проверка: тот же
@@ -73,18 +75,25 @@ g-kits): 429 общего лимитера httpkit описан в контра�
     уровень error; выключенный redact — записи двух логгеров равны, окружение в них видно),
     `TestNewFromEnv_RejectsInvalidEnv` (8 случаев, в том числе паттерн у выключенного redact),
     `TestNewFromEnv_SilentKeepsErrorsInStderr` → PASS (`N/g-kits/green-s2-logkit.log`); на `90adb36` `NewFromEnv`
-    нет (`git grep` пуст); правки без чтения `LOG_REDACT_*`, без stderr и без ошибки `NewRedactConfig` тесты ловят
+    нет (`git grep` пуст); ручные мутации L1–L4 (без `LOG_REDACT_*`, без stderr, без ошибки `NewRedactConfig` и
+    `NewConfig`) тесты убивают (`N/g-kits/mutations.log`)
 - [x] **AC4** — Доки называют новое: README httpkit и `docs/` (контракт ошибок, `ErrorMap`, `RateLimitConfig`,
   тестирование), README logkit (без fx, API, `LOG_SILENT`, инварианты), строки индекса корневого README; сниппет
   `NewFromEnv` держит `readme_test.go`. Проверка: `make envdoc-check` → OK; `go test -run TestReadme ./logkit/` →
   PASS
   - Подтверждено: `make envdoc-check` → OK (254 переменных); `TestReadme_QuickStartWithoutFx` с `NewFromEnv` → PASS
-- [ ] **AC5** — Шаблон на ветке (временный `go.work` в `N/wt-g-kits-t` от `main` шаблона): `go build ./...` → OK;
+- [x] **AC5** — Шаблон на ветке (временный `go.work` в `N/wt-g-kits-t` от `main` шаблона): `go build ./...` → OK;
   `openapi.json` по `make gen` (`go test ./cmd/api -run '^TestOpenAPISpec$' -args -update`) отличается от
   закоммиченного только 429: новые 429 `RATE_LIMITED` с `Retry-After` у операций без них, у `/api/auth/*` — прежнее
   описание без повтора кода и `Retry-After`; правки «Потребителю» на пробу (без коммита) дают зелёные
   `TestOpenAPISpec`, `TestHTTPOperations`, тесты `authlimit`, archtest и сборку команд на `logkit.NewFromEnv`.
   Проверка: прогоны в `N/wt-g-kits-t`, итог — в «Подтверждено»
+  - Подтверждено: на `402ed8c` (`N/g-kits/s3-template.log`, скрипт `N/g-kits/trial/s3-check.sh`) — `go build ./...`
+    → OK; `openapi.json` меняется только в 429: у 7 операций вне `/api/auth/*`, с `/health` и `/ready`, — новый 429
+    `RATE_LIMITED`, у 8 операций `/api/auth/*` описание прежнее, повторов кода нет, у всех — обязательный
+    `Retry-After`; `TestHTTPOperations` шаблона без правок падает только проверкой «429 только под `/api/auth/`» (7
+    операций); с правками «Потребителю» (`N/g-kits/trial/template-trial.patch`) контракт байт в байт тот же, `go vet
+    -tags=integration ./...`, `go test ./...`, archtest, тесты `authlimit` и `TestRun_Usage` команды миграций — зелёные
 
 ## Шаги
 ### Киты
@@ -109,10 +118,13 @@ g-kits): 429 общего лимитера httpkit описан в контра�
     `readme_test.go`, doc-comment `WithStderrFallback`, строка индекса корневого README; `go test -short -race
     ./logkit/...` → PASS; `make envdoc-check` → OK; `make check` → `✓ check clean (./...)`
 ### Потребитель
-- [ ] **S3** — проверка на шаблоне через временный `go.work`; «Потребителю» и строки аннотации сверены с итогом,
+- [x] **S3** — проверка на шаблоне через временный `go.work`; «Потребителю» и строки аннотации сверены с итогом,
   хвост — в бэклог
   - Проверка: прогоны AC5 → как в критерии; `flock N/gate.lock make check` → `✓ check clean (./...)`
   - Закрывает: AC5 · Зависит от: S1, S2
+  - Сделано: проба на шаблоне — как в AC5; `make release-diff PREV=v1.5.0` — несовместимого API нет, новое —
+    `logkit.NewFromEnv` (`N/g-kits/release-diff.log`), Breaking S1 — по футеру коммита; «Потребителю» уточнён по
+    пробе; хвост — `httpkit-kit-errors-contract` в бэклог; `make check` → `✓ check clean (./...)`
 
 ## Решения
 - Строки аннотации `v1.6.0` и «Потребителю» — подразделы `## Handoff`: так их берёт `/release` (профиль плана),
@@ -137,6 +149,10 @@ g-kits): 429 общего лимитера httpkit описан в контра�
 - `NewFromEnv` ставит `WithStderrFallback`: у логгера команды OTel-sink'а нет по построению — правило кита для таких
   логгеров (`FxLogger`, логгер ошибок экспорта telemetry); иначе при `LOG_SILENT=true` команда теряет причину отказа.
   Разбор `LOG_*` тот же, что у графа с `Module`: `TestNewFromEnv_ParsesLikeModule` сверяет записи двух логгеров.
+- Проба «Потребителю» — в своём worktree шаблона без коммита (скрипт и патч — `N/g-kits/trial/`): правки шаблона
+  делает g-upgrade после тега, а проба показывает, что путь рабочий и контракт после него байт в байт тот же.
+- Операциям `/api/auth/*` без доменных ошибок (`logoutUser`, `requestPasswordReset`) — `Errors: []int{500}`, а не
+  исключение из проверки `default` шаблона: проверка остаётся сторожем забытого `Declare`, набор ответов — прежним.
 
 ## Handoff
 ### Аннотация v1.6.0 — строки трека
@@ -152,19 +168,33 @@ Breaking:
   `LOG_SILENT=true` записи `ERROR` — в stderr.
 
 ### Потребителю — go-backend-template (трек g-upgrade)
-1. `go get git.stit.tech/stit-core/golibinfra@v1.6.0 && go mod tidy`; `make gen` — `openapi.json`: 429
-   `RATE_LIMITED` с `Retry-After` у каждой операции.
-2. 429 строгого лимита описывает кит (тот же код и `Retry-After`): `authlimit.Rule` и `errLimited` удалить,
-   правило — из таблиц операций `/api/auth/*`; таблицы из него одного (`logoutErrors`,
-   `requestPasswordResetErrors`) — вместе с `Declare`.
-3. `TestHTTPOperations`: проверку «429 `RATE_LIMITED` — ровно под `authlimit.Prefix`» снять — 429 у каждой
-   операции держит тест кита; `authlimit_test.go` сверяет код отказа с кодом лимитера кита.
-4. `cmd/migrate`, `cmd/seed-admin`: `newLog()` → `logkit.NewFromEnv()`; `newLog` и оба `TestNewLog` удалить —
-   разбор `LOG_*`, `ErrConfig` и stderr держат тесты кита. Команды начинают читать `LOG_REDACT_*` и при
-   `LOG_SILENT=true` пишут записи `ERROR` в stderr.
-5. Доки и обвязка под пп. 2–4; бэклог — снять `golibinfra-httpkit-429` и `golibinfra-logkit-env`.
+Пп. 2–4 на пробу — `N/g-kits/trial/template-trial.patch` (скрипт `trial/apply.py`, прогон `N/g-kits/s3-template.log`):
+с ними `openapi.json` байт в байт тот же, что после одного `make gen`.
+1. `go get git.stit.tech/stit-core/golibinfra@v1.6.0 && go mod tidy`; `make gen` — в `openapi.json` 429
+   `RATE_LIMITED` с обязательным `Retry-After` у каждой операции, и у `/health`, `/ready`; у `/api/auth/*` описание
+   429 прежнее, добавлен `Retry-After`.
+2. 429 строгого лимита `/api/auth/*` описывает кит: код и заголовок те же, что у `authlimit.Middleware` (это
+   `httpkit.RateLimit`). `authlimit.Rule` и `errLimited` удалить (комментарий `Prefix` — без «правилом Rule»),
+   правило — из таблиц `loginErrors`, `refreshErrors`, `changePasswordErrors`, `registerErrors`,
+   `confirmPasswordResetErrors`, `confirmEmailErrors`; таблицы из него одного — `logoutErrors`,
+   `requestPasswordResetErrors` — удалить вместе с `Declare`, а их операциям — `Errors:
+   []int{http.StatusInternalServerError}`: huma описывает 422 и 500, а не `default`, и проверка `default` в
+   `TestHTTPOperations` остаётся.
+3. `TestHTTPOperations`: проверку «429 `RATE_LIMITED` — ровно под `authlimit.Prefix`» снять (на теге она падает на
+   7 операциях вне префикса) — 429 у каждой операции держит `TestErrorMap_DescribesServerRateLimit` кита;
+   `authlimit_test.go` сверяет код отказа с `"RATE_LIMITED"` и наличие `Retry-After`.
+4. `cmd/migrate`, `cmd/seed-admin`: `newLog()` → `logkit.NewFromEnv()`; `newLog`, оба `TestNewLog` и импорт
+   `logkit` в `cmd/migrate/run_test.go` удалить — разбор `LOG_*`, `ErrConfig` и stderr держат тесты кита
+   (`TestNewFromEnv_*`). Команды начинают читать `LOG_REDACT_*` и при `LOG_SILENT=true` пишут записи `ERROR` в
+   stderr.
+5. Доки и обвязка: `docs/reference/architecture.md` (§ Контракт ошибок API — исключение «кроме операции под
+   `authlimit.Prefix`» и абзац про `authlimit.Rule`), `.claude/skills/scaffold/references/endpoint.md` (строка про
+   `authlimit.Rule`), `scripts/tools/mutants.txt` (якоря `loginErrors` и `confirmEmailErrors` с `authlimit.Rule`),
+   пример `newLog()` в `TestMainOnlyEnters` (`internal/archtest/generated_test.go`, текст случая); бэклог — снять
+   `golibinfra-httpkit-429` и `golibinfra-logkit-env`.
 
 ## Где мы сейчас
-S1 и S2 сделаны: 429 лимитера и `Retry-After` в контракте операций, `logkit.NewFromEnv`. Проба правок «Потребителю»
-на шаблоне (`N/g-kits/trial/apply.py`, патч `template-trial.patch`) зелёная на эксперименте с тем же кодом.
-Следующий шаг — S3: повторить пробу на ветке трека, сверить «Потребителю» и аннотацию, хвост — в бэклог.
+Шаги S1–S3 закрыты, критерии подтверждены: 429 лимитера и `Retry-After` — в контракте каждой операции,
+`logkit.NewFromEnv` — логгер команды одной строкой, шаблон на ветке проверен. План держит Handoff до выпуска
+`v1.6.0`: дирижёр после валидатора сливает ветку, переносит строки в аннотацию тега и закрывает план
+(`chore(plan): close-httpkit-logkit-gaps закрыт`).
