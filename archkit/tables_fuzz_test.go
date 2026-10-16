@@ -11,6 +11,8 @@ func FuzzSQL(f *testing.F) {
 		"CREATE FUNCTION f() AS $$", "CREATE FUNCTION f() AS", "BEGIN ATOMIC", "BEGIN ATOMIC CASE END END;", "DO $$", "DO",
 		"SELECT a FROM t1 JOIN t2 USING (id)", "CREATE VIEW v AS SELECT * FROM t; SELECT * FROM v",
 		"CREATE FUNCTION f() RETURNS int AS $x$ SELECT f() $x$; CREATE VIEW v AS SELECT f() FROM v;",
+		"DROP FUNCTION f(int, text), g; DROP VIEW", "ALTER TABLE", "ALTER FUNCTION f( RENAME TO", "ALTER VIEW v RENAME TO w;",
+		"TABLE", "TRUNCATE", "$тег$", `"A"."B" . "C"`, "public/**/.t", "public/*",
 	} {
 		f.Add(seed)
 	}

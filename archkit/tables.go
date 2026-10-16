@@ -19,6 +19,10 @@ var (
 	fromEnds = []string{"where", "group", "having", "order", "limit", "offset", "returning", "union", "intersect", "except", "window", "for", "do"}
 	// lockClauses — слова, после которых UPDATE — не оператор: FOR UPDATE, FOR NO KEY UPDATE, DO UPDATE.
 	lockClauses = []string{"for", "key", "do"}
+	// queryStarts — слова, после которых TABLE t начинает запрос: начало оператора, скобка, конец списка
+	// WITH, UNION и другие операции над множествами, AS представления. TRUNCATE, LOCK и COPY — только в
+	// начале оператора: в выражении это имена колонок.
+	queryStarts = []string{"", ";", "(", ")", "as", "union", "intersect", "except", "all", "distinct"}
 	// createModifiers — слова между CREATE и видом объекта: OR REPLACE, TEMP, UNLOGGED, MATERIALIZED.
 	createModifiers = []string{"or", "replace", "global", "local", "temp", "temporary", "unlogged", "recursive", "materialized"}
 )
@@ -328,18 +332,20 @@ const (
 // sqlScope — уровень скобок запроса.
 type sqlScope struct {
 	query, from bool     // идёт запрос, открыт список FROM
+	joined      bool     // последним открыт JOIN: USING (…) за ним — столбцы, а не таблицы
 	ctes        []string // имена CTE, видимые на этом уровне и глубже
 	with        int      // разбор списка WITH этого уровня
 	cte         string   // имя CTE, которое разбирается
 	recursive   bool     // WITH RECURSIVE: имя CTE видно и в его теле
 }
 
-// readRefs — к чему обращается SQL: имена в позиции таблицы — после FROM запроса, JOIN, INTO, UPDATE,
-// USING и через запятую в списке FROM, в том числе после JOIN … ON … и в скобках соединения (a JOIN b), — и
-// функции, которые он вызывает. Колонка с именем таблицы (orders.notes), FROM внутри выражения (TRIM(… FROM
-// notes), IS DISTINCT FROM notes), слово после FOR UPDATE и DO UPDATE, столбцы JOIN … USING (…) и имя CTE
-// своего оператора — не обращение к таблице; в теле CTE без RECURSIVE его имя — таблица, цель INSERT, UPDATE,
-// DELETE и MERGE — таблица и под одноимённым CTE: её PostgreSQL ищет только в каталоге.
+// readRefs — к чему обращается SQL: имена в позиции таблицы — после FROM запроса, JOIN, INSERT INTO, MERGE
+// INTO, UPDATE, USING, TABLE, TRUNCATE, LOCK, COPY и через запятую в списке FROM, в том числе после JOIN …
+// ON … и в скобках соединения (a JOIN b), — и функции, которые он вызывает. Колонка с именем таблицы
+// (orders.notes), FROM внутри выражения (TRIM(… FROM notes), IS DISTINCT FROM notes), слово после FOR UPDATE
+// и DO UPDATE, переменная SELECT … INTO, столбцы JOIN … USING (…) и имя CTE своего оператора — не обращение к
+// таблице; в теле CTE без RECURSIVE его имя — таблица, цель INSERT, UPDATE, DELETE и MERGE — таблица и под
+// одноимённым CTE: её PostgreSQL ищет только в каталоге.
 func readRefs(tokens []sqlToken) sqlRefs {
 	scopes := []sqlScope{{}}
 	var refs sqlRefs
@@ -363,7 +369,7 @@ func readRefs(tokens []sqlToken) sqlRefs {
 				refs.calls = append(refs.calls, relName(prev))
 			}
 			// Скобка в позиции таблицы — подзапрос или соединение (a JOIN b): тот же список FROM.
-			inFrom := table && prev != "using"
+			inFrom := table && (prev != "using" || !cur.joined)
 			scopes, table, target = append(scopes, sqlScope{from: inFrom}), inFrom, false
 		case word == ")":
 			scopes, table, target = scopes[:max(len(scopes)-1, 1)], false, false
@@ -377,21 +383,29 @@ func readRefs(tokens []sqlToken) sqlRefs {
 			scopes, table, target = []sqlScope{{}}, false, false
 		case word == ",":
 			table, target = cur.from, false
-		case table && word != "only" && word != "lateral":
+		case table && word != "only" && word != "lateral" && word != "table":
 			if name := relName(word); target || strings.Contains(word, ".") || !slices.ContainsFunc(scopes, func(s sqlScope) bool { return slices.Contains(s.ctes, name) }) {
 				refs.tables = append(refs.tables, name)
 			}
 			table, target = false, false
 		case word == "with":
 			cur.with, cur.recursive = cteName, false
-		case word == "select" || word == "delete" || word == "perform":
-			cur.query, cur.from = true, false
+		case word == "select" || word == "delete" || word == "perform" || word == "merge":
+			cur.query, cur.from, cur.joined = true, false, false
 		case word == "values":
 			cur.from = false
 		case word == "from" && cur.query && prev != "distinct":
 			cur.from, table, target = true, true, prev == "delete"
-		case word == "join" || word == "into" || word == "using" || word == "update" && !slices.Contains(lockClauses, prev):
-			cur.query, table, target = true, true, word == "into" || word == "update"
+		case word == "into" && (prev == "insert" || prev == "merge"), word == "update" && !slices.Contains(lockClauses, prev):
+			cur.query, table, target = true, true, true
+		case word == "join":
+			cur.query, cur.joined, table = true, true, true
+		case word == "using":
+			cur.query, table = true, true
+		case word == "table" && slices.Contains(queryStarts, prev), (prev == "" || prev == ";") && (word == "truncate" || word == "lock"):
+			cur.query, cur.from, table = true, true, true
+		case (prev == "" || prev == ";") && word == "copy":
+			table = true
 		case slices.Contains(fromEnds, word):
 			cur.from = false
 		}
@@ -474,8 +488,8 @@ func version(name string) (uint64, bool) {
 	return v, err == nil
 }
 
-// sqlToken — слово SQL (в нижнем регистре, имя в кавычках — с кавычками, имя со схемой — через точку),
-// знак ( ) , ; или строка: у неё text — содержимое.
+// sqlToken — слово SQL (в нижнем регистре; имя в кавычках — с кавычками, как написано; имя со схемой —
+// через точку), знак ( ) , ; или строка: у неё text — содержимое.
 type sqlToken struct {
 	text string
 	str  bool
@@ -545,20 +559,22 @@ func statements(tokens []sqlToken) [][]sqlToken {
 	return append(all, tokens[start:])
 }
 
-// sqlName читает имя с позиции i: слово или имя в кавычках, со схемой через точку (и с пробелами вокруг
-// неё); возвращает его в нижнем регистре и позицию после него.
+// sqlName читает имя с позиции i: слово или имя в кавычках, со схемой через точку (и с пробелами и
+// комментариями вокруг неё); слово — в нижнем регистре, имя в кавычках — как написано (PostgreSQL их
+// различает), и позицию после имени.
 func sqlName(sql string, i int) (string, int) {
 	var name strings.Builder
 	for {
 		start := i
 		if sql[i] == '"' {
 			i = closingQuote(sql, i)
+			name.WriteString(sql[start:i])
 		} else {
 			for i < len(sql) && (isWordByte(sql[i]) || sql[i] == '$') {
 				i++
 			}
+			name.WriteString(strings.ToLower(sql[start:i]))
 		}
-		name.WriteString(strings.ToLower(sql[start:i]))
 		dot := skipSpaces(sql, i)
 		if dot >= len(sql) || sql[dot] != '.' {
 			return name.String(), i
@@ -610,7 +626,7 @@ func quoted(sql string, i int, escapes bool) (string, int) {
 // или знак.
 func dollarTag(s string) string {
 	j := 1
-	for j < len(s) && (s[j] == '_' || isLetter(s[j]) || j > 1 && isDigit(s[j])) {
+	for j < len(s) && (s[j] == '_' || isLetter(s[j]) || s[j] >= 0x80 || j > 1 && isDigit(s[j])) {
 		j++
 	}
 	if j < len(s) && s[j] == '$' {
@@ -656,9 +672,19 @@ func endOfComment(sql string, i int) int {
 	return len(sql)
 }
 
+// skipSpaces — позиция после пробелов и комментариев с позиции i.
 func skipSpaces(sql string, i int) int {
-	for i < len(sql) && strings.IndexByte(" \t\r\n", sql[i]) >= 0 {
-		i++
+	for i < len(sql) {
+		switch {
+		case strings.IndexByte(" \t\r\n", sql[i]) >= 0:
+			i++
+		case strings.HasPrefix(sql[i:], "--"):
+			i = endOfLine(sql, i)
+		case strings.HasPrefix(sql[i:], "/*"):
+			i = endOfComment(sql, i)
+		default:
+			return i
+		}
 	}
 	return i
 }

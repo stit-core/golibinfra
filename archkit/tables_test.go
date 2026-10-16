@@ -37,10 +37,16 @@ func TestOwnTables(t *testing.T) {
 		"delete under a cte of the same name": "WITH customers AS (SELECT customer_id AS id FROM orders) DELETE FROM customers WHERE id IN (SELECT id FROM customers);",
 		"merge under a cte of the same name": "WITH customers AS (SELECT customer_id AS id FROM orders) " +
 			"MERGE INTO customers c USING customers s ON c.id = s.id WHEN MATCHED THEN DELETE;",
-		"parenthesized join":       "SELECT c.email FROM (orders o JOIN customers c ON c.id = o.customer_id) WHERE o.id = $1;",
-		"parenthesized cross join": "SELECT c.email FROM (customers c CROSS JOIN orders o);",
-		"after another":            "SELECT id FROM orders WHERE id = $1;\n\n-- name: Owner :one\nSELECT email FROM customers WHERE id = $1;",
-		"alias named set":          "SELECT c.email FROM orders AS set, customers c WHERE c.id = set.customer_id;",
+		"parenthesized join":                "SELECT c.email FROM (orders o JOIN customers c ON c.id = o.customer_id) WHERE o.id = $1;",
+		"parenthesized cross join":          "SELECT c.email FROM (customers c CROSS JOIN orders o);",
+		"after another":                     "SELECT id FROM orders WHERE id = $1;\n\n-- name: Owner :one\nSELECT email FROM customers WHERE id = $1;",
+		"table shorthand":                   "TABLE customers;",
+		"truncate":                          "TRUNCATE orders, customers;",
+		"lock":                              "LOCK TABLE customers IN SHARE MODE;",
+		"delete using a parenthesized join": "DELETE FROM orders USING (customers c JOIN order_items i ON true) WHERE c.id = orders.customer_id;",
+		"comment between the schema and the name": "SELECT c.email FROM orders o JOIN public/**/.customers c ON c.id = o.customer_id;",
+		"quoted cte of another case":              `WITH "Customers" AS (SELECT 1 AS id) SELECT id FROM customers;`,
+		"alias named set":                         "SELECT c.email FROM orders AS set, customers c WHERE c.id = set.customer_id;",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -71,12 +77,12 @@ func TestOwnTables(t *testing.T) {
 			edits: edits{
 				"migrations/0003_tags.up.sql": "CREATE TABLE public.tags (id UUID PRIMARY KEY);\n" +
 					"CREATE TABLE \"public\".\"Labels\" (id UUID PRIMARY KEY);\ncreate table if not exists \"notes\" (id UUID PRIMARY KEY);\n",
-				orderQueries:    "SELECT id FROM tags;\nSELECT id FROM labels;\nSELECT id FROM notes;\n",
-				customerQueries: "SELECT id FROM tags;\nSELECT id FROM labels;\nSELECT id FROM notes;\n",
+				orderQueries:    "SELECT id FROM tags;\nSELECT id FROM \"Labels\";\nSELECT id FROM notes;\n",
+				customerQueries: "SELECT id FROM tags;\nSELECT id FROM \"Labels\";\nSELECT id FROM labels;\nSELECT id FROM NOTES;\n",
 			},
 			want: []string{
 				"table tags is queried by domains customer, order: " + whyTables,
-				"table labels is queried by domains customer, order: " + whyTables,
+				"table Labels is queried by domains customer, order: " + whyTables,
 				"table notes is queried by domains customer, order: " + whyTables,
 			},
 		},
@@ -211,7 +217,7 @@ func TestOwnTablesThroughSchemaObjects(t *testing.T) {
 		"temporary view":    {"CREATE TEMPORARY VIEW v AS SELECT * FROM customers;", "SELECT * FROM v;", "view v"},
 		"recursive view":    {"CREATE RECURSIVE VIEW v (id) AS SELECT id FROM customers UNION ALL SELECT id FROM v WHERE false;", "SELECT * FROM v;", "view v"},
 		"materialized view": {"CREATE MATERIALIZED VIEW IF NOT EXISTS v AS SELECT * FROM public.customers WITH NO DATA;", "SELECT * FROM v;", "view v"},
-		"quoted names":      {`create view "V" as select * from "public"."customers";`, "SELECT * FROM public.v;", "view v"},
+		"quoted names":      {`create view "V" as select * from "public"."customers";`, `SELECT * FROM public."V";`, "view V"},
 		"view over a view": {
 			"CREATE VIEW base AS SELECT * FROM customers;\nCREATE VIEW v AS SELECT * FROM base;", "SELECT * FROM v;", "view v",
 		},
@@ -269,6 +275,11 @@ func TestOwnTablesThroughSchemaObjects(t *testing.T) {
 			"CREATE FUNCTION f(uid UUID) RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n" +
 				"CREATE FUNCTION f(n int) RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;",
 			"SELECT f($1);", "function f",
+		},
+		"body with a non-ASCII dollar tag": {
+			"CREATE FUNCTION f() RETURNS bigint LANGUAGE plpgsql AS $тело$\nDECLARE n bigint;\nBEGIN\n" +
+				"  SELECT count(*) INTO n FROM customers;\n  RETURN n;\nEND;\n$тело$;",
+			"SELECT f();", "function f",
 		},
 		"view renamed": {
 			"CREATE VIEW v AS SELECT * FROM customers;\nALTER VIEW IF EXISTS v RENAME TO w;", "SELECT * FROM w;", "view w",
@@ -383,6 +394,16 @@ func TestOwnTablesThroughSchemaObjects(t *testing.T) {
 				orderQueries:             "SELECT * FROM v;\n",
 			},
 		},
+		// Переменная PL/pgSQL после SELECT … INTO и строка вне тела функции — не таблицы.
+		{
+			name: "variable and strings of a function",
+			edits: edits{
+				objects: "CREATE FUNCTION pending() RETURNS int LANGUAGE plpgsql AS $$\nDECLARE customers int;\nBEGIN\n" +
+					"    SELECT count(*) INTO customers FROM orders;\n    RETURN customers;\nEND\n$$;\n" +
+					"CREATE FUNCTION noted(note text DEFAULT 'SELECT 1 FROM customers') RETURNS int LANGUAGE sql AS $$ SELECT 1 $$;\n",
+				orderQueries: "SELECT pending(), noted();\n",
+			},
+		},
 		{
 			name: "trigger function",
 			edits: edits{objects: "CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$\nBEGIN\n    NEW.updated_at = NOW();\n" +
@@ -416,7 +437,7 @@ func TestQueriedTables(t *testing.T) {
 		{"INSERT INTO t1 (a, b) SELECT a, b FROM t2 RETURNING a, b", []string{"t1", "t2"}},
 		{"UPDATE t1 SET a = t2.a FROM t2 WHERE t1.id = t2.id", []string{"t1", "t2"}},
 		{"DELETE FROM t1 USING t2, t3 WHERE t1.id = t2.id", []string{"t1", "t2", "t3"}},
-		{`SELECT a FROM "public"."t1" JOIN public.t2 ON true JOIN "T3" ON true`, []string{"t1", "t2", "t3"}},
+		{`SELECT a FROM "public"."t1" JOIN public.t2 ON true JOIN "T3" ON true JOIN T4 ON true`, []string{"t1", "t2", "T3", "t4"}},
 		{"SELECT a FROM ONLY t1 JOIN LATERAL (SELECT b FROM t2) s ON true", []string{"t1", "t2"}},
 		{"SELECT TRIM(LEADING 'x' FROM a), SUBSTRING(a FROM 2), EXTRACT(day FROM b) FROM t1", []string{"t1"}},
 		{"SELECT a FROM t1 WHERE a IS DISTINCT FROM b AND c IS NOT DISTINCT FROM d", []string{"t1"}},
@@ -435,7 +456,24 @@ func TestQueriedTables(t *testing.T) {
 		{"WITH t1 AS (SELECT 1) MERGE INTO t1 USING t1 s ON true WHEN MATCHED THEN DELETE", []string{"t1"}},
 		{"WITH t1 AS (SELECT 1) UPDATE t2 SET a = 1 FROM t1", []string{"t2"}},
 		{"WITH t1 AS (SELECT 1) SELECT * FROM t1 FOR UPDATE", nil},
-		{`WITH "T1" AS (SELECT 1) SELECT * FROM t1, public.t1`, []string{"t1"}},
+		{`SELECT 'a\' FROM t1 WHERE b = 'c''d'`, []string{"t1"}},
+		{"SELECT $тег$ ; FROM t2 $тег$ FROM t1", []string{"t1"}},
+		{`SELECT "Select", "from" FROM t1`, []string{"t1"}},
+		{"SELECT count(*) INTO n FROM t1", []string{"t1"}},
+		{"INSERT INTO t1 SELECT * FROM t2 RETURNING id INTO v", []string{"t1", "t2"}},
+		{"TABLE t1", []string{"t1"}},
+		{"SELECT a FROM t1 UNION ALL TABLE t2", []string{"t1", "t2"}},
+		{"(TABLE t1) EXCEPT (TABLE t2)", []string{"t1", "t2"}},
+		{"WITH c AS (SELECT a FROM t1) TABLE c", []string{"t1"}},
+		{"TRUNCATE TABLE ONLY t1, t2 RESTART IDENTITY CASCADE", []string{"t1", "t2"}},
+		{"LOCK TABLE t1, t2 IN ACCESS EXCLUSIVE MODE", []string{"t1", "t2"}},
+		{"COPY t1 (a, b) FROM STDIN", []string{"t1"}},
+		{"SELECT copy, lock, truncate FROM t1", []string{"t1"}},
+		{"COPY (SELECT a FROM t1) TO STDOUT", []string{"t1"}},
+		{"DELETE FROM t1 USING (t2 JOIN t3 ON true) WHERE true", []string{"t1", "t2", "t3"}},
+		{"DELETE FROM t1 USING t2 JOIN t3 USING (id, t4)", []string{"t1", "t2", "t3"}},
+		{"MERGE INTO t1 USING (SELECT a FROM t2) s ON true WHEN NOT MATCHED THEN INSERT VALUES (1)", []string{"t1", "t2"}},
+		{`WITH "T1" AS (SELECT 1) SELECT * FROM t1, "T1", public.t1`, []string{"t1", "t1"}},
 		{"WITH RECURSIVE r(n) AS (SELECT 1 UNION ALL SELECT n + 1 FROM r) SELECT n FROM r", nil},
 		{"WITH RECURSIVE t1 AS (SELECT id FROM t1) SELECT id FROM t1", nil},
 		{"WITH a AS (SELECT 1), b AS (SELECT * FROM a, t1) SELECT * FROM b, a", []string{"t1"}},
@@ -455,7 +493,7 @@ func TestQueriedTables(t *testing.T) {
 		{"SELECT a FROM (VALUES (1, 2), (3, 4)) v(a, b), t1", []string{"t1"}},
 		{"SELECT a FROM t1 JOIN t2 USING (id, t3)", []string{"t1", "t2"}},
 		{"SELECT a FROM t1, LATERAL (SELECT b, c FROM t2) s", []string{"t1", "t2"}},
-		{`SELECT a FROM public . t1 JOIN "public" . "T2" ON true`, []string{"t1", "t2"}},
+		{`SELECT a FROM public . t1 JOIN "public" . "t2" ON true JOIN public/* c */./**/t3 ON true`, []string{"t1", "t2", "t3"}},
 		{"SELECT $$FROM t2$$, $x$ JOIN t3 $x$ FROM t1", []string{"t1"}},
 		{`SELECT 'FROM t2', E'it\'s FROM t3' FROM t1`, []string{"t1"}},
 		{"/* a /* b */ FROM t2 */ SELECT a FROM t1 -- JOIN t3\n", []string{"t1"}},
