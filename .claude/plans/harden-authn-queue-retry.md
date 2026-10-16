@@ -75,10 +75,13 @@ blocked-by: —
   (`bruteforcekit.Guard.Refund`) — одинаково в pgstore и фейке, без гонок; на копии шаблона с правкой входа (возврат на
   `ErrBusy`) жертвы с верным паролем под потоком входят без блокировок, а перебор упирается в guard после
   `MaxFailures` проверенных попыток. Проверка: `bruteforcetest.RunContract` (фейк и pgstore), `TestStore_RefundConcurrent` → PASS; эксперимент валидатора `TestValExp_Lockout*` — база: блокировки, ветка: 0
-- [ ] **AC8** — minor валидатора: два повтора подряд и срок токена повтора у конца сессии закреплены (мутанты V1, V3
+- [x] **AC8** — minor валидатора: два повтора подряд и срок токена повтора у конца сессии закреплены (мутанты V1, V3
   убиты), фейк при окне 0 и часах назад — как pgstore (V2 убит), параллельные повторы в окне фейк и pgstore проводят
   одинаково — все, живым остаётся один токен (VGA-04), пример «Логин» отвечает на отмену одинаково (VGA-05),
   `SESSION_RETRY_WINDOW` — не больше 5m и совет держать секунды (VGA-06). Проверка: `go test -race ./authnkit/session/... ./testkit/sessiontest/` → PASS, кейсы красные на `9d96d98`; мутанты V1–V3 → убиты
+  - Подтверждено: → PASS; на `9d96d98` красные `StrictReuseAfterClockStepBack` (фейк), `ConcurrentRetriesKeepTheSession`
+    и `TestStore_ConcurrentRetry` (pgstore), окно 6m проходит `Validate` (`N/g-auth/red-s6-base.log`, `red-s7-base.log`);
+    мутанты V1–V5, M1–M7 убиты (`N/g-auth/mut/`); пример «Логин» — одна ветка на ошибку проверки у обоих путей (S5)
 - [ ] **AC6** — доки и сигналы китов по факту: README и `docs/` authnkit и bruteforcekit, строки testkit и корневого
   README, `ErrBusy` и ответ на него (503, `Retry-After`, возврат попытки guard'а), `authn_password_busy_total`,
   `result="retry"`, `SESSION_RETRY_WINDOW`; «Handoff» — строки аннотации `v1.6.0` и шаги шаблона, сверенные с
@@ -140,8 +143,12 @@ blocked-by: —
     На `9d96d98` красные: фейк — `StrictReuseAfterClockStepBack`, pgstore — `ConcurrentRetriesKeepTheSession` и
     `TestStore_ConcurrentRetry` (`N/g-auth/red-s6-base.log`); мутанты валидатора V1–V3, свои V4–V5 и M1–M7 убиты
     (`N/g-auth/mut/vga-mutants.log`, `pgstore-mutants-s6.log`); `make check` → `✓ check clean (./...)`
-- [ ] **S7** — `SESSION_RETRY_WINDOW` не больше 5m и совет держать окно коротким (VGA-06)
+- [x] **S7** — `SESSION_RETRY_WINDOW` не больше 5m и совет держать окно коротким (VGA-06)
   - Проверка: `go test -race ./authnkit/session/ ./internal/envconf/` → PASS · Закрывает: AC8
+  - Сделано: `session.MaxRetryWindow` (5m) — потолок в `Validate` (ошибка называет переменную), строка
+    `SESSION_RETRY_WINDOW` в `configuration.md` — держать секунды и почему; на `9d96d98` окно 6m `Validate` пропускал
+    (`N/g-auth/red-s7-base.log`); `go test -race ./authnkit/session/ ./internal/envconf/` → PASS;
+    `make check` → `✓ check clean (./...)`
 - [ ] **S8** — эксперимент VGA-01 на копии шаблона с правкой входа (возврат на `ErrBusy`), «Handoff», гейт на чистом
   дереве
   - Проверка: `TestValExp_Lockout*` на копиях; `make gate-clean` → `✓ check clean (./...)` · Закрывает: AC7, AC6 · Зависит от: S5, S6, S7
@@ -240,13 +247,14 @@ Breaking:
 
 Поведение:
 - authnkit/session: `SESSION_RETRY_WINDOW` = 30s — повтор использованного refresh-токена в окне после его ротации,
-  пока преемник не использован, выдаёт нового преемника и гасит прежнего, а не отзывает сессию; `0` — прежняя строгость.
+  пока преемник не использован, выдаёт нового преемника и гасит прежнего, а не отзывает сессию (параллельные повторы —
+  по очереди, живым остаётся последний выданный); `0` — прежняя строгость.
 - authnkit/session/pgstore: `authn_session_rotations_total{result="retry"}` — честный повтор, `reused` его не считает.
 - authnkit: гистограммы `authn_password_*_duration_seconds` пишут только допущенные в очередь вычисления.
 
 Изменения:
 - authnkit: `ErrBusy` (`RetryAfter()` — 1 с), метрика `authn_password_busy_total`.
-- authnkit/session: `Config.RetryWindow` (`SESSION_RETRY_WINDOW`).
+- authnkit/session: `Config.RetryWindow` (`SESSION_RETRY_WINDOW`, не больше `MaxRetryWindow` — 5m).
 - testkit/authntest: `DeterministicHasher.Busy` — `ErrBusy` у `Hash`, `Verify` и `VerifyDummy`.
 - testkit/bruteforcetest: `Refund` у фейков, `Recorder.Refunds()`, контракт `RunContract(t, newGuard)`.
 
@@ -271,5 +279,6 @@ Breaking:
 
 ## Где мы сейчас
 Доводка по валидации (`N/validation-g-auth.md`, FAIL по VGA-01): S5 (возврат попытки `Guard.Refund`, VGA-05) и S6
-(VGA-02, VGA-03, VGA-04) закрыты. Следующий шаг — S7: `SESSION_RETRY_WINDOW` не больше 5m (VGA-06); затем S8 —
-эксперимент VGA-01 на копии шаблона, «Handoff», `make gate-clean`.
+(VGA-02, VGA-03, VGA-04) и S7 (VGA-06) закрыты, AC8 подтверждён. Следующий шаг — S8: эксперимент VGA-01 валидатора
+на копиях шаблона (база и ветка с правкой входа — возврат на `ErrBusy`), «Handoff», `make release-diff`,
+`make gate-clean`.

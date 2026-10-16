@@ -63,6 +63,7 @@ type ReusedError struct{ SessionID, Subject string } // errors.Is(err, ErrReused
 var ErrConfig, ErrInvalidSubject, ErrInvalid, ErrExpired, ErrReused, ErrInTx error
 func NewConfig() (Config, error) // SESSION_*
 func CheckSubject(subject string) error
+const MaxRetryWindow = 5 * time.Minute // потолок Config.RetryWindow (SESSION_RETRY_WINDOW)
 func pgstore.NewStore(cfg session.Config, db *pgkit.DB, opts ...pgstore.Option) (*pgstore.Store, error)
 func pgstore.WithClock(c clockkit.Clock) pgstore.Option
 func (s *pgstore.Store) Cleanup(ctx context.Context) error

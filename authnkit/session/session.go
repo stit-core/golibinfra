@@ -31,6 +31,10 @@ var (
 // вызывающего кода (индексная запись Postgres вместила бы и больше).
 const MaxSubjectLen = 255
 
+// MaxRetryWindow — потолок Config.RetryWindow: окно держит повтор родителя живого токена всё своё время, и вор с
+// последним использованным токеном забирает сессию до следующего обновления клиента — окну хватает секунд.
+const MaxRetryWindow = 5 * time.Minute
+
 // Token — выданный refresh-токен. Value отдаётся клиенту, хранилище держит только
 // его хеш (authnkit.HashToken).
 type Token struct {

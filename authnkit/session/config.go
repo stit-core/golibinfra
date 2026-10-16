@@ -38,8 +38,8 @@ func NewConfig() (Config, error) {
 }
 
 // Validate проверяет сроки; нарушение — ErrConfig. Нулевой Config отвергается:
-// сессия без срока жизни хуже упавшего старта. Окно повтора короче срока токена: повтор возможен, только пока жив
-// преемник, выданный ротацией.
+// сессия без срока жизни хуже упавшего старта. Окно повтора — не больше MaxRetryWindow и короче срока токена: повтор
+// возможен, только пока жив преемник, выданный ротацией.
 func (c Config) Validate() error {
 	switch {
 	case c.IdleTTL <= 0:
@@ -48,8 +48,9 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: SESSION_ABSOLUTE_TTL (%s) must be >= SESSION_IDLE_TTL (%s)", ErrConfig, c.AbsoluteTTL, c.IdleTTL)
 	case c.CleanupInterval <= 0:
 		return fmt.Errorf("%w: SESSION_CLEANUP_INTERVAL must be > 0, got %s", ErrConfig, c.CleanupInterval)
-	case c.RetryWindow < 0 || c.RetryWindow >= c.IdleTTL:
-		return fmt.Errorf("%w: SESSION_RETRY_WINDOW must be >= 0 and < SESSION_IDLE_TTL (%s), got %s", ErrConfig, c.IdleTTL, c.RetryWindow)
+	case c.RetryWindow < 0 || c.RetryWindow > MaxRetryWindow || c.RetryWindow >= c.IdleTTL:
+		return fmt.Errorf("%w: SESSION_RETRY_WINDOW must be within 0..%s and < SESSION_IDLE_TTL (%s), got %s",
+			ErrConfig, MaxRetryWindow, c.IdleTTL, c.RetryWindow)
 	}
 	return nil
 }

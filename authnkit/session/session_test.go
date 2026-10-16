@@ -13,7 +13,8 @@ func TestConfig_Validate(t *testing.T) {
 	t.Parallel()
 	for _, ok := range []session.Config{
 		{IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute},
-		{IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: time.Hour - time.Nanosecond},
+		{IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: session.MaxRetryWindow},
+		{IdleTTL: time.Minute, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: time.Minute - time.Nanosecond},
 	} {
 		if err := ok.Validate(); err != nil {
 			t.Fatalf("Validate(%+v) = %v", ok, err)
@@ -25,7 +26,8 @@ func TestConfig_Validate(t *testing.T) {
 		"absolute below idle":                {IdleTTL: 2 * time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute},
 		"no cleanup interval":                {IdleTTL: time.Hour, AbsoluteTTL: time.Hour},
 		"negative retry window":              {IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: -time.Second},
-		"retry window of the token lifetime": {IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: time.Hour},
+		"retry window of the token lifetime": {IdleTTL: time.Minute, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: time.Minute},
+		"retry window above the ceiling":     {IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: session.MaxRetryWindow + time.Nanosecond},
 	} {
 		if err := cfg.Validate(); !errors.Is(err, session.ErrConfig) {
 			t.Errorf("%s: Validate = %v, want ErrConfig", name, err)
