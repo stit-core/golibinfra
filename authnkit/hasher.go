@@ -32,7 +32,8 @@ var ErrPasswordTooLong = errors.New("authnkit: password too long")
 
 // ErrBusy — очередь вычислений Argon2id полна: Hash, Verify и VerifyDummy отказывают сразу, без ожидания слота и без
 // вычисления. Это перегрузка процесса, а не ошибка ввода: ответ на неё — 503 на любом пути проверки пароля, иначе отказ
-// под нагрузкой различал бы учётные записи; RetryAfter() ошибки (секунда) httpkit.ErrorMap ставит в Retry-After.
+// под нагрузкой различал бы учётные записи; RetryAfter() ошибки (секунда) httpkit.ErrorMap ставит в Retry-After, пока
+// ErrBusy — в цепочке ошибки ответа.
 var ErrBusy error = busyError{}
 
 // busyError — тип ErrBusy: значение сравнимо (errors.Is) и подсказывает, когда повторить.
