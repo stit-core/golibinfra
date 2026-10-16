@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -21,8 +22,11 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit/sessiontest"
 )
 
-// testConfig — сроки тестов хранилища: токен живёт час, сессия — три.
+// testConfig — сроки тестов хранилища: токен живёт час, сессия — три; окна повтора нет.
 var testConfig = session.Config{IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Hour, CleanupInterval: time.Hour}
+
+// windowConfig — testConfig с окном повтора в минуту.
+var windowConfig = session.Config{IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Hour, CleanupInterval: time.Hour, RetryWindow: time.Minute}
 
 var testStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
@@ -222,6 +226,20 @@ func TestStore_Metrics(t *testing.T) {
 		t.Fatalf("Revoke again: %v", err)
 	}
 	_, _ = s.Rotate(pgkit.WithTestTx(ctx), c.Value) // error: ErrInTx
+	retrying, err := pgstore.NewStore(windowConfig, db, pgstore.WithClock(clock))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	r, err := retrying.Issue(ctx, "metrics-retry")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	if _, err := retrying.Rotate(ctx, r.Value); err != nil { // ok
+		t.Fatalf("Rotate: %v", err)
+	}
+	if _, err := retrying.Rotate(ctx, r.Value); err != nil { // retry: повтор в окне, не reused
+		t.Fatalf("retry: %v", err)
+	}
 	clock.Advance(time.Hour)
 	_, _ = s.Rotate(ctx, c.Value) // expired
 	if err := s.RevokeAll(ctx, "metrics-user"); err != nil {
@@ -234,9 +252,10 @@ func TestStore_Metrics(t *testing.T) {
 		labels []string
 		value  float64
 	}{
-		{"authn_session_issued_total", []string{"result", "ok"}, 3},
+		{"authn_session_issued_total", []string{"result", "ok"}, 4},
 		{"authn_session_issued_total", []string{"result", "invalid"}, 1},
-		{"authn_session_rotations_total", []string{"result", "ok"}, 1},
+		{"authn_session_rotations_total", []string{"result", "ok"}, 2},
+		{"authn_session_rotations_total", []string{"result", "retry"}, 1},
 		{"authn_session_rotations_total", []string{"result", "reused"}, 1},
 		{"authn_session_rotations_total", []string{"result", "invalid"}, 2},
 		{"authn_session_rotations_total", []string{"result", "expired"}, 1},
@@ -314,5 +333,115 @@ func TestStore_ReuseRevokeSurvivesClientCancel(t *testing.T) {
 	}
 	if _, err := s.Rotate(bg, thief.Value); !errors.Is(err, session.ErrInvalid) {
 		t.Fatalf("the thief's token after the cancelled reuse: %v, want ErrInvalid — the session must be revoked", err)
+	}
+}
+
+// Регрессия RCOD-16: ответ ротации до клиента не дошёл — потребитель упал после Rotate (поиск пользователя) или
+// оборвалась сеть, и клиент повторяет тем же токеном. На дефолтах ENV кита это повтор в окне, а не кража: новый токен,
+// сессия жива; токен из потерянного ответа погашен — его предъявление отзывает сессию.
+func TestStore_RetryAfterLostResponse(t *testing.T) {
+	_, db := startDB(t)
+	cfg, err := session.NewConfig()
+	if err != nil {
+		t.Fatalf("NewConfig: %v", err)
+	}
+	clock := clockkit.NewTickable(testStart)
+	s, err := pgstore.NewStore(cfg, db, pgstore.WithClock(clock))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := t.Context()
+	first, err := s.Issue(ctx, "lost-response")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	lost, err := s.Rotate(ctx, first.Value)
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+
+	clock.Advance(2 * time.Second)
+	retried, err := s.Rotate(ctx, first.Value)
+	if err != nil || retried.SessionID != first.SessionID || retried.Value == lost.Value {
+		t.Fatalf("retry with the same token = %+v, %v; want a new token of session %s", retried, err, first.SessionID)
+	}
+	if _, err := s.Rotate(ctx, retried.Value); err != nil {
+		t.Fatalf("the session after the retry: %v, want it alive", err)
+	}
+	if _, err := s.Rotate(ctx, lost.Value); !errors.Is(err, session.ErrReused) {
+		t.Fatalf("the token of the lost response after the retry = %v, want ErrReused", err)
+	}
+}
+
+// liveTokens — токены сессии, которые ещё ротируются: не использованы, сессия не отозвана.
+func liveTokens(t *testing.T, db *pgkit.DB, sessionID string) []string {
+	t.Helper()
+	rows, err := db.Query(t.Context(), `
+		SELECT t.token_hash FROM authn_session_tokens t JOIN authn_sessions s ON s.id = t.session_id
+		WHERE s.id = $1 AND t.used_at IS NULL AND s.revoked_at IS NULL`, sessionID)
+	if err != nil {
+		t.Fatalf("live tokens: %v", err)
+	}
+	hashes, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		t.Fatalf("live tokens: %v", err)
+	}
+	return hashes
+}
+
+// В окне параллельные Rotate одним токеном не оставляют сессии двух живых токенов — ни из свежего токена (ротация и
+// повторы), ни из использованного (одни повторы): повтор гасит преемника, проигравший гонку повтор отзывает сессию.
+func TestStore_ConcurrentRetry(t *testing.T) {
+	_, db := startDB(t)
+	s, err := pgstore.NewStore(windowConfig, db, pgstore.WithClock(clockkit.NewTickable(testStart)))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := t.Context()
+	const rounds, n = 20, 8
+	for round := range rounds {
+		first, err := s.Issue(ctx, "concurrent-retry")
+		if err != nil {
+			t.Fatalf("Issue: %v", err)
+		}
+		if round%2 == 1 {
+			if _, err := s.Rotate(ctx, first.Value); err != nil {
+				t.Fatalf("Rotate: %v", err)
+			}
+		}
+		var (
+			wg     sync.WaitGroup
+			mu     sync.Mutex
+			issued = map[string]bool{}
+			reused int
+		)
+		start := make(chan struct{})
+		for range n {
+			wg.Go(func() {
+				<-start
+				next, err := s.Rotate(ctx, first.Value)
+				mu.Lock()
+				defer mu.Unlock()
+				switch {
+				case err == nil:
+					issued[authnkit.HashToken(next.Value)] = true
+				case errors.Is(err, session.ErrReused):
+					reused++
+				default:
+					t.Errorf("round %d: Rotate = %v, want a token or ErrReused", round, err)
+				}
+			})
+		}
+		close(start)
+		wg.Wait()
+		live := liveTokens(t, db, first.SessionID)
+		switch {
+		case len(issued) == 0:
+			t.Fatalf("round %d: no Rotate issued a token", round)
+		case len(live) > 1:
+			t.Fatalf("round %d: %d live tokens after %d parallel Rotate, want at most one", round, len(live), n)
+		case reused == 0 && (len(live) != 1 || !issued[live[0]]):
+			t.Fatalf("round %d: without a reuse the session keeps exactly one issued token, live %v", round, live)
+		}
 	}
 }

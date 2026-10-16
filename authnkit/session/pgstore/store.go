@@ -1,10 +1,11 @@
 // Package pgstore — session.Store поверх Postgres (pgkit): сессии в authn_sessions,
-// хеши refresh-токенов в authn_session_tokens, миграции кита, проверка схемы на
-// старте, cleanup-job и fx-проводка; метрики authn_session_*.
+// хеши refresh-токенов и их преемников в authn_session_tokens, миграции кита, проверка
+// схемы на старте, cleanup-job и fx-проводка; метрики authn_session_*.
 package pgstore
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -89,13 +90,13 @@ func (s *Store) Issue(ctx context.Context, subject string) (session.Token, error
 	return t, nil
 }
 
-// Условный UPDATE гасит токен, только если он жив; из параллельных ротаций строку
-// получает один, остальные видят used_at. Следующий токен вставляется тем же
-// оператором и не переживает абсолютный срок сессии.
+// Условный UPDATE гасит токен, только если он жив, и запоминает его преемника; из параллельных ротаций строку
+// получает один, остальные видят used_at. Следующий токен вставляется тем же оператором и не переживает абсолютный
+// срок сессии.
 const rotateSQL = `
 WITH used AS (
     UPDATE authn_session_tokens t
-    SET used_at = $3
+    SET used_at = $3, successor_hash = $2
     FROM authn_sessions s
     WHERE t.token_hash = $1
       AND s.id = t.session_id
@@ -110,30 +111,82 @@ SELECT $2, id, LEAST($4::timestamptz, expires_at), $3 FROM used
 RETURNING session_id, expires_at, (SELECT subject FROM used), (SELECT expires_at FROM used)
 `
 
-// Rotate гасит токен и выдаёт следующий в той же сессии; внутри транзакции из ctx —
-// session.ErrInTx.
+// Повтор в окне: токен использован позже $5 (начало окна), сессия жива, его преемник не использован. Преемник гаснет
+// условным UPDATE — из параллельных повторов его получает один, — и только тогда вставляется новый и родитель указывает
+// на него: живым остаётся один токен.
+const retrySQL = `
+WITH parent AS (
+    SELECT t.successor_hash, s.id, s.subject, s.expires_at
+    FROM authn_session_tokens t
+    JOIN authn_sessions s ON s.id = t.session_id
+    WHERE t.token_hash = $1
+      AND t.used_at > $5
+      AND s.revoked_at IS NULL
+      AND s.expires_at > $3
+),
+superseded AS (
+    UPDATE authn_session_tokens c
+    SET used_at = $3
+    FROM parent p
+    WHERE c.token_hash = p.successor_hash
+      AND c.used_at IS NULL
+    RETURNING c.session_id
+),
+repointed AS (
+    UPDATE authn_session_tokens t
+    SET successor_hash = $2
+    FROM superseded
+    WHERE t.token_hash = $1
+    RETURNING t.session_id
+)
+INSERT INTO authn_session_tokens (token_hash, session_id, expires_at, created_at)
+SELECT $2, p.id, LEAST($4::timestamptz, p.expires_at), $3 FROM parent p, repointed
+RETURNING session_id, expires_at, (SELECT subject FROM parent), (SELECT expires_at FROM parent)
+`
+
+// Rotate гасит токен и выдаёт следующий в той же сессии; повтор использованного токена в окне
+// session.Config.RetryWindow гасит его преемника и выдаёт нового; внутри транзакции из ctx — session.ErrInTx.
 func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, error) {
 	if pgkit.InTx(ctx) {
 		s.instr.rotate(ctx, resultError)
 		return session.Token{}, session.ErrInTx
 	}
 	now := s.now()
-	next := session.Token{Value: authnkit.NewToken()}
-	err := s.db.QueryRow(ctx, rotateSQL, authnkit.HashToken(refresh), authnkit.HashToken(next.Value),
-		now, now.Add(s.cfg.IdleTTL)).
-		Scan(&next.SessionID, &next.ExpiresAt, &next.Subject, &next.SessionExpiresAt)
-	if err == nil {
-		next.ExpiresAt, next.SessionExpiresAt = next.ExpiresAt.UTC(), next.SessionExpiresAt.UTC()
-		s.instr.rotate(ctx, resultOK)
-		return next, nil
+	result := resultOK
+	next, err := s.issueNext(ctx, rotateSQL, refresh, now)
+	if errors.Is(err, errNotIssued) && s.cfg.RetryWindow > 0 {
+		result = resultRetry
+		next, err = s.issueNext(ctx, retrySQL, refresh, now, now.Add(-s.cfg.RetryWindow))
 	}
-	if !pgkit.IsNoRows(err) {
-		s.instr.rotate(ctx, resultError)
+	switch {
+	case errors.Is(err, errNotIssued):
+		result, err = s.reject(ctx, refresh, now)
+	case err != nil:
+		result = resultError
+	}
+	s.instr.rotate(ctx, result)
+	return next, err
+}
+
+// errNotIssued — оператор ротации или повтора не нашёл подходящего токена: исход решает reject.
+var errNotIssued = errors.New("authnkit/session/pgstore: no token issued")
+
+// issueNext выполняет оператор ротации или повтора и отдаёт выданный им токен; без строки — errNotIssued.
+func (s *Store) issueNext(ctx context.Context, sql, refresh string, now time.Time, args ...any) (session.Token, error) {
+	next := session.Token{Value: authnkit.NewToken()}
+	err := s.db.QueryRow(ctx, sql, append([]any{
+		authnkit.HashToken(refresh), authnkit.HashToken(next.Value),
+		now, now.Add(s.cfg.IdleTTL),
+	}, args...)...).
+		Scan(&next.SessionID, &next.ExpiresAt, &next.Subject, &next.SessionExpiresAt)
+	switch {
+	case pgkit.IsNoRows(err):
+		return session.Token{}, errNotIssued
+	case err != nil:
 		return session.Token{}, fmt.Errorf("authnkit/session/pgstore: rotate: %w", err)
 	}
-	result, err := s.reject(ctx, refresh, now)
-	s.instr.rotate(ctx, result)
-	return session.Token{}, err
+	next.ExpiresAt, next.SessionExpiresAt = next.ExpiresAt.UTC(), next.SessionExpiresAt.UTC()
+	return next, nil
 }
 
 // revokeTimeout — срок отзыва сессии при повторе токена: он идёт мимо отмены ctx запроса.
@@ -148,9 +201,9 @@ WHERE t.token_hash = $1
 
 const revokeSessionSQL = `UPDATE authn_sessions SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL`
 
-// reject — исход токена, который не прошёл условный UPDATE ротации. Повтор
-// использованного токена отзывает сессию: его предъявил либо клиент, либо тот, кто
-// украл токен, и различить их нельзя.
+// reject — исход токена, который не прошёл ни ротацию, ни повтор в окне. Повтор использованного токена отзывает
+// сессию: вне окна, после использования преемника или погашенный повтором преемник его предъявил либо клиент, либо
+// тот, кто украл токен, и различить их нельзя.
 func (s *Store) reject(ctx context.Context, refresh string, now time.Time) (string, error) {
 	var (
 		sessionID, subject string

@@ -14,36 +14,52 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
-// contractConfig — сроки набора: токен живёт час, сессия — три.
-var contractConfig = session.Config{IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Hour, CleanupInterval: time.Hour}
+// contractConfig — сроки набора: токен живёт час, сессия — три, окно повтора — минута.
+var contractConfig = session.Config{IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Hour, CleanupInterval: time.Hour, RetryWindow: time.Minute}
+
+// strictConfig — сроки набора без окна повтора: любой повтор использованного токена отзывает сессию.
+var strictConfig = session.Config{IdleTTL: time.Hour, AbsoluteTTL: 3 * time.Hour, CleanupInterval: time.Hour}
 
 var contractStart = time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 
 // RunContract прогоняет контракт session.Store: newStore вызывается на каждый кейс и отдаёт
 // хранилище с переданными Config и часами (время двигает набор). Хранилище может
-// быть общим для кейсов — subject у каждого кейса свой.
+// быть общим для кейсов — subject у каждого кейса свой. Окно повтора у кейсов — минута, у кейсов
+// строгого режима (Strict…, ConcurrentRotateHasOneWinner) — ноль.
 func RunContract(t *testing.T, newStore func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store) {
 	t.Helper()
 	cases := []struct {
-		name string
-		run  func(t *testing.T, s session.Store, clock *clockkit.Tickable)
+		name   string
+		strict bool
+		run    func(t *testing.T, s session.Store, clock *clockkit.Tickable)
 	}{
-		{"IssueAndRotate", issueAndRotate},
-		{"ReuseRevokesSession", reuseRevokesSession},
-		{"ConcurrentRotateHasOneWinner", concurrentRotate},
-		{"AbsoluteDeadlineIsNotExtended", absoluteDeadline},
-		{"IdleTokenExpires", idleExpiry},
-		{"RevokeClosesSession", revokeClosesSession},
-		{"ConcurrentRevokeHasOneOwner", concurrentRevoke},
-		{"RevokeAllClosesSubjectSessions", revokeAll},
-		{"UnknownToken", unknownToken},
-		{"InvalidSubject", invalidSubject},
-		{"RotateRefusesTransaction", rotateInTx},
+		{"IssueAndRotate", false, issueAndRotate},
+		{"RetryInWindowIssuesNewSuccessor", false, retryInWindow},
+		{"RetryKillsPreviousSuccessor", false, retryKillsPreviousSuccessor},
+		{"ReuseOutsideWindowRevokesSession", false, reuseOutsideWindow},
+		{"ReuseAfterSuccessorUsedRevokesSession", false, reuseAfterSuccessorUsed},
+		{"RetryDoesNotReopenClosedSession", false, retryOfClosedSession},
+		{"RetryDoesNotOutliveSession", false, retryAfterAbsoluteDeadline},
+		{"ConcurrentRotateLeavesOneLiveToken", false, concurrentRotateInWindow},
+		{"StrictReuseRevokesSession", true, strictReuseRevokesSession},
+		{"ConcurrentRotateHasOneWinner", true, concurrentRotate},
+		{"AbsoluteDeadlineIsNotExtended", false, absoluteDeadline},
+		{"IdleTokenExpires", false, idleExpiry},
+		{"RevokeClosesSession", false, revokeClosesSession},
+		{"ConcurrentRevokeHasOneOwner", false, concurrentRevoke},
+		{"RevokeAllClosesSubjectSessions", false, revokeAll},
+		{"UnknownToken", false, unknownToken},
+		{"InvalidSubject", false, invalidSubject},
+		{"RotateRefusesTransaction", false, rotateInTx},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			cfg := contractConfig
+			if c.strict {
+				cfg = strictConfig
+			}
 			clock := clockkit.NewTickable(contractStart)
-			c.run(t, newStore(t, contractConfig, clock), clock)
+			c.run(t, newStore(t, cfg, clock), clock)
 		})
 	}
 }
@@ -77,6 +93,19 @@ func wantRotateErr(t *testing.T, s session.Store, refresh string, want error) {
 	}
 }
 
+// wantReused — Rotate отозвал сессию tok при повторе: *ReusedError с её сессией и владельцем.
+func wantReused(t *testing.T, s session.Store, refresh string, tok session.Token) {
+	t.Helper()
+	_, err := s.Rotate(t.Context(), refresh)
+	var reused *session.ReusedError
+	if !errors.As(err, &reused) || !errors.Is(err, session.ErrReused) {
+		t.Fatalf("Rotate(used) = %v, want *ReusedError", err)
+	}
+	if reused.SessionID != tok.SessionID || reused.Subject != tok.Subject {
+		t.Fatalf("ReusedError = %+v, want session %s of %s", reused, tok.SessionID, tok.Subject)
+	}
+}
+
 var tokenRe = regexp.MustCompile(`^[0-9a-f]{64}$`)
 
 func issueAndRotate(t *testing.T, s session.Store, clock *clockkit.Tickable) {
@@ -103,24 +132,137 @@ func issueAndRotate(t *testing.T, s session.Store, clock *clockkit.Tickable) {
 	mustRotate(t, s, next.Value)
 }
 
-// Использованный токен предъявил либо клиент, либо укравший его: сессия отзывается
-// целиком, и следующий токен цепочки тоже мёртв.
-func reuseRevokesSession(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+// Ответ ротации потерян (сбой потребителя после Rotate, обрыв сети): клиент повторяет тем же токеном в окне и
+// получает нового преемника той же сессии, сроки — как у ротации в момент повтора; сессия живёт дальше.
+func retryInWindow(t *testing.T, s session.Store, clock *clockkit.Tickable) {
+	subj := subject(t)
+	first := mustIssue(t, s, subj)
+	lost := mustRotate(t, s, first.Value)
+
+	clock.Advance(30 * time.Second)
+	retried := mustRotate(t, s, first.Value)
+	if retried.Value == lost.Value || retried.Value == first.Value || !tokenRe.MatchString(retried.Value) {
+		t.Fatalf("retry returned token %q, want a new 64-hex token", retried.Value)
+	}
+	if retried.SessionID != first.SessionID || retried.Subject != subj {
+		t.Fatalf("retry = %+v, want the same session %s of %s", retried, first.SessionID, subj)
+	}
+	if !retried.ExpiresAt.Equal(clock.Now().Add(time.Hour)) || !retried.SessionExpiresAt.Equal(first.SessionExpiresAt) {
+		t.Fatalf("retry deadlines = %s / %s", retried.ExpiresAt, retried.SessionExpiresAt)
+	}
+	mustRotate(t, s, mustRotate(t, s, retried.Value).Value)
+}
+
+// Повтор гасит прежнего преемника: живым остаётся один токен. Его предъявление — повтор (украл ли кто-то ответ или
+// преемника получил второй клиент), и сессия отзывается вместе с токеном повтора.
+func retryKillsPreviousSuccessor(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	previous := mustRotate(t, s, first.Value)
+	retried := mustRotate(t, s, first.Value)
+
+	wantReused(t, s, previous.Value, first)
+	wantRotateErr(t, s, retried.Value, session.ErrInvalid)
+}
+
+// Использованный токен вне окна предъявил либо клиент, либо укравший его: сессия отзывается
+// целиком, и следующий токен цепочки тоже мёртв; другие сессии владельца живы.
+func reuseOutsideWindow(t *testing.T, s session.Store, clock *clockkit.Tickable) {
 	subj := subject(t)
 	first := mustIssue(t, s, subj)
 	next := mustRotate(t, s, first.Value)
 
-	_, err := s.Rotate(t.Context(), first.Value)
-	var reused *session.ReusedError
-	if !errors.As(err, &reused) || !errors.Is(err, session.ErrReused) {
-		t.Fatalf("Rotate(used) = %v, want *ReusedError", err)
-	}
-	if reused.SessionID != first.SessionID || reused.Subject != subj {
-		t.Fatalf("ReusedError = %+v, want session %s of %s", reused, first.SessionID, subj)
-	}
+	clock.Advance(contractConfig.RetryWindow)
+	wantReused(t, s, first.Value, first)
 	wantRotateErr(t, s, next.Value, session.ErrInvalid)
 	other := mustIssue(t, s, subj)
 	mustRotate(t, s, other.Value)
+}
+
+// Преемник уже использован — цепочка ушла дальше, и старый токен в окне предъявляет не клиент, чей ответ потерян, а
+// второй держатель: сессия отзывается, живой токен цепочки мёртв.
+func reuseAfterSuccessorUsed(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	second := mustRotate(t, s, first.Value)
+	live := mustRotate(t, s, second.Value)
+
+	wantReused(t, s, first.Value, first)
+	wantRotateErr(t, s, live.Value, session.ErrInvalid)
+}
+
+// Окно не открывает закрытую сессию: выход или «выйти везде» после ротации делает повтор её старым токеном отказом.
+func retryOfClosedSession(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	next := mustRotate(t, s, first.Value)
+	if _, err := s.Revoke(t.Context(), next.Value); err != nil {
+		t.Fatalf("Revoke: %v", err)
+	}
+	wantReused(t, s, first.Value, first)
+	wantRotateErr(t, s, next.Value, session.ErrInvalid)
+}
+
+// Окно не продлевает сессию: повтор после её абсолютного срока — отказ, а не токен, с которым потребитель выдал бы
+// access-токен истёкшей сессии.
+func retryAfterAbsoluteDeadline(t *testing.T, s session.Store, clock *clockkit.Tickable) {
+	tok := mustIssue(t, s, subject(t))
+	for range 3 {
+		clock.Advance(50 * time.Minute)
+		tok = mustRotate(t, s, tok.Value)
+	}
+	clock.Advance(29*time.Minute + 30*time.Second)
+	mustRotate(t, s, tok.Value)
+	clock.Advance(45 * time.Second)
+	wantReused(t, s, tok.Value, tok)
+}
+
+// Параллельные ротации одним токеном в окне — повторы друг друга: каждый вызов — новый токен или повтор с отзывом
+// сессии, и живым после них остаётся не больше одного токена сессии.
+func concurrentRotateInWindow(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	const n = 8
+	var (
+		wg              sync.WaitGroup
+		mu              sync.Mutex
+		issued          []string
+		unexpectedError error
+	)
+	start := make(chan struct{})
+	for range n {
+		wg.Go(func() {
+			<-start
+			next, err := s.Rotate(context.Background(), first.Value)
+			mu.Lock()
+			defer mu.Unlock()
+			switch {
+			case err == nil:
+				issued = append(issued, next.Value)
+			case !errors.Is(err, session.ErrReused):
+				unexpectedError = err
+			}
+		})
+	}
+	close(start)
+	wg.Wait()
+	if len(issued) == 0 || unexpectedError != nil {
+		t.Fatalf("%d parallel Rotate in the window: %d issued, unexpected %v; want at least one token and only reuses besides", n, len(issued), unexpectedError)
+	}
+	live := 0
+	for _, tok := range issued {
+		if _, err := s.Rotate(t.Context(), tok); err == nil {
+			live++
+		}
+	}
+	if live > 1 {
+		t.Fatalf("%d of %d issued tokens still rotate, want at most one live token", live, len(issued))
+	}
+}
+
+// Без окна повтор использованного токена отзывает сессию сразу, даже если ответ ротации потерян.
+func strictReuseRevokesSession(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	next := mustRotate(t, s, first.Value)
+
+	wantReused(t, s, first.Value, first)
+	wantRotateErr(t, s, next.Value, session.ErrInvalid)
 }
 
 func concurrentRotate(t *testing.T, s session.Store, _ *clockkit.Tickable) {

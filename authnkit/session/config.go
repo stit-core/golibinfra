@@ -22,6 +22,10 @@ type Config struct {
 	// CleanupInterval — период job'а очистки истёкших сессий, который регистрирует
 	// pgstore.Module.
 	CleanupInterval time.Duration `envconfig:"SESSION_CLEANUP_INTERVAL" default:"1h"`
+	// RetryWindow — окно повтора: использованный токен, предъявленный не позже RetryWindow после его ротации, пока его
+	// преемник не использован, — повтор клиента, чей ответ потерян, а не кража: Rotate гасит преемника и выдаёт нового.
+	// 0 — окна нет, любой повтор отзывает сессию.
+	RetryWindow time.Duration `envconfig:"SESSION_RETRY_WINDOW" default:"30s"`
 }
 
 // NewConfig читает Config из ENV и валидирует его.
@@ -34,7 +38,8 @@ func NewConfig() (Config, error) {
 }
 
 // Validate проверяет сроки; нарушение — ErrConfig. Нулевой Config отвергается:
-// сессия без срока жизни хуже упавшего старта.
+// сессия без срока жизни хуже упавшего старта. Окно повтора короче срока токена: повтор возможен, только пока жив
+// преемник, выданный ротацией.
 func (c Config) Validate() error {
 	switch {
 	case c.IdleTTL <= 0:
@@ -43,6 +48,8 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: SESSION_ABSOLUTE_TTL (%s) must be >= SESSION_IDLE_TTL (%s)", ErrConfig, c.AbsoluteTTL, c.IdleTTL)
 	case c.CleanupInterval <= 0:
 		return fmt.Errorf("%w: SESSION_CLEANUP_INTERVAL must be > 0, got %s", ErrConfig, c.CleanupInterval)
+	case c.RetryWindow < 0 || c.RetryWindow >= c.IdleTTL:
+		return fmt.Errorf("%w: SESSION_RETRY_WINDOW must be >= 0 and < SESSION_IDLE_TTL (%s), got %s", ErrConfig, c.IdleTTL, c.RetryWindow)
 	}
 	return nil
 }

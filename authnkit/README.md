@@ -5,8 +5,9 @@ Argon2id (пароль — до `MaxPasswordLen`, 1024 байта), JWT sign/ver
 секрета (`HS256JWT`, go-jose; `JWT_ISSUER`, `JWT_AUDIENCE`, `JWT_PREVIOUS_SECRET`),
 TOTP-генератор по RFC 6238 (`TOTPGenerator`), одноразовые непрозрачные токены
 (`NewToken`, `HashToken`), in-process RBAC-реестр (`Registry`) и сессии
-refresh-токенов `authnkit/session` (ротация, отзыв сессии при повторе токена,
-абсолютный срок, отзыв всех сессий пользователя; хранилище — `session/pgstore`).
+refresh-токенов `authnkit/session` (ротация, окно повтора для клиента, чей ответ потерян, —
+`SESSION_RETRY_WINDOW`, отзыв сессии при прочем повторе токена, абсолютный срок, отзыв всех
+сессий пользователя; хранилище — `session/pgstore`).
 Login-flow, MFA enrollment и хранение секретов живут на стороне потребителя. Observability-by-default: эмитит исход верификаций
 JWT/TOTP, время хэширования/проверки пароля и отказы перегруженного хэшера.
 

@@ -14,9 +14,10 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
-// Store — in-memory session.Store с семантикой pgstore: те же сроки, ротация,
-// отзыв сессии при повторе токена и ErrInTx у Rotate в транзакции. Откат
-// транзакции фейк не видит: отзыв в транзакции проверяется на pgstore.
+// Store — in-memory session.Store с семантикой pgstore: те же сроки, ротация, окно повтора, отзыв сессии при
+// повторе токена и ErrInTx у Rotate в транзакции. Откат транзакции фейк не видит: отзыв в транзакции проверяется на
+// pgstore; параллельные Rotate одним токеном фейк проводит по очереди — каждый повтор в окне гасит преемника
+// предыдущего, — а pgstore на повторе, проигравшем гонку другому, отзывает сессию.
 type Store struct {
 	cfg   session.Config
 	clock clockkit.Clock
@@ -35,7 +36,8 @@ type fakeSession struct {
 type fakeToken struct {
 	sessionID string
 	expiresAt time.Time
-	used      bool
+	usedAt    time.Time // нулевое — токен не использован
+	successor string    // authnkit.HashToken преемника, выданного ротацией или повтором
 }
 
 var _ session.Store = (*Store)(nil)
@@ -90,7 +92,11 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	}
 	sess := s.sessions[tok.sessionID]
 	switch {
-	case tok.used:
+	case !tok.usedAt.IsZero():
+		if successor := s.tokens[tok.successor]; s.retry(tok, sess, successor, now) {
+			successor.usedAt = now
+			return s.next(tok, sess, now), nil
+		}
 		sess.revoked = true
 		return session.Token{}, &session.ReusedError{SessionID: tok.sessionID, Subject: sess.subject}
 	case sess.revoked:
@@ -98,7 +104,18 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	case !tok.expiresAt.After(now) || !sess.expiresAt.After(now):
 		return session.Token{}, session.ErrExpired
 	}
-	tok.used = true
+	tok.usedAt = now
+	return s.next(tok, sess, now), nil
+}
+
+// retry — повтор использованного tok в окне: не позже RetryWindow после ротации, сессия жива, преемник не использован.
+func (s *Store) retry(tok *fakeToken, sess *fakeSession, successor *fakeToken, now time.Time) bool {
+	return now.Sub(tok.usedAt) < s.cfg.RetryWindow && !sess.revoked && sess.expiresAt.After(now) &&
+		successor != nil && successor.usedAt.IsZero()
+}
+
+// next выдаёт преемника tok: срок — IdleTTL, не дальше срока сессии.
+func (s *Store) next(tok *fakeToken, sess *fakeSession, now time.Time) session.Token {
 	expiresAt := now.Add(s.cfg.IdleTTL)
 	if sess.expiresAt.Before(expiresAt) {
 		expiresAt = sess.expiresAt
@@ -110,8 +127,9 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 		ExpiresAt:        expiresAt,
 		SessionExpiresAt: sess.expiresAt,
 	}
-	s.tokens[authnkit.HashToken(next.Value)] = &fakeToken{sessionID: next.SessionID, expiresAt: next.ExpiresAt}
-	return next, nil
+	tok.successor = authnkit.HashToken(next.Value)
+	s.tokens[tok.successor] = &fakeToken{sessionID: next.SessionID, expiresAt: next.ExpiresAt}
+	return next
 }
 
 // Revoke закрывает сессию токена и отдаёт её владельца; неизвестный токен или закрытая

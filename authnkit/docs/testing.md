@@ -93,9 +93,23 @@ _, err := jwt.ParseAccess(ctx, tok) // ErrTokenExpired
 `Active(subject)` показывает, сколько сессий открыто после `RevokeAll`.
 `sessiontest.RunContract(t, newStore)` — общий контракт `session.Store`: его проходят и
 фейк, и `pgstore.Store`, так что поведение в юнит-тесте не расходится с продом (в том числе
-владелец из `Revoke` — только у вызова, закрывшего сессию).
+владелец из `Revoke` — только у вызова, закрывшего сессию, и окно повтора: повтор в окне —
+новый преемник, прежний погашен; вне окна, после использования преемника, у закрытой или
+истёкшей сессии — `ErrReused`). Окно у кейсов набора — минута (`Config.RetryWindow`), у
+кейсов строгого режима — ноль: `newStore` берёт `Config` кейса.
 Откат транзакции фейк не видит — `RevokeAll` в откатанной транзакции
-проверяется на pgstore.
+проверяется на pgstore. Параллельные `Rotate` одним токеном фейк проводит по очереди — каждый
+повтор в окне гасит преемника предыдущего, — а pgstore на повторе, проигравшем гонку другому,
+отзывает сессию: контракт держит общее — живым остаётся не больше одного токена.
+
+Сбой потребителя после `Rotate` (ответ клиенту не ушёл) и повтор тем же токеном:
+
+```go
+lost, _ := sessions.Rotate(ctx, tok.Value)        // ответ потерян
+clock.Advance(2 * time.Second)                     // меньше cfg.RetryWindow
+retried, err := sessions.Rotate(ctx, tok.Value)    // nil: новый преемник той же сессии
+_, err = sessions.Rotate(ctx, lost.Value)          // session.ErrReused: преемник погашен, сессия отозвана
+```
 
 `pgstore.Store` проверяется на Postgres из `testkit.StartPostgres` с миграциями
 кита; сроки — часами `pgstore.WithClock(clockkit.NewTickable(...))`, без `sleep`:

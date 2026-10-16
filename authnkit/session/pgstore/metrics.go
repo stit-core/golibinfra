@@ -13,6 +13,7 @@ import (
 // reason — у authn_session_revoked_total.
 const (
 	resultOK      = "ok"
+	resultRetry   = "retry"
 	resultInvalid = "invalid"
 	resultExpired = "expired"
 	resultReused  = "reused"
@@ -38,7 +39,7 @@ func newInstruments() *instruments {
 		issued: otelkit.Must(m.Int64Counter("authn_session_issued_total",
 			metric.WithDescription("Sessions opened by Issue, by result (ok|invalid|error)"))),
 		rotations: otelkit.Must(m.Int64Counter("authn_session_rotations_total",
-			metric.WithDescription("Refresh token rotations by result (ok|invalid|expired|reused|error)"))),
+			metric.WithDescription("Refresh token rotations by result (ok|retry|invalid|expired|reused|error)"))),
 		revoked: otelkit.Must(m.Int64Counter("authn_session_revoked_total",
 			metric.WithDescription("Sessions closed, by reason (logout|all|reused)"))),
 		cleanupDeleted: otelkit.Must(m.Int64Counter("authn_session_cleanup_deleted_total",

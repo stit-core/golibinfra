@@ -107,6 +107,7 @@ users — у каждого получателя свой `JWT_AUDIENCE`, у в�
 | `SESSION_IDLE_TTL` | `IdleTTL` | `time.Duration` | `168h` | Срок refresh-токена: ротация выдаёт следующий на тот же срок, но не дальше срока сессии (`168h` = 7 дней без входа — сессия истекла). `<= 0` → `session.ErrConfig`. |
 | `SESSION_ABSOLUTE_TTL` | `AbsoluteTTL` | `time.Duration` | `720h` | Срок сессии от входа; ротация его не продлевает (`720h` = 30 дней — затем вход заново). Меньше `SESSION_IDLE_TTL` → `session.ErrConfig`. |
 | `SESSION_CLEANUP_INTERVAL` | `CleanupInterval` | `time.Duration` | `1h` | Период job'а `authnkit.session.cleanup`, удаляющего сессии с истёкшим абсолютным сроком. `<= 0` → `session.ErrConfig`. |
+| `SESSION_RETRY_WINDOW` | `RetryWindow` | `time.Duration` | `30s` | Окно повтора: использованный refresh-токен, предъявленный не позже окна после его ротации, пока сессия жива и его преемник не использован, — повтор клиента, чей ответ потерян: `Rotate` гасит преемника и выдаёт нового, сессия жива. Окно покрывает повтор после 5xx и обрыва соединения; дольше окна — кража, сессия отозвана. `0` — окна нет (и в литерале `Config`). Отрицательное или не короче `SESSION_IDLE_TTL` → `session.ErrConfig`. |
 
 Нулевой `session.Config` отвергается `Validate`: сессия без срока жизни хуже
 упавшего старта.

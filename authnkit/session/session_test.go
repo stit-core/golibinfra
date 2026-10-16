@@ -11,15 +11,21 @@ import (
 
 func TestConfig_Validate(t *testing.T) {
 	t.Parallel()
-	ok := session.Config{IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute}
-	if err := ok.Validate(); err != nil {
-		t.Fatalf("Validate(%+v) = %v", ok, err)
+	for _, ok := range []session.Config{
+		{IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute},
+		{IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: time.Hour - time.Nanosecond},
+	} {
+		if err := ok.Validate(); err != nil {
+			t.Fatalf("Validate(%+v) = %v", ok, err)
+		}
 	}
 	for name, cfg := range map[string]session.Config{
-		"zero":                {},
-		"no idle":             {AbsoluteTTL: time.Hour, CleanupInterval: time.Minute},
-		"absolute below idle": {IdleTTL: 2 * time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute},
-		"no cleanup interval": {IdleTTL: time.Hour, AbsoluteTTL: time.Hour},
+		"zero":                               {},
+		"no idle":                            {AbsoluteTTL: time.Hour, CleanupInterval: time.Minute},
+		"absolute below idle":                {IdleTTL: 2 * time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute},
+		"no cleanup interval":                {IdleTTL: time.Hour, AbsoluteTTL: time.Hour},
+		"negative retry window":              {IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: -time.Second},
+		"retry window of the token lifetime": {IdleTTL: time.Hour, AbsoluteTTL: time.Hour, CleanupInterval: time.Minute, RetryWindow: time.Hour},
 	} {
 		if err := cfg.Validate(); !errors.Is(err, session.ErrConfig) {
 			t.Errorf("%s: Validate = %v, want ErrConfig", name, err)
@@ -33,7 +39,7 @@ func TestNewConfig_Defaults(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewConfig: %v", err)
 	}
-	if cfg.IdleTTL != 168*time.Hour || cfg.AbsoluteTTL != 720*time.Hour || cfg.CleanupInterval != time.Hour {
+	if cfg.IdleTTL != 168*time.Hour || cfg.AbsoluteTTL != 720*time.Hour || cfg.CleanupInterval != time.Hour || cfg.RetryWindow != 30*time.Second {
 		t.Fatalf("defaults = %+v", cfg)
 	}
 	t.Setenv("SESSION_ABSOLUTE_TTL", "1h")

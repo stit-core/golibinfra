@@ -53,12 +53,14 @@ Meter: `git.stit.tech/stit-core/golibinfra/authnkit/session`. Пишет хра�
 | Метрика | Тип | Unit | Labels | Назначение |
 |---|---|---|---|---|
 | `authn_session_issued_total` | Int64 Counter | — | `result` | Исход `Issue`: `ok`, `invalid` (`ErrInvalidSubject`), `error`. |
-| `authn_session_rotations_total` | Int64 Counter | — | `result` | Исход `Rotate`: `ok`, `invalid` (неизвестный токен или отозванная сессия), `expired`, `reused` (повтор использованного токена), `error` (в т.ч. `ErrInTx`). |
+| `authn_session_rotations_total` | Int64 Counter | — | `result` | Исход `Rotate`: `ok`, `retry` (повтор в окне `SESSION_RETRY_WINDOW`: новый преемник, прежний погашен), `invalid` (неизвестный токен или отозванная сессия), `expired`, `reused` (прочий повтор использованного токена — сессия отозвана), `error` (в т.ч. `ErrInTx`). |
 | `authn_session_revoked_total` | Int64 Counter | — | `reason` | Закрытые сессии: `logout` (`Revoke`), `all` (`RevokeAll`), `reused` (отзыв при повторе токена). Значение — число сессий. |
 | `authn_session_cleanup_deleted_total` | Int64 Counter | — | — | Сессии с истёкшим абсолютным сроком, удалённые `Cleanup`. |
 
 Рост `reused` — признак кражи refresh-токенов или клиента, который обновляет
-параллельно: алерт на него ставится первым.
+параллельно: алерт на него ставится первым. Одиночный повтор клиента, чей ответ
+потерян, в окне повтора — `retry`, не `reused`; рост `retry` без сбоев сервиса —
+сбои сети у клиентов или повторы украденных токенов в окне.
 
 Счётчики пишутся в момент вызова: `Issue` и `RevokeAll` в транзакции, которую
 вызывающий потом откатил, оставляют `issued_total{result="ok"}` и

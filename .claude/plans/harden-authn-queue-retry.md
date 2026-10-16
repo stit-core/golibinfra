@@ -49,10 +49,15 @@ blocked-by: —
   Проверка: `go test -race -run 'TestArgon2id_FullQueue|TestDeterministicHasher' ./authnkit/ ./testkit/authntest/` → PASS
   - Подтверждено: → PASS; в `TestArgon2id_FullQueueFailsFast` `VerifyDummy` и `Verify` пароля длиннее предела — `ErrBusy`
     (мутант «длинный пароль без ошибки холостого вычисления» убит), `TestDeterministicHasher_Busy` — тот же порядок исходов
-- [ ] **AC3** — RCOD-16: повтор `Rotate` тем же токеном не позже `SESSION_RETRY_WINDOW` (по умолчанию 30 с) после его
+- [x] **AC3** — RCOD-16: повтор `Rotate` тем же токеном не позже `SESSION_RETRY_WINDOW` (по умолчанию 30 с) после его
   ротации, пока преемник не использован, выдаёт нового преемника и гасит прежнего — сессия жива; повтор вне окна, после
   использования преемника и предъявление погашенного преемника — `*ReusedError` и отзыв сессии, как прежде. Проверка: `sessiontest.RunContract` на фейке и pgstore → PASS; проба `zz_gauth_session_probe_test.go` — база: повтор через 2 с — `ErrReused`, ветка: новый токен, три сценария кражи — `ErrReused`
-- [ ] **AC4** — параллельные `Rotate` одним токеном в окне не оставляют двух живых токенов сессии. Проверка: `go test -race -run 'TestStore_ConcurrentRetry' ./authnkit/session/pgstore/` → PASS
+  - Подтверждено: `TestStore_Contract` (pgstore) и `TestStore_Contract` фейка → PASS; проба — база: повтор через 2 с —
+    `ErrReused`, сессия отозвана; ветка: новый токен, сессия жива, токен потерянного ответа — `ErrReused`, три сценария
+    кражи — `ErrReused` (`N/g-auth/probe-session-*.log`); `TestStore_RetryAfterLostResponse` на базе — `ErrReused`
+- [x] **AC4** — параллельные `Rotate` одним токеном в окне не оставляют двух живых токенов сессии. Проверка: `go test -race -run 'TestStore_ConcurrentRetry' ./authnkit/session/pgstore/` → PASS
+  - Подтверждено: → PASS (`-count=3`, 20 раундов по 8 вызовов — из свежего и из использованного токена); мутант «повтор
+    гасит преемника без `used_at IS NULL`» им убит (`N/g-auth/mut/pgstore-mutants.log`)
 - [ ] **AC5** — эксперименты аудитора на копии шаблона: H2 (лимит `/api/auth/*` снят) — вход жертвы на базе секунды,
   на ветке не дольше очереди или отказ сразу; E3 — на базе `AUTH_REFRESH_REUSED` и закрытая сессия, на ветке — 200,
   сессия открыта, записи `refresh_reused` нет. Проверка: логи `N/g-auth/tpl-*.log`
@@ -71,9 +76,16 @@ blocked-by: —
     testkit и корневого README. `TestArgon2id_FullQueueFailsFast` → PASS, мутант «ожидание вместо отказа» убит; на базе
     регрессия красная — вызов ждал дедлайн 2 с (`N/g-auth/red-base.log`); `go test -short -race ./authnkit/...
     ./testkit/authntest/` → PASS; `make check` → `✓ check clean (./...)`
-- [ ] **S2** — authnkit/session: окно повтора ротации (RCOD-16) — `Config.RetryWindow` (`SESSION_RETRY_WINDOW`),
+- [x] **S2** — authnkit/session: окно повтора ротации (RCOD-16) — `Config.RetryWindow` (`SESSION_RETRY_WINDOW`),
   миграция `0002` (`successor_hash`), pgstore и фейк, кейсы `RunContract`, `result="retry"`, доки
   - Проверка: `go test -race ./authnkit/session/... ./testkit/sessiontest/` → PASS, регрессия на базе красная; проба R на ветке; `make check` → `✓ check clean (./...)` · Закрывает: AC3, AC4, AC6
+  - Сделано: `Config.RetryWindow` (`SESSION_RETRY_WINDOW`, 30s, `0 ≤ … < SESSION_IDLE_TTL`); миграция `0002`
+    (`successor_hash`); ротация пишет преемника, повтор в окне — один оператор (`retrySQL`), прочее — `reject`; фейк — то
+    же окно; контракт — семь кейсов окна и строгий режим, второй сломанный store (повтор не гасит преемника) проваливает
+    `RetryKillsPreviousSuccessor`; `result="retry"`; регрессия `TestStore_RetryAfterLostResponse`, `TestStore_ConcurrentRetry`;
+    доки кита, строки testkit, корневых README и SECURITY.md. Шесть мутантов SQL и пять мутантов фейка убиты
+    (`N/g-auth/mut/`); `go test -race ./authnkit/session/... ./testkit/sessiontest/ ./internal/envconf/` → PASS;
+    `make envdoc-check` → OK; `make check` → `✓ check clean (./...)`
 - [ ] **S3** — эксперименты аудитора H2 и E3 на копии шаблона (`git archive`): база `v1.5.0` и ветка через `replace`
   - Проверка: логи `N/g-auth/tpl-*.log` · Закрывает: AC1, AC3, AC5 · Зависит от: S1, S2
 - [ ] **S4** — «Handoff» сверен с `make release-diff PREV=v1.5.0`; гейт на чистом дереве
@@ -120,6 +132,14 @@ blocked-by: —
   очереди — каждый гасит преемника предыдущего; расхождение названо в доках.
 - `SESSION_RETRY_WINDOW` — 30 с по умолчанию, окно `0 ≤ … < SESSION_IDLE_TTL`: покрывает повтор после 5xx и обрыва
   соединения; ноль в литерале `Config` — строгий режим без окна, литералы потребителей поведения молча не меняют.
+- Повтор в окне у отозванной или истёкшей сессии — `*ReusedError`, как у любого использованного токена, а не
+  `ErrInvalid`/`ErrExpired`: порядок исходов прежний (использованный токен — первым), окно не меняет ничего, кроме
+  случая «сессия жива, преемник не использован». Честный повтор после «выйти везде» или на абсолютном сроке редок,
+  а исход контракт держит кейсами `RetryDoesNotReopenClosedSession` и `RetryDoesNotOutliveSession`.
+- Контракт `RunContract` берёт `Config` кейса: окно — минута, строгие кейсы (`StrictReuseRevokesSession`,
+  `ConcurrentRotateHasOneWinner`) — без окна; гонку повторов в окне pgstore держит своим тестом по базе
+  (`TestStore_ConcurrentRetry`), а контракт — общее для фейка и pgstore: не больше одного живого токена.
+- Чужие файлы: строка authnkit в корневых `README.md` (§ Пакеты) и `SECURITY.md` (§ Что в скоупе) — описание своего кита.
 
 ## Handoff
 ### Аннотация `v1.6.0` — authnkit
@@ -157,5 +177,6 @@ Breaking:
    `.env.example` (`SESSION_RETRY_WINDOW`), якоря `scripts/tools/mutants.txt` у правленого кода.
 
 ## Где мы сейчас
-S1 закрыт: хэшер отказывает при полной очереди (`ErrBusy`), AC1 и AC2 подтверждены. Следующий шаг — S2: окно повтора
-ротации refresh (`SESSION_RETRY_WINDOW`, миграция `0002`, pgstore, фейк, контракт, доки).
+S1 и S2 закрыты: хэшер отказывает при полной очереди (`ErrBusy`), повтор ротации в окне выдаёт нового преемника;
+AC1–AC4 подтверждены. Следующий шаг — S3: эксперименты аудитора H2 и E3 на копии шаблона (`git archive`), база
+`v1.5.0` и ветка через `replace`.
