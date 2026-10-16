@@ -11,7 +11,9 @@ blocked-by: —
 g-kits) и пункт `httpkit-kit-errors-contract`, добавленный дирижёром: ответы, которые httpkit отдаёт на операции
 сам (429 лимитера, 503 дедлайна, 413 лимита тела, 401 с `WWW-Authenticate`), описаны в контракте операций там и
 тогда, где кит их отдаёт, а короткоживущая команда вне fx получает логгер одной строкой `logkit` с тем же разбором
-`LOG_*`, что у графа с `logkit.Module`. Потребитель получает всё тегом `v1.6.0`.
+`LOG_*`, что у графа с `logkit.Module`. Находки валидатора трека закрываются до выпуска: хендлер операции исполняет
+то, что видят OpenAPI и проверка старта, — и в группе huma, ответы `Idempotency` — в контракте. Потребитель получает
+всё тегом `v1.6.0`.
 
 ## Контекст
 - Программа — `go-backend-template/.claude/plans/reaudit-to-nine.md` (S9, раздел «golibinfra — S9»): ветка
@@ -33,7 +35,11 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   отказа (у `FxLogger` — `WithStderrFallback`). `TestNewLog`: умолчания — логгер, `LOG_LEVEL=loud` — `ErrConfig`;
   `TestMainOnlyEnters` шаблона держит `main` без логики — логгер даёт один вызов.
 - Источники пунктов: `N/validation-s7-code.md`, `N/conductor.md` (поиск «429», «newLog»).
-- `httpkit-kit-errors-contract` (S4, поручение дирижёра): на `d0a8d42` кит отдаёт `413 BODY_TOO_LARGE` операции huma
+- Находки валидатора трека — `N/validation-g-kits.md` (VGK-01…06; пробы — `N/val-g-kits/probe/`); журнал второго
+  исполнителя — `N/g-kits2/progress.md`. VGK-01 был до трека: группа huma с префиксом (`PrefixModifier`) отдаёт
+  `DocumentOperation` и `Handle` разные копии операции, хуки `OnAddOperation` правят копию в OpenAPI, а хендлер (`opAdapter.Handle`,
+  `httpkit/routes.go`) получал копию без их правок — `Security` хука не проверялся, лимит тела `RawBody` не действовал.
+- `httpkit-kit-errors-contract` (S4, поручение дирижёра): на `b9b6889` кит отдаёт `413 BODY_TOO_LARGE` операции huma
   с телом под лимитом, `503 REQUEST_TIMEOUT` дедлайна (`httpkit/deadline.go`, кроме потока SSE), `503
   AUTH_UNAVAILABLE` от extractor'а схемы и `WWW-Authenticate` у 401 `HumaAuth` (`httpkit/middleware.go`), а
   `describeErrors` их не описывает; 401 он описывает и у операции с необязательной аутентификацией, где `HumaAuth`
@@ -88,7 +94,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   закоммиченного только ответами-ошибками кита: 429 `RATE_LIMITED` с `Retry-After` у операций без него, у
   `/api/auth/*` — прежнее описание 429 без повтора кода и `Retry-After`. Проверка: прогоны в `N/wt-g-kits-t`, итог —
   в «Подтверждено»
-  - Подтверждено: на `52fe6e8` (`N/g-kits/s5-template.log`, скрипт `N/g-kits/trial2/s5-check.sh`) — `go build
+  - Подтверждено: на `5b25826` (`N/g-kits/s5-template.log`, скрипт `N/g-kits/trial2/s5-check.sh`) — `go build
     ./...` → OK; меняются только ответы-ошибки: 429 `RATE_LIMITED` у 7 операций вне `/api/auth/*` (с `/health` и
     `/ready`), у 8 операций `/api/auth/*` описание 429 прежнее, у всех 429 — обязательный `Retry-After`; 503
     `REQUEST_TIMEOUT` у 15 операций, 413 `BODY_TOO_LARGE` у 7 операций с телом, `WWW-Authenticate` (`Cookie`) у 401
@@ -99,8 +105,8 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   маршрут мимо huma); `503 REQUEST_TIMEOUT` — при дедлайне запроса, кроме потока SSE; 401 `HumaAuth` с
   необязательным `WWW-Authenticate` (вызов схем операции) — только у операции huma с обязательной аутентификацией;
   `503 AUTH_UNAVAILABLE` объявляет таблица владельца схемы, кит код не повторяет. Проверка: `go test -race -run
-  TestErrorMap_DescribesKitResponses ./httpkit/` → PASS; на `d0a8d42` — FAIL
-  - Подтверждено: на `d0a8d42` тест красный — нет 413 и 503, у 401 нет `WWW-Authenticate`, у операции с `{}` 401
+  TestErrorMap_DescribesKitResponses ./httpkit/` → PASS; на `b9b6889` — FAIL
+  - Подтверждено: на `b9b6889` тест красный — нет 413 и 503, у 401 нет `WWW-Authenticate`, у операции с `{}` 401
     есть, кит отвечает 413 и 503 вне контракта (`N/g-kits/red-s4-kit-errors.log`); на ветке — PASS
     (`green-s4-kit-errors.log`); мутации K1–K11 (условия 401, 503 и 413, multipart, маршрут мимо huma, вызов и
     обязательность заголовка, код дедлайна) тест убивает (`N/g-kits/mutations.sh`, `mutations.log`)
@@ -109,7 +115,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   `/api/auth/*` в контракте 429 `RATE_LIMITED` (правило шаблона), у остальных 429 нет, а строгий лимит отвечает 429
   `RATE_LIMITED` с `Retry-After`; правки «Потребителю» на пробу — тесты шаблона зелёные. Проверка: прогоны в
   `N/wt-g-kits-t`, итог — в «Подтверждено»
-  - Подтверждено: на `52fe6e8` (`N/g-kits/s5-template.log`) — умолчания: как в AC5; `HTTP_RATE_LIMIT_RPS=0` при
+  - Подтверждено: на `5b25826` (`N/g-kits/s5-template.log`) — умолчания: как в AC5; `HTTP_RATE_LIMIT_RPS=0` при
     строгом лимите 1/1 (`middlewares` шаблона, проба `N/g-kits/trial2/zz_gkits_limit_test.go`): у 8 операций
     `/api/auth/*` 429 `RATE_LIMITED` с обязательным `Retry-After` из `authlimit.Rule`, у прочих 429 нет, строгий
     лимит отвечает 429 `RATE_LIMITED` с `Retry-After`; правки «Потребителю» (`N/g-kits/trial2/template-trial.patch`,
@@ -118,11 +124,29 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
 - [x] **AC8** — У `/ready` в контракте его собственный 503: тело готовности `ReadyBody` (`application/json`) и при
   дедлайне — `APIError` (`application/problem+json`) у одного ответа, описание `Service Unavailable: draining,
   unhealthy, REQUEST_TIMEOUT` без повтора кодов; ответы `/ready` (пауза остановки, проба down, дедлайн) — среди
-  описанных. Проверка: `go test -race -run TestErrorMap_DescribesReady503 ./httpkit/` → PASS; на `843c0c8` — FAIL
-  - Подтверждено: на `843c0c8` тест красный — у 503 `/ready` только `APIError` дедлайна, а `/ready` отвечает 503
+  описанных. Проверка: `go test -race -run TestErrorMap_DescribesReady503 ./httpkit/` → PASS; на `6790a5f` — FAIL
+  - Подтверждено: на `6790a5f` тест красный — у 503 `/ready` только `APIError` дедлайна, а `/ready` отвечает 503
     `application/json` `unhealthy` и `draining` (`N/g-kits/red-s6-ready.log`); на ветке — PASS; мутации R1–R4
     (статус тела, коды метаданных, `APIError` рядом с телом) тест убивает (`N/g-kits/mutations.log`, 28 из 28);
     шаблон на ветке: у `/ready` ответы 200, 429, 503 с обоими телами (`N/g-kits/s6-template.log`)
+- [x] **AC9** — Хендлер операции `huma.Register` исполняет её копию из OpenAPI — и у операции группы huma с префиксом:
+  `Security`, выставленный хуком `OnAddOperation` потребителя, закрывает её (401 без credentials, `WWW-Authenticate` —
+  вызов схем операции), тело режет лимит кита по её `MaxBodyBytes` — у `Body` и у `RawBody` (413); без группы — так
+  же. Проверка: `go test -race -run TestServer_GroupOperationRunsAsDocumented ./httpkit/` → PASS; на `47c78b9` — FAIL
+  - Подтверждено: на `47c78b9` тест красный — у `/v1/hooked` без credentials 204, у `/v1/raw` и `/v1/upload` с телом
+    сверх 64 B — 204 (`N/g-kits2/red-s7.log`); на ветке — PASS, без группы ответы те же (`green-s7.log`)
+- [ ] **AC10** — Контракт операции группы huma совпадает с её ответами: 413 описан там, где тело режет лимит — кита или
+  самой huma (тело `Body` операции группы huma читает по `MaxBodyBytes` литерала), и ответ на тело сверх него — 413;
+  пример `WWW-Authenticate` — заголовок ответа. Проверка: `go test -race -run TestErrorMap_DescribesKitResponses
+  ./httpkit/` → PASS; на коммите S7 — FAIL
+- [ ] **AC11** — Ответы `Idempotency` — в контракте операций, где она действует (store в графе, `POST`/`PUT`/`PATCH`
+  операции huma со схемой в `Security`): `409 IDEMPOTENCY_IN_PROGRESS`, `422 IDEMPOTENCY_KEY_REUSED`, при
+  `HTTP_IDEMPOTENCY_FAIL_CLOSED=true` — `503 IDEMPOTENCY_UNAVAILABLE`; тело сверх лимита с `Idempotency-Key` получает
+  тот же ответ, что без ключа (у multipart — 422), и доки говорят то же. Проверка: `go test -race -run
+  TestErrorMap_DescribesIdempotency ./httpkit/` → PASS; на коммите S8 — FAIL
+- [ ] **AC12** — Доки называют границы контракта: `docs/testing.md` — 503 нет у потока SSE, 413 — у multipart-формы;
+  Handoff — как описать 401 хендлера маршрута мимо huma. Проверка: `go test -race -run TestTestingDoc ./httpkit/` →
+  PASS; на коммите S9 — FAIL
 
 ## Шаги
 ### Киты
@@ -154,7 +178,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
 - [x] **S4** — httpkit: 413, 503 дедлайна и `WWW-Authenticate` у 401 — в контракте операций там, где кит их отдаёт;
   401 — только при обязательной аутентификации операции huma; `AUTH_UNAVAILABLE` — таблицей владельца схемы;
   остатки — в бэклог; коммит `fix(httpkit)!:`
-  - Проверка: новый тест на `d0a8d42` → FAIL, на ветке → PASS; мутации `N/g-kits/mutations.sh` убиты; `flock
+  - Проверка: новый тест на `b9b6889` → FAIL, на ветке → PASS; мутации `N/g-kits/mutations.sh` убиты; `flock
     N/gate.lock make check` → `✓ check clean (./...)`
   - Закрывает: AC6 · Зависит от: S1
   - Сделано: `describeErrors(cfg, registered)` — 503 `codeRequestTimeout` при `HTTP_REQUEST_TIMEOUT > 0` (кроме
@@ -173,13 +197,39 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
     обновлены; `make check` → `✓ check clean (./...)`
 - [x] **S6** — httpkit: собственный 503 `/ready` (`draining`, `unhealthy`) — в контракте операции рядом с
   `APIError` дедлайна; остаток `httpkit-ready-503-contract` снят с бэклога
-  - Проверка: новый тест на `843c0c8` → FAIL, на ветке → PASS; мутации убиты; `flock N/gate.lock make check` → `✓
+  - Проверка: новый тест на `6790a5f` → FAIL, на ветке → PASS; мутации убиты; `flock N/gate.lock make check` → `✓
     check clean (./...)`
   - Закрывает: AC8 · Зависит от: S4
   - Сделано: `RegisterHealth` объявляет 503 `/ready` с телом `ReadyBody` и статусами `draining`, `unhealthy` (константы
     — и в ответе, и в описании) через ключ кодов `Declare`; `kitResponse` кладёт `APIError` рядом с телом операции того
     же статуса; `TestErrorMap_DescribesReady503`; доки — `docs/architecture.md` (§ Контракт ошибок, § Health /
     readiness), `docs/usage.md`; проба шаблона — `N/g-kits/s6-template.log`; `make check` → `✓ check clean (./...)`
+
+### Находки валидатора трека
+- [x] **S7** — httpkit: хендлер операции из `huma.Register` исполняет её копию из OpenAPI, и в группе huma с префиксом
+  (VGK-01); коммит `fix(httpkit):`
+  - Проверка: новый тест на `47c78b9` → FAIL, на ветке → PASS; `go test -short -race ./httpkit/...
+    ./testkit/handlertest/...` → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
+  - Закрывает: AC9 · Зависит от: —
+  - Сделано: `opAdapter.Handle` строит контекст хендлера и дедлайн операции из копии, которую видят OpenAPI и
+    `CheckRoutes` (`documented`); `TestServer_GroupOperationRunsAsDocumented` — на `47c78b9` FAIL, на ветке PASS;
+    `docs/architecture.md` (§ Точки расширения, § Аутентификация); `make check` → `✓ check clean (./...)`
+- [ ] **S8** — httpkit: контракт операции группы совпадает с её ответами — лимит, с которым huma читает тело `Body`
+  группы, и лимит операции без `MaxBody` (VGK-02); коммит `fix(httpkit)!:`
+  - Проверка: тест на коммите S7 → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
+  - Закрывает: AC10 · Зависит от: S7
+- [ ] **S9** — httpkit: ответы `Idempotency` — в контракте операций, где она действует; тело сверх лимита с ключом — как
+  без него (VGK-03); коммит `fix(httpkit)!:`
+  - Проверка: новый тест на коммите S8 → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
+  - Закрывает: AC11 · Зависит от: S8
+- [ ] **S10** — доки и Handoff: оговорки SSE и multipart в `docs/testing.md`, подсказка миграции 401 маршрута мимо huma
+  (VGK-06)
+  - Проверка: новый тест на коммите S9 → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
+  - Закрывает: AC12 · Зависит от: S9
+- [ ] **S11** — запись мутаций трека — по правде: M3 под код S6, прогон отличает сборку от теста; AC8 (VGK-04)
+  - Проверка: `N/g-kits/mutations.sh` → M3 убита тестом (до правки — `BUILD`); `flock N/gate.lock make check` → `✓ check
+    clean (./...)`
+  - Закрывает: AC8 · Зависит от: S10
 
 ## Решения
 - Строки аннотации `v1.6.0` и «Потребителю» — подразделы `## Handoff`: так их берёт `/release` (профиль плана),
@@ -211,11 +261,12 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   и при `HTTP_RATE_LIMIT_RPS=0` его 429 держит в контракте только это правило (проба: ответ 429 остаётся). Дублирует
   кит лишь проверку `TestHTTPOperations` «429 только под `/api/auth/`»: с общим лимитером 429 у каждой операции
   объявляет кит, поэтому её граф собирается без общего лимитера, а сама проверка остаётся.
-- Сообщение коммита S1 переписано до публикации ветки (поручение дирижёра): футер `BREAKING CHANGE:` советует
-  оставить своё правило 429; `commit --fixup=reword` и `rebase --autosquash 90adb36` — деревья всех коммитов прежние
-  (`git rev-parse <коммит>^{tree}` до и после, `N/g-kits/trees-compare.txt`), хеши: `c84ebbc` → `ff5fc1c`, `402ed8c` →
-  `fa3a1c6`, `cc5fa17` → `d0a8d42`, `8719533` → `52fe6e8`, `6e3d584` → `843c0c8`; хеши в плане — новые, в журналах
-  `N/g-kits/` — прежние.
+- Сообщения коммитов переписаны до публикации ветки (`commit --fixup=reword`, `rebase -i --autosquash 90adb36`), деревья
+  всех коммитов прежние (`git rev-parse <коммит>^{tree}` до и после): S1 — футер `BREAKING CHANGE:` советует оставить
+  своё правило 429 (`N/g-kits/trees-compare.txt`); S3–S6 — ссылки на хеши до rebase заменены на `fa3a1c6` и «родитель»
+  (VGK-05, `N/g-kits2/trees-compare.txt`). S6 переписан сверх VGK-05: rebase меняет хеш S5, и его ссылка «на `843c0c8`»
+  повисла бы. Хеши в плане — нынешние, в журналах `N/g-kits/` — прежние: `c84ebbc` = `ff5fc1c`, `402ed8c` = `fa3a1c6`,
+  `cc5fa17`/`d0a8d42` = `b9b6889`, `8719533`/`52fe6e8` = `5b25826`, `6e3d584`/`843c0c8` = `6790a5f`, `6491b6b` = `47c78b9`.
 - Ответы кита — только там, где он их отдаёт: 401 и 413 — у операции huma (`Server.registered` — операция из
   `huma.Register` этого сервера); у маршрута мимо huma, описанного руками, 401 и 413 — ответы его хендлера
   (`HumaAuth` его не видит, тело режет `MaxBody`, а отвечает он сам); 429 и 503 дедлайна стоят в цепочке и у него.
@@ -243,6 +294,13 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   метод `Server.registered`.
 - S4 — `fix(httpkit)!`: контракт операций меняется (новые ответы, снятый 401 у необязательной аутентификации) —
   перегенерация контракта и тестов потребителя.
+- Хендлер операции из `huma.Register` исполняет её копию из OpenAPI (`documented`), а не копию адаптера (S7): у операции
+  без группы и у группы без префикса это один объект, у группы с префиксом копия адаптера не видит правок хуков, а
+  `HumaAuth`, лимит тела, `Idempotency`, transformer и дедлайн читают операцию из контекста. Отказ старта при
+  расхождении копий не выбран: исполняется копия из OpenAPI целиком, и расходиться нечему, кроме того, что huma читает из
+  литерала сама (лимит, с которым она читает тело, — S8).
+- S7 — `fix(httpkit):` без `!`: контракт не меняется (OpenAPI и `CheckRoutes` и так видели копию с правками хуков), а
+  исполнение доходит до него; 401 там, где хендлер отвечал анониму, — закрытый fail-open, а не смена API.
 
 ## Handoff
 ### Аннотация v1.6.0 — строки трека
@@ -259,6 +317,11 @@ Breaking:
   при `{}` и не у маршрута мимо huma); у `/ready` 503 — тело готовности (`ReadyBody`: `draining`, `unhealthy`) рядом
   с `APIError` дедлайна, `default` у него нет → перегенерировать контракт и тесты набора ответов; `503
   AUTH_UNAVAILABLE` своей схемы объявить правилом таблицы её операций (`Err: httpkit.ErrAuthUnavailable`).
+
+Поведение:
+- httpkit: хендлер операции группы huma с префиксом исполняет её копию из OpenAPI: `Security`, выставленный хуком
+  `OnAddOperation`, проверяется (401 без credentials), лимит тела кита — по её `MaxBodyBytes` и у `RawBody`, вызов 401 — по
+  схемам из `components`.
 
 Изменения:
 - logkit: `NewFromEnv()` — `Logger` команды вне fx из `LOG_*` и `LOG_REDACT_*`, как граф с `Module`; при
@@ -291,8 +354,7 @@ Breaking:
    (`Err: httpkit.ErrAuthUnavailable`); шаблону с локальным JWT не нужно.
 
 ## Где мы сейчас
-Шаги S1–S6 закрыты, критерии AC1–AC8 подтверждены: ответы кита (429, 503 дедлайна, 413, 401 с `WWW-Authenticate`,
-свой 503 `/ready`) — в контракте операций там, где кит их отдаёт, `logkit.NewFromEnv` — логгер команды одной строкой,
-шаблон на ветке проверен в обоих режимах лимитеров. План держит Handoff до выпуска `v1.6.0`: дирижёр после
-валидатора сливает ветку, переносит строки в аннотацию тега и закрывает план (`chore(plan):
-close-httpkit-logkit-gaps закрыт`).
+S1–S7 закрыты: ответы кита — в контракте, `logkit.NewFromEnv`, хендлер операции группы huma исполняет её копию из
+OpenAPI (VGK-01). Сообщения S3–S6 переписаны без хешей до rebase (VGK-05, «Решения»). Дальше — S8: контракт операции
+группы против лимита, с которым huma читает тело `Body` (у группы — по литералу), и лимит операции без `MaxBody`; затем
+S9 (Idempotency), S10 (доки), S11 (мутации). Слияние, аннотация `v1.6.0` и закрытие плана — дирижёр после валидатора.

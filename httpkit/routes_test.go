@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 )
 
 // startErr собирает граф с Module и возвращает ошибку сборки или старта; стартовавший граф
@@ -283,5 +285,77 @@ func TestPublic_KeepsCallerMetadata(t *testing.T) {
 	public := httpkit.Public(base)
 	if len(base.Metadata) != 1 || len(public.Metadata) != 2 || public.Metadata["k"] != "v" {
 		t.Fatalf("Public must copy metadata: base %v, public %v", base.Metadata, public.Metadata)
+	}
+}
+
+// Регрессия VGK-01: группа huma с префиксом отдаёт хендлеру свою копию операции, а хуки OnAddOperation правят копию
+// в OpenAPI. Хендлер исполняет ту, что видят OpenAPI и CheckRoutes: Security хука потребителя закрывает операцию
+// (401 с вызовом схемы, а не ответ хендлера), тело режет лимит кита — и у RawBody; без группы — так же.
+func TestServer_GroupOperationRunsAsDocumented(t *testing.T) {
+	jwt := httpkit.SecuritySchemeEntry{Name: "jwt", Scheme: bearerScheme, Extract: func(r *http.Request) (context.Context, error) {
+		if r.Header.Get("Authorization") != "Bearer ok" {
+			return nil, errors.New("no credentials")
+		}
+		return httpkit.ContextWithSubject(r.Context(), "u1"), nil
+	}}
+	secureHooked := httpkit.WithHumaConfig(func(c *huma.Config) {
+		c.OnAddOperation = append(c.OnAddOperation, func(_ *huma.OpenAPI, op *huma.Operation) {
+			if strings.HasSuffix(op.Path, "/hooked") {
+				op.Security = []map[string][]string{{"jwt": {}}}
+			}
+		})
+	})
+	cfg := testConfig(t, "127.0.0.1:0")
+	cfg.MaxBody.MaxBytes = 64
+	srv := mustServer(t, cfg, httpkit.WithSecuritySchemes(jwt), secureHooked)
+	api := srv.BindAPI()
+	type named struct {
+		Body struct {
+			Name string `json:"name"`
+		}
+	}
+	jwtOnly := []map[string][]string{{"jwt": {}}}
+	apis := []struct {
+		id, prefix string
+		api        huma.API
+	}{{"root", "", api}, {"v1", "/v1", huma.NewGroup(api, "/v1")}}
+	for _, a := range apis {
+		huma.Register(a.api, huma.Operation{OperationID: a.id + "-hooked", Method: http.MethodGet, Path: "/hooked"}, noBody)
+		huma.Register(a.api, huma.Operation{OperationID: a.id + "-raw", Method: http.MethodPost, Path: "/raw", Security: jwtOnly},
+			func(context.Context, *struct{ RawBody []byte }) (*struct{}, error) { return nil, nil })
+		huma.Register(a.api, huma.Operation{OperationID: a.id + "-upload", Method: http.MethodPost, Path: "/upload", Security: jwtOnly},
+			func(context.Context, *named) (*struct{}, error) { return nil, nil })
+	}
+	if err := srv.CheckRoutes(); err != nil {
+		t.Fatalf("CheckRoutes: %v", err)
+	}
+	serve := func(method, path, body string, headers ...string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(method, path, strings.NewReader(body))
+		for _, h := range headers {
+			name, value, _ := strings.Cut(h, ": ")
+			req.Header.Set(name, value)
+		}
+		rec := httptest.NewRecorder()
+		srv.Router().ServeHTTP(rec, req)
+		return rec
+	}
+	const auth, asJSON = "Authorization: Bearer ok", "Content-Type: application/json"
+	over := `{"name":"` + strings.Repeat("x", 100) + `"}`
+	for _, a := range apis {
+		t.Run(a.id+" Security of the hook", func(t *testing.T) {
+			resp := serve(http.MethodGet, a.prefix+"/hooked", "")
+			handlertest.AssertAPIError(t, resp, http.StatusUnauthorized, "UNAUTHORIZED")
+			if got := resp.Header().Get("WWW-Authenticate"); got != "Bearer" {
+				t.Errorf("WWW-Authenticate = %q, want the challenge of the scheme Bearer", got)
+			}
+			handlertest.AssertStatus(t, serve(http.MethodGet, a.prefix+"/hooked", "", auth), http.StatusNoContent)
+		})
+		t.Run(a.id+" RawBody over the limit", func(t *testing.T) {
+			handlertest.AssertAPIError(t, serve(http.MethodPost, a.prefix+"/raw", over, auth), http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE")
+		})
+		t.Run(a.id+" Body over the limit", func(t *testing.T) {
+			handlertest.AssertAPIError(t, serve(http.MethodPost, a.prefix+"/upload", over, auth, asJSON), http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE")
+			handlertest.AssertStatus(t, serve(http.MethodPost, a.prefix+"/upload", `{"name":"x"}`, auth, asJSON), http.StatusNoContent)
+		})
 	}
 }

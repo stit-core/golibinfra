@@ -104,12 +104,13 @@ type opAdapter struct {
 	log     logkit.Logger
 }
 
-// Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в replaced.
+// Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в replaced. Хендлер
+// операции из huma.Register исполняет её копию из OpenAPI (documented): группа huma с префиксом отдаёт
+// сюда другую копию, без правок хуков OnAddOperation — Security, лимита тела и вызова 401.
 func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
-	serve := func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(op, r, w)) }
 	documented := a.reg.claim(op)
 	if documented == nil {
-		a.router.MethodFunc(op.Method, op.Path, serve)
+		a.router.MethodFunc(op.Method, op.Path, func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(op, r, w)) })
 		return
 	}
 	route := op.Method + " " + routeKey(op.Path)
@@ -118,7 +119,8 @@ func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
 			a.reg.replaced = append(a.reg.replaced, fmt.Sprintf("route %s is registered before operation %s, which replaces it", route, operationName(documented)))
 		}
 	}
-	a.router.Method(op.Method, op.Path, opHandler{operationDeadline(a.timeout, a.log, op, serve)})
+	serve := func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(documented, r, w)) }
+	a.router.Method(op.Method, op.Path, opHandler{operationDeadline(a.timeout, a.log, documented, serve)})
 }
 
 // SanitizeInternalContext — опциональный интерфейс адаптера humachi (autopatch huma).
