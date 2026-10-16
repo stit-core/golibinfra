@@ -66,7 +66,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Подтверждено: на `90adb36` тест красный — у `ping`, `getMe`, `stream`, `/health`, `/ready` 429 нет, а лимитер
     отвечает `RATE_LIMITED` с `Retry-After: 1` (`N/g-kits/red-s1-429.log`); на ветке — PASS (`green-s1-429.log`);
     мутации M1–M9 (флаг лимитера, заголовок, повтор и порядок кода, `Responses == nil`, `Required`, минимум, код)
-    тест убивает (`N/g-kits/mutations.sh`, `mutations.log`)
+    тест убивает (`N/g-kits/mutations.sh`, прогон на `47c78b9` — `N/g-kits2/mutations-s6.log`)
 - [x] **AC2** — 429 не задваивается: таблица с 429 `RATE_LIMITED` (свой лимитер потребителя, как `authlimit.Rule`)
   при включённом лимитере даёт описание `Too Many Requests: RATE_LIMITED`, с другим кодом 429 — `Too Many Requests:
   AUTH_LOCKED, RATE_LIMITED` (коды таблицы — первыми); `Retry-After` — у каждого 429 операции. Проверка: тот же
@@ -83,7 +83,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Подтверждено: `TestNewFromEnv_ParsesLikeModule` (4 окружения — записи двух логгеров равны, окружение в них
     видно), `TestNewFromEnv_RejectsInvalidEnv` (8 случаев, и паттерн у выключенного redact),
     `TestNewFromEnv_SilentKeepsErrorsInStderr` → PASS (`N/g-kits/green-s2-logkit.log`); на `90adb36` `NewFromEnv` нет;
-    мутации L1–L4 (без `LOG_REDACT_*`, без stderr, без ошибок конфигов) тесты убивают (`N/g-kits/mutations.log`)
+    мутации L1–L4 (без `LOG_REDACT_*`, без stderr, без ошибок конфигов) тесты убивают (`N/g-kits2/mutations-s6.log`)
 - [x] **AC4** — Доки называют новое: README httpkit и `docs/` (контракт ошибок, `ErrorMap`, `RateLimitConfig`,
   тестирование), README logkit (без fx, API, `LOG_SILENT`, инварианты), строки индекса корневого README; сниппет
   `NewFromEnv` держит `readme_test.go`. Проверка: `make envdoc-check` → OK; `go test -run TestReadme ./logkit/` →
@@ -109,7 +109,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Подтверждено: на `b9b6889` тест красный — нет 413 и 503, у 401 нет `WWW-Authenticate`, у операции с `{}` 401
     есть, кит отвечает 413 и 503 вне контракта (`N/g-kits/red-s4-kit-errors.log`); на ветке — PASS
     (`green-s4-kit-errors.log`); мутации K1–K11 (условия 401, 503 и 413, multipart, маршрут мимо huma, вызов и
-    обязательность заголовка, код дедлайна) тест убивает (`N/g-kits/mutations.sh`, `mutations.log`)
+    обязательность заголовка, код дедлайна) тест убивает (`N/g-kits/mutations.sh`, `N/g-kits2/mutations-s6.log`)
 - [x] **AC7** — Шаблон на ветке (`go.work`) в обоих режимах: при умолчаниях `openapi.json` меняется только в
   ответах-ошибках, без повтора кодов; при `HTTP_RATE_LIMIT_RPS=0` и включённом строгом лимите у 8 операций
   `/api/auth/*` в контракте 429 `RATE_LIMITED` (правило шаблона), у остальных 429 нет, а строгий лимит отвечает 429
@@ -127,8 +127,10 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   описанных. Проверка: `go test -race -run TestErrorMap_DescribesReady503 ./httpkit/` → PASS; на `6790a5f` — FAIL
   - Подтверждено: на `6790a5f` тест красный — у 503 `/ready` только `APIError` дедлайна, а `/ready` отвечает 503
     `application/json` `unhealthy` и `draining` (`N/g-kits/red-s6-ready.log`); на ветке — PASS; мутации R1–R4
-    (статус тела, коды метаданных, `APIError` рядом с телом) тест убивает (`N/g-kits/mutations.log`, 28 из 28);
-    шаблон на ветке: у `/ready` ответы 200, 429, 503 с обоими телами (`N/g-kits/s6-template.log`)
+    (статус тела, коды метаданных, `APIError` рядом с телом) тест убивает; набор трека `N/g-kits/mutations.sh` (M3 —
+    под код S6, правка, которая не собирается, — `BUILD`, а не убита) на `47c78b9` — 28 из 28 убиты тестами
+    (`N/g-kits2/mutations-s6.log`; прежний M3 на этом коде не собирался — `mutations-s6-oldm3.log`); шаблон на ветке: у
+    `/ready` ответы 200, 429, 503 с обоими телами (`N/g-kits/s6-template.log`)
 - [x] **AC9** — Хендлер операции `huma.Register` исполняет её копию из OpenAPI — и у операции группы huma с префиксом:
   `Security`, выставленный хуком `OnAddOperation` потребителя, закрывает её (401 без credentials, `WWW-Authenticate` —
   вызов схем операции), тело режет лимит кита по её `MaxBodyBytes` — у `Body` и у `RawBody` (413); без группы — так
@@ -252,10 +254,15 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Сделано: `docs/testing.md` — таблица ответов кита по видам операций (SSE без 503, multipart и маршрут мимо huma без
     413, 401 — только при обязательной аутентификации) и оговорка про `Idempotency`; `TestTestingDoc_KitResponsesTable`
     сверяет таблицу с OpenAPI; в Handoff — как маршруту мимо huma описать свой 401; `make check` → `✓ check clean (./...)`
-- [ ] **S11** — запись мутаций трека — по правде: M3 под код S6, прогон отличает сборку от теста; AC8 (VGK-04)
+- [x] **S11** — запись мутаций трека — по правде: M3 под код S6, прогон отличает сборку от теста; AC8 (VGK-04)
   - Проверка: `N/g-kits/mutations.sh` → M3 убита тестом (до правки — `BUILD`); `flock N/gate.lock make check` → `✓ check
     clean (./...)`
   - Закрывает: AC8 · Зависит от: S10
+  - Сделано: в `N/g-kits/mutations.sh` M3 — `Retry-After` только при лимитере сервера (под код S6), правка без сборки —
+    `BUILD`, без якоря — `NOAPPLY`; на `47c78b9` прежний M3 — `BUILD`, набор — 28 из 28 убиты тестами; на голове ветки
+    27 и K5 `NOAPPLY` (якорь сменил S8), его аналог B11 и весь набор S7–S9 `N/g-kits2/scripts/mutate.sh` убиты, кроме
+    эквивалентной G2 (`N/g-kits2/mutations-head.log`); AC1, AC3, AC6, AC8 — на этот прогон; `make check` → `✓ check
+    clean (./...)`
 
 ## Решения
 - Строки аннотации `v1.6.0` и «Потребителю» — подразделы `## Handoff`: так их берёт `/release` (профиль плана),
@@ -352,6 +359,11 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   контракта; 413 и `400 BAD_BODY` `Idempotency` не отдаёт.
 - Оговорки `docs/testing.md` — таблицей, которую сверяет тест (S10), как таблицы сигналов `docs/observability.md`:
   утверждение прозой «у каждой операции 429 и 503, у операции с телом 413» разошлось с китом без отказа гейта.
+- Вне `httpkit/` и `logkit/` трек S7–S11 правит одну строку — индекс httpkit в корневом `README.md` (S9): перечень ответов
+  кита в OpenAPI называет и ответы `Idempotency`, как доки кита.
+- Мутации трека вне гейта: `N/g-kits/mutations.sh` (код S1–S6) и `N/g-kits2/scripts/mutate.sh` (S7–S9). Убитой считается
+  правка, которая собралась (`go vet` пакета) и уронила тесты: `BUILD` и `NOAPPLY` — отдельные итоги. G2 (дедлайн по
+  копии адаптера) — эквивалентная: `Responses` копий группы — одна карта, и признак потока у них один.
 
 ## Handoff
 ### Аннотация v1.6.0 — строки трека
@@ -423,8 +435,9 @@ Breaking:
    контракте при `make gen`.
 
 ## Где мы сейчас
-S1–S10 закрыты: ответы кита — в контракте, `logkit.NewFromEnv`, хендлер операции группы huma исполняет её копию из
-OpenAPI (VGK-01), лимит тела операции группы — в контракте по факту (VGK-02), ответы `Idempotency` — в контракте, тело
-сверх лимита с ключом — как без него (VGK-03), таблица ответов кита в `docs/testing.md` и подсказка 401 (VGK-06).
-Сообщения S3–S6 переписаны без хешей до rebase (VGK-05, «Решения»). Дальше — S11: M3 в `N/g-kits/mutations.sh` под код
-S6, прогон, отличающий сборку от теста, и AC8. Слияние, аннотация `v1.6.0` и закрытие плана — дирижёр после валидатора.
+Шаги S1–S11 закрыты, критерии AC1–AC12 подтверждены: ответы кита — в контракте, `logkit.NewFromEnv`, хендлер операции
+группы huma исполняет её копию из OpenAPI (VGK-01), лимит тела операции группы — в контракте по факту (VGK-02), ответы
+`Idempotency` — в контракте, тело сверх лимита с ключом — как без него (VGK-03), таблица ответов кита в `docs/testing.md`
+и подсказка 401 (VGK-06), запись мутаций — по правде (VGK-04), сообщения S3–S6 без хешей до rebase (VGK-05). План держит
+Handoff до выпуска `v1.6.0`: дирижёр после валидатора сливает ветку, переносит строки в аннотацию тега и закрывает план
+(`chore(plan): close-httpkit-logkit-gaps закрыт`).
