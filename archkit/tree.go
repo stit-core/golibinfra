@@ -54,7 +54,7 @@ type tree struct {
 	pkgImports map[string][]string // пакет → импорты его не-тестовых файлов
 	tables     []string            // таблицы приложения: CREATE TABLE в migrations/*.up.sql
 	views      map[string]sqlRefs  // представление из migrations/*.up.sql → к чему обращается
-	funcs      map[string]sqlRefs  // функция и процедура из migrations/*.up.sql → к чему обращается
+	funcs      map[string]funcDefs // функция и процедура из migrations/*.up.sql → перегрузки
 	queries    map[string]sqlRefs  // домен → к чему обращаются его infra/postgres/queries
 	ioChains   map[string][]string
 	seen       map[string]bool
@@ -81,7 +81,7 @@ func load(fsys fs.FS, o options) (*tree, error) {
 		opts:       o,
 		pkgImports: map[string][]string{},
 		views:      map[string]sqlRefs{},
-		funcs:      map[string]sqlRefs{},
+		funcs:      map[string]funcDefs{},
 		queries:    map[string]sqlRefs{},
 		types:      map[string]map[string]declared{},
 		ioChains:   map[string][]string{},

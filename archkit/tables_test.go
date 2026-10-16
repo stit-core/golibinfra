@@ -264,11 +264,16 @@ func TestOwnTablesThroughSchemaObjects(t *testing.T) {
 			"CREATE VIEW v AS SELECT * FROM customers;\nCREATE FUNCTION f(uid UUID) RETURNS TEXT AS $$ SELECT email FROM v WHERE id = uid $$ LANGUAGE sql;",
 			"SELECT f($1);", "function f",
 		},
-		// Определения одного имени из разных миграций складываются: правило не следит за DROP и OR REPLACE.
-		"function defined twice": {
-			"CREATE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n" +
-				"CREATE OR REPLACE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;",
-			"SELECT f();", "function f",
+		// Перегрузки складываются: вызов в запросе сигнатуру не выбирает.
+		"overload of another signature": {
+			"CREATE FUNCTION f(uid UUID) RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n" +
+				"CREATE FUNCTION f(n int) RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;",
+			"SELECT f($1);", "function f",
+		},
+		"overload left by DROP of another": {
+			"CREATE FUNCTION f(uid UUID) RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n" +
+				"CREATE FUNCTION f(n int) RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;\nDROP FUNCTION f(n int);",
+			"SELECT f($1);", "function f",
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -313,6 +318,36 @@ func TestOwnTablesThroughSchemaObjects(t *testing.T) {
 			name: "objects that no domain queries",
 			edits: edits{objects: "CREATE VIEW report AS SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id;\n" +
 				"CREATE FUNCTION report_count() RETURNS bigint AS $$ SELECT count(*) FROM orders JOIN customers ON true $$ LANGUAGE sql;\n"},
+		},
+		// Миграции читаются по порядку версий: OR REPLACE заменяет определение, DROP снимает.
+		{
+			name: "view and function replaced",
+			edits: edits{
+				objects: "CREATE VIEW v AS SELECT * FROM customers;\n" +
+					"CREATE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n",
+				"migrations/0004_fix.up.sql": "CREATE OR REPLACE VIEW v AS SELECT * FROM orders;\n" +
+					"CREATE OR REPLACE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;\n",
+				orderQueries: "SELECT * FROM v;\nSELECT f();\n",
+			},
+		},
+		{
+			name: "dropped and created again",
+			edits: edits{
+				objects: "CREATE MATERIALIZED VIEW v AS SELECT * FROM customers;\n" +
+					"CREATE FUNCTION f(uid UUID) RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n" +
+					"CREATE FUNCTION g() RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n",
+				"migrations/0004_fix.up.sql": "DROP MATERIALIZED VIEW IF EXISTS v CASCADE;\nDROP FUNCTION IF EXISTS f(uuid), g();\n" +
+					"CREATE VIEW v AS SELECT * FROM orders;\n",
+				orderQueries: "SELECT * FROM v;\nSELECT f($1), g();\n",
+			},
+		},
+		{
+			name: "migrations in version order",
+			edits: edits{
+				"migrations/9_v.up.sql":  "CREATE VIEW v AS SELECT * FROM customers;\n",
+				"migrations/10_v.up.sql": "CREATE OR REPLACE VIEW v AS SELECT * FROM orders;\n",
+				orderQueries:             "SELECT * FROM v;\n",
+			},
 		},
 		{
 			name: "trigger function",

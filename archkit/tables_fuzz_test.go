@@ -21,7 +21,7 @@ func FuzzSQL(f *testing.F) {
 				t.Fatalf("empty word in %q", sql)
 			}
 		}
-		schema := &tree{views: map[string]sqlRefs{}, funcs: map[string]sqlRefs{}}
+		schema := &tree{views: map[string]sqlRefs{}, funcs: map[string]funcDefs{}}
 		schema.readSchema(tokens)
 		schema.reach(readRefs(tokens))
 	})

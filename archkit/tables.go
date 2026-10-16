@@ -4,7 +4,10 @@ import (
 	"cmp"
 	"errors"
 	"io/fs"
+	"maps"
+	"path"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -22,6 +25,9 @@ var (
 
 // sqlRefs — к чему обращается SQL: имена в позиции таблицы (без имён CTE) и вызванные функции.
 type sqlRefs struct{ tables, calls []string }
+
+// funcDefs — перегрузки функции: сигнатура (слова скобок после имени) → к чему обращается определение.
+type funcDefs map[string]sqlRefs
 
 func (r sqlRefs) with(more sqlRefs) sqlRefs {
 	return sqlRefs{tables: slices.Concat(r.tables, more.tables), calls: slices.Concat(r.calls, more.calls)}
@@ -52,8 +58,9 @@ func (t *tree) loadSQL(fsys fs.FS, domains []string) error {
 	return nil
 }
 
-// readSchema запоминает, что объявляют операторы миграции: таблицы приложения, представления и функции
-// с тем, к чему обращаются их определения; тело DO читается так же.
+// readSchema читает операторы миграции по порядку: CREATE объявляет таблицу приложения, представление или
+// функцию с тем, к чему обращается её определение, DROP снимает представление и функцию; тело DO
+// читается так же.
 func (t *tree) readSchema(tokens []sqlToken) {
 	for _, st := range statements(tokens) {
 		if len(st) > 0 && keyword(st[0], "do") {
@@ -64,14 +71,19 @@ func (t *tree) readSchema(tokens []sqlToken) {
 			}
 			continue
 		}
-		if at := slices.IndexFunc(st, func(tok sqlToken) bool { return keyword(tok, "create") }); at >= 0 {
+		switch at := slices.IndexFunc(st, func(tok sqlToken) bool { return keyword(tok, "create", "drop") }); {
+		case at < 0:
+		case st[at].text == "create":
 			t.declareObject(st[at+1:])
+		default:
+			t.dropObjects(st[at+1:])
 		}
 	}
 }
 
 // declareObject разбирает объявление после CREATE: таблица — имя, представление и функция — имя и
-// обращения определения (определения одного имени из разных миграций складываются).
+// обращения определения. Определение заменяет прежнее того же имени (у функции — той же сигнатуры:
+// перегрузки складываются).
 func (t *tree) declareObject(st []sqlToken) {
 	i := 0
 	for i < len(st) && keyword(st[i], createModifiers...) {
@@ -91,10 +103,72 @@ func (t *tree) declareObject(st []sqlToken) {
 	case kind == "table" && !slices.Contains(t.tables, name):
 		t.tables = append(t.tables, name)
 	case kind == "view":
-		t.views[name] = t.views[name].with(readRefs(rest))
+		t.views[name] = readRefs(rest)
 	case kind == "function" || kind == "procedure":
-		t.funcs[name] = t.funcs[name].with(readRefs(functionBody(rest)))
+		if t.funcs[name] == nil {
+			t.funcs[name] = funcDefs{}
+		}
+		t.funcs[name][signature(rest)] = readRefs(functionBody(rest))
 	}
+}
+
+// dropObjects снимает представления и функции оператора DROP (перечень через запятую). Функция с
+// сигнатурой, которой нет среди её объявлений (DROP называет только типы), снимается со всеми
+// перегрузками. Таблицы правило не снимает: запрос к снятой таблице не собрал бы sqlc.
+func (t *tree) dropObjects(st []sqlToken) {
+	i := 0
+	if i < len(st) && keyword(st[i], "materialized") {
+		i++
+	}
+	if i >= len(st) || !keyword(st[i], "view", "function", "procedure") {
+		return
+	}
+	kind := st[i].text
+	for i++; i < len(st) && keyword(st[i], "if", "exists"); i++ {
+	}
+	for i < len(st) && !st[i].str && !keyword(st[i], "(", ")", ",", "cascade", "restrict") {
+		name, sig := relName(st[i].text), signature(st[i+1:])
+		switch _, exact := t.funcs[name][sig]; {
+		case kind == "view":
+			delete(t.views, name)
+		case exact:
+			delete(t.funcs[name], sig)
+		default:
+			delete(t.funcs, name)
+		}
+		i = afterParens(st, i+1)
+		if i < len(st) && keyword(st[i], ",") {
+			i++
+		}
+	}
+}
+
+// signature — сигнатура функции после её имени: слова скобок через пробел; "" — скобок нет.
+func signature(st []sqlToken) string {
+	end := afterParens(st, 0)
+	words := make([]string, 0, end)
+	for _, tok := range st[:end] {
+		words = append(words, tok.text)
+	}
+	return strings.Join(words, " ")
+}
+
+// afterParens — позиция после скобок, которые открывает st[i]; i — если там не скобка.
+func afterParens(st []sqlToken, i int) int {
+	if i >= len(st) || !keyword(st[i], "(") {
+		return i
+	}
+	for depth := 0; i < len(st); i++ {
+		switch {
+		case keyword(st[i], "("):
+			depth++
+		case keyword(st[i], ")"):
+			if depth--; depth == 0 {
+				return i + 1
+			}
+		}
+	}
+	return i
 }
 
 // functionBody — определение функции токенами: строка после AS (тело на SQL или PL/pgSQL) читается как SQL
@@ -154,9 +228,11 @@ func (t *tree) reach(refs sqlRefs) map[string]string {
 			}
 		}
 		for _, name := range refs.calls {
-			if def, ok := t.funcs[name]; ok && !expanded["function "+name] {
+			if overloads, ok := t.funcs[name]; ok && !expanded["function "+name] {
 				expanded["function "+name] = true
-				walk(def, cmp.Or(via, "function "+name))
+				for _, sig := range slices.Sorted(maps.Keys(overloads)) {
+					walk(overloads[sig], cmp.Or(via, "function "+name))
+				}
 			}
 		}
 	}
@@ -282,13 +358,14 @@ func relName(word string) string {
 	return strings.Trim(word[strings.LastIndex(word, ".")+1:], `"`)
 }
 
-// sqlFiles — токены каждого файла glob: файл — свой разбор, оборванная строка или комментарий
-// соседний файл не съедают.
+// sqlFiles — токены каждого файла glob в порядке версий: файл — свой разбор, оборванная строка или
+// комментарий соседний файл не съедают.
 func sqlFiles(fsys fs.FS, glob string) ([][]sqlToken, error) {
 	files, err := fs.Glob(fsys, glob)
 	if err != nil {
 		return nil, err
 	}
+	slices.SortFunc(files, byVersion)
 	var tokens [][]sqlToken
 	for _, f := range files {
 		data, err := fs.ReadFile(fsys, f)
@@ -298,6 +375,28 @@ func sqlFiles(fsys fs.FS, glob string) ([][]sqlToken, error) {
 		tokens = append(tokens, lexSQL(string(data)))
 	}
 	return tokens, nil
+}
+
+// byVersion — порядок файлов, в котором мигратор накатывает миграции: по номеру версии в начале имени (2
+// раньше 10), файл без номера — после, по имени.
+func byVersion(a, b string) int {
+	va, okA := version(path.Base(a))
+	vb, okB := version(path.Base(b))
+	switch {
+	case okA && okB && va != vb:
+		return cmp.Compare(va, vb)
+	case okA != okB && okA:
+		return -1
+	case okA != okB:
+		return 1
+	}
+	return strings.Compare(a, b)
+}
+
+// version — номер версии в начале имени файла миграции.
+func version(name string) (uint64, bool) {
+	v, err := strconv.ParseUint(name[:len(name)-len(strings.TrimLeft(name, "0123456789"))], 10, 64)
+	return v, err == nil
 }
 
 // sqlToken — слово SQL (в нижнем регистре, имя в кавычках — с кавычками, имя со схемой — через точку),
