@@ -70,6 +70,16 @@ const HeaderIdempotentReplayed = "Idempotent-Replayed"
 // заново, а не получает сохранённый отказ на HTTP_IDEMPOTENCY_TTL.
 var notExecuted = []int{http.StatusRequestTimeout, http.StatusConflict, http.StatusTooEarly, http.StatusTooManyRequests}
 
+// idempotentMethods — методы, запросы которых Idempotency дедуплицирует: её ответы объявляют операции этих методов.
+var idempotentMethods = []string{http.MethodPost, http.MethodPut, http.MethodPatch}
+
+// Коды ответов Idempotency: их же объявляет в OpenAPI операция, где она действует.
+const (
+	codeIdempotencyInProgress  = "IDEMPOTENCY_IN_PROGRESS"
+	codeIdempotencyKeyReused   = "IDEMPOTENCY_KEY_REUSED"
+	codeIdempotencyUnavailable = "IDEMPOTENCY_UNAVAILABLE"
+)
+
 const memorySweepEvery = time.Minute
 
 // memoryStoreMaxKeys — предел ключей MemoryStore: уникальные ключи клиентов не растят память
@@ -275,10 +285,12 @@ func storeCtx(parent context.Context, timeout time.Duration) (context.Context, c
 // её в цепочку huma после HumaAuth: replay получает только запрос, прошедший аутентификацию
 // операции. Ключ scope'ится субъектом, которого кладёт extractor схемы (ContextWithSubject).
 // Запрос без субъекта — аноним или клиент, чей extractor субъекта не положил, — идёт без
-// дедупликации и в store не пишет. Повтор с другим телом, путём, query или методом — 422,
-// параллельный повтор — 409. Кэшируются только ответы < 500, кроме 408, 409, 425 и 429, и не
-// больше scopeMaxKeys на субъекта за окно TTL: новый ключ сверх бюджета — как отказ store.
-// Ошибка store — строка лога и fail-open, если не задан FailClosed. nil-логгер — logkit.Nop().
+// дедупликации и в store не пишет, как и запрос, тело которого не легло в буфер (больше
+// MaxBodyBytes, сверх лимита тела, ошибка чтения): на тело ему отвечает handler, как без ключа.
+// Повтор с другим телом, путём, query или методом — 422, параллельный повтор — 409. Кэшируются
+// только ответы < 500, кроме 408, 409, 425 и 429, и не больше scopeMaxKeys на субъекта за окно
+// TTL: новый ключ сверх бюджета — как отказ store. Ошибка store — строка лога и fail-open, если
+// не задан FailClosed (503). nil-логгер — logkit.Nop().
 func Idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logger) func(http.Handler) http.Handler {
 	if log == nil {
 		log = logkit.Nop()
@@ -300,15 +312,13 @@ func idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 		if !cfg.FailClosed {
 			return false
 		}
-		writeAPIError(ctx, w, Unavailable("IDEMPOTENCY_UNAVAILABLE", ""))
+		writeAPIError(ctx, w, Unavailable(codeIdempotencyUnavailable, ""))
 		return true
 	}
 
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Method {
-			case http.MethodPost, http.MethodPut, http.MethodPatch:
-			default:
+			if !slices.Contains(idempotentMethods, r.Method) {
 				next.ServeHTTP(w, r)
 				return
 			}
@@ -328,16 +338,8 @@ func idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 				return
 			}
 
-			body, tooBig, err := bufferBody(r, cfg.MaxBodyBytes)
-			if err != nil {
-				if IsMaxBodyError(err) {
-					writeAPIError(ctx, w, Error(codeBodyTooLarge, http.StatusRequestEntityTooLarge, "request body too large"))
-					return
-				}
-				writeAPIError(ctx, w, BadRequest("BAD_BODY", "cannot read request body"))
-				return
-			}
-			if tooBig {
+			body, buffered := bufferBody(r, cfg.MaxBodyBytes)
+			if !buffered {
 				outcome(ctx, "skipped")
 				next.ServeHTTP(w, r)
 				return
@@ -383,7 +385,7 @@ func idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 					return
 				}
 				outcome(ctx, "in_progress")
-				writeAPIError(ctx, w, Error("IDEMPOTENCY_IN_PROGRESS", http.StatusConflict,
+				writeAPIError(ctx, w, Error(codeIdempotencyInProgress, http.StatusConflict,
 					"a request with this "+cfg.Header+" is still being processed"))
 				return
 			}
@@ -460,7 +462,7 @@ func humaMiddleware(mw func(http.Handler) http.Handler) func(huma.Context, func(
 func replay(ctx context.Context, w http.ResponseWriter, rec idempotencyRecord, fp, header string, outcome func(context.Context, string)) {
 	if rec.Fingerprint != fp {
 		outcome(ctx, "conflict")
-		e := Error("IDEMPOTENCY_KEY_REUSED", http.StatusUnprocessableEntity, header+" was already used with a different request")
+		e := Error(codeIdempotencyKeyReused, http.StatusUnprocessableEntity, header+" was already used with a different request")
 		e.Errors = []FieldError{{Location: "header." + header, Code: e.Code, Message: e.Detail}}
 		writeAPIError(ctx, w, e)
 		return
@@ -484,25 +486,23 @@ func loadRecord(ctx context.Context, store IdempotencyStore, key string) (idempo
 	return rec, true, nil
 }
 
-// bufferBody читает тело до limit; при переполнении тело восстанавливается
-// для сквозного выполнения, а идемпотентность для запроса пропускается.
-func bufferBody(r *http.Request, limit int64) ([]byte, bool, error) {
+// bufferBody читает тело до limit. Тело больше limit или прочитанное с ошибкой (сверх лимита тела,
+// обрыв) восстанавливается для сквозного выполнения — buffered=false, и идемпотентность для запроса
+// пропускается: ошибку чтения handler получит сам, как без ключа.
+func bufferBody(r *http.Request, limit int64) (body []byte, buffered bool) {
 	if r.Body == nil || r.Body == http.NoBody {
-		return nil, false, nil
+		return nil, true
 	}
 	buf, err := io.ReadAll(io.LimitReader(r.Body, limit+1))
-	if err != nil {
-		return nil, false, err
-	}
-	if int64(len(buf)) > limit {
+	if err != nil || int64(len(buf)) > limit {
 		r.Body = struct {
 			io.Reader
 			io.Closer
 		}{io.MultiReader(bytes.NewReader(buf), r.Body), r.Body}
-		return nil, true, nil
+		return nil, false
 	}
 	r.Body = io.NopCloser(bytes.NewReader(buf))
-	return buf, false, nil
+	return buf, true
 }
 
 // fingerprint покрывает метод, путь, канонизированный query и тело: `?dry_run=true`

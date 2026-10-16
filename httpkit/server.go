@@ -312,7 +312,7 @@ func (s *Server) bindAPI() {
 		fn(&humaConfig)
 	}
 	// Описание ошибок и вызов 401 — после хуков потребителя: их Security тоже объявляет 401.
-	describe := describeErrors(s.cfg, s.registered)
+	describe := describeErrors(s.cfg, s.opts.store != nil, s.registered)
 	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describe, authChallenge)
 	consumer := routeHandlers(s.router)
 	api := humachi.New(s.router, humaConfig)

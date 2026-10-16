@@ -14,7 +14,8 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 `request_id`), 429 — с `Retry-After`, 401 — с `WWW-Authenticate`; panic после начала
 ответа обрывает соединение. В OpenAPI операции — коды её таблицы `ErrorMap.Declare` и ответы,
 которые кит отдаёт сам, там, где он их отдаёт: 401 с `WWW-Authenticate`, `429 RATE_LIMITED` с
-`Retry-After`, `503 REQUEST_TIMEOUT` дедлайна и `413 BODY_TOO_LARGE`. При схеме
+`Retry-After`, `503 REQUEST_TIMEOUT` дедлайна, `413 BODY_TOO_LARGE` и ответы `Idempotency`
+(409, 422, 503 при `HTTP_IDEMPOTENCY_FAIL_CLOSED`). При схеме
 безопасности в графе открытость операции явная — `Security` или `httpkit.Public`; дубли маршрутов (и маршрут мимо huma на
 пути операции), забытая пометка и маршрут мимо huma — ошибка старта (`CheckRoutes`). `/health` и `/ready` (по пробам из
 fx-группы `healthkit.probes`; panic пробы — проба `down`) регистрируются автоматически.

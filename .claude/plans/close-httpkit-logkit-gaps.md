@@ -142,11 +142,16 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Подтверждено: на `d90f1bc` (S7) тесты красные — при `HTTP_MAX_BODY_BYTES=0` у `Body` группы 413 в ответе, но не в
     контракте, у `RawBody` группы с лимитом хука 64 B на 100 B — 204 (`N/g-kits2/red-s8.log`); на ветке — PASS
     (`green-s8.log`); мутации B1, B3–B10, G1 убиты, G2 — эквивалентная (`N/g-kits2/mutations-s8.log`)
-- [ ] **AC11** — Ответы `Idempotency` — в контракте операций, где она действует (store в графе, `POST`/`PUT`/`PATCH`
+- [x] **AC11** — Ответы `Idempotency` — в контракте операций, где она действует (store в графе, `POST`/`PUT`/`PATCH`
   операции huma со схемой в `Security`): `409 IDEMPOTENCY_IN_PROGRESS`, `422 IDEMPOTENCY_KEY_REUSED`, при
   `HTTP_IDEMPOTENCY_FAIL_CLOSED=true` — `503 IDEMPOTENCY_UNAVAILABLE`; тело сверх лимита с `Idempotency-Key` получает
   тот же ответ, что без ключа (у multipart — 422), и доки говорят то же. Проверка: `go test -race -run
-  TestErrorMap_DescribesIdempotency ./httpkit/` → PASS; на коммите S8 — FAIL
+  'TestErrorMap_DescribesIdempotency|TestIdempotency_UnbufferedBodyGoesToHandler' ./httpkit/` → PASS; на `6e3174e` — FAIL
+  - Подтверждено: на `6e3174e` (S8) тесты красные — 409 и 422 идемпотентности в ответе, но не в контракте, 503
+    `IDEMPOTENCY_UNAVAILABLE` при FailClosed — тоже, multipart с ключом сверх лимита — 413 (без ключа — 422), операция
+    без тела с ключом — 413 (без ключа — 204), недочитанное тело — 413 и 400 Idempotency (`N/g-kits2/red-s9.log`); на
+    ветке — PASS (`green-s9.log`); мутации I1–I10 убиты (`N/g-kits2/mutations-s9.log`); шаблон на ветке — контракт байт в
+    байт тот же, что с `47c78b9`, пробный патч «Потребителю» — `go test ./...` 23 ok (`N/g-kits2/template-s9.log`)
 - [ ] **AC12** — Доки называют границы контракта: `docs/testing.md` — 503 нет у потока SSE, 413 — у multipart-формы;
   Handoff — как описать 401 хендлера маршрута мимо huma. Проверка: `go test -race -run TestTestingDoc ./httpkit/` →
   PASS; на коммите S9 — FAIL
@@ -226,10 +231,16 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
     операции сам; группы — в `TestErrorMap_DescribesKitResponses`, `TestErrorMap_GroupBodyLimitWithoutMaxBody`; доки —
     `docs/configuration.md` (§ MaxBodyConfig), `docs/architecture.md` (§ Контракт ошибок); `make check` → `✓ check
     clean (./...)`
-- [ ] **S9** — httpkit: ответы `Idempotency` — в контракте операций, где она действует; тело сверх лимита с ключом — как
+- [x] **S9** — httpkit: ответы `Idempotency` — в контракте операций, где она действует; тело сверх лимита с ключом — как
   без него (VGK-03); коммит `fix(httpkit)!:`
-  - Проверка: новый тест на коммите S8 → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
+  - Проверка: новые тесты на `6e3174e` → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
   - Закрывает: AC11 · Зависит от: S8
+  - Сделано: `describeErrors(cfg, idempotent, registered)` объявляет 409, 422 и при FailClosed 503 `Idempotency` у
+    `POST`/`PUT`/`PATCH` операции huma со схемой в `Security`, коды — константы рядом с `Idempotency`, методы —
+    `idempotentMethods`; тело, которое не легло в буфер, идёт к операции без идемпотентности (`bufferBody`);
+    `TestErrorMap_DescribesIdempotency`, `TestIdempotency_UnbufferedBodyGoesToHandler`; доки — README httpkit и индекс
+    корневого README, `docs/{architecture,configuration,usage}.md`; шаблон на ветке — как в AC11; `make check` → `✓ check
+    clean (./...)`
 - [ ] **S10** — доки и Handoff: оговорки SSE и multipart в `docs/testing.md`, подсказка миграции 401 маршрута мимо huma
   (VGK-06)
   - Проверка: новый тест на коммите S9 → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
@@ -297,9 +308,8 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   метаданных, что у `Declare`, — и код дедлайна не повторяется; `APIError` дедлайна `kitResponse` кладёт рядом с
   телом, а не вместо него. У `/ready` три ответа (200, 429, 503), и `default` huma ему не добавляет — других ответов
   кит на `/ready` не отдаёт. Правка вне `errormap.go` — `httpkit/health.go`.
-- Код 413 — константа `codeBodyTooLarge` рядом с `MaxBody`, как `codeRateLimited`: её отдают huma (`codeForStatus`) и
-  `Idempotency` и объявляет хук. Вне `errormap.go` — по строке в `httpkit/{maxbody,error,idempotency,server}.go` и
-  метод `Server.registered`.
+- Код 413 — константа `codeBodyTooLarge` рядом с `MaxBody`, как `codeRateLimited`: её отдаёт huma (`codeForStatus`) и
+  объявляет хук. Вне `errormap.go` — по строке в `httpkit/{maxbody,error,server}.go` и метод `Server.registered`.
 - S4 — `fix(httpkit)!`: контракт операций меняется (новые ответы, снятый 401 у необязательной аутентификации) —
   перегенерация контракта и тестов потребителя.
 - Хендлер операции из `huma.Register` исполняет её копию из OpenAPI (`documented`), а не копию адаптера (S7): у операции
@@ -321,6 +331,18 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   группы: форму huma по нему не читает (`readsBody`).
 - S8 — `fix(httpkit)!`: у операций `Body` группы при `HTTP_MAX_BODY_BYTES=0` в контракте появляется 413 —
   перегенерация контракта.
+- Ответы `Idempotency` объявлены там, где она действует (S9): store в графе, запись (`POST`, `PUT`, `PATCH`) операции
+  huma и схема в `Security` — субъекта ключа кладёт extractor схемы, это условие подключения store (`docs/usage.md`);
+  при `{}` запрос с credentials тоже дедуплицируется. Коды — константы рядом с `Idempotency`, методы — один список
+  `idempotentMethods` у middleware и хука. Заголовок ключа кит не описывает: операция, которой клиент его шлёт,
+  объявляет его своим входом.
+- Тело, которое не легло в буфер `Idempotency` (сверх лимита тела, ошибка чтения), идёт к операции без
+  идемпотентности, как тело больше `HTTP_IDEMPOTENCY_MAX_BODY_BYTES` (S9): ключ не меняет ответ — у multipart-формы 422,
+  у операции без тела её ответ, у остальных 413 самой операции. Описывать 413 `Idempotency` не выбрано: он зависел бы
+  от отношения `HTTP_MAX_BODY_BYTES` к `HTTP_IDEMPOTENCY_MAX_BODY_BYTES` и был бы у операции без тела, которая тело не
+  читает; `400 BAD_BODY` ушёл тем же путём — на недочитанное тело отвечает операция (huma — 500 или 408).
+- S9 — `fix(httpkit)!`: у записи под `Security` при store в контракте появляются 409, 422 и 503 — перегенерация
+  контракта; 413 и `400 BAD_BODY` `Idempotency` не отдаёт.
 
 ## Handoff
 ### Аннотация v1.6.0 — строки трека
@@ -342,11 +364,18 @@ Breaking:
   (`MaxBodyBytes` литерала, по умолчанию 1 MiB), и при `HTTP_MAX_BODY_BYTES=0` → перегенерировать контракт; лимит такой
   операции выше 1 MiB или без предела — `MaxBodyBytes: -1` в литерале.
 
+- httpkit: при `IdempotencyStore` в графе у операций huma `POST`/`PUT`/`PATCH` со схемой в `Security` в OpenAPI —
+  `409 IDEMPOTENCY_IN_PROGRESS`, `422 IDEMPOTENCY_KEY_REUSED`, при `HTTP_IDEMPOTENCY_FAIL_CLOSED=true` — `503
+  IDEMPOTENCY_UNAVAILABLE` → перегенерировать контракт; заголовок ключа операция объявляет своим входом сама.
+
 Поведение:
 - httpkit: хендлер операции группы huma с префиксом исполняет её копию из OpenAPI: `Security`, выставленный хуком
   `OnAddOperation`, проверяется (401 без credentials), лимит тела кита — по её `MaxBodyBytes` и у `RawBody`, вызов 401 — по
   схемам из `components`.
 - httpkit: лимит тела операции из хука кит режет и при `HTTP_MAX_BODY_BYTES=0`: у операции группы huma его не видит huma.
+- httpkit: тело, которое `Idempotency` не прочла в буфер (сверх лимита тела, ошибка чтения), идёт к операции без
+  идемпотентности (`http_idempotency_total{result="skipped"}`), и она отвечает, как без ключа: 413, у multipart-формы —
+  422, у операции без тела — своим ответом; `413` и `400 BAD_BODY` `Idempotency` не отдаёт.
 
 Изменения:
 - logkit: `NewFromEnv()` — `Logger` команды вне fx из `LOG_*` и `LOG_REDACT_*`, как граф с `Module`; при
@@ -377,9 +406,14 @@ Breaking:
    снять `golibinfra-httpkit-429` и `golibinfra-logkit-env`.
 5. Схема с бэкендом (JWKS, хаб) объявляет `503 AUTH_UNAVAILABLE` правилом таблицы своих операций
    (`Err: httpkit.ErrAuthUnavailable`); шаблону с локальным JWT не нужно.
+6. Строки S7–S9 (группы huma, ответы `Idempotency`) шаблону правок не требуют: групп huma и `IdempotencyStore` в графе
+   `cmd/api` у него нет — `openapi.json` с веткой байт в байт тот же, что с `47c78b9`, а пп. 2–3 на пробу зелёные
+   (`N/g-kits2/template-s9.log`, шаблон `fb7594c`). Форк со store в графе получает 409, 422 и 503 идемпотентности в
+   контракте при `make gen`.
 
 ## Где мы сейчас
-S1–S8 закрыты: ответы кита — в контракте, `logkit.NewFromEnv`, хендлер операции группы huma исполняет её копию из
-OpenAPI (VGK-01), лимит тела операции группы — в контракте по факту (VGK-02). Сообщения S3–S6 переписаны без хешей до
-rebase (VGK-05, «Решения»). Дальше — S9: ответы `Idempotency` в контракте и тело сверх лимита с ключом — как без него;
-затем S10 (доки), S11 (мутации). Слияние, аннотация `v1.6.0` и закрытие плана — дирижёр после валидатора.
+S1–S9 закрыты: ответы кита — в контракте, `logkit.NewFromEnv`, хендлер операции группы huma исполняет её копию из
+OpenAPI (VGK-01), лимит тела операции группы — в контракте по факту (VGK-02), ответы `Idempotency` — в контракте, тело
+сверх лимита с ключом — как без него (VGK-03). Сообщения S3–S6 переписаны без хешей до rebase (VGK-05, «Решения»).
+Дальше — S10 (оговорки SSE и multipart в `docs/testing.md`, подсказка 401 маршрута мимо huma), S11 (мутации и AC8).
+Слияние, аннотация `v1.6.0` и закрытие плана — дирижёр после валидатора.

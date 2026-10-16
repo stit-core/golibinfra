@@ -135,8 +135,9 @@ func (m ErrorMap) Declare(op huma.Operation) huma.Operation {
 // создаёт эти ответы раньше хука), и ответы, которые кит отдаёт сам, — там, где он их отдаёт: 429
 // лимитера с Retry-After — у каждой операции, 503 дедлайна запроса — у каждой, кроме потока SSE; у
 // операции huma (registered, а не маршрута мимо huma) — 401 HumaAuth с WWW-Authenticate при
-// обязательной аутентификации и 413 при теле под лимитом.
-func describeErrors(cfg Config, registered func(*huma.Operation) bool) huma.AddOpFunc {
+// обязательной аутентификации, 413 при теле под лимитом, а со store (idempotent) у записи со схемой
+// в Security — ответы Idempotency: 409, 422 и 503 при FailClosed.
+func describeErrors(cfg Config, idempotent bool, registered func(*huma.Operation) bool) huma.AddOpFunc {
 	return func(oapi *huma.OpenAPI, op *huma.Operation) {
 		declared, _ := op.Metadata[errorCodesKey].(map[int][]string)
 		codes := maps.Clone(declared)
@@ -146,6 +147,9 @@ func describeErrors(cfg Config, registered func(*huma.Operation) bool) huma.AddO
 		viaHuma := registered(op)
 		authRequired := viaHuma && len(op.Security) > 0 &&
 			!slices.ContainsFunc(op.Security, func(alt map[string][]string) bool { return len(alt) == 0 })
+		// Субъекта ключа кладёт extractor схемы: без схемы в Security идемпотентность запрос пропускает.
+		deduplicated := idempotent && viaHuma && slices.Contains(idempotentMethods, op.Method) &&
+			slices.ContainsFunc(op.Security, func(alt map[string][]string) bool { return len(alt) > 0 })
 		if authRequired {
 			kitResponse(oapi, op, codes, http.StatusUnauthorized, codeUnauthorized)
 		}
@@ -157,6 +161,13 @@ func describeErrors(cfg Config, registered func(*huma.Operation) bool) huma.AddO
 		}
 		if viaHuma && readsLimitedBody(op) {
 			kitResponse(oapi, op, codes, http.StatusRequestEntityTooLarge, codeBodyTooLarge)
+		}
+		if deduplicated {
+			kitResponse(oapi, op, codes, http.StatusConflict, codeIdempotencyInProgress)
+			kitResponse(oapi, op, codes, http.StatusUnprocessableEntity, codeIdempotencyKeyReused)
+			if cfg.Idempotency.FailClosed {
+				kitResponse(oapi, op, codes, http.StatusServiceUnavailable, codeIdempotencyUnavailable)
+			}
 		}
 		for status, list := range codes {
 			if resp := op.Responses[strconv.Itoa(status)]; resp != nil {

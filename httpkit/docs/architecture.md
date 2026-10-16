@@ -240,6 +240,11 @@ WebSocket-upgrade. Повторное оборачивание того же wri
   ([configuration.md § MaxBodyConfig](configuration.md#maxbodyconfig)). У multipart-формы
   превышение — `422 VALIDATION_FAILED`: форму huma разбирает сама; у маршрута мимо huma на
   превышение отвечает его хендлер (`IsMaxBodyError`).
+- Ответы `Idempotency` — при `IdempotencyStore` в графе у операции huma `POST`, `PUT` или `PATCH` со
+  схемой в `Security` (субъекта ключа кладёт extractor схемы, § Идемпотентность): `409
+  IDEMPOTENCY_IN_PROGRESS`, `422 IDEMPOTENCY_KEY_REUSED` и при `HTTP_IDEMPOTENCY_FAIL_CLOSED=true`
+  — `503 IDEMPOTENCY_UNAVAILABLE`. Заголовок ключа кит в OpenAPI не описывает: операция, которой
+  клиент шлёт ключ, объявляет его своим входом (`header:"Idempotency-Key"`).
 
 `503 AUTH_UNAVAILABLE` отдаёт не каждая схема, а extractor, который знает недоступный бэкенд
 (JWKS, хаб): его объявляет владелец схемы правилом таблицы операций схемы —
@@ -340,6 +345,10 @@ prod-адаптере chi, и на `testkit/handlertest`.
   получает отказ на `HTTP_IDEMPOTENCY_TTL`. Ошибка store —
   строка `idempotency store failed` в логе и fail-open (`HTTP_IDEMPOTENCY_FAIL_CLOSED=true`
   → `503`).
+- **Тело, которое не легло в буфер, — без идемпотентности.** Тело больше `MaxBodyBytes`, сверх
+  лимита тела операции или с ошибкой чтения идёт дальше без дедупликации (`result=skipped`):
+  прочитанное Idempotency и ошибку чтения получает операция и отвечает, как без ключа — `413`,
+  у multipart-формы `422`, у операции без тела — своим ответом.
 
 ## Health / readiness
 

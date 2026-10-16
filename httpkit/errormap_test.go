@@ -608,15 +608,7 @@ func TestErrorMap_GroupBodyLimitWithoutMaxBody(t *testing.T) {
 	if err := srv.CheckRoutes(); err != nil {
 		t.Fatalf("CheckRoutes: %v", err)
 	}
-	var body bytes.Buffer
-	mw := multipart.NewWriter(&body)
-	fw, err := mw.CreateFormFile("file", "a.txt")
-	if err == nil {
-		_, err = fw.Write([]byte(strings.Repeat("y", 200)))
-	}
-	if err != nil || mw.Close() != nil {
-		t.Fatalf("multipart body: %v", err)
-	}
+	body, contentType := multipartFile(t, 200)
 	for _, prefix := range []string{"", "/v1"} {
 		raw := api.OpenAPI().Paths[prefix+"/raw"].Post
 		if got := codesOf(raw, http.StatusRequestEntityTooLarge); !slices.Equal(got, []string{"BODY_TOO_LARGE"}) {
@@ -631,8 +623,184 @@ func TestErrorMap_GroupBodyLimitWithoutMaxBody(t *testing.T) {
 		if resp := api.OpenAPI().Paths[prefix+"/form"].Post.Responses["413"]; resp != nil {
 			t.Errorf("%s/form: 413 = %q, but a multipart form is not read by the limit of its literal", prefix, resp.Description)
 		}
-		resp := serveRouter(srv, http.MethodPost, prefix+"/form", body.String(), "Content-Type: "+mw.FormDataContentType())
-		handlertest.AssertStatus(t, resp, http.StatusNoContent)
+		handlertest.AssertStatus(t, serveRouter(srv, http.MethodPost, prefix+"/form", body, contentType), http.StatusNoContent)
+	}
+}
+
+// multipartFile — multipart-форма с файлом file из size байт и заголовок её Content-Type.
+func multipartFile(t *testing.T, size int) (body, contentType string) {
+	t.Helper()
+	var b bytes.Buffer
+	mw := multipart.NewWriter(&b)
+	fw, err := mw.CreateFormFile("file", "a.txt")
+	if err == nil {
+		_, err = fw.Write([]byte(strings.Repeat("y", size)))
+	}
+	if err == nil {
+		err = mw.Close()
+	}
+	if err != nil {
+		t.Fatalf("multipart body: %v", err)
+	}
+	return b.String(), "Content-Type: " + mw.FormDataContentType()
+}
+
+// scriptedStore — MemoryStore, которому тест велит держать ключ занятым или отказывать.
+type scriptedStore struct {
+	*httpkit.MemoryStore
+	mode atomic.Int32 // 0 — как MemoryStore, 1 — ключ занят другим запросом, 2 — store недоступен
+}
+
+func (s *scriptedStore) Reserve(ctx context.Context, key string, ttl time.Duration) (string, bool, error) {
+	switch s.mode.Load() {
+	case 1:
+		return "", false, nil
+	case 2:
+		return "", false, errStoreDown
+	}
+	return s.MemoryStore.Reserve(ctx, key, ttl)
+}
+
+func (s *scriptedStore) Get(ctx context.Context, key string) ([]byte, bool, error) {
+	if s.mode.Load() == 2 {
+		return nil, false, errStoreDown
+	}
+	return s.MemoryStore.Get(ctx, key)
+}
+
+// Регрессия VGK-03: ответы Idempotency — в контракте операций, где она действует (store в графе, POST, PUT и PATCH
+// операции huma со схемой в Security — субъекта ключа кладёт её extractor): 409 IDEMPOTENCY_IN_PROGRESS, 422
+// IDEMPOTENCY_KEY_REUSED, при FailClosed — 503 IDEMPOTENCY_UNAVAILABLE; описание сверено с ответом. Тело сверх лимита с
+// ключом получает тот же ответ, что без ключа: у multipart-формы — 422 валидации, у операции без тела — её ответ.
+func TestErrorMap_DescribesIdempotency(t *testing.T) {
+	bearer := httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
+		Extract: func(r *http.Request) (context.Context, error) {
+			if r.Header.Get("Authorization") == "" {
+				return nil, errors.New("no credentials")
+			}
+			return httpkit.ContextWithSubject(r.Context(), r.Header.Get("Authorization")), nil
+		},
+	}
+	type named struct {
+		Body struct {
+			Name string `json:"name"`
+		}
+	}
+	type replaced struct {
+		ID   string `path:"id"`
+		Body struct {
+			Name string `json:"name"`
+		}
+	}
+	type form struct {
+		RawBody huma.MultipartFormFiles[struct {
+			File huma.FormFile `form:"file"`
+		}]
+	}
+	noBody := func(context.Context, *struct{}) (*struct{}, error) { return nil, nil } // тело ответа не нужно
+	secured := []map[string][]string{{"Bearer": {}}}
+	register := func(api huma.API) {
+		huma.Register(api, huma.Operation{OperationID: "create", Method: http.MethodPost, Path: "/things", Security: secured},
+			func(context.Context, *named) (*struct{}, error) { return nil, nil })
+		huma.Register(api, huma.Operation{
+			OperationID: "replace", Method: http.MethodPut, Path: "/things/{id}", Security: []map[string][]string{{"Bearer": {}}, {}},
+		}, func(context.Context, *replaced) (*struct{}, error) { return nil, nil })
+		huma.Register(api, huma.Operation{OperationID: "upload", Method: http.MethodPost, Path: "/upload", Security: secured},
+			func(context.Context, *form) (*struct{}, error) { return nil, nil })
+		huma.Register(api, huma.Operation{OperationID: "touch", Method: http.MethodPatch, Path: "/touch", Security: secured}, noBody)
+		huma.Register(api, huma.Operation{OperationID: "read", Method: http.MethodGet, Path: "/things", Security: secured}, noBody)
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "open", Method: http.MethodPost, Path: "/open"}),
+			func(context.Context, *named) (*struct{}, error) { return nil, nil })
+		// Маршрут мимо huma, описанный в OpenAPI руками: Idempotency стоит в цепочке huma, его она не видит.
+		api.OpenAPI().AddOperation(&huma.Operation{OperationID: "rawRoute", Method: http.MethodPost, Path: "/raw-route", Security: secured})
+	}
+	const (
+		inProgress = "Conflict: IDEMPOTENCY_IN_PROGRESS"
+		reused     = "Unprocessable Entity: IDEMPOTENCY_KEY_REUSED"
+	)
+	idempotent := []string{"create", "replace", "upload", "touch"}
+	for _, tc := range []struct {
+		name              string
+		store, failClosed bool
+	}{{"store, fail-open", true, false}, {"store, fail-closed", true, true}, {"no store", false, false}} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "127.0.0.1:0")
+			// Лимит тела ниже буфера идемпотентности: тело сверх лимита упирается в него ещё при буферизации.
+			cfg.MaxBody.MaxBytes = 64
+			cfg.Idempotency.FailClosed = tc.failClosed
+			store := &scriptedStore{MemoryStore: httpkit.NewMemoryStore()}
+			opts := []httpkit.ServerOption{httpkit.WithSecuritySchemes(bearer)}
+			if tc.store {
+				opts = append(opts, httpkit.WithIdempotencyStore(store))
+			}
+			srv := mustServer(t, cfg, opts...)
+			api := srv.BindAPI()
+			register(api)
+			if err := srv.CheckRoutes(); err != nil {
+				t.Fatalf("CheckRoutes: %v", err)
+			}
+			ops := operations(api.OpenAPI())
+			for id, op := range ops {
+				acts := tc.store && slices.Contains(idempotent, id)
+				for status, want := range map[int]string{http.StatusConflict: inProgress, http.StatusUnprocessableEntity: reused} {
+					if !acts {
+						want = ""
+					}
+					got := ""
+					if resp := op.Responses[strconv.Itoa(status)]; resp != nil {
+						got = resp.Description
+					}
+					if got != want {
+						t.Errorf("%s: %d = %q, want %q", id, status, got, want)
+					}
+				}
+				if got := slices.Contains(codesOf(op, http.StatusServiceUnavailable), "IDEMPOTENCY_UNAVAILABLE"); got != (acts && tc.failClosed) {
+					t.Errorf("%s: IDEMPOTENCY_UNAVAILABLE in 503 = %v, want %v", id, got, acts && tc.failClosed)
+				}
+			}
+			if !tc.store {
+				return
+			}
+			// Описание — то, что Idempotency отвечает на этой же операции.
+			answers := func(id string, status int, resp *httptest.ResponseRecorder) {
+				t.Helper()
+				got := handlertest.DecodeAPIError(t, resp)
+				handlertest.AssertAPIError(t, resp, status, got.Code)
+				if codes := codesOf(ops[id], status); !slices.Contains(codes, got.Code) {
+					t.Errorf("the kit answers %s %d %s, the contract lists %v", id, status, got.Code, codes)
+				}
+			}
+			const auth = "Authorization: Bearer u1"
+			key := func(k string) string { return cfg.Idempotency.Header + ": " + k }
+			handlertest.AssertStatus(t, serveRouter(srv, http.MethodPost, "/things", `{"name":"a"}`, auth, key("k1")), http.StatusNoContent)
+			answers("create", http.StatusUnprocessableEntity, serveRouter(srv, http.MethodPost, "/things", `{"name":"b"}`, auth, key("k1")))
+			store.mode.Store(1)
+			answers("create", http.StatusConflict, serveRouter(srv, http.MethodPost, "/things", `{"name":"a"}`, auth, key("k2")))
+			store.mode.Store(2)
+			if resp := serveRouter(srv, http.MethodPost, "/things", `{"name":"a"}`, auth, key("k3")); tc.failClosed {
+				answers("create", http.StatusServiceUnavailable, resp)
+			} else {
+				handlertest.AssertStatus(t, resp, http.StatusNoContent)
+			}
+			store.mode.Store(0)
+			form, contentType := multipartFile(t, 200)
+			over := `{"name":"` + strings.Repeat("x", 100) + `"}`
+			for _, c := range []struct {
+				id, method, path, body string
+				headers                []string
+			}{
+				{"create", http.MethodPost, "/things", over, nil},
+				{"upload", http.MethodPost, "/upload", form, []string{contentType}},
+				{"touch", http.MethodPatch, "/touch", over, nil},
+			} {
+				without := serveRouter(srv, c.method, c.path, c.body, append([]string{auth}, c.headers...)...)
+				with := serveRouter(srv, c.method, c.path, c.body, append([]string{auth, key("big-" + c.id)}, c.headers...)...)
+				if with.Code != without.Code {
+					t.Errorf("%s: a body over the limit gets %d with %s and %d without it", c.id, with.Code, cfg.Idempotency.Header, without.Code)
+				}
+			}
+		})
 	}
 }
 

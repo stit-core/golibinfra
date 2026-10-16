@@ -96,8 +96,8 @@ Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP и�
 фиксируется на первом чтении тела, и тело операции huma читается по её
 `MaxBodyBytes`: поднятый лимит поднимает и лимит транспорта, у маршрутов мимо huma —
 `HTTP_MAX_BODY_BYTES`. Превышение — `413 BODY_TOO_LARGE`, и в huma тоже, кроме multipart-формы:
-её huma разбирает сама, и тело сверх лимита у неё — `422 VALIDATION_FAILED`. 413 объявлен в
-OpenAPI операции huma с телом, если её `MaxBodyBytes > 0`.
+её huma разбирает сама, и тело сверх лимита у неё — `422 VALIDATION_FAILED`; с `Idempotency-Key`
+ответ тот же. 413 объявлен в OpenAPI операции huma с телом, если её `MaxBodyBytes > 0`.
 
 Операцию группы huma с префиксом кит исполняет по её копии из OpenAPI — с лимитом кита и хуков
 (при `HTTP_MAX_BODY_BYTES=0` лимит хука режет сам кит), — но тело huma читает по `MaxBodyBytes`
@@ -129,7 +129,7 @@ OpenAPI операции huma с телом, если её `MaxBodyBytes > 0`.
 | `HTTP_IDEMPOTENCY_RESERVE_TTL` | `ReserveTTL` | `time.Duration` | `60s` | сколько ключ считается «выполняется», если процесс упал в середине запроса; больше `HTTP_REQUEST_TIMEOUT` (резерв переживает запрос); ответ хендлера, который его пережил, не сохраняется (`result=skipped`) |
 | `HTTP_IDEMPOTENCY_MAX_BODY_BYTES` | `MaxBodyBytes` | `int64` | `65536` | потолок буферизации запроса и ответа; больше — запрос идёт без идемпотентности; `> 0` |
 | `HTTP_IDEMPOTENCY_STORE_TIMEOUT` | `StoreTimeout` | `time.Duration` | `2s` | потолок одной операции store; запись результата не зависит от отмены ctx клиента; `> 0` |
-| `HTTP_IDEMPOTENCY_FAIL_CLOSED` | `FailClosed` | `bool` | `false` | `true` — недоступный store отвечает `503 IDEMPOTENCY_UNAVAILABLE`; `false` — запрос выполняется без дедупликации (fail-open) |
+| `HTTP_IDEMPOTENCY_FAIL_CLOSED` | `FailClosed` | `bool` | `false` | `true` — недоступный store отвечает `503 IDEMPOTENCY_UNAVAILABLE` (объявлен в OpenAPI операций, где действует `Idempotency`); `false` — запрос выполняется без дедупликации (fail-open) |
 
 ## Дедлайн запроса
 

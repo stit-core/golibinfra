@@ -161,6 +161,59 @@ func TestIdempotency_OversizedBodySkipped(t *testing.T) {
 	}
 }
 
+// failingBody отдаёт prefix, затем ошибку чтения: тело, которое Idempotency не дочитала в буфер.
+type failingBody struct {
+	prefix *strings.Reader
+	err    error
+}
+
+func (b *failingBody) Read(p []byte) (int, error) {
+	if b.prefix.Len() > 0 {
+		return b.prefix.Read(p)
+	}
+	return 0, b.err
+}
+
+func (b *failingBody) Close() error { return nil }
+
+// VGK-03: тело, которое не легло в буфер (сверх лимита тела, ошибка чтения), идёт без идемпотентности — handler читает
+// его сам и отвечает, как без ключа, а не 413 или 400 Idempotency.
+func TestIdempotency_UnbufferedBodyGoesToHandler(t *testing.T) {
+	errDropped := errors.New("connection reset")
+	for name, body := range map[string]func(w http.ResponseWriter) io.ReadCloser{
+		"over the body limit": func(w http.ResponseWriter) io.ReadCloser {
+			return http.MaxBytesReader(w, io.NopCloser(strings.NewReader(strings.Repeat("x", 40))), 16)
+		},
+		"read error": func(http.ResponseWriter) io.ReadCloser {
+			return &failingBody{prefix: strings.NewReader(strings.Repeat("x", 16)), err: errDropped}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			var calls atomic.Int32
+			var seen []byte
+			var readErr error
+			h := Idempotency(idemCfg(), NewMemoryStore(), logkit.Nop())(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				calls.Add(1)
+				seen, readErr = io.ReadAll(r.Body)
+				w.WriteHeader(http.StatusAccepted)
+			}))
+			rec := httptest.NewRecorder()
+			req := postWithKey("k1", "")
+			req.Body = body(rec)
+			h.ServeHTTP(rec, req)
+			if rec.Code != http.StatusAccepted || calls.Load() != 1 {
+				t.Fatalf("status %d, handler calls %d: the handler answers a body that is not buffered", rec.Code, calls.Load())
+			}
+			if string(seen) != strings.Repeat("x", 16) || readErr == nil {
+				t.Fatalf("the handler reads %q, %v: the bytes read by Idempotency and then the read error", seen, readErr)
+			}
+			if name == "over the body limit" && !IsMaxBodyError(readErr) {
+				t.Fatalf("the handler must get *http.MaxBytesError, got %v", readErr)
+			}
+		})
+	}
+}
+
 type stubStore struct {
 	reserve bool
 	err     error
