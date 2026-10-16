@@ -6,12 +6,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"mime"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"slices"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,6 +22,7 @@ import (
 	"github.com/danielgtaylor/huma/v2/sse"
 	"go.uber.org/fx"
 
+	"git.stit.tech/stit-core/golibinfra/healthkit"
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
@@ -542,6 +546,116 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Регрессия httpkit-ready-503-contract: /ready отвечает 503 своим телом готовности — draining на паузе остановки,
+// unhealthy при пробе down, — а при дедлайне запроса — 503 REQUEST_TIMEOUT: у ответа 503 в контракте оба тела
+// (ReadyBody и APIError), коды не повторяются; без дедлайна — только тело готовности. Описание сверено с ответом /ready.
+func TestErrorMap_DescribesReady503(t *testing.T) {
+	t.Setenv("HTTP_REQUEST_TIMEOUT", "300ms")
+	t.Setenv("HTTP_SHUTDOWN_DRAIN_DELAY", "400ms")
+	var mode atomic.Int32 // проба: 0 — ok, 1 — down, 2 — висит до дедлайна запроса
+	probe := healthkit.New("dep", func(ctx context.Context) error {
+		switch mode.Load() {
+		case 1:
+			return errors.New("dep is down")
+		case 2:
+			<-ctx.Done()
+			return ctx.Err()
+		}
+		return nil
+	})
+	var srv *httpkit.Server
+	app := fx.New(fx.NopLogger, fx.Supply(testConfig(t, "127.0.0.1:0")), fx.Provide(logkit.Nop), httpkit.Module,
+		healthkit.ProvideProbe(func() healthkit.Probe { return probe }), fx.Populate(&srv))
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := app.Start(ctx); err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	ready := operations(srv.API().OpenAPI())["get-ready"]
+	described := ready.Responses["503"]
+	if described == nil {
+		t.Fatal("/ready has no 503 in OpenAPI")
+	}
+	if want := "Service Unavailable: draining, unhealthy, REQUEST_TIMEOUT"; described.Description != want {
+		t.Errorf("503 of /ready = %q, want %q", described.Description, want)
+	}
+	for ct, schema := range map[string]string{"application/json": "/ReadyBody", httpkit.ProblemContentType: "/APIError"} {
+		if mt := described.Content[ct]; mt == nil || mt.Schema == nil || !strings.HasSuffix(mt.Schema.Ref, schema) {
+			t.Errorf("503 of /ready: %s must be %s, got %+v", ct, schema, mt)
+		}
+	}
+	addr := srv.Addr().String()
+	check := func(name string, status int, contentType, code string) {
+		t.Helper()
+		if status != http.StatusServiceUnavailable || described.Content[contentType] == nil ||
+			!slices.Contains(codesOf(ready, http.StatusServiceUnavailable), code) {
+			t.Errorf("%s: /ready answers %d %s %q, the contract of its 503 is %q with %v",
+				name, status, contentType, code, described.Description, slices.Collect(maps.Keys(described.Content)))
+		}
+	}
+	for _, c := range []struct {
+		name string
+		mode int32
+		want string
+	}{{"probe down", 1, "unhealthy"}, {"request deadline", 2, "REQUEST_TIMEOUT"}} {
+		mode.Store(c.mode)
+		status, ct, code := readyAnswer(t, addr)
+		if code != c.want {
+			t.Errorf("%s: /ready answers %q, want %q", c.name, code, c.want)
+		}
+		check(c.name, status, ct, code)
+	}
+
+	mode.Store(0)
+	stopped := make(chan error, 1)
+	go func() { stopped <- app.Stop(ctx) }()
+	status, ct, code := readyAnswer(t, addr)
+	for wait := time.Now().Add(time.Second); status != http.StatusServiceUnavailable && time.Now().Before(wait); {
+		status, ct, code = readyAnswer(t, addr)
+	}
+	if code != "draining" {
+		t.Errorf("drain pause: /ready answers %d %q, want 503 draining", status, code)
+	}
+	check("drain pause", status, ct, code)
+	if err := <-stopped; err != nil {
+		t.Fatalf("stop: %v", err)
+	}
+
+	cfg := testConfig(t, "127.0.0.1:0")
+	cfg.RequestTimeout = -time.Second
+	api := handlertest.NewAPI(t, func(api huma.API) { httpkit.RegisterHealth(api, time.Second, nil) }, handlertest.WithConfig(cfg))
+	off := operations(api.OpenAPI())["get-ready"].Responses["503"]
+	if off == nil || off.Description != "Service Unavailable: draining, unhealthy" || off.Content[httpkit.ProblemContentType] != nil {
+		t.Errorf("503 of /ready without a request deadline = %+v, want only the readiness body", off)
+	}
+}
+
+// readyAnswer — ответ /ready: статус, тип тела и его код — status тела готовности или code APIError.
+func readyAnswer(t *testing.T, addr string) (status int, contentType, code string) {
+	t.Helper()
+	client := &http.Client{Timeout: 5 * time.Second, Transport: &http.Transport{DisableKeepAlives: true}}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, "http://"+addr+"/ready", http.NoBody)
+	if err != nil {
+		t.Fatalf("request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("GET /ready: %v", err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	contentType, _, _ = mime.ParseMediaType(resp.Header.Get("Content-Type"))
+	var body map[string]any
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		t.Fatalf("decode /ready: %v", err)
+	}
+	key := "status"
+	if contentType == httpkit.ProblemContentType {
+		key = "code"
+	}
+	code, _ = body[key].(string)
+	return resp.StatusCode, contentType, code
 }
 
 // operations — операции OpenAPI по OperationID.

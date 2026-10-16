@@ -337,7 +337,8 @@ healthkit.ProvideProbe(func(s *Sync) healthkit.Probe { return healthkit.New("syn
 `{"status":"unhealthy","probes":[{"name":"pgkit","status":"down"}]}`; текст
 ошибки — в логе. panic пробы — тоже `down` и ERROR `readiness probe panicked` со
 стеком, процесс жив. С начала остановки `/ready` отвечает `503
-{"status":"draining"}`.
+{"status":"draining"}`. В OpenAPI оба тела 503 описаны у `/ready` вместе с `APIError`
+дедлайна запроса ([architecture.md § Health / readiness](architecture.md#health--readiness)).
 
 ## Остановка за балансировщиком
 

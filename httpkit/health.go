@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
+	"strconv"
 	"sync"
 	"time"
 
@@ -40,6 +42,12 @@ type readyOutput struct {
 	Body   readyBody
 }
 
+// Статусы тела 503 /ready: их, как коды Declare, перечисляет описание ответа 503 в OpenAPI.
+const (
+	readyDraining  = "draining"
+	readyUnhealthy = "unhealthy"
+)
+
 // RegisterHealth регистрирует публичные (Public) /health (liveness) и /ready (readiness по
 // пробам). Пробы выполняются параллельно, каждая — не дольше probeTimeout. Текст ошибок
 // проб уходит в лог, а не в ответ: там могут быть DSN и адреса. С начала Server.Stop
@@ -58,20 +66,28 @@ func RegisterHealth(api huma.API, probeTimeout time.Duration, log logkit.Logger,
 		return &healthOutput{Body: healthBody{Status: "ok"}}, nil
 	})
 
+	// 503 тела готовности объявлен сам: huma описывает у выхода со Status только статус по умолчанию.
+	notReady := strconv.Itoa(http.StatusServiceUnavailable)
+	readySchema := api.OpenAPI().Components.Schemas.Schema(reflect.TypeFor[readyBody](), true, "ReadyBody")
 	huma.Register(api, Public(huma.Operation{
 		OperationID: "get-ready",
 		Method:      http.MethodGet,
 		Path:        "/ready",
 		Summary:     "Readiness check",
+		Responses: map[string]*huma.Response{notReady: {
+			Description: http.StatusText(http.StatusServiceUnavailable),
+			Content:     map[string]*huma.MediaType{"application/json": {Schema: readySchema}},
+		}},
+		Metadata: map[string]any{errorCodesKey: map[int][]string{http.StatusServiceUnavailable: {readyDraining, readyUnhealthy}}},
 	}), func(ctx context.Context, _ *struct{}) (*readyOutput, error) {
 		if draining(ctx) {
-			return &readyOutput{Status: http.StatusServiceUnavailable, Body: readyBody{Status: "draining"}}, nil
+			return &readyOutput{Status: http.StatusServiceUnavailable, Body: readyBody{Status: readyDraining}}, nil
 		}
 		statuses := runProbes(ctx, log, probeTimeout, probes)
 		out := &readyOutput{Status: http.StatusOK, Body: readyBody{Status: "ok", Probes: statuses}}
 		for _, s := range statuses {
 			if s.Status != "ok" {
-				out.Status, out.Body.Status = http.StatusServiceUnavailable, "unhealthy"
+				out.Status, out.Body.Status = http.StatusServiceUnavailable, readyUnhealthy
 				break
 			}
 		}

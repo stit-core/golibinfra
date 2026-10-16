@@ -28,14 +28,12 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   delivery/http`); у `logoutUser` и `requestPasswordReset` таблица — из него одного. `TestHTTPOperations`
   (`cmd/api/api_test.go`) держит «429 `RATE_LIMITED` — ровно под `/api/auth/`» и «у операций `/api/` нет
   `default`»; `openapi.json` пишет `TestOpenAPISpec -update` (`make gen`) при `HTTP_*` по умолчанию.
-- `golibinfra-logkit-env`. `newLog` в `cmd/migrate/main.go` и `cmd/seed-admin/main.go` шаблона —
-  `logkit.NewConfig()` и `logkit.New(cfg)`: `LOG_REDACT_*` он не читает (граф `cmd/api` берёт и
-  `NewRedactConfig`), а при `LOG_SILENT=true` у команды без OTel-sink'а пропадает и причина отказа (у `FxLogger` на
-  этот случай — `WithStderrFallback`). `TestNewLog` обеих команд: окружение по умолчанию — логгер без ошибки,
-  `LOG_LEVEL=loud` — `logkit.ErrConfig`; `TestMainOnlyEnters` шаблона держит `main` без логики — логгер даёт один
-  вызов.
+- `golibinfra-logkit-env`. `newLog` в `cmd/migrate` и `cmd/seed-admin` шаблона — `NewConfig` и `New`: `LOG_REDACT_*`
+  не читает (граф `cmd/api` берёт и `NewRedactConfig`), при `LOG_SILENT=true` команда без OTel-sink'а теряет и причину
+  отказа (у `FxLogger` — `WithStderrFallback`). `TestNewLog`: умолчания — логгер, `LOG_LEVEL=loud` — `ErrConfig`;
+  `TestMainOnlyEnters` шаблона держит `main` без логики — логгер даёт один вызов.
 - Источники пунктов: `N/validation-s7-code.md`, `N/conductor.md` (поиск «429», «newLog»).
-- `httpkit-kit-errors-contract` (S4, поручение дирижёра): на `cc5fa17` кит отдаёт `413 BODY_TOO_LARGE` операции huma
+- `httpkit-kit-errors-contract` (S4, поручение дирижёра): на `d0a8d42` кит отдаёт `413 BODY_TOO_LARGE` операции huma
   с телом под лимитом, `503 REQUEST_TIMEOUT` дедлайна (`httpkit/deadline.go`, кроме потока SSE), `503
   AUTH_UNAVAILABLE` от extractor'а схемы и `WWW-Authenticate` у 401 `HumaAuth` (`httpkit/middleware.go`), а
   `describeErrors` их не описывает; 401 он описывает и у операции с необязательной аутентификацией, где `HumaAuth`
@@ -44,14 +42,13 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
 ## Не входит
 - Правки шаблона (`go.mod`, `TestHTTPOperations`, `newLog`, `openapi.json`, доки) — трек g-upgrade после тега;
   здесь — проверка на временном `go.work` (AC5, AC7) и раздел «Потребителю».
-- Остатки S4 — пунктами бэклога: `503 AUTH_UNAVAILABLE` у операций `hubkit/sso`
-  (`httpkit-auth-unavailable-scheme`), 413 у multipart-операции (`httpkit-multipart-body-limit`), свой 503
-  `/ready` (`httpkit-ready-503-contract`).
+- Остатки S4 — пунктами бэклога golibinfra (шаблона не касаются: у него локальный JWT и нет multipart): `503
+  AUTH_UNAVAILABLE` у операций `hubkit/sso` (`httpkit-auth-unavailable-scheme`), 413 у multipart-операции
+  (`httpkit-multipart-body-limit`).
 - `httpkit.Healthcheck` остаётся на `logkit.Config{}`: его контракт — причина отказа в stdout при любом `LOG_*`.
-- Пункты бэклога golibinfra рядом с треком без пересечения: `httpkit-ratelimit-overflow-bucket` (поведение
-  лимитера, а не контракт), `logkit-redact-disabled-literal` (путь литерала; помощник идёт путём ENV, где
-  `NewRedactConfig` проверяет и выключенный redact), `kit-form-leftovers` (`ServiceConfig` помощник, как `Module`,
-  не читает).
+- Пункты бэклога golibinfra рядом без пересечения: `httpkit-ratelimit-overflow-bucket` (поведение лимитера),
+  `logkit-redact-disabled-literal` (путь литерала; помощник идёт путём ENV, где `NewRedactConfig` проверяет и
+  выключенный redact), `kit-form-leftovers` (`ServiceConfig` помощник, как `Module`, не читает).
 
 ## Критерии приёмки
 - [x] **AC1** — При включённом лимитере сервера (`HTTP_RATE_LIMIT_RPS > 0`) у каждой операции OpenAPI — публичной
@@ -60,11 +57,10 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   `Retry-After` (целое от 1, обязательный); код и заголовок — те, что лимитер отвечает на этой операции. При
   `HTTP_RATE_LIMIT_RPS=0` 429 у операции — только из её таблицы. Проверка: `go test -race -run
   TestErrorMap_DescribesServerRateLimit ./httpkit/` → PASS; на `90adb36` — FAIL (у операции без таблицы 429 нет)
-  - Подтверждено: на `90adb36` тест красный — у `ping`, `getMe`, `stream`, `/health`, `/ready` 429 нет, лимитер
-    отвечает `RATE_LIMITED` с `Retry-After: 1`, а контракт `ping` 429 не знает (`N/g-kits/red-s1-429.log`); на
-    ветке — PASS (`N/g-kits/green-s1-429.log`); ручные мутации хука и лимитера M1–M9 (флаг лимитера, заголовок у 429
-    таблицы, повтор и порядок кода, `Responses == nil`, `Required`, минимум, код лимитера) тест убивает
-    (`N/g-kits/mutations.sh`, лог `mutations.log`)
+  - Подтверждено: на `90adb36` тест красный — у `ping`, `getMe`, `stream`, `/health`, `/ready` 429 нет, а лимитер
+    отвечает `RATE_LIMITED` с `Retry-After: 1` (`N/g-kits/red-s1-429.log`); на ветке — PASS (`green-s1-429.log`);
+    мутации M1–M9 (флаг лимитера, заголовок, повтор и порядок кода, `Responses == nil`, `Required`, минимум, код)
+    тест убивает (`N/g-kits/mutations.sh`, `mutations.log`)
 - [x] **AC2** — 429 не задваивается: таблица с 429 `RATE_LIMITED` (свой лимитер потребителя, как `authlimit.Rule`)
   при включённом лимитере даёт описание `Too Many Requests: RATE_LIMITED`, с другим кодом 429 — `Too Many Requests:
   AUTH_LOCKED, RATE_LIMITED` (коды таблицы — первыми); `Retry-After` — у каждого 429 операции. Проверка: тот же
@@ -78,12 +74,10 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   `LOG_REDACT_PATTERNS` (и при `LOG_REDACT_DISABLED=true`), `LOG_REDACT_REPLACE_WITH` — `logkit.ErrConfig`; при
   `LOG_SILENT=true` stdout пуст, записи `ERROR` — в stderr. Проверка: `go test -race -run TestNewFromEnv
   ./logkit/` → PASS; на `90adb36` — не собирается (нет `NewFromEnv`)
-  - Подтверждено: `TestNewFromEnv_ParsesLikeModule` (умолчания; text и debug; свои маски, замена, `source` и
-    уровень error; выключенный redact — записи двух логгеров равны, окружение в них видно),
-    `TestNewFromEnv_RejectsInvalidEnv` (8 случаев, в том числе паттерн у выключенного redact),
-    `TestNewFromEnv_SilentKeepsErrorsInStderr` → PASS (`N/g-kits/green-s2-logkit.log`); на `90adb36` `NewFromEnv`
-    нет (`git grep` пуст); ручные мутации L1–L4 (без `LOG_REDACT_*`, без stderr, без ошибки `NewRedactConfig` и
-    `NewConfig`) тесты убивают (`N/g-kits/mutations.log`)
+  - Подтверждено: `TestNewFromEnv_ParsesLikeModule` (4 окружения — записи двух логгеров равны, окружение в них
+    видно), `TestNewFromEnv_RejectsInvalidEnv` (8 случаев, и паттерн у выключенного redact),
+    `TestNewFromEnv_SilentKeepsErrorsInStderr` → PASS (`N/g-kits/green-s2-logkit.log`); на `90adb36` `NewFromEnv` нет;
+    мутации L1–L4 (без `LOG_REDACT_*`, без stderr, без ошибок конфигов) тесты убивают (`N/g-kits/mutations.log`)
 - [x] **AC4** — Доки называют новое: README httpkit и `docs/` (контракт ошибок, `ErrorMap`, `RateLimitConfig`,
   тестирование), README logkit (без fx, API, `LOG_SILENT`, инварианты), строки индекса корневого README; сниппет
   `NewFromEnv` держит `readme_test.go`. Проверка: `make envdoc-check` → OK; `go test -run TestReadme ./logkit/` →
@@ -94,7 +88,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   закоммиченного только ответами-ошибками кита: 429 `RATE_LIMITED` с `Retry-After` у операций без него, у
   `/api/auth/*` — прежнее описание 429 без повтора кода и `Retry-After`. Проверка: прогоны в `N/wt-g-kits-t`, итог —
   в «Подтверждено»
-  - Подтверждено: на `8719533` (`N/g-kits/s5-template.log`, скрипт `N/g-kits/trial2/s5-check.sh`) — `go build
+  - Подтверждено: на `52fe6e8` (`N/g-kits/s5-template.log`, скрипт `N/g-kits/trial2/s5-check.sh`) — `go build
     ./...` → OK; меняются только ответы-ошибки: 429 `RATE_LIMITED` у 7 операций вне `/api/auth/*` (с `/health` и
     `/ready`), у 8 операций `/api/auth/*` описание 429 прежнее, у всех 429 — обязательный `Retry-After`; 503
     `REQUEST_TIMEOUT` у 15 операций, 413 `BODY_TOO_LARGE` у 7 операций с телом, `WWW-Authenticate` (`Cookie`) у 401
@@ -105,8 +99,8 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   маршрут мимо huma); `503 REQUEST_TIMEOUT` — при дедлайне запроса, кроме потока SSE; 401 `HumaAuth` с
   необязательным `WWW-Authenticate` (вызов схем операции) — только у операции huma с обязательной аутентификацией;
   `503 AUTH_UNAVAILABLE` объявляет таблица владельца схемы, кит код не повторяет. Проверка: `go test -race -run
-  TestErrorMap_DescribesKitResponses ./httpkit/` → PASS; на `cc5fa17` — FAIL
-  - Подтверждено: на `cc5fa17` тест красный — нет 413 и 503, у 401 нет `WWW-Authenticate`, у операции с `{}` 401
+  TestErrorMap_DescribesKitResponses ./httpkit/` → PASS; на `d0a8d42` — FAIL
+  - Подтверждено: на `d0a8d42` тест красный — нет 413 и 503, у 401 нет `WWW-Authenticate`, у операции с `{}` 401
     есть, кит отвечает 413 и 503 вне контракта (`N/g-kits/red-s4-kit-errors.log`); на ветке — PASS
     (`green-s4-kit-errors.log`); мутации K1–K11 (условия 401, 503 и 413, multipart, маршрут мимо huma, вызов и
     обязательность заголовка, код дедлайна) тест убивает (`N/g-kits/mutations.sh`, `mutations.log`)
@@ -115,12 +109,20 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   `/api/auth/*` в контракте 429 `RATE_LIMITED` (правило шаблона), у остальных 429 нет, а строгий лимит отвечает 429
   `RATE_LIMITED` с `Retry-After`; правки «Потребителю» на пробу — тесты шаблона зелёные. Проверка: прогоны в
   `N/wt-g-kits-t`, итог — в «Подтверждено»
-  - Подтверждено: на `8719533` (`N/g-kits/s5-template.log`) — умолчания: как в AC5; `HTTP_RATE_LIMIT_RPS=0` при
+  - Подтверждено: на `52fe6e8` (`N/g-kits/s5-template.log`) — умолчания: как в AC5; `HTTP_RATE_LIMIT_RPS=0` при
     строгом лимите 1/1 (`middlewares` шаблона, проба `N/g-kits/trial2/zz_gkits_limit_test.go`): у 8 операций
     `/api/auth/*` 429 `RATE_LIMITED` с обязательным `Retry-After` из `authlimit.Rule`, у прочих 429 нет, строгий
     лимит отвечает 429 `RATE_LIMITED` с `Retry-After`; правки «Потребителю» (`N/g-kits/trial2/template-trial.patch`,
     5 файлов) — контракт байт в байт тот же, `go vet -tags=integration ./...`, `go test ./...`, archtest, тесты
     `authlimit` и `TestRun_Usage` команды миграций — зелёные
+- [x] **AC8** — У `/ready` в контракте его собственный 503: тело готовности `ReadyBody` (`application/json`) и при
+  дедлайне — `APIError` (`application/problem+json`) у одного ответа, описание `Service Unavailable: draining,
+  unhealthy, REQUEST_TIMEOUT` без повтора кодов; ответы `/ready` (пауза остановки, проба down, дедлайн) — среди
+  описанных. Проверка: `go test -race -run TestErrorMap_DescribesReady503 ./httpkit/` → PASS; на `843c0c8` — FAIL
+  - Подтверждено: на `843c0c8` тест красный — у 503 `/ready` только `APIError` дедлайна, а `/ready` отвечает 503
+    `application/json` `unhealthy` и `draining` (`N/g-kits/red-s6-ready.log`); на ветке — PASS; мутации R1–R4
+    (статус тела, коды метаданных, `APIError` рядом с телом) тест убивает (`N/g-kits/mutations.log`, 28 из 28);
+    шаблон на ветке: у `/ready` ответы 200, 429, 503 с обоими телами (`N/g-kits/s6-template.log`)
 
 ## Шаги
 ### Киты
@@ -129,21 +131,17 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Проверка: новый тест на `90adb36` → FAIL, на ветке → PASS; `go test -short -race ./httpkit/...
     ./testkit/handlertest/...` → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
   - Закрывает: AC1, AC2, AC4 · Зависит от: —
-  - Сделано: `describeErrors(rateLimited)` объявляет 429 `codeRateLimited` у каждой операции при
-    `HTTP_RATE_LIMIT_RPS > 0` (код — после кодов таблицы, без повтора; ответов нет — ответ со схемой `APIError`) и
-    обязательный `Retry-After` (целое от 1) у любого 429; `TestErrorMap_DescribesServerRateLimit` на `90adb36` →
-    FAIL, на ветке → PASS; `TestErrorMap_Declare` — код кита после `AUTH_LOCKED`; доки — README httpkit,
-    `docs/{architecture,usage,configuration,testing}.md`, строка индекса корневого README; `go test -short -race
-    ./httpkit/... ./testkit/handlertest/...` → PASS; `make check` → `✓ check clean (./...)`
+  - Сделано: `describeErrors` объявляет 429 `codeRateLimited` у каждой операции при `HTTP_RATE_LIMIT_RPS > 0` (после
+    кодов таблицы, без повтора) и обязательный `Retry-After` у любого 429; `TestErrorMap_DescribesServerRateLimit` —
+    на `90adb36` FAIL, на ветке PASS; доки httpkit и индекс корневого README; `make check` → `✓ check clean (./...)`
 - [x] **S2** — logkit: `NewFromEnv` — тесты паритета с `Module`, ошибок конфига и `LOG_SILENT`; README logkit,
   строка индекса корневого README
   - Проверка: `go test -short -race ./logkit/...` → PASS; `make envdoc-check` → OK; `flock N/gate.lock make
     check` → `✓ check clean (./...)`
   - Закрывает: AC3, AC4 · Зависит от: —
-  - Сделано: `logkit.NewFromEnv()` — `NewConfig`, `NewRedactConfig` и `New` с `WithRedact` и `WithStderrFallback`;
-    тесты `logkit/fromenv_test.go`; README logkit (без fx, `LOG_SILENT`, API, инварианты), сниппет в
-    `readme_test.go`, doc-comment `WithStderrFallback`, строка индекса корневого README; `go test -short -race
-    ./logkit/...` → PASS; `make envdoc-check` → OK; `make check` → `✓ check clean (./...)`
+  - Сделано: `logkit.NewFromEnv()` — `NewConfig`, `NewRedactConfig`, `New` с `WithRedact` и `WithStderrFallback`;
+    тесты `logkit/fromenv_test.go`; README logkit, сниппет в `readme_test.go`, индекс корневого README; `make
+    envdoc-check` → OK; `make check` → `✓ check clean (./...)`
 ### Потребитель
 - [x] **S3** — проверка на шаблоне через временный `go.work`; «Потребителю» и строки аннотации сверены с итогом,
   хвост — в бэклог
@@ -156,7 +154,7 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
 - [x] **S4** — httpkit: 413, 503 дедлайна и `WWW-Authenticate` у 401 — в контракте операций там, где кит их отдаёт;
   401 — только при обязательной аутентификации операции huma; `AUTH_UNAVAILABLE` — таблицей владельца схемы;
   остатки — в бэклог; коммит `fix(httpkit)!:`
-  - Проверка: новый тест на `cc5fa17` → FAIL, на ветке → PASS; мутации `N/g-kits/mutations.sh` убиты; `flock
+  - Проверка: новый тест на `d0a8d42` → FAIL, на ветке → PASS; мутации `N/g-kits/mutations.sh` убиты; `flock
     N/gate.lock make check` → `✓ check clean (./...)`
   - Закрывает: AC6 · Зависит от: S1
   - Сделано: `describeErrors(cfg, registered)` — 503 `codeRequestTimeout` при `HTTP_REQUEST_TIMEOUT > 0` (кроме
@@ -173,6 +171,15 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Сделано: проба на шаблоне — как в AC5 и AC7; «Потребителю» и строка Breaking аннотации по 429 переписаны
     (`authlimit.Rule` остаётся, граф проверки 429 в `TestHTTPOperations` — без общего лимитера); «Решения»
     обновлены; `make check` → `✓ check clean (./...)`
+- [x] **S6** — httpkit: собственный 503 `/ready` (`draining`, `unhealthy`) — в контракте операции рядом с
+  `APIError` дедлайна; остаток `httpkit-ready-503-contract` снят с бэклога
+  - Проверка: новый тест на `843c0c8` → FAIL, на ветке → PASS; мутации убиты; `flock N/gate.lock make check` → `✓
+    check clean (./...)`
+  - Закрывает: AC8 · Зависит от: S4
+  - Сделано: `RegisterHealth` объявляет 503 `/ready` с телом `ReadyBody` и статусами `draining`, `unhealthy` (константы
+    — и в ответе, и в описании) через ключ кодов `Declare`; `kitResponse` кладёт `APIError` рядом с телом операции того
+    же статуса; `TestErrorMap_DescribesReady503`; доки — `docs/architecture.md` (§ Контракт ошибок, § Health /
+    readiness), `docs/usage.md`; проба шаблона — `N/g-kits/s6-template.log`; `make check` → `✓ check clean (./...)`
 
 ## Решения
 - Строки аннотации `v1.6.0` и «Потребителю» — подразделы `## Handoff`: так их берёт `/release` (профиль плана),
@@ -203,8 +210,12 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
 - Шаблон оставляет `authlimit.Rule` (поручение дирижёра, S5): строгий лимит `/api/auth/*` — его собственный лимитер,
   и при `HTTP_RATE_LIMIT_RPS=0` его 429 держит в контракте только это правило (проба: ответ 429 остаётся). Дублирует
   кит лишь проверку `TestHTTPOperations` «429 только под `/api/auth/`»: с общим лимитером 429 у каждой операции
-  объявляет кит, поэтому её граф собирается без общего лимитера, а сама проверка остаётся. Футер коммита `c84ebbc`
-  советует снять своё правило — для аннотации действует строка Breaking раздела Handoff.
+  объявляет кит, поэтому её граф собирается без общего лимитера, а сама проверка остаётся.
+- Сообщение коммита S1 переписано до публикации ветки (поручение дирижёра): футер `BREAKING CHANGE:` советует
+  оставить своё правило 429; `commit --fixup=reword` и `rebase --autosquash 90adb36` — деревья всех коммитов прежние
+  (`git rev-parse <коммит>^{tree}` до и после, `N/g-kits/trees-compare.txt`), хеши: `c84ebbc` → `ff5fc1c`, `402ed8c` →
+  `fa3a1c6`, `cc5fa17` → `d0a8d42`, `8719533` → `52fe6e8`, `6e3d584` → `843c0c8`; хеши в плане — новые, в журналах
+  `N/g-kits/` — прежние.
 - Ответы кита — только там, где он их отдаёт: 401 и 413 — у операции huma (`Server.registered` — операция из
   `huma.Register` этого сервера); у маршрута мимо huma, описанного руками, 401 и 413 — ответы его хендлера
   (`HumaAuth` его не видит, тело режет `MaxBody`, а отвечает он сам); 429 и 503 дедлайна стоят в цепочке и у него.
@@ -222,8 +233,11 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   схемы правилом таблицы — тем же путём, что шаблон объявляет коды 401 своего extractor'а (`authgate.Secured`); кит
   сводит код без повтора (тест). `hubkit/sso` вне объёма и правится только под API — бэклог
   `httpkit-auth-unavailable-scheme`.
-- `/ready` получает 503 дедлайна, как прочие операции; его собственный 503 (`draining`, `unhealthy`) контракт не
-  описывает — бэклог `httpkit-ready-503-contract`.
+- Собственный 503 `/ready` объявляет `RegisterHealth`: у выхода со `Status` huma описывает только статус по
+  умолчанию. Статусы тела готовности (`draining`, `unhealthy`) описание перечисляет как коды — тем же ключом
+  метаданных, что у `Declare`, — и код дедлайна не повторяется; `APIError` дедлайна `kitResponse` кладёт рядом с
+  телом, а не вместо него. У `/ready` три ответа (200, 429, 503), и `default` huma ему не добавляет — других ответов
+  кит на `/ready` не отдаёт. Правка вне `errormap.go` — `httpkit/health.go`.
 - Код 413 — константа `codeBodyTooLarge` рядом с `MaxBody`, как `codeRateLimited`: её отдают huma (`codeForStatus`) и
   `Idempotency` и объявляет хук. Вне `errormap.go` — по строке в `httpkit/{maxbody,error,idempotency,server}.go` и
   метод `Server.registered`.
@@ -242,20 +256,22 @@ Breaking:
 - httpkit: в OpenAPI операций — ответы, которые кит отдаёт сам: `503 REQUEST_TIMEOUT` при `HTTP_REQUEST_TIMEOUT > 0`
   (кроме потока SSE), `413 BODY_TOO_LARGE` у операции huma с телом под лимитом (кроме multipart), у 401 `HumaAuth` —
   необязательный `WWW-Authenticate`; `401 UNAUTHORIZED` — только у операции huma с обязательной аутентификацией (не
-  при `{}` и не у маршрута мимо huma) → перегенерировать контракт и тесты набора ответов; `503 AUTH_UNAVAILABLE`
-  своей схемы объявить правилом таблицы её операций (`Err: httpkit.ErrAuthUnavailable`).
+  при `{}` и не у маршрута мимо huma); у `/ready` 503 — тело готовности (`ReadyBody`: `draining`, `unhealthy`) рядом
+  с `APIError` дедлайна, `default` у него нет → перегенерировать контракт и тесты набора ответов; `503
+  AUTH_UNAVAILABLE` своей схемы объявить правилом таблицы её операций (`Err: httpkit.ErrAuthUnavailable`).
 
 Изменения:
 - logkit: `NewFromEnv()` — `Logger` команды вне fx из `LOG_*` и `LOG_REDACT_*`, как граф с `Module`; при
   `LOG_SILENT=true` записи `ERROR` — в stderr.
 
 ### Потребителю — go-backend-template (трек g-upgrade)
-Пп. 2–3 на пробу — `N/g-kits/trial2/template-trial.patch` (скрипт `trial2/apply.py`, прогон
-`N/g-kits/s5-template.log`): с ними `openapi.json` байт в байт тот же, что после одного `make gen`.
+Пп. 2–3 на пробу — `N/g-kits/trial3/template-trial.patch` (скрипт `trial3/apply.py`, прогон
+`N/g-kits/s6-template.log`): с ними `openapi.json` байт в байт тот же, что после одного `make gen`.
 1. `go get git.stit.tech/stit-core/golibinfra@v1.6.0 && go mod tidy`; `make gen` — в `openapi.json` ответы кита:
    429 `RATE_LIMITED` с обязательным `Retry-After` у каждой операции (у 8 операций `/api/auth/*` описание 429
-   прежнее), 503 `REQUEST_TIMEOUT` у каждой, 413 `BODY_TOO_LARGE` у 7 операций с телом, необязательный
-   `WWW-Authenticate` (`Cookie`) у 401 шести операций под `Security`; повторов кода нет.
+   прежнее), 503 `REQUEST_TIMEOUT` у каждой (у `/ready` — рядом с телом готовности: `Service Unavailable: draining,
+   unhealthy, REQUEST_TIMEOUT`, `default` у `/ready` уходит), 413 `BODY_TOO_LARGE` у 7 операций с телом,
+   необязательный `WWW-Authenticate` (`Cookie`) у 401 шести операций под `Security`; повторов кода нет.
 2. `authlimit.Rule` в таблицах `/api/auth/*` оставить: это описание собственного строгого лимита шаблона — при
    `HTTP_RATE_LIMIT_RPS=0` и включённом строгом лимите 429 у `/api/auth/*` держит только оно, а при общем лимитере
    кит код не повторяет. Дублирует только проверка `TestHTTPOperations` «429 `RATE_LIMITED` — ровно под
@@ -275,7 +291,8 @@ Breaking:
    (`Err: httpkit.ErrAuthUnavailable`); шаблону с локальным JWT не нужно.
 
 ## Где мы сейчас
-Шаги S1–S5 закрыты, критерии AC1–AC7 подтверждены: ответы кита (429, 503 дедлайна, 413, 401 с `WWW-Authenticate`) —
-в контракте операций там, где кит их отдаёт, `logkit.NewFromEnv` — логгер команды одной строкой, шаблон на ветке
-проверен в обоих режимах лимитеров. План держит Handoff до выпуска `v1.6.0`: дирижёр после валидатора сливает ветку,
-переносит строки в аннотацию тега и закрывает план (`chore(plan): close-httpkit-logkit-gaps закрыт`).
+Шаги S1–S6 закрыты, критерии AC1–AC8 подтверждены: ответы кита (429, 503 дедлайна, 413, 401 с `WWW-Authenticate`,
+свой 503 `/ready`) — в контракте операций там, где кит их отдаёт, `logkit.NewFromEnv` — логгер команды одной строкой,
+шаблон на ветке проверен в обоих режимах лимитеров. План держит Handoff до выпуска `v1.6.0`: дирижёр после
+валидатора сливает ветку, переносит строки в аннотацию тега и закрывает план (`chore(plan):
+close-httpkit-logkit-gaps закрыт`).

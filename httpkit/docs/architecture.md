@@ -232,7 +232,8 @@ WebSocket-upgrade. Повторное оборачивание того же wri
   `/health`, `/ready`, и у описанной в OpenAPI мимо `huma.Register`. У любого 429 операции —
   обязательный `Retry-After` (целые секунды, от 1): кит ставит его на каждый ответ 429.
 - `503 REQUEST_TIMEOUT` (дедлайн запроса) при `HTTP_REQUEST_TIMEOUT > 0` — у каждой операции,
-  кроме потока SSE (ответ `text/event-stream`).
+  кроме потока SSE (ответ `text/event-stream`); у ответа операции со своим телом того же статуса
+  (503 `/ready`, § Health / readiness) `APIError` описан рядом с ним.
 - `413 BODY_TOO_LARGE` — у операции huma с телом при лимите тела (`MaxBodyBytes > 0`). У
   multipart-формы превышение — `422 VALIDATION_FAILED`: форму huma разбирает сама; у маршрута
   мимо huma на превышение отвечает его хендлер (`IsMaxBodyError`).
@@ -348,3 +349,7 @@ prod-адаптере chi, и на `testkit/handlertest`.
 - С начала остановки `/ready` отвечает `503 {"status":"draining"}` без проб: флаг
   остановки сервер кладёт в базовый ctx запросов, поэтому так отвечает `/ready`,
   зарегистрированный и без fx, на API этого сервера.
+- В OpenAPI у `/ready` ответ 503 — тело готовности `ReadyBody` (`application/json`,
+  описание перечисляет его `status`: `draining`, `unhealthy`), а при дедлайне запроса рядом —
+  `APIError` дедлайна (`503 REQUEST_TIMEOUT`, `application/problem+json`): `Service Unavailable:
+  draining, unhealthy, REQUEST_TIMEOUT`.

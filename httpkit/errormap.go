@@ -30,7 +30,8 @@ type ErrorRule struct {
 // совпавшее правило выигрывает.
 type ErrorMap struct{ rules []ErrorRule }
 
-// errorCodesKey — ключ Operation.Metadata, где Declare оставляет коды по статусам.
+// errorCodesKey — ключ Operation.Metadata, где Declare оставляет коды по статусам (RegisterHealth — статусы
+// тела 503 /ready).
 const errorCodesKey = "httpkit.errorCodes"
 
 // NewErrorMap собирает таблицу. Правило без ровно одного из Err и Match, без Code,
@@ -193,8 +194,8 @@ func setHeader(resp *huma.Response, name string, h *huma.Param) {
 	resp.Headers[name] = h
 }
 
-// kitResponse объявляет у операции ответ status с кодом code, который кит отдаёт сам: код —
-// после кодов Declare и без повтора, ответа статуса у операции нет — ответ со схемой APIError.
+// kitResponse объявляет у операции ответ status с кодом code, который кит отдаёт сам: код — после кодов
+// Declare и без повтора, тело — APIError, и у ответа операции со своим телом (503 /ready) — рядом с ним.
 func kitResponse(oapi *huma.OpenAPI, op *huma.Operation, codes map[int][]string, status int, code string) {
 	if !slices.Contains(codes[status], code) {
 		codes[status] = append(slices.Clone(codes[status]), code)
@@ -202,10 +203,17 @@ func kitResponse(oapi *huma.OpenAPI, op *huma.Operation, codes map[int][]string,
 	if op.Responses == nil {
 		op.Responses = map[string]*huma.Response{}
 	}
-	if op.Responses[strconv.Itoa(status)] == nil {
-		schema := oapi.Components.Schemas.Schema(reflect.TypeFor[APIError](), true, "APIError")
-		op.Responses[strconv.Itoa(status)] = &huma.Response{
-			Content: map[string]*huma.MediaType{ProblemContentType: {Schema: schema}},
+	resp := op.Responses[strconv.Itoa(status)]
+	if resp == nil {
+		resp = &huma.Response{}
+		op.Responses[strconv.Itoa(status)] = resp
+	}
+	if resp.Content[ProblemContentType] == nil {
+		if resp.Content == nil {
+			resp.Content = map[string]*huma.MediaType{}
+		}
+		resp.Content[ProblemContentType] = &huma.MediaType{
+			Schema: oapi.Components.Schemas.Schema(reflect.TypeFor[APIError](), true, "APIError"),
 		}
 	}
 }
