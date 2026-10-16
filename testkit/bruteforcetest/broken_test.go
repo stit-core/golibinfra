@@ -37,6 +37,12 @@ func TestRunContract_BrokenGuardFails(t *testing.T) {
 	}{
 		"refund-does-nothing": {func(g bruteforcekit.Guard) bruteforcekit.Guard { return forgetfulGuard{g} }, "RefundReturnsTheAttempt"},
 		"refund-returns-two":  {func(g bruteforcekit.Guard) bruteforcekit.Guard { return generousGuard{g} }, "RefundKeepsCheckedAttempts"},
+		"refund-goes-below-zero": {
+			func(g bruteforcekit.Guard) bruteforcekit.Guard {
+				return bruteforcetest.RefundBelowZero(g.(*bruteforcetest.Counting))
+			},
+			"RefundAfterParallelSuccessKeepsTheBudget",
+		},
 	}
 	if variant := os.Getenv(brokenEnv); variant != "" {
 		bruteforcetest.RunContract(t, func(t *testing.T, cfg bruteforcekit.Config) bruteforcekit.Guard {

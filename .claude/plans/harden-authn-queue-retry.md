@@ -110,8 +110,11 @@ blocked-by: —
     новый — красный: ротируются 7 из 8 выданных (`N/g-auth3/vga07-red-green.log`); самотест `retry-races-its-check` —
     красный в 1100 прогонах из 1100, в том числе под нагрузкой CPU; мутант pgstore «повтор гасит преемника без
     `used_at IS NULL`» контракт `cc9beab` пропускал (ловил только `TestStore_ConcurrentRetry`), новый — красный
-- [ ] **AC10** — VGA-08: возврат после параллельного успешного входа не уводит окно ниже нуля — субъект пропускает
+- [x] **AC10** — VGA-08: возврат после параллельного успешного входа не уводит окно ниже нуля — субъект пропускает
   `SubjectMaxFailures` попыток, не больше, одинаково в фейке и pgstore. Проверка: `go test -race -run 'TestCounting_Contract|TestStore_Contract|TestRunContract_BrokenGuardFails' ./testkit/bruteforcetest/ ./bruteforcekit/pgstore/` → PASS; мутанты «пол снят» (W3 в pgstore, `max` фейка) — красные
+  - Подтверждено: → PASS; мутанты W3 (pgstore, `GREATEST` снят) и F3 (фейк, `max` снят) контракт `cc9beab`
+    пропускал, новый — красный в `RefundAfterParallelSuccessKeepsTheBudget`: субъект пускает четвёртую попытку при
+    бюджете 3 (`N/g-auth3/vga08-mutants.log`); самотест `refund-goes-below-zero` проваливает только этот кейс
 
 ## Шаги
 - [x] **S1** — authnkit: очередь хэшера с отказом `ErrBusy` (RSECT-01) — вычисления ждут слот не дальше
@@ -193,8 +196,14 @@ blocked-by: —
     блокировкой (`RacyRetry`, `export_test.go`), контракт проваливает в этом кейсе; доки — `authnkit/docs/testing.md`,
     строка `sessiontest` README testkit; «Handoff» — строка `sessiontest`. Красное и зелёное — AC9;
     `go test -race ./testkit/sessiontest/ ./authnkit/session/pgstore/` → PASS; `make check` → `✓ check clean (./...)`
-- [ ] **S10** — контракт возврата: пол счётчика `Refund` — кейс по пробе R4 валидатора (VGA-08)
+- [x] **S10** — контракт возврата: пол счётчика `Refund` — кейс по пробе R4 валидатора (VGA-08)
   - Проверка: `go test -race ./testkit/bruteforcetest/ ./bruteforcekit/pgstore/` → PASS; мутанты «пол снят» — красные · Закрывает: AC10
+  - Сделано: кейс `RefundAfterParallelSuccessKeepsTheBudget` — проба R4 (попытка A, успешный вход B того же субъекта
+    с другого адреса, возврат A) и попытка C в новом окне с возвратом: возвратов в окне больше учтённых, а субъект
+    снова пропускает `SubjectMaxFailures` попыток; самотест `refund-goes-below-zero` — `Counting` без пола
+    (`RefundBelowZero`, `export_test.go`); README bruteforcekit (зачем пол, сломанные возвраты набора), строка
+    `bruteforcetest` README testkit. Красное и зелёное — AC10; `go test -race ./testkit/bruteforcetest/
+    ./bruteforcekit/pgstore/` → PASS; `make check` → `✓ check clean (./...)`
 
 ## Решения
 - RSECT-01 — отказ по длине очереди, а не по сроку ожидания: при полной очереди отказ приходит сразу и освобождает
@@ -273,6 +282,9 @@ blocked-by: —
   `rows changed` — fail-closed 500 честному клиенту); 16 — запас на порядки, предел цикла остаётся.
 - Контракт `bruteforcetest.RunContract` — новый: возврат обязан вести себя одинаково в pgstore и фейке; кейсы без
   сдвига часов (pgstore считает время часами базы), истечение блокировки — тесты хранилищ.
+- VGA-08 — кейс по пробе R4 с попыткой C после успеха: фейк успехом стирает строку субъекта, pgstore её обнуляет, и
+  без попытки, учтённой в новом окне, пол фейка не достигается — его мутант выжил бы. Самотест — `Counting` без пола в
+  `export_test.go`, как `RacyRetry` у сессий: обёртка снаружи не видит, что счётчик окна на нуле.
 
 ## Handoff
 ### Аннотация `v1.6.0` — authnkit и bruteforcekit
@@ -327,8 +339,7 @@ Breaking:
    `.env.example` (`SESSION_RETRY_WINDOW`: секунды, потолок 5m), якоря `scripts/tools/mutants.txt` у правленого кода.
 
 ## Где мы сейчас
-Шаги S1–S8 и критерии AC1–AC8 закрыты, перепроверка `cc9beab` — PASS с двумя minor-пробелами тестов. S9 закрыт:
-контракт сессий проваливает хранилище, у которого параллельные повторы оставляют несколько живых токенов (VGA-07).
-Дальше — S10 (VGA-08): кейс контракта `bruteforcetest` по пробе R4 — возврат после параллельного успешного входа не
-уводит окно ниже нуля; затем дирижёр: слияние в `main`, удаление плана, тег `v1.6.0` с аннотацией из «Handoff» и трек
-g-upgrade шаблона (заготовка правки входа — `N/g-auth/tpl-v-fix/internal/domain/auth/`).
+Все шаги и критерии закрыты, включая доводку по перепроверке `cc9beab` (PASS с двумя minor-пробелами тестов): контракт
+сессий проваливает хранилище, у которого параллельные повторы оставляют несколько живых токенов (VGA-07), контракт
+возврата — возврат, уводящий окно ниже нуля (VGA-08). Дальше — дирижёр: слияние в `main`, удаление плана, тег `v1.6.0`
+с аннотацией из «Handoff» и трек g-upgrade шаблона (заготовка правки входа — `N/g-auth/tpl-v-fix/internal/domain/auth/`).

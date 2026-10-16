@@ -39,6 +39,7 @@ func RunContract(t *testing.T, newGuard func(t *testing.T, cfg bruteforcekit.Con
 		{"RefundWithoutAttemptIsNoop", bruteforcekit.SubjectBudgetOff, refundWithoutAttempt},
 		{"RefundAfterSuccessIsNoop", bruteforcekit.SubjectBudgetOff, refundAfterSuccess},
 		{"RefundReturnsTheSubjectBudget", 3, refundReturnsTheSubjectBudget},
+		{"RefundAfterParallelSuccessKeepsTheBudget", 3, refundAfterParallelSuccess},
 		{"RefundRejectsInvalidKey", 3, refundRejectsInvalidKey},
 	}
 	for _, c := range cases {
@@ -129,6 +130,25 @@ func refundReturnsTheSubjectBudget(t *testing.T, g bruteforcekit.Guard, subject 
 	mustRefund(t, g, subject, "203.0.113.3")
 	wantAllowed(t, g, subject, "203.0.113.4", 1)
 	wantLocked(t, g, subject, "203.0.113.5", bruteforcekit.ScopeSubject)
+}
+
+// Возврат после параллельного успешного входа: попытку A учли, вход B того же субъекта с другого адреса успешен и
+// обнулил окно субъекта, попытку C учли уже в новом окне, а A и C получили отказ перегрузки и вернулись. Возвратов в
+// окне больше, чем учтённых в нём попыток, но окно не уходит ниже нуля: субъект снова пропускает SubjectMaxFailures
+// попыток, не больше.
+func refundAfterParallelSuccess(t *testing.T, g bruteforcekit.Guard, subject string) {
+	wantAllowed(t, g, subject, "203.0.113.1", 1)
+	wantAllowed(t, g, subject, "203.0.113.2", 1)
+	if err := g.RecordSuccess(t.Context(), subject, "203.0.113.2"); err != nil {
+		t.Fatalf("RecordSuccess: %v", err)
+	}
+	wantAllowed(t, g, subject, "203.0.113.3", 1)
+	mustRefund(t, g, subject, "203.0.113.1")
+	mustRefund(t, g, subject, "203.0.113.3")
+	for _, ip := range []string{"203.0.113.4", "203.0.113.5", "203.0.113.6"} {
+		wantAllowed(t, g, subject, ip, 1)
+	}
+	wantLocked(t, g, subject, "203.0.113.7", bruteforcekit.ScopeSubject)
 }
 
 func refundRejectsInvalidKey(t *testing.T, g bruteforcekit.Guard, subject string) {
