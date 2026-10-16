@@ -53,7 +53,9 @@ type tree struct {
 	pkgDirs    []string            // каталоги pkg/ с Go-файлами — тоже
 	pkgImports map[string][]string // пакет → импорты его не-тестовых файлов
 	tables     []string            // таблицы приложения: CREATE TABLE в migrations/*.up.sql
-	queries    map[string]string   // домен → SQL его infra/postgres/queries
+	views      map[string]sqlRefs  // представление из migrations/*.up.sql → к чему обращается
+	funcs      map[string]sqlRefs  // функция и процедура из migrations/*.up.sql → к чему обращается
+	queries    map[string]sqlRefs  // домен → к чему обращаются его infra/postgres/queries
 	ioChains   map[string][]string
 	seen       map[string]bool
 	found      []violation
@@ -78,7 +80,9 @@ func load(fsys fs.FS, o options) (*tree, error) {
 		module:     string(m[1]),
 		opts:       o,
 		pkgImports: map[string][]string{},
-		queries:    map[string]string{},
+		views:      map[string]sqlRefs{},
+		funcs:      map[string]sqlRefs{},
+		queries:    map[string]sqlRefs{},
 		types:      map[string]map[string]declared{},
 		ioChains:   map[string][]string{},
 		seen:       map[string]bool{},

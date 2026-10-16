@@ -45,8 +45,8 @@
   `Backlog`.
 - **archkit-rule-gaps** — формы нарушений, которые правила `archkit` не видят (правила синтаксические — README кита § Инварианты):
   порт между доменами через поле параметра (структура `fx.In`), функцию-помощник и приведение к интерфейсу вне пакетов доменов;
-  `time.Now` за обёрткой в `pkg/`; `io/ioutil`, `path/filepath` и `embed` в корне домена; в SQL — `public . users`,
-  `CREATE UNLOGGED TABLE`, схема не `public`, представление над чужой таблицей; запись
+  `time.Now` за обёрткой в `pkg/`; `io/ioutil`, `path/filepath` и `embed` в корне домена; в SQL — таблица под новым именем
+  (`ALTER TABLE … RENAME TO`), триггер и правило (`CREATE RULE`) над чужой таблицей, `EXECUTE` в теле функции; запись
   `WithUncheckedPackages` о пакете под другим доверенным. Триггер: повторный аудит archkit или такая форма у потребителя.
 - **natskit-empty-durable** — `SubscribeStream` с пустым `durable` шина принимает и создаёт эфемерный консьюмер, хотя контракт
   метода — durable: позиция между переподключениями и раздел нагрузки между инстансами (`natskit/docs/architecture.md`);

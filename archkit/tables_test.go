@@ -21,6 +21,7 @@ func TestOwnTables(t *testing.T) {
 		"subquery":                 "SELECT count(*) FROM orders WHERE customer_id IN (SELECT id FROM customers WHERE name <> '');",
 		"quoted":                   `SELECT c.email FROM orders o JOIN "customers" c ON c.id = o.customer_id;`,
 		"schema":                   `SELECT c.email FROM orders o JOIN public."customers" c ON c.id = o.customer_id;`,
+		"schema with spaces":       "SELECT c.email FROM orders o JOIN public . customers c ON c.id = o.customer_id;",
 		"upper case":               "SELECT C.EMAIL FROM ORDERS O JOIN CUSTOMERS C ON C.ID = O.CUSTOMER_ID;",
 		"using":                    "DELETE FROM orders USING customers WHERE customers.id = orders.customer_id;",
 		"update":                   "UPDATE customers SET name = $2 WHERE id = $1;",
@@ -109,6 +110,47 @@ SELECT id FROM customers;
 `},
 		},
 		{
+			name: "unlogged, temporary and global tables",
+			edits: edits{
+				"migrations/0003_carts.up.sql": "CREATE UNLOGGED TABLE carts (id UUID);\nCREATE TEMP TABLE drafts (id UUID);\n" +
+					"CREATE GLOBAL TEMPORARY TABLE marks (id UUID);\n",
+				orderQueries:    "SELECT id FROM carts;\nSELECT id FROM drafts;\nSELECT id FROM marks;\n",
+				customerQueries: "SELECT id FROM carts;\nSELECT id FROM drafts;\nSELECT id FROM marks;\n",
+			},
+			want: []string{
+				"table carts is queried by domains customer, order: " + whyTables,
+				"table drafts is queried by domains customer, order: " + whyTables,
+				"table marks is queried by domains customer, order: " + whyTables,
+			},
+		},
+		{
+			name: "table of another schema",
+			edits: edits{
+				"migrations/0003_billing.up.sql": "CREATE SCHEMA billing;\nCREATE TABLE billing.invoices (id UUID);\n",
+				orderQueries:                     "SELECT id FROM invoices;\n",
+				customerQueries:                  "SELECT id FROM billing.invoices;\n",
+			},
+			want: []string{"table invoices is queried by domains customer, order: " + whyTables},
+		},
+		{
+			name: "table created in a DO block",
+			edits: edits{
+				"migrations/0003_carts.up.sql": "DO $$\nBEGIN\n  IF NOT EXISTS (SELECT 1 FROM pg_tables WHERE tablename = 'carts') THEN\n" +
+					"    CREATE TABLE carts (id UUID);\n  END IF;\nEND\n$$;\n",
+				orderQueries:    "SELECT id FROM carts;\n",
+				customerQueries: "SELECT id FROM carts;\n",
+			},
+			want: []string{"table carts is queried by domains customer, order: " + whyTables},
+		},
+		{
+			name: "dollar and escape strings, nested comments",
+			edits: edits{orderQueries: `-- name: Noise :one
+SELECT $$FROM customers$$, $q$ JOIN customers $q$, E'it\'s FROM customers'
+FROM orders /* a /* b */ JOIN customers c */
+WHERE id = $1;
+`},
+		},
+		{
 			name: "comments and strings",
 			edits: edits{orderQueries: `-- name: Noise :one
 -- FROM customers
@@ -140,6 +182,137 @@ WHERE id = $1;
 				orderQueries:                      "SELECT count(*) FROM audit_log;\n",
 				customerQueries:                   "SELECT count(*) FROM audit_log;\n",
 			},
+		},
+	})
+}
+
+// Таблица соседа за представлением или функцией из миграций — то же обращение к ней; отказ называет обход.
+func TestOwnTablesThroughSchemaObjects(t *testing.T) {
+	t.Parallel()
+	const objects = "migrations/0003_objects.up.sql"
+	through := func(via string) []string {
+		return []string{"table customers is queried by domains customer, order: " + whyTables + " (order through " + via + ")"}
+	}
+	for name, tc := range map[string]struct{ schema, query, via string }{
+		"view": {
+			"CREATE VIEW v AS SELECT id, email FROM customers WHERE name <> 'x';",
+			"SELECT o.id FROM orders o JOIN v ON v.id = o.customer_id;", "view v",
+		},
+		"view with columns and options": {
+			"CREATE OR REPLACE VIEW v (id, email) WITH (security_barrier = true) AS SELECT id, email FROM customers WITH LOCAL CHECK OPTION;",
+			"SELECT email FROM v;", "view v",
+		},
+		"temporary view":    {"CREATE TEMPORARY VIEW v AS SELECT * FROM customers;", "SELECT * FROM v;", "view v"},
+		"recursive view":    {"CREATE RECURSIVE VIEW v (id) AS SELECT id FROM customers UNION ALL SELECT id FROM v WHERE false;", "SELECT * FROM v;", "view v"},
+		"materialized view": {"CREATE MATERIALIZED VIEW IF NOT EXISTS v AS SELECT * FROM public.customers WITH NO DATA;", "SELECT * FROM v;", "view v"},
+		"quoted names":      {`create view "V" as select * from "public"."customers";`, "SELECT * FROM public.v;", "view v"},
+		"view over a view": {
+			"CREATE VIEW base AS SELECT * FROM customers;\nCREATE VIEW v AS SELECT * FROM base;", "SELECT * FROM v;", "view v",
+		},
+		"view over a function": {
+			"CREATE FUNCTION email_of(uid UUID) RETURNS TEXT AS $$ SELECT email FROM customers WHERE id = uid $$ LANGUAGE sql;\n" +
+				"CREATE VIEW v AS SELECT email_of(customer_id) FROM orders;",
+			"SELECT * FROM v;", "view v",
+		},
+		"view in a DO block": {
+			"DO $$\nBEGIN\n  IF true THEN\n    CREATE VIEW v AS SELECT * FROM customers;\n  END IF;\nEND\n$$;", "SELECT * FROM v;", "view v",
+		},
+		"function": {
+			"CREATE FUNCTION f(uid UUID) RETURNS TEXT AS $$ SELECT email FROM customers WHERE id = uid; $$ LANGUAGE sql STABLE;",
+			"SELECT f(o.customer_id) FROM orders o;", "function f",
+		},
+		"body in quotes": {
+			"CREATE OR REPLACE FUNCTION public.f(uid UUID) RETURNS TEXT LANGUAGE sql AS 'SELECT email FROM customers WHERE id = uid AND name <> ''x''';",
+			"SELECT public.f(o.customer_id) FROM orders o;", "function f",
+		},
+		"body in an escape string": {
+			`CREATE FUNCTION f(uid UUID) RETURNS TEXT AS E'SELECT email FROM customers WHERE name <> \'x\'' LANGUAGE sql;`,
+			"SELECT f($1);", "function f",
+		},
+		"PL/pgSQL body with a tag": {
+			"CREATE FUNCTION f(uid UUID) RETURNS TEXT LANGUAGE plpgsql AS $body$\nDECLARE e text;\nBEGIN\n" +
+				"  SELECT email INTO e FROM customers WHERE id = uid;\n  RETURN e;\nEND;\n$body$;",
+			"SELECT f($1);", "function f",
+		},
+		"PERFORM": {"CREATE FUNCTION f() RETURNS void LANGUAGE plpgsql AS $$ BEGIN PERFORM 1 FROM customers; END $$;", "SELECT f();", "function f"},
+		"BEGIN ATOMIC body": {
+			"CREATE FUNCTION f(uid UUID) RETURNS TEXT LANGUAGE sql\nBEGIN ATOMIC\n  SELECT CASE WHEN uid IS NULL THEN 'none' END;\n" +
+				"  SELECT email FROM customers WHERE id = uid;\nEND;",
+			"SELECT f($1);", "function f",
+		},
+		"RETURN body": {
+			"CREATE FUNCTION f(uid UUID) RETURNS TEXT LANGUAGE sql RETURN (SELECT email FROM customers WHERE id = uid);",
+			"SELECT f($1);", "function f",
+		},
+		"set-returning function in FROM": {
+			"CREATE FUNCTION f(uid UUID) RETURNS SETOF customers AS $$ SELECT * FROM customers WHERE id = uid $$ LANGUAGE sql;",
+			"SELECT * FROM f($1);", "function f",
+		},
+		"procedure": {"CREATE PROCEDURE f(uid UUID) LANGUAGE sql AS $$ DELETE FROM customers WHERE id = uid $$;", "CALL f($1);", "function f"},
+		"function over a function": {
+			"CREATE FUNCTION g(uid UUID) RETURNS TEXT AS $$ SELECT email FROM customers WHERE id = uid $$ LANGUAGE sql;\n" +
+				"CREATE FUNCTION f(uid UUID) RETURNS TEXT AS $$ SELECT g(uid) $$ LANGUAGE sql;",
+			"SELECT f($1);", "function f",
+		},
+		"function over a view": {
+			"CREATE VIEW v AS SELECT * FROM customers;\nCREATE FUNCTION f(uid UUID) RETURNS TEXT AS $$ SELECT email FROM v WHERE id = uid $$ LANGUAGE sql;",
+			"SELECT f($1);", "function f",
+		},
+		// Определения одного имени из разных миграций складываются: правило не следит за DROP и OR REPLACE.
+		"function defined twice": {
+			"CREATE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n" +
+				"CREATE OR REPLACE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;",
+			"SELECT f();", "function f",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			got := failures(t, edits{objects: tc.schema + "\n", orderQueries: "-- name: Probe :one\n" + tc.query + "\n"})
+			requireFailures(t, got, through(tc.via))
+		})
+	}
+
+	runCases(t, []ruleCase{
+		{
+			name: "direct query next to the view",
+			edits: edits{
+				objects:      "CREATE VIEW v AS SELECT * FROM customers;\n",
+				orderQueries: "SELECT * FROM v;\nSELECT email FROM customers;\n",
+			},
+			want: []string{"table customers is queried by domains customer, order: " + whyTables},
+		},
+		{
+			name: "two domains through objects",
+			edits: edits{
+				objects: "CREATE VIEW v AS SELECT * FROM customers;\n" +
+					"CREATE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n",
+				"internal/domain/billing/billing.go":                      goSrc("billing"),
+				"internal/domain/billing/infra/postgres/queries/bill.sql": "SELECT f();\n",
+				orderQueries: "SELECT * FROM v;\n",
+			},
+			want: []string{
+				"table customers is queried by domains billing, customer, order: " + whyTables +
+					" (billing through function f; order through view v)",
+			},
+		},
+		{
+			name: "objects over own tables",
+			edits: edits{
+				objects: "CREATE VIEW open_orders AS SELECT * FROM orders WHERE note IS NULL;\n" +
+					"CREATE FUNCTION order_count() RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;\n",
+				orderQueries: "SELECT * FROM open_orders;\nSELECT order_count();\n",
+			},
+		},
+		{
+			name: "objects that no domain queries",
+			edits: edits{objects: "CREATE VIEW report AS SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id;\n" +
+				"CREATE FUNCTION report_count() RETURNS bigint AS $$ SELECT count(*) FROM orders JOIN customers ON true $$ LANGUAGE sql;\n"},
+		},
+		{
+			name: "trigger function",
+			edits: edits{objects: "CREATE OR REPLACE FUNCTION set_updated_at() RETURNS TRIGGER AS $$\nBEGIN\n    NEW.updated_at = NOW();\n" +
+				"    RETURN NEW;\nEND;\n$$ LANGUAGE plpgsql;\n\n" +
+				"CREATE TRIGGER customers_updated_at BEFORE UPDATE ON customers FOR EACH ROW EXECUTE FUNCTION set_updated_at();\n"},
 		},
 	})
 }
@@ -200,12 +373,17 @@ func TestQueriedTables(t *testing.T) {
 		{"SELECT a FROM (VALUES (1, 2), (3, 4)) v(a, b), t1", []string{"t1"}},
 		{"SELECT a FROM t1 JOIN t2 USING (id, t3)", []string{"t1", "t2"}},
 		{"SELECT a FROM t1, LATERAL (SELECT b, c FROM t2) s", []string{"t1", "t2"}},
+		{`SELECT a FROM public . t1 JOIN "public" . "T2" ON true`, []string{"t1", "t2"}},
+		{"SELECT $$FROM t2$$, $x$ JOIN t3 $x$ FROM t1", []string{"t1"}},
+		{`SELECT 'FROM t2', E'it\'s FROM t3' FROM t1`, []string{"t1"}},
+		{"/* a /* b */ FROM t2 */ SELECT a FROM t1 -- JOIN t3\n", []string{"t1"}},
+		{"SELECT $tag$ ; FROM t2 $tag$ FROM t1 WHERE b = $1", []string{"t1"}},
 		{"SELECT 1", nil},
 	} {
 		t.Run(tc.sql, func(t *testing.T) {
 			t.Parallel()
-			if got := queriedTables(tc.sql); !slices.Equal(got, tc.want) {
-				t.Fatalf("queriedTables = %v, want %v", got, tc.want)
+			if got := readRefs(lexSQL(tc.sql)).tables; !slices.Equal(got, tc.want) {
+				t.Fatalf("tables = %v, want %v", got, tc.want)
 			}
 		})
 	}
