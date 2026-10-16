@@ -389,8 +389,9 @@ func liveTokens(t *testing.T, db *pgkit.DB, sessionID string) []string {
 	return hashes
 }
 
-// В окне параллельные Rotate одним токеном не оставляют сессии двух живых токенов — ни из свежего токена (ротация и
-// повторы), ни из использованного (одни повторы): повтор гасит преемника, проигравший гонку повтор отзывает сессию.
+// Регрессия VGA-04: в окне параллельные Rotate одним токеном — из свежего токена (ротация и повторы) и из
+// использованного (одни повторы) — проходят все, как в фейке: повтор, проигравший гонку, идёт заново. Сессия жива, и
+// живой токен у неё ровно один — один из выданных.
 func TestStore_ConcurrentRetry(t *testing.T) {
 	_, db := startDB(t)
 	s, err := pgstore.NewStore(windowConfig, db, pgstore.WithClock(clockkit.NewTickable(testStart)))
@@ -413,7 +414,6 @@ func TestStore_ConcurrentRetry(t *testing.T) {
 			wg     sync.WaitGroup
 			mu     sync.Mutex
 			issued = map[string]bool{}
-			reused int
 		)
 		start := make(chan struct{})
 		for range n {
@@ -422,26 +422,71 @@ func TestStore_ConcurrentRetry(t *testing.T) {
 				next, err := s.Rotate(ctx, first.Value)
 				mu.Lock()
 				defer mu.Unlock()
-				switch {
-				case err == nil:
-					issued[authnkit.HashToken(next.Value)] = true
-				case errors.Is(err, session.ErrReused):
-					reused++
-				default:
-					t.Errorf("round %d: Rotate = %v, want a token or ErrReused", round, err)
+				if err != nil {
+					t.Errorf("round %d: Rotate = %v, want a token", round, err)
+					return
 				}
+				issued[authnkit.HashToken(next.Value)] = true
 			})
 		}
 		close(start)
 		wg.Wait()
-		live := liveTokens(t, db, first.SessionID)
-		switch {
-		case len(issued) == 0:
-			t.Fatalf("round %d: no Rotate issued a token", round)
-		case len(live) > 1:
-			t.Fatalf("round %d: %d live tokens after %d parallel Rotate, want at most one", round, len(live), n)
-		case reused == 0 && (len(live) != 1 || !issued[live[0]]):
-			t.Fatalf("round %d: without a reuse the session keeps exactly one issued token, live %v", round, live)
+		if live := liveTokens(t, db, first.SessionID); len(issued) != n || len(live) != 1 || !issued[live[0]] {
+			t.Fatalf("round %d: %d of %d parallel Rotate issued a token, live %v; want all and exactly one of them live",
+				round, len(issued), n, live)
 		}
+	}
+}
+
+// retryCounter — трассировщик pgx: считает операторы повтора (retrySQL).
+type retryCounter struct{ n atomic.Int32 }
+
+func (c *retryCounter) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.Contains(data.SQL, "repointed AS") {
+		c.n.Add(1)
+	}
+	return ctx
+}
+
+func (*retryCounter) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
+// Круг повтора — только после проигранной гонки: повтор старого токена, когда цепочка ушла дальше (преемник
+// использован), решается одним оператором и уходит в отзыв, а не крутит круги до предела — у предъявленного старого
+// токена нет цены в шестнадцать операторов.
+func TestStore_RetryOfMovedOnChainIsOneStatement(t *testing.T) {
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	counter := &retryCounter{}
+	pcfg, err := pgxpool.ParseConfig(pg.DSN)
+	if err != nil {
+		t.Fatal(err)
+	}
+	pcfg.ConnConfig.Tracer = counter
+	pool, err := pgxpool.NewWithConfig(t.Context(), pcfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pool.Close)
+	s, err := pgstore.NewStore(windowConfig, pgkit.NewDB(pool), pgstore.WithClock(clockkit.NewTickable(testStart)))
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	ctx := t.Context()
+	first, err := s.Issue(ctx, "moved-on")
+	if err != nil {
+		t.Fatalf("Issue: %v", err)
+	}
+	second, err := s.Rotate(ctx, first.Value)
+	if err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	if _, err := s.Rotate(ctx, second.Value); err != nil {
+		t.Fatalf("Rotate: %v", err)
+	}
+	before := counter.n.Load()
+	if _, err := s.Rotate(ctx, first.Value); !errors.Is(err, session.ErrReused) {
+		t.Fatalf("Rotate of a token whose successor is used = %v, want ErrReused", err)
+	}
+	if got := counter.n.Load() - before; got != 1 {
+		t.Fatalf("retry statements for one stale token = %d, want 1", got)
 	}
 }

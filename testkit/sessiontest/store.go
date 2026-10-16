@@ -14,10 +14,9 @@ import (
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 )
 
-// Store — in-memory session.Store с семантикой pgstore: те же сроки, ротация, окно повтора, отзыв сессии при
-// повторе токена и ErrInTx у Rotate в транзакции. Откат транзакции фейк не видит: отзыв в транзакции проверяется на
-// pgstore; параллельные Rotate одним токеном фейк проводит по очереди — каждый повтор в окне гасит преемника
-// предыдущего, — а pgstore на повторе, проигравшем гонку другому, отзывает сессию.
+// Store — in-memory session.Store с семантикой pgstore: те же сроки, ротация, окно повтора (параллельные повторы —
+// по очереди, каждый гасит преемника предыдущего), отзыв сессии при повторе токена и ErrInTx у Rotate в транзакции.
+// Откат транзакции фейк не видит: отзыв в транзакции проверяется на pgstore.
 type Store struct {
 	cfg   session.Config
 	clock clockkit.Clock
@@ -108,9 +107,10 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	return s.next(tok, sess, now), nil
 }
 
-// retry — повтор использованного tok в окне: меньше RetryWindow после ротации, сессия жива, преемник не использован.
+// retry — повтор использованного tok в окне: окно есть, меньше RetryWindow после ротации, сессия жива, преемник не
+// использован.
 func (s *Store) retry(tok *fakeToken, sess *fakeSession, successor *fakeToken, now time.Time) bool {
-	return now.Sub(tok.usedAt) < s.cfg.RetryWindow && !sess.revoked && sess.expiresAt.After(now) &&
+	return s.cfg.RetryWindow > 0 && now.Sub(tok.usedAt) < s.cfg.RetryWindow && !sess.revoked && sess.expiresAt.After(now) &&
 		successor != nil && successor.usedAt.IsZero()
 }
 

@@ -36,12 +36,14 @@ func RunContract(t *testing.T, newStore func(t *testing.T, cfg session.Config, c
 		{"IssueAndRotate", false, issueAndRotate},
 		{"RetryInWindowIssuesNewSuccessor", false, retryInWindow},
 		{"RetryKillsPreviousSuccessor", false, retryKillsPreviousSuccessor},
+		{"TwoRetriesInARow", false, twoRetriesInARow},
 		{"ReuseOutsideWindowRevokesSession", false, reuseOutsideWindow},
 		{"ReuseAfterSuccessorUsedRevokesSession", false, reuseAfterSuccessorUsed},
 		{"RetryDoesNotReopenClosedSession", false, retryOfClosedSession},
 		{"RetryDoesNotOutliveSession", false, retryAfterAbsoluteDeadline},
-		{"ConcurrentRotateLeavesOneLiveToken", false, concurrentRotateInWindow},
+		{"ConcurrentRetriesKeepTheSession", false, concurrentRetriesKeepTheSession},
 		{"StrictReuseRevokesSession", true, strictReuseRevokesSession},
+		{"StrictReuseAfterClockStepBack", true, strictReuseAfterClockStepBack},
 		{"ConcurrentRotateHasOneWinner", true, concurrentRotate},
 		{"AbsoluteDeadlineIsNotExtended", false, absoluteDeadline},
 		{"IdleTokenExpires", false, idleExpiry},
@@ -200,8 +202,24 @@ func retryOfClosedSession(t *testing.T, s session.Store, _ *clockkit.Tickable) {
 	wantRotateErr(t, s, next.Value, session.ErrInvalid)
 }
 
-// Окно не продлевает сессию: повтор после её абсолютного срока — отказ, а не токен, с которым потребитель выдал бы
-// access-токен истёкшей сессии.
+// Два ответа подряд потеряны: второй повтор гасит преемника первого, живым остаётся последний выданный, а токен первого
+// повтора — погашенный преемник.
+func twoRetriesInARow(t *testing.T, s session.Store, clock *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	mustRotate(t, s, first.Value)
+	clock.Advance(5 * time.Second)
+	firstRetry := mustRotate(t, s, first.Value)
+	clock.Advance(5 * time.Second)
+	secondRetry := mustRotate(t, s, first.Value)
+	if secondRetry.Value == firstRetry.Value || secondRetry.SessionID != first.SessionID {
+		t.Fatalf("second retry = %+v, want a new token of session %s", secondRetry, first.SessionID)
+	}
+	mustRotate(t, s, secondRetry.Value)
+	wantReused(t, s, firstRetry.Value, first)
+}
+
+// Окно не продлевает сессию: токен повтора у её конца живёт до абсолютного срока, не дальше, а повтор после срока —
+// отказ, а не токен, с которым потребитель выдал бы access-токен истёкшей сессии.
 func retryAfterAbsoluteDeadline(t *testing.T, s session.Store, clock *clockkit.Tickable) {
 	tok := mustIssue(t, s, subject(t))
 	for range 3 {
@@ -210,50 +228,55 @@ func retryAfterAbsoluteDeadline(t *testing.T, s session.Store, clock *clockkit.T
 	}
 	clock.Advance(29*time.Minute + 30*time.Second)
 	mustRotate(t, s, tok.Value)
-	clock.Advance(45 * time.Second)
+	clock.Advance(10 * time.Second)
+	retried := mustRotate(t, s, tok.Value)
+	if deadline := contractStart.Add(contractConfig.AbsoluteTTL); !retried.ExpiresAt.Equal(deadline) || !retried.SessionExpiresAt.Equal(deadline) {
+		t.Fatalf("retry at the end of the session expires %s, session %s; want both at the absolute deadline %s",
+			retried.ExpiresAt, retried.SessionExpiresAt, deadline)
+	}
+	clock.Advance(35 * time.Second)
 	wantReused(t, s, tok.Value, tok)
 }
 
-// Параллельные ротации одним токеном в окне — повторы друг друга: каждый вызов — новый токен или повтор с отзывом
-// сессии, и живым после них остаётся не больше одного токена сессии.
-func concurrentRotateInWindow(t *testing.T, s session.Store, _ *clockkit.Tickable) {
-	first := mustIssue(t, s, subject(t))
+// Параллельные ротации одним токеном в окне — повторы друг друга: проходят по очереди, каждый вызов получает новый
+// токен, и сессия жива — честные параллельные обновления клиента её не закрывают; живым остаётся последний выданный.
+func concurrentRetriesKeepTheSession(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	subj := subject(t)
+	first := mustIssue(t, s, subj)
 	const n = 8
 	var (
-		wg              sync.WaitGroup
-		mu              sync.Mutex
-		issued          []string
-		unexpectedError error
+		wg   sync.WaitGroup
+		mu   sync.Mutex
+		errs []error
 	)
 	start := make(chan struct{})
 	for range n {
 		wg.Go(func() {
 			<-start
-			next, err := s.Rotate(context.Background(), first.Value)
-			mu.Lock()
-			defer mu.Unlock()
-			switch {
-			case err == nil:
-				issued = append(issued, next.Value)
-			case !errors.Is(err, session.ErrReused):
-				unexpectedError = err
+			if _, err := s.Rotate(context.Background(), first.Value); err != nil {
+				mu.Lock()
+				errs = append(errs, err)
+				mu.Unlock()
 			}
 		})
 	}
 	close(start)
 	wg.Wait()
-	if len(issued) == 0 || unexpectedError != nil {
-		t.Fatalf("%d parallel Rotate in the window: %d issued, unexpected %v; want at least one token and only reuses besides", n, len(issued), unexpectedError)
+	if len(errs) != 0 {
+		t.Fatalf("%d parallel Rotate in the window: errors %v, want a token for each", n, errs)
 	}
-	live := 0
-	for _, tok := range issued {
-		if _, err := s.Rotate(t.Context(), tok); err == nil {
-			live++
-		}
+	if owner, err := s.Revoke(t.Context(), first.Value); err != nil || owner != subj {
+		t.Fatalf("Revoke after parallel retries = %q, %v; want the open session of %q", owner, err, subj)
 	}
-	if live > 1 {
-		t.Fatalf("%d of %d issued tokens still rotate, want at most one live token", live, len(issued))
-	}
+}
+
+// Без окна часы, шагнувшие назад, повтор не открывают: использованный токен — повтор, сессия отозвана.
+func strictReuseAfterClockStepBack(t *testing.T, s session.Store, clock *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	next := mustRotate(t, s, first.Value)
+	clock.Set(clock.Now().Add(-time.Second))
+	wantReused(t, s, first.Value, first)
+	wantRotateErr(t, s, next.Value, session.ErrInvalid)
 }
 
 // Без окна повтор использованного токена отзывает сессию сразу, даже если ответ ротации потерян.

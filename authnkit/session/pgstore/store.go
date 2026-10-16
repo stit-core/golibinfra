@@ -111,16 +111,18 @@ SELECT $2, id, LEAST($4::timestamptz, expires_at), $3 FROM used
 RETURNING session_id, expires_at, (SELECT subject FROM used), (SELECT expires_at FROM used)
 `
 
-// Повтор в окне: токен использован позже $5 (начало окна), сессия жива, его преемник не использован. Преемник гаснет
-// условным UPDATE — из параллельных повторов его получает один, — и только тогда вставляется новый и родитель указывает
-// на него: живым остаётся один токен.
+// Повтор в окне: токен использован позже $5 (начало окна), сессия жива, его преемник по снимку оператора не использован
+// — тогда строка ответа есть. Преемник гаснет условным UPDATE, и только тогда вставляется новый и родитель указывает на
+// него: живым остаётся один токен. Строка без выданного токена — преемника после снимка погасил параллельный повтор.
 const retrySQL = `
 WITH parent AS (
     SELECT t.successor_hash, s.id, s.subject, s.expires_at
     FROM authn_session_tokens t
     JOIN authn_sessions s ON s.id = t.session_id
+    JOIN authn_session_tokens c ON c.token_hash = t.successor_hash
     WHERE t.token_hash = $1
       AND t.used_at > $5
+      AND c.used_at IS NULL
       AND s.revoked_at IS NULL
       AND s.expires_at > $3
 ),
@@ -138,10 +140,14 @@ repointed AS (
     FROM superseded
     WHERE t.token_hash = $1
     RETURNING t.session_id
+),
+issued AS (
+    INSERT INTO authn_session_tokens (token_hash, session_id, expires_at, created_at)
+    SELECT $2, p.id, LEAST($4::timestamptz, p.expires_at), $3 FROM parent p, repointed
+    RETURNING session_id, expires_at
 )
-INSERT INTO authn_session_tokens (token_hash, session_id, expires_at, created_at)
-SELECT $2, p.id, LEAST($4::timestamptz, p.expires_at), $3 FROM parent p, repointed
-RETURNING session_id, expires_at, (SELECT subject FROM parent), (SELECT expires_at FROM parent)
+SELECT i.session_id, i.expires_at, p.subject, p.expires_at
+FROM parent p LEFT JOIN issued i ON true
 `
 
 // Rotate гасит токен и выдаёт следующий в той же сессии; повтор использованного токена в окне
@@ -153,10 +159,10 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 	}
 	now := s.now()
 	result := resultOK
-	next, err := s.issueNext(ctx, rotateSQL, refresh, now)
+	next, err := s.rotate(ctx, refresh, now)
 	if errors.Is(err, errNotIssued) && s.cfg.RetryWindow > 0 {
 		result = resultRetry
-		next, err = s.issueNext(ctx, retrySQL, refresh, now, now.Add(-s.cfg.RetryWindow))
+		next, err = s.retry(ctx, refresh, now)
 	}
 	switch {
 	case errors.Is(err, errNotIssued):
@@ -171,13 +177,10 @@ func (s *Store) Rotate(ctx context.Context, refresh string) (session.Token, erro
 // errNotIssued — оператор ротации или повтора не нашёл подходящего токена: исход решает reject.
 var errNotIssued = errors.New("authnkit/session/pgstore: no token issued")
 
-// issueNext выполняет оператор ротации или повтора и отдаёт выданный им токен; без строки — errNotIssued.
-func (s *Store) issueNext(ctx context.Context, sql, refresh string, now time.Time, args ...any) (session.Token, error) {
+// rotate — ротация живого токена: выданный следующий токен; токен не жив — errNotIssued.
+func (s *Store) rotate(ctx context.Context, refresh string, now time.Time) (session.Token, error) {
 	next := session.Token{Value: authnkit.NewToken()}
-	err := s.db.QueryRow(ctx, sql, append([]any{
-		authnkit.HashToken(refresh), authnkit.HashToken(next.Value),
-		now, now.Add(s.cfg.IdleTTL),
-	}, args...)...).
+	err := s.db.QueryRow(ctx, rotateSQL, authnkit.HashToken(refresh), authnkit.HashToken(next.Value), now, now.Add(s.cfg.IdleTTL)).
 		Scan(&next.SessionID, &next.ExpiresAt, &next.Subject, &next.SessionExpiresAt)
 	switch {
 	case pgkit.IsNoRows(err):
@@ -187,6 +190,36 @@ func (s *Store) issueNext(ctx context.Context, sql, refresh string, now time.Tim
 	}
 	next.ExpiresAt, next.SessionExpiresAt = next.ExpiresAt.UTC(), next.SessionExpiresAt.UTC()
 	return next, nil
+}
+
+// retryRounds — сколько раз повтор идёт заново после гонки: проигрыш — это чужой выигрыш, поэтому из N одновременных
+// повторов одного токена каждому хватает N раундов; дальше — отказ, как у прочего повтора.
+const retryRounds = 16
+
+// retry — повтор использованного токена в окне: выданный новый преемник. Оператор, проигравший гонку параллельному
+// повтору, идёт заново и гасит преемника победителя: параллельные повторы проходят по очереди, как в фейке. Токен не
+// годится для повтора — errNotIssued.
+func (s *Store) retry(ctx context.Context, refresh string, now time.Time) (session.Token, error) {
+	for range retryRounds {
+		var (
+			next      = session.Token{Value: authnkit.NewToken()}
+			sessionID *string
+			expiresAt *time.Time
+		)
+		err := s.db.QueryRow(ctx, retrySQL, authnkit.HashToken(refresh), authnkit.HashToken(next.Value), now,
+			now.Add(s.cfg.IdleTTL), now.Add(-s.cfg.RetryWindow)).
+			Scan(&sessionID, &expiresAt, &next.Subject, &next.SessionExpiresAt)
+		switch {
+		case pgkit.IsNoRows(err):
+			return session.Token{}, errNotIssued
+		case err != nil:
+			return session.Token{}, fmt.Errorf("authnkit/session/pgstore: rotate: retry: %w", err)
+		case sessionID != nil:
+			next.SessionID, next.ExpiresAt, next.SessionExpiresAt = *sessionID, expiresAt.UTC(), next.SessionExpiresAt.UTC()
+			return next, nil
+		}
+	}
+	return session.Token{}, errNotIssued
 }
 
 // revokeTimeout — срок отзыва сессии при повторе токена: он идёт мимо отмены ctx запроса.
