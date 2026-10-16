@@ -2,7 +2,9 @@ package archkit
 
 import (
 	"go/ast"
+	"go/token"
 	"go/types"
+	"maps"
 	"slices"
 )
 
@@ -46,27 +48,49 @@ func (t *tree) wallClock() {
 // маппинга.
 func (t *tree) identityClosures() {
 	for _, f := range t.files {
-		if !f.domainCode() || f.sub != "module" {
-			continue
+		if f.domainCode() && f.sub == "module" {
+			t.closuresIn(f, f.syntax, nil)
 		}
-		ast.Inspect(f.syntax, func(n ast.Node) bool {
-			for _, c := range t.passedThrough(f, n) {
-				t.add(f.path+" returns "+types.ExprString(c.param)+" as "+types.ExprString(c.result), whyClosure)
-			}
-			return true
-		})
 	}
+}
+
+// closuresIn проверяет функции под узлом n. outer — значения чужого домена функций уровнем выше (имя →
+// тип параметра): литерал функции, который их захватил, отдаёт их так же, как свои параметры.
+func (t *tree) closuresIn(f goFile, n ast.Node, outer map[string]ast.Expr) {
+	ast.Inspect(n, func(n ast.Node) bool {
+		fn, body := funcParts(n)
+		if body == nil {
+			return true
+		}
+		seen := maps.Clone(outer)
+		if seen == nil {
+			seen = map[string]ast.Expr{}
+		}
+		for _, p := range fn.Params.List {
+			for _, name := range p.Names {
+				delete(seen, name.Name)
+				if t.foreign(f, f.domain, p.Type, 0) {
+					seen[name.Name] = p.Type
+				}
+			}
+		}
+		held := t.holders(f, body, seen)
+		for _, c := range t.passedThrough(f, fn, body, held) {
+			t.add(f.path+" returns "+types.ExprString(c.param)+" as "+types.ExprString(c.result), whyClosure)
+		}
+		t.closuresIn(f, body, held)
+		return false
+	})
 }
 
 // passing — параметр чужого домена, который функция возвращает, и тип результата, под которым.
 type passing struct{ param, result ast.Expr }
 
-// passedThrough — параметры чужого домена, которые функция n возвращает под типом не из чужого домена:
-// в любом return и любой позиции результата, как есть, в скобках, приведением к интерфейсу или чужому
-// типу, утверждением типа, через переменную или именованный результат.
-func (t *tree) passedThrough(f goFile, n ast.Node) []passing {
-	fn, body := funcParts(n)
-	if body == nil || fn.Results == nil {
+// passedThrough — значения чужого домена из held, которые функция возвращает под типом не из чужого
+// домена: в любом return и любой позиции результата, как есть, в скобках, приведением к интерфейсу или
+// чужому типу, утверждением типа, через переменную или именованный результат.
+func (t *tree) passedThrough(f goFile, fn *ast.FuncType, body *ast.BlockStmt, held map[string]ast.Expr) []passing {
+	if fn.Results == nil || len(held) == 0 {
 		return nil
 	}
 	var results, named []ast.Expr
@@ -79,32 +103,24 @@ func (t *tree) passedThrough(f goFile, n ast.Node) []passing {
 		}
 	}
 	var found []passing
-	for _, p := range fn.Params.List {
-		if !t.foreign(f, f.domain, p.Type, 0) {
-			continue
+	inspectBody(body, func(n ast.Node) {
+		ret, ok := n.(*ast.ReturnStmt)
+		if !ok {
+			return
 		}
-		for _, name := range p.Names {
-			held := t.holders(f, body, name.Name)
-			inspectBody(body, func(n ast.Node) {
-				ret, ok := n.(*ast.ReturnStmt)
-				if !ok {
-					return
-				}
-				values := ret.Results
-				if len(values) == 0 {
-					values = named
-				}
-				if len(values) != len(results) {
-					return
-				}
-				for i, v := range values {
-					if t.holds(f, v, held) && !t.foreign(f, f.domain, results[i], 0) {
-						found = append(found, passing{param: p.Type, result: results[i]})
-					}
-				}
-			})
+		values := ret.Results
+		if len(values) == 0 {
+			values = named
 		}
-	}
+		if len(values) != len(results) {
+			return
+		}
+		for i, v := range values {
+			if param, ok := t.holds(f, v, held); ok && !t.foreign(f, f.domain, results[i], 0) {
+				found = append(found, passing{param: param, result: results[i]})
+			}
+		}
+	})
 	return found
 }
 
@@ -130,11 +146,11 @@ func inspectBody(body *ast.BlockStmt, visit func(ast.Node)) {
 	})
 }
 
-// holders — имена, под которыми тело держит значение параметра: он сам и переменные, которым его
-// присвоили.
-func (t *tree) holders(f goFile, body *ast.BlockStmt, param string) map[string]bool {
-	held := map[string]bool{param: true}
-	for grew := true; grew; {
+// holders — имена, под которыми тело держит значения seed (имя → тип параметра): они сами и переменные,
+// которым их присвоили (и v из v, ok := x.(T)).
+func (t *tree) holders(f goFile, body *ast.BlockStmt, seed map[string]ast.Expr) map[string]ast.Expr {
+	held := maps.Clone(seed)
+	for grew := len(held) > 0; grew; {
 		grew = false
 		inspectBody(body, func(n ast.Node) {
 			var names, values []ast.Expr
@@ -147,12 +163,19 @@ func (t *tree) holders(f goFile, body *ast.BlockStmt, param string) map[string]b
 				}
 				values = s.Values
 			}
+			if _, commaOK := ast.Unparen(single(values)).(*ast.TypeAssertExpr); commaOK && len(names) == 2 {
+				names = names[:1]
+			}
 			if len(names) != len(values) {
 				return
 			}
 			for i, name := range names {
-				if id, ok := name.(*ast.Ident); ok && !held[id.Name] && t.holds(f, values[i], held) {
-					held[id.Name], grew = true, true
+				id, ok := name.(*ast.Ident)
+				if !ok || held[id.Name] != nil {
+					continue
+				}
+				if param, ok := t.holds(f, values[i], held); ok {
+					held[id.Name], grew = param, true
 				}
 			}
 		})
@@ -160,24 +183,39 @@ func (t *tree) holders(f goFile, body *ast.BlockStmt, param string) map[string]b
 	return held
 }
 
-// holds — выражение отдаёт значение одного из имён held как есть: само имя, скобки, утверждение типа,
-// приведение к интерфейсу или к чужому типу.
-func (t *tree) holds(f goFile, e ast.Expr, held map[string]bool) bool {
+// single — единственное выражение списка; nil — их не одно.
+func single(exprs []ast.Expr) ast.Expr {
+	if len(exprs) != 1 {
+		return nil
+	}
+	return exprs[0]
+}
+
+// holds — выражение отдаёт значение одного из имён held как есть: само имя, скобки, *&, утверждение
+// типа, приведение к интерфейсу или к чужому типу; param — тип параметра, чьё это значение.
+func (t *tree) holds(f goFile, e ast.Expr, held map[string]ast.Expr) (param ast.Expr, ok bool) {
 	for {
 		switch x := e.(type) {
 		case *ast.Ident:
-			return held[x.Name]
+			param, ok = held[x.Name]
+			return param, ok
 		case *ast.ParenExpr:
 			e = x.X
 		case *ast.TypeAssertExpr:
 			e = x.X
+		case *ast.StarExpr:
+			addr, isAddr := ast.Unparen(x.X).(*ast.UnaryExpr)
+			if !isAddr || addr.Op != token.AND {
+				return nil, false
+			}
+			e = addr.X
 		case *ast.CallExpr:
 			if len(x.Args) != 1 || x.Ellipsis.IsValid() || !t.keepsValue(f, x.Fun) {
-				return false
+				return nil, false
 			}
 			e = x.Args[0]
 		default:
-			return false
+			return nil, false
 		}
 	}
 }

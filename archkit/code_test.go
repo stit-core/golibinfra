@@ -237,6 +237,9 @@ var reader = func(uc *Usecase) order.CustomerReader { return uc }
 	inner   = func(uc *customer.Usecase) func() order.CustomerReader {
 		return func() order.CustomerReader { return &customerReader{uc: uc} }
 	}
+	shadowed = func(uc *customer.Usecase) func(uc *order.Usecase) order.Placer {
+		return func(uc *order.Usecase) order.Placer { return uc }
+	}
 	own   = func(uc *order.Usecase) order.Placer { return uc }
 	plain = func(n int) int { return n }
 )`)},
@@ -306,6 +309,12 @@ var (
 		"with a failing error":       "var reader = func(uc *customer.Usecase) (order.CustomerReader, error) { return uc, errBoom }",
 		"first of two results":       "var reader = func(uc *customer.Usecase) (order.CustomerReader, *order.Order) { return uc, nil }",
 		"second of two results":      "var reader = func(uc *customer.Usecase) (*order.Order, order.CustomerReader) { return nil, uc }",
+		"comma-ok assertion": "func newReader(uc *customer.Usecase) order.CustomerReader {\n\tif r, ok := any(uc).(order.CustomerReader); ok {\n" +
+			"\t\treturn r\n\t}\n\treturn nil\n}",
+		"address dereferenced":                "var reader = func(uc *customer.Usecase) order.CustomerReader { return *&uc }",
+		"literal that captures the parameter": "var reader = func(uc *customer.Usecase) order.CustomerReader {\n\treturn func() order.CustomerReader { return uc }()\n}",
+		"literal that captures a variable": "func newReader(uc *customer.Usecase) order.CustomerReader {\n\tr := uc\n" +
+			"\tget := func() order.CustomerReader { return r }\n\treturn get()\n}",
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
