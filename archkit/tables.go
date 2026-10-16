@@ -59,8 +59,8 @@ func (t *tree) loadSQL(fsys fs.FS, domains []string) error {
 }
 
 // readSchema читает операторы миграции по порядку: CREATE объявляет таблицу приложения, представление или
-// функцию с тем, к чему обращается её определение, DROP снимает представление и функцию; тело DO
-// читается так же.
+// функцию с тем, к чему обращается её определение, DROP снимает представление и функцию, ALTER … RENAME TO
+// переносит объект на новое имя; тело DO читается так же.
 func (t *tree) readSchema(tokens []sqlToken) {
 	for _, st := range statements(tokens) {
 		if len(st) > 0 && keyword(st[0], "do") {
@@ -71,12 +71,14 @@ func (t *tree) readSchema(tokens []sqlToken) {
 			}
 			continue
 		}
-		switch at := slices.IndexFunc(st, func(tok sqlToken) bool { return keyword(tok, "create", "drop") }); {
+		switch at := slices.IndexFunc(st, func(tok sqlToken) bool { return keyword(tok, "create", "drop", "alter") }); {
 		case at < 0:
 		case st[at].text == "create":
 			t.declareObject(st[at+1:])
-		default:
+		case st[at].text == "drop":
 			t.dropObjects(st[at+1:])
+		default:
+			t.renameObject(st[at+1:])
 		}
 	}
 }
@@ -139,6 +141,79 @@ func (t *tree) dropObjects(st []sqlToken) {
 		i = afterParens(st, i+1)
 		if i < len(st) && keyword(st[i], ",") {
 			i++
+		}
+	}
+}
+
+// renameObject разбирает ALTER … RENAME TO: таблица под новым именем — таблица приложения, представление
+// и функция (перегрузка той же сигнатуры или все) переходят на новое имя. Определения, которые обращались
+// к старому имени, обращаются к новому: представление в PostgreSQL держит объект, а не имя.
+func (t *tree) renameObject(st []sqlToken) {
+	i := 0
+	if i < len(st) && keyword(st[i], "materialized") {
+		i++
+	}
+	if i >= len(st) || !keyword(st[i], "table", "view", "function", "procedure") {
+		return
+	}
+	kind := st[i].text
+	for i++; i < len(st) && keyword(st[i], "if", "exists", "only"); i++ {
+	}
+	if i >= len(st) || st[i].str {
+		return
+	}
+	name, sig := relName(st[i].text), signature(st[i+1:])
+	if i = afterParens(st, i+1); i+2 >= len(st) || !keyword(st[i], "rename") || !keyword(st[i+1], "to") || st[i+2].str {
+		return
+	}
+	to := relName(st[i+2].text)
+	if kind == "function" || kind == "procedure" {
+		moved := t.funcs[name]
+		if def, exact := moved[sig]; exact {
+			moved = funcDefs{sig: def}
+		}
+		for s, def := range moved {
+			if t.funcs[to] == nil {
+				t.funcs[to] = funcDefs{}
+			}
+			t.funcs[to][s] = def
+			delete(t.funcs[name], s)
+		}
+		t.renameRefs(true, name, to)
+		return
+	}
+	if slices.Contains(t.tables, name) && !slices.Contains(t.tables, to) {
+		t.tables = append(t.tables, to)
+	}
+	if def, ok := t.views[name]; ok {
+		t.views[to] = def
+		delete(t.views, name)
+	}
+	t.renameRefs(false, name, to)
+}
+
+// renameRefs заменяет имя from на to в обращениях определений представлений и функций — в вызовах
+// (calls) или в именах таблиц.
+func (t *tree) renameRefs(calls bool, from, to string) {
+	swap := func(r sqlRefs) sqlRefs {
+		names := &r.tables
+		if calls {
+			names = &r.calls
+		}
+		*names = slices.Clone(*names)
+		for i, name := range *names {
+			if name == from {
+				(*names)[i] = to
+			}
+		}
+		return r
+	}
+	for name, def := range t.views {
+		t.views[name] = swap(def)
+	}
+	for _, overloads := range t.funcs {
+		for sig, def := range overloads {
+			overloads[sig] = swap(def)
 		}
 	}
 }

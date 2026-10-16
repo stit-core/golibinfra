@@ -270,6 +270,13 @@ func TestOwnTablesThroughSchemaObjects(t *testing.T) {
 				"CREATE FUNCTION f(n int) RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;",
 			"SELECT f($1);", "function f",
 		},
+		"view renamed": {
+			"CREATE VIEW v AS SELECT * FROM customers;\nALTER VIEW IF EXISTS v RENAME TO w;", "SELECT * FROM w;", "view w",
+		},
+		"function renamed": {
+			"CREATE FUNCTION f() RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\nALTER FUNCTION f() RENAME TO g;",
+			"SELECT g();", "function g",
+		},
 		"overload left by DROP of another": {
 			"CREATE FUNCTION f(uid UUID) RETURNS bigint AS $$ SELECT count(*) FROM customers $$ LANGUAGE sql;\n" +
 				"CREATE FUNCTION f(n int) RETURNS bigint AS $$ SELECT count(*) FROM orders $$ LANGUAGE sql;\nDROP FUNCTION f(n int);",
@@ -318,6 +325,33 @@ func TestOwnTablesThroughSchemaObjects(t *testing.T) {
 			name: "objects that no domain queries",
 			edits: edits{objects: "CREATE VIEW report AS SELECT * FROM orders o JOIN customers c ON c.id = o.customer_id;\n" +
 				"CREATE FUNCTION report_count() RETURNS bigint AS $$ SELECT count(*) FROM orders JOIN customers ON true $$ LANGUAGE sql;\n"},
+		},
+		// Таблица под новым именем — та же таблица приложения, и представление над ней идёт за ней.
+		{
+			name: "table renamed",
+			edits: edits{
+				objects:         "ALTER TABLE IF EXISTS customers RENAME TO clients;\n",
+				customerQueries: "SELECT id FROM clients;\n",
+				orderQueries:    "SELECT id FROM clients;\n",
+			},
+			want: []string{"table clients is queried by domains customer, order: " + whyTables},
+		},
+		{
+			name: "view follows the renamed table",
+			edits: edits{
+				objects:         "CREATE VIEW v AS SELECT * FROM customers;\nALTER TABLE customers RENAME TO clients;\n",
+				customerQueries: "SELECT id FROM clients;\n",
+				orderQueries:    "SELECT * FROM v;\n",
+			},
+			want: []string{"table clients is queried by domains customer, order: " + whyTables + " (order through view v)"},
+		},
+		{
+			name: "column renames",
+			edits: edits{
+				objects:         "ALTER TABLE customers RENAME COLUMN name TO full_name;\nALTER TABLE customers RENAME email TO title;\n",
+				customerQueries: "SELECT 1 FROM title;\nSELECT 1 FROM full_name;\n",
+				orderQueries:    "SELECT 1 FROM title;\nSELECT 1 FROM full_name;\n",
+			},
 		},
 		// Миграции читаются по порядку версий: OR REPLACE заменяет определение, DROP снимает.
 		{
