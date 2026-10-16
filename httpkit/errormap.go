@@ -180,10 +180,15 @@ func describeErrors(cfg Config, registered func(*huma.Operation) bool) huma.AddO
 	}
 }
 
-// readsLimitedBody — тело операции huma читает под лимитом (MaxBodyBytes): превышение — 413.
-// Multipart-форму huma разбирает сама, и тело сверх лимита у неё — 422 валидации.
+// readsBody — тело операции huma читает целиком, по лимиту операции. Multipart-форму huma разбирает сама, и тело
+// сверх лимита у неё — 422 валидации.
+func readsBody(op *huma.Operation) bool {
+	return op.RequestBody != nil && op.RequestBody.Content["multipart/form-data"] == nil
+}
+
+// readsLimitedBody — тело операции читается под лимитом (MaxBodyBytes): превышение — 413.
 func readsLimitedBody(op *huma.Operation) bool {
-	return op.RequestBody != nil && op.MaxBodyBytes > 0 && op.RequestBody.Content["multipart/form-data"] == nil
+	return readsBody(op) && op.MaxBodyBytes > 0
 }
 
 // setHeader описывает заголовок ответа: карту заголовков huma у ответа-ошибки не создаёт.

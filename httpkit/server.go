@@ -312,7 +312,8 @@ func (s *Server) bindAPI() {
 		fn(&humaConfig)
 	}
 	// Описание ошибок и вызов 401 — после хуков потребителя: их Security тоже объявляет 401.
-	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describeErrors(s.cfg, s.registered), authChallenge)
+	describe := describeErrors(s.cfg, s.registered)
+	humaConfig.OnAddOperation = append(humaConfig.OnAddOperation, describe, authChallenge)
 	consumer := routeHandlers(s.router)
 	api := humachi.New(s.router, humaConfig)
 	s.docsRoutes = map[string]bool{}
@@ -321,7 +322,7 @@ func (s *Server) bindAPI() {
 			s.docsRoutes[route] = true
 		}
 	}
-	s.api = &registry{API: api}
+	s.api = &registry{API: api, describe: describe}
 	s.api.adapter = &opAdapter{Adapter: api.Adapter(), router: s.router, reg: s.api, timeout: s.cfg.RequestTimeout, log: s.log}
 	s.api.UseMiddleware(operationBodyLimit, HumaAuth(s.opts.schemes, s.log))
 	if s.opts.store != nil {

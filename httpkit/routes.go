@@ -51,7 +51,9 @@ type PublicRoutes []string
 type registry struct {
 	huma.API
 	adapter *opAdapter
-	ops     []*huma.Operation
+	// describe — хук описания ошибок сервера: Handle повторяет его, когда сверяет лимит тела операции группы.
+	describe huma.AddOpFunc
+	ops      []*huma.Operation
 	// pending — операции, которым huma.Register ещё не поставил хендлер.
 	pending []*huma.Operation
 	// replaced — маршруты chi, которые операция заменила при регистрации.
@@ -106,12 +108,20 @@ type opAdapter struct {
 
 // Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в replaced. Хендлер
 // операции из huma.Register исполняет её копию из OpenAPI (documented): группа huma с префиксом отдаёт
-// сюда другую копию, без правок хуков OnAddOperation — Security, лимита тела и вызова 401.
+// сюда другую копию, без правок хуков OnAddOperation — Security, лимита тела и вызова 401. Тело такой
+// операции huma читает по лимиту своей копии: копия из OpenAPI берёт лимит, который режет раньше, и
+// описывает его 413.
 func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
 	documented := a.reg.claim(op)
 	if documented == nil {
 		a.router.MethodFunc(op.Method, op.Path, func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(op, r, w)) })
 		return
+	}
+	if readsBody(documented) {
+		if limit := stricterLimit(documented.MaxBodyBytes, op.MaxBodyBytes); limit != documented.MaxBodyBytes {
+			documented.MaxBodyBytes = limit
+			a.reg.describe(a.reg.OpenAPI(), documented)
+		}
 	}
 	route := op.Method + " " + routeKey(op.Path)
 	if h, ok := routeHandlers(a.router)[route]; ok {

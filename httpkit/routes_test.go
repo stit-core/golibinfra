@@ -330,14 +330,7 @@ func TestServer_GroupOperationRunsAsDocumented(t *testing.T) {
 		t.Fatalf("CheckRoutes: %v", err)
 	}
 	serve := func(method, path, body string, headers ...string) *httptest.ResponseRecorder {
-		req := httptest.NewRequest(method, path, strings.NewReader(body))
-		for _, h := range headers {
-			name, value, _ := strings.Cut(h, ": ")
-			req.Header.Set(name, value)
-		}
-		rec := httptest.NewRecorder()
-		srv.Router().ServeHTTP(rec, req)
-		return rec
+		return serveRouter(srv, method, path, body, headers...)
 	}
 	const auth, asJSON = "Authorization: Bearer ok", "Content-Type: application/json"
 	over := `{"name":"` + strings.Repeat("x", 100) + `"}`
@@ -358,4 +351,16 @@ func TestServer_GroupOperationRunsAsDocumented(t *testing.T) {
 			handlertest.AssertStatus(t, serve(http.MethodPost, a.prefix+"/upload", `{"name":"x"}`, auth, asJSON), http.StatusNoContent)
 		})
 	}
+}
+
+// serveRouter отвечает на запрос роутером сервера — цепочкой кита целиком, без listener'а; заголовки — «Имя: значение».
+func serveRouter(srv *httpkit.Server, method, path, body string, headers ...string) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(method, path, strings.NewReader(body))
+	for _, h := range headers {
+		name, value, _ := strings.Cut(h, ": ")
+		req.Header.Set(name, value)
+	}
+	rec := httptest.NewRecorder()
+	srv.Router().ServeHTTP(rec, req)
+	return rec
 }

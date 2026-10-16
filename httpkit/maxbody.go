@@ -69,12 +69,30 @@ func (b *limitedBody) Read(p []byte) (int, error) {
 func (b *limitedBody) Close() error { return b.body.Close() }
 
 // operationBodyLimit — huma-middleware: тело операции ограничено её MaxBodyBytes, а не общим
-// лимитом MaxBody; не больше нуля — без предела, как у huma.
+// лимитом MaxBody; без MaxBody в цепочке тело режет свой MaxBytesReader. Не больше нуля — без
+// предела, как у huma.
 func operationBodyLimit(ctx huma.Context, next func(huma.Context)) {
-	if b, ok := ctx.Context().Value(bodyLimitKey{}).(*limitedBody); ok && b.r == nil {
-		b.limit = ctx.Operation().MaxBodyBytes
+	limit := ctx.Operation().MaxBodyBytes
+	if b, ok := ctx.Context().Value(bodyLimitKey{}).(*limitedBody); ok {
+		if b.r == nil {
+			b.limit = limit
+		}
+	} else if r, w := unwrapHTTP(ctx); limit > 0 && r != nil && r.Body != nil {
+		// Лимит хука операции группы huma не видит: тело своей копии она читает по литералу.
+		r.Body = http.MaxBytesReader(w, r.Body, limit)
 	}
 	next(ctx)
+}
+
+// stricterLimit — лимит тела, который режет раньше; не больше нуля — без предела.
+func stricterLimit(a, b int64) int64 {
+	switch {
+	case b <= 0:
+		return a
+	case a <= 0 || b < a:
+		return b
+	}
+	return a
 }
 
 // IsMaxBodyError — helper для caller'ов, которые сами читают body.

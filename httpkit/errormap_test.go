@@ -389,6 +389,8 @@ func TestErrorMap_DescribesServerRateLimit(t *testing.T) {
 // при дедлайне запроса, кроме потока SSE, 401 HumaAuth — с WWW-Authenticate по схемам операции и только при
 // обязательной аутентификации; у маршрута мимо huma 401 и 413 — ответы его хендлера. 503 AUTH_UNAVAILABLE отдаёт
 // extractor схемы — его объявляет таблица владельца схемы, кит код не повторяет. Описание сверено с ответом кита.
+// VGK-02: у операции группы huma с префиксом — так же; тело Body группы huma читает по лимиту своей копии (1 MiB), и
+// при выключенном лимите кита 413 описан по нему.
 func TestErrorMap_DescribesKitResponses(t *testing.T) {
 	bearer := httpkit.SecuritySchemeEntry{
 		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
@@ -402,6 +404,8 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 			return r.Context(), nil
 		},
 	}
+	// Имя схемы — не её вызов: пример WWW-Authenticate — вызов схемы (Bearer), а не имя.
+	jwt := httpkit.SecuritySchemeEntry{Name: "jwt", Scheme: bearer.Scheme, Extract: bearer.Extract}
 	backendErrors := httpkit.NewErrorMap( // таблица владельца схемы, чей extractor знает недоступный бэкенд
 		httpkit.ErrorRule{Err: httpkit.ErrAuthUnavailable, Status: http.StatusServiceUnavailable, Code: "AUTH_UNAVAILABLE"},
 	)
@@ -446,6 +450,13 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 			OperationID: "rawRoute", Method: http.MethodPost, Path: "/raw-route", Security: secured,
 			RequestBody: &huma.RequestBody{Content: map[string]*huma.MediaType{"application/json": {}}},
 		})
+		grp := huma.NewGroup(api, "/v1")
+		huma.Register(grp, httpkit.Public(huma.Operation{OperationID: "gupload", Method: http.MethodPost, Path: "/upload"}), noOutput)
+		// MaxBodyBytes: -1 в литерале — huma тело копии группы не режет, режет лимит кита.
+		huma.Register(grp, httpkit.Public(huma.Operation{OperationID: "gbig", Method: http.MethodPost, Path: "/big", MaxBodyBytes: -1}), noOutput)
+		huma.Register(grp, httpkit.Public(huma.Operation{OperationID: "graw", Method: http.MethodPost, Path: "/raw"}),
+			func(context.Context, *struct{ RawBody []byte }) (*struct{}, error) { return nil, nil })
+		huma.Register(grp, huma.Operation{OperationID: "gme", Method: http.MethodGet, Path: "/me", Security: []map[string][]string{{"jwt": {}}}}, noBody)
 	}
 	const (
 		tooLarge     = "Request Entity Too Large: BODY_TOO_LARGE"
@@ -462,11 +473,14 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 			"upload": {tooLarge, timeout, ""}, "import": {tooLarge, timeout, ""}, "raw": {tooLarge, timeout, ""},
 			"form": {"", timeout, ""}, "slow": {"", timeout, ""}, "events": {}, "rawRoute": {"", timeout, ""},
 			"me": {"", timeout, unauthorized}, "maybe": {"", timeout, ""},
-			"hub": {"", "Service Unavailable: AUTH_UNAVAILABLE, REQUEST_TIMEOUT", unauthorized},
+			"hub":     {"", "Service Unavailable: AUTH_UNAVAILABLE, REQUEST_TIMEOUT", unauthorized},
+			"gupload": {tooLarge, timeout, ""}, "graw": {tooLarge, timeout, ""}, "gme": {"", timeout, unauthorized},
+			"gbig": {tooLarge, timeout, ""},
 		}},
 		{"limits off", false, map[string]described{
 			"upload": {}, "import": {tooLarge, "", ""}, "raw": {}, "form": {}, "slow": {}, "events": {}, "rawRoute": {},
 			"me": {"", "", unauthorized}, "maybe": {}, "hub": {"", "Service Unavailable: AUTH_UNAVAILABLE", unauthorized},
+			"gupload": {tooLarge, "", ""}, "graw": {}, "gme": {"", "", unauthorized}, "gbig": {},
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -475,7 +489,7 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 			if tc.limits {
 				cfg.MaxBody.MaxBytes, cfg.RequestTimeout = 64, 100*time.Millisecond
 			}
-			api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), handlertest.WithSecuritySchemes(bearer))
+			api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), handlertest.WithSecuritySchemes(bearer, jwt))
 			ops := operations(api.OpenAPI())
 			for id, want := range tc.want {
 				op := ops[id]
@@ -505,9 +519,6 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 					t.Errorf("%s: 401 must declare the optional WWW-Authenticate challenge Bearer, got %+v", id, h)
 				}
 			}
-			if !tc.limits {
-				return
-			}
 			// Описание — то, что кит отвечает на этой же операции.
 			answers := func(id string, status int, resp *httptest.ResponseRecorder) {
 				t.Helper()
@@ -517,18 +528,38 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 					t.Errorf("the kit answers %s %d %s, the contract lists %v", id, status, got.Code, codes)
 				}
 			}
-			answers("upload", http.StatusRequestEntityTooLarge, api.Post("/upload", strings.NewReader(`{"name":"`+strings.Repeat("x", 100)+`"}`)))
+			challenges := func(id string, resp *httptest.ResponseRecorder) {
+				t.Helper()
+				answers(id, http.StatusUnauthorized, resp)
+				var promised any
+				if h := ops[id].Responses["401"].Headers["WWW-Authenticate"]; h != nil {
+					promised = h.Example
+				}
+				if got := resp.Header().Get("WWW-Authenticate"); got != promised {
+					t.Errorf("HumaAuth answers WWW-Authenticate %q, the contract of %s promises %v", got, id, promised)
+				}
+			}
+			challenges("gme", api.Get("/v1/me"))
+			if !tc.limits {
+				// Лимит кита выключен, а тело Body операции группы huma читает по лимиту своей копии. Запросы — мимо журнала
+				// humatest: тело в 1 MiB он печатал бы целиком.
+				big := func(path string) *httptest.ResponseRecorder {
+					resp := httptest.NewRecorder()
+					api.Adapter().ServeHTTP(resp, httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"name":"`+strings.Repeat("x", 1<<20)+`"}`)))
+					return resp
+				}
+				answers("gupload", http.StatusRequestEntityTooLarge, big("/v1/upload"))
+				handlertest.AssertStatus(t, big("/v1/big"), http.StatusNoContent)
+				return
+			}
+			over := `{"name":"` + strings.Repeat("x", 100) + `"}`
+			answers("upload", http.StatusRequestEntityTooLarge, api.Post("/upload", strings.NewReader(over)))
+			answers("gupload", http.StatusRequestEntityTooLarge, api.Post("/v1/upload", strings.NewReader(over)))
+			answers("graw", http.StatusRequestEntityTooLarge, api.Post("/v1/raw", strings.NewReader(over)))
+			answers("gbig", http.StatusRequestEntityTooLarge, api.Post("/v1/big", strings.NewReader(over)))
 			answers("slow", http.StatusServiceUnavailable, api.Get("/slow"))
 			answers("hub", http.StatusServiceUnavailable, api.Get("/hub", "Authorization: Bearer down"))
-			resp := api.Get("/me")
-			answers("me", http.StatusUnauthorized, resp)
-			var promised any
-			if h := ops["me"].Responses["401"].Headers["WWW-Authenticate"]; h != nil {
-				promised = h.Example
-			}
-			if got := resp.Header().Get("WWW-Authenticate"); got != promised {
-				t.Errorf("HumaAuth answers WWW-Authenticate %q, the contract of me promises %v", got, promised)
-			}
+			challenges("me", api.Get("/me"))
 			// Превышение у multipart — 422 валидации huma, поэтому 413 у формы в контракте нет.
 			var body bytes.Buffer
 			mw := multipart.NewWriter(&body)
@@ -545,6 +576,63 @@ func TestErrorMap_DescribesKitResponses(t *testing.T) {
 				t.Errorf("an optional-auth operation without credentials: %d, want the handler response", resp.Code)
 			}
 		})
+	}
+}
+
+// VGK-02: без MaxBody (HTTP_MAX_BODY_BYTES=0) операция группы huma с префиксом режет тело, как та же операция без группы,
+// хотя huma читает тело копии группы по её литералу: лимит хука (у RawBody huma его не видит) кит режет сам, а лимит
+// литерала multipart-формы (по нему huma форму не читает) не действует. Контракт и ответ совпадают.
+func TestErrorMap_GroupBodyLimitWithoutMaxBody(t *testing.T) {
+	cfg := testConfig(t, "127.0.0.1:0")
+	cfg.MaxBody.MaxBytes = 0
+	limitRaw := httpkit.WithHumaConfig(func(c *huma.Config) {
+		c.OnAddOperation = append(c.OnAddOperation, func(_ *huma.OpenAPI, op *huma.Operation) {
+			if strings.HasSuffix(op.Path, "/raw") {
+				op.MaxBodyBytes = 64
+			}
+		})
+	})
+	type form struct {
+		RawBody huma.MultipartFormFiles[struct {
+			File huma.FormFile `form:"file"`
+		}]
+	}
+	srv := mustServer(t, cfg, limitRaw)
+	api := srv.BindAPI()
+	for _, a := range []huma.API{api, huma.NewGroup(api, "/v1")} {
+		huma.Register(a, huma.Operation{Method: http.MethodPost, Path: "/raw"},
+			func(context.Context, *struct{ RawBody []byte }) (*struct{}, error) { return nil, nil })
+		huma.Register(a, huma.Operation{Method: http.MethodPost, Path: "/form", MaxBodyBytes: 64},
+			func(context.Context, *form) (*struct{}, error) { return nil, nil })
+	}
+	if err := srv.CheckRoutes(); err != nil {
+		t.Fatalf("CheckRoutes: %v", err)
+	}
+	var body bytes.Buffer
+	mw := multipart.NewWriter(&body)
+	fw, err := mw.CreateFormFile("file", "a.txt")
+	if err == nil {
+		_, err = fw.Write([]byte(strings.Repeat("y", 200)))
+	}
+	if err != nil || mw.Close() != nil {
+		t.Fatalf("multipart body: %v", err)
+	}
+	for _, prefix := range []string{"", "/v1"} {
+		raw := api.OpenAPI().Paths[prefix+"/raw"].Post
+		if got := codesOf(raw, http.StatusRequestEntityTooLarge); !slices.Equal(got, []string{"BODY_TOO_LARGE"}) {
+			t.Errorf("%s/raw: 413 codes %v, want [BODY_TOO_LARGE]: the hook limits the body", prefix, got)
+		}
+		if resp := serveRouter(srv, http.MethodPost, prefix+"/raw", strings.Repeat("x", 100)); resp.Code != http.StatusRequestEntityTooLarge {
+			t.Errorf("%s/raw: 100 B over the limit 64 of the hook: %d, want 413", prefix, resp.Code)
+		} else {
+			handlertest.AssertAPIError(t, resp, http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE")
+		}
+		handlertest.AssertStatus(t, serveRouter(srv, http.MethodPost, prefix+"/raw", strings.Repeat("x", 32)), http.StatusNoContent)
+		if resp := api.OpenAPI().Paths[prefix+"/form"].Post.Responses["413"]; resp != nil {
+			t.Errorf("%s/form: 413 = %q, but a multipart form is not read by the limit of its literal", prefix, resp.Description)
+		}
+		resp := serveRouter(srv, http.MethodPost, prefix+"/form", body.String(), "Content-Type: "+mw.FormDataContentType())
+		handlertest.AssertStatus(t, resp, http.StatusNoContent)
 	}
 }
 

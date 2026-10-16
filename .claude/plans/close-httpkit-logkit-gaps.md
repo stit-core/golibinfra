@@ -135,10 +135,13 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   же. Проверка: `go test -race -run TestServer_GroupOperationRunsAsDocumented ./httpkit/` → PASS; на `47c78b9` — FAIL
   - Подтверждено: на `47c78b9` тест красный — у `/v1/hooked` без credentials 204, у `/v1/raw` и `/v1/upload` с телом
     сверх 64 B — 204 (`N/g-kits2/red-s7.log`); на ветке — PASS, без группы ответы те же (`green-s7.log`)
-- [ ] **AC10** — Контракт операции группы huma совпадает с её ответами: 413 описан там, где тело режет лимит — кита или
+- [x] **AC10** — Контракт операции группы huma совпадает с её ответами: 413 описан там, где тело режет лимит — кита или
   самой huma (тело `Body` операции группы huma читает по `MaxBodyBytes` литерала), и ответ на тело сверх него — 413;
-  пример `WWW-Authenticate` — заголовок ответа. Проверка: `go test -race -run TestErrorMap_DescribesKitResponses
-  ./httpkit/` → PASS; на коммите S7 — FAIL
+  лимит хука режется и без `MaxBody`; пример `WWW-Authenticate` — заголовок ответа. Проверка: `go test -race -run
+  'TestErrorMap_DescribesKitResponses|TestErrorMap_GroupBodyLimitWithoutMaxBody' ./httpkit/` → PASS; на `d90f1bc` — FAIL
+  - Подтверждено: на `d90f1bc` (S7) тесты красные — при `HTTP_MAX_BODY_BYTES=0` у `Body` группы 413 в ответе, но не в
+    контракте, у `RawBody` группы с лимитом хука 64 B на 100 B — 204 (`N/g-kits2/red-s8.log`); на ветке — PASS
+    (`green-s8.log`); мутации B1, B3–B10, G1 убиты, G2 — эквивалентная (`N/g-kits2/mutations-s8.log`)
 - [ ] **AC11** — Ответы `Idempotency` — в контракте операций, где она действует (store в графе, `POST`/`PUT`/`PATCH`
   операции huma со схемой в `Security`): `409 IDEMPOTENCY_IN_PROGRESS`, `422 IDEMPOTENCY_KEY_REUSED`, при
   `HTTP_IDEMPOTENCY_FAIL_CLOSED=true` — `503 IDEMPOTENCY_UNAVAILABLE`; тело сверх лимита с `Idempotency-Key` получает
@@ -214,10 +217,15 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   - Сделано: `opAdapter.Handle` строит контекст хендлера и дедлайн операции из копии, которую видят OpenAPI и
     `CheckRoutes` (`documented`); `TestServer_GroupOperationRunsAsDocumented` — на `47c78b9` FAIL, на ветке PASS;
     `docs/architecture.md` (§ Точки расширения, § Аутентификация); `make check` → `✓ check clean (./...)`
-- [ ] **S8** — httpkit: контракт операции группы совпадает с её ответами — лимит, с которым huma читает тело `Body`
+- [x] **S8** — httpkit: контракт операции группы совпадает с её ответами — лимит, с которым huma читает тело `Body`
   группы, и лимит операции без `MaxBody` (VGK-02); коммит `fix(httpkit)!:`
-  - Проверка: тест на коммите S7 → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
+  - Проверка: тесты на `d90f1bc` → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
   - Закрывает: AC10 · Зависит от: S7
+  - Сделано: `opAdapter.Handle` — у операции с телом копия из OpenAPI берёт лимит, который режет раньше (свой или копии
+    адаптера, `stricterLimit`), и повторяет хук описания ошибок; `operationBodyLimit` без `MaxBody` режет тело лимитом
+    операции сам; группы — в `TestErrorMap_DescribesKitResponses`, `TestErrorMap_GroupBodyLimitWithoutMaxBody`; доки —
+    `docs/configuration.md` (§ MaxBodyConfig), `docs/architecture.md` (§ Контракт ошибок); `make check` → `✓ check
+    clean (./...)`
 - [ ] **S9** — httpkit: ответы `Idempotency` — в контракте операций, где она действует; тело сверх лимита с ключом — как
   без него (VGK-03); коммит `fix(httpkit)!:`
   - Проверка: новый тест на коммите S8 → FAIL, на ветке → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
@@ -301,6 +309,18 @@ g-kits) и пункт `httpkit-kit-errors-contract`, добавленный ди
   литерала сама (лимит, с которым она читает тело, — S8).
 - S7 — `fix(httpkit):` без `!`: контракт не меняется (OpenAPI и `CheckRoutes` и так видели копию с правками хуков), а
   исполнение доходит до него; 401 там, где хендлер отвечал анониму, — закрытый fail-open, а не смена API.
+- Тело операции группы huma с префиксом huma читает по `MaxBodyBytes` своей копии (литерал), и поднять или снять этот
+  лимит кит не может (S8): копия из OpenAPI берёт лимит, который режет раньше, и 413 описан по нему. Отказ старта не
+  выбран: при `HTTP_MAX_BODY_BYTES` выше 1 MiB или 0 не стартовала бы каждая операция `Body` группы — env оператора
+  ломал бы старт кода. Выше 1 MiB или без предела — `MaxBodyBytes: -1` в литерале (тест — `gbig`).
+- Лимит huma кит берёт из копии адаптера — литерала после модификаторов группы. Модификатор, который меняет
+  `MaxBodyBytes`, до huma не доходит, как и хук; описание 413 разойдётся с ответом, только если модификатор снимет лимит
+  `Body` (`-1`) — снять его так нельзя и без кита.
+- Лимит операции без `MaxBody` (`HTTP_MAX_BODY_BYTES=0`) кит режет сам (`MaxBytesReader` в `operationBodyLimit`): у
+  операции без группы его режет и huma, у копии группы — никто. Лимит литерала multipart-формы не действует, как и без
+  группы: форму huma по нему не читает (`readsBody`).
+- S8 — `fix(httpkit)!`: у операций `Body` группы при `HTTP_MAX_BODY_BYTES=0` в контракте появляется 413 —
+  перегенерация контракта.
 
 ## Handoff
 ### Аннотация v1.6.0 — строки трека
@@ -318,10 +338,15 @@ Breaking:
   с `APIError` дедлайна, `default` у него нет → перегенерировать контракт и тесты набора ответов; `503
   AUTH_UNAVAILABLE` своей схемы объявить правилом таблицы её операций (`Err: httpkit.ErrAuthUnavailable`).
 
+- httpkit: у операции группы huma с префиксом с телом `Body` 413 в OpenAPI — по лимиту, с которым тело читает huma
+  (`MaxBodyBytes` литерала, по умолчанию 1 MiB), и при `HTTP_MAX_BODY_BYTES=0` → перегенерировать контракт; лимит такой
+  операции выше 1 MiB или без предела — `MaxBodyBytes: -1` в литерале.
+
 Поведение:
 - httpkit: хендлер операции группы huma с префиксом исполняет её копию из OpenAPI: `Security`, выставленный хуком
   `OnAddOperation`, проверяется (401 без credentials), лимит тела кита — по её `MaxBodyBytes` и у `RawBody`, вызов 401 — по
   схемам из `components`.
+- httpkit: лимит тела операции из хука кит режет и при `HTTP_MAX_BODY_BYTES=0`: у операции группы huma его не видит huma.
 
 Изменения:
 - logkit: `NewFromEnv()` — `Logger` команды вне fx из `LOG_*` и `LOG_REDACT_*`, как граф с `Module`; при
@@ -354,7 +379,7 @@ Breaking:
    (`Err: httpkit.ErrAuthUnavailable`); шаблону с локальным JWT не нужно.
 
 ## Где мы сейчас
-S1–S7 закрыты: ответы кита — в контракте, `logkit.NewFromEnv`, хендлер операции группы huma исполняет её копию из
-OpenAPI (VGK-01). Сообщения S3–S6 переписаны без хешей до rebase (VGK-05, «Решения»). Дальше — S8: контракт операции
-группы против лимита, с которым huma читает тело `Body` (у группы — по литералу), и лимит операции без `MaxBody`; затем
-S9 (Idempotency), S10 (доки), S11 (мутации). Слияние, аннотация `v1.6.0` и закрытие плана — дирижёр после валидатора.
+S1–S8 закрыты: ответы кита — в контракте, `logkit.NewFromEnv`, хендлер операции группы huma исполняет её копию из
+OpenAPI (VGK-01), лимит тела операции группы — в контракте по факту (VGK-02). Сообщения S3–S6 переписаны без хешей до
+rebase (VGK-05, «Решения»). Дальше — S9: ответы `Idempotency` в контракте и тело сверх лимита с ключом — как без него;
+затем S10 (доки), S11 (мутации). Слияние, аннотация `v1.6.0` и закрытие плана — дирижёр после валидатора.

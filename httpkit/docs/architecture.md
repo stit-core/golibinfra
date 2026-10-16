@@ -235,9 +235,11 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 - `503 REQUEST_TIMEOUT` (дедлайн запроса) при `HTTP_REQUEST_TIMEOUT > 0` — у каждой операции,
   кроме потока SSE (ответ `text/event-stream`); у ответа операции со своим телом того же статуса
   (503 `/ready`, § Health / readiness) `APIError` описан рядом с ним.
-- `413 BODY_TOO_LARGE` — у операции huma с телом при лимите тела (`MaxBodyBytes > 0`). У
-  multipart-формы превышение — `422 VALIDATION_FAILED`: форму huma разбирает сама; у маршрута
-  мимо huma на превышение отвечает его хендлер (`IsMaxBodyError`).
+- `413 BODY_TOO_LARGE` — у операции huma с телом при лимите тела (`MaxBodyBytes > 0`); у операции
+  группы huma с префиксом — и при лимите, с которым тело читает сама huma
+  ([configuration.md § MaxBodyConfig](configuration.md#maxbodyconfig)). У multipart-формы
+  превышение — `422 VALIDATION_FAILED`: форму huma разбирает сама; у маршрута мимо huma на
+  превышение отвечает его хендлер (`IsMaxBodyError`).
 
 `503 AUTH_UNAVAILABLE` отдаёт не каждая схема, а extractor, который знает недоступный бэкенд
 (JWKS, хаб): его объявляет владелец схемы правилом таблицы операций схемы —
