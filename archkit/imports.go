@@ -8,6 +8,7 @@ import (
 
 const (
 	whyLayout = "internal/ holds domain, platform and the WithInternalDirs directories only — business code goes to internal/domain/<d>, code shared by domains to pkg/"
+	whyPkg    = "pkg/ holds the WithPkgPackages packages only — a new package is named there, a generic primitive goes to golibinfra"
 
 	whyMocks       = "mocks are for tests only"
 	whyLowLayer    = "platform and pkg lie below the domains: they import only platform and pkg"
@@ -30,6 +31,16 @@ func (t *tree) internalLayout() {
 	for _, dir := range t.codeDirs {
 		if !slices.ContainsFunc(roots, func(root string) bool { return under(dir, root) }) {
 			t.add(dir, whyLayout)
+		}
+	}
+}
+
+// pkgLayout: пакет pkg/ — запись настроек потребителя, а не только файл в ревью кода: generic-примитив,
+// положенный в pkg/, виден в диффе настроек.
+func (t *tree) pkgLayout() {
+	for _, pkg := range t.pkgPackages() {
+		if !slices.Contains(t.opts.pkgPackages, pkg) {
+			t.add(pkg, whyPkg)
 		}
 	}
 }

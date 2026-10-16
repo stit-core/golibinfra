@@ -50,6 +50,7 @@ type tree struct {
 	opts       options
 	files      []goFile
 	codeDirs   []string            // каталоги internal/ с Go-файлами, какими бы ни были их имена
+	pkgDirs    []string            // каталоги pkg/ с Go-файлами — тоже
 	pkgImports map[string][]string // пакет → импорты его не-тестовых файлов
 	tables     []string            // таблицы приложения: CREATE TABLE в migrations/*.up.sql
 	queries    map[string]string   // домен → SQL его infra/postgres/queries
@@ -102,6 +103,9 @@ func load(fsys fs.FS, o options) (*tree, error) {
 	}
 	if err == nil {
 		t.codeDirs, err = goDirs(fsys, "internal")
+	}
+	if err == nil {
+		t.pkgDirs, err = goDirs(fsys, pkgDir)
 	}
 	if err != nil {
 		return nil, err
@@ -248,6 +252,19 @@ func parseFile(fsys fs.FS, fset *token.FileSet, p string) (goFile, error) {
 		f.imports = append(f.imports, imp)
 	}
 	return f, nil
+}
+
+// pkgPackages — пакеты pkg/: каталоги с Go-файлами и пакеты, которые сборка берёт по импорту (и через
+// каталог-ссылку), по алфавиту.
+func (t *tree) pkgPackages() []string {
+	pkgs := slices.Clone(t.pkgDirs)
+	for _, f := range t.files {
+		if under(f.pkg, pkgDir) && !slices.Contains(pkgs, f.pkg) {
+			pkgs = append(pkgs, f.pkg)
+		}
+	}
+	slices.Sort(pkgs)
+	return pkgs
 }
 
 // domains — домены модуля: каталоги internal/domain с Go-кодом, по алфавиту.

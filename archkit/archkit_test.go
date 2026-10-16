@@ -270,6 +270,19 @@ func TestInternalDirsOption(t *testing.T) {
 	}
 }
 
+func TestPkgPackagesOption(t *testing.T) {
+	t.Parallel()
+	for _, pkg := range []string{"pkg", "pkg/", "policy", "pkg/policy/", "pkg//policy", "pkg/./policy", "pkg/../policy", "./pkg/policy", "internal/platform/identity", ""} {
+		t.Run(pkg, func(t *testing.T) {
+			t.Parallel()
+			got, err := inspect(fixture(t, nil), configure(append(consumer(), WithPkgPackages(pkg))...))
+			if want := fmt.Sprintf("WithPkgPackages(%q): a package of pkg/ is named from the module root, such as pkg/policy", pkg); err == nil || err.Error() != want {
+				t.Fatalf("inspect = %q, %v; want the error %q", got, err, want)
+			}
+		})
+	}
+}
+
 // Module path — из go.mod: копия сервиса под другим путём проверяется теми же правилами.
 func TestModulePath(t *testing.T) {
 	t.Parallel()

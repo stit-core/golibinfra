@@ -4,6 +4,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"slices"
 	"strings"
 	"sync"
@@ -39,12 +40,15 @@ var rootLibs = []string{kit + "/clockkit", kit + "/idkit", kit + "/logkit", kit 
 // Настройки потребителя фикстуры.
 var (
 	fixtureDirs      = WithInternalDirs("internal/testkit")
+	fixturePkg       = WithPkgPackages("pkg/paging", "pkg/policy")
 	fixturePure      = WithPurePackages("internal/platform/identity", "pkg/policy")
 	fixtureUnchecked = WithUncheckedPackages("internal/platform/identity")
 	fixtureLibs      = WithRootLibs(rootLibs...)
 )
 
-func consumer() []Option { return []Option{fixtureDirs, fixturePure, fixtureUnchecked, fixtureLibs} }
+func consumer() []Option {
+	return []Option{fixtureDirs, fixturePkg, fixturePure, fixtureUnchecked, fixtureLibs}
+}
 
 // edits — правки фикстуры: путь → содержимое, "" — файла нет.
 type edits map[string]string
@@ -74,10 +78,17 @@ func configure(opts ...Option) options {
 	return o
 }
 
-// failures — строки отказа по фикстуре с правками и настройками потребителя, дополненными opts.
+// failures — строки отказа по фикстуре с правками и настройками потребителя, дополненными opts. Пакет
+// pkg/, который заводит правка случая, потребитель называет в WithPkgPackages: перечень держит свой тест.
 func failures(t *testing.T, e edits, opts ...Option) []string {
 	t.Helper()
-	return failuresWith(t, e, append(consumer(), opts...)...)
+	var added []string
+	for name, content := range e {
+		if strings.HasPrefix(name, pkgDir+"/") && strings.HasSuffix(name, ".go") && content != "" {
+			added = append(added, path.Dir(name))
+		}
+	}
+	return failuresWith(t, e, append(append(consumer(), WithPkgPackages(added...)), opts...)...)
 }
 
 // failuresWith — строки отказа по фикстуре с правками и ровно этими настройками.

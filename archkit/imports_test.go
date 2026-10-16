@@ -1,7 +1,9 @@
 package archkit
 
 import (
+	"io/fs"
 	"testing"
+	"testing/fstest"
 )
 
 func TestCleanFixture(t *testing.T) {
@@ -46,8 +48,123 @@ func TestInternalLayout(t *testing.T) {
 
 	t.Run("without directories of the consumer", func(t *testing.T) {
 		t.Parallel()
-		got := failuresWith(t, nil, fixturePure, fixtureUnchecked, fixtureLibs)
+		got := failuresWith(t, nil, fixturePkg, fixturePure, fixtureUnchecked, fixtureLibs)
 		requireFailures(t, got, []string{"internal/testkit/orderfix: " + whyLayout})
+	})
+}
+
+// Пакет pkg/ — запись WithPkgPackages: перечень пакетов, а не каталогов, и код, где бы он ни лежал.
+func TestPkgLayout(t *testing.T) {
+	t.Parallel()
+	const util = "pkg/util/util.go"
+	listed := func(e edits, opts ...Option) []string {
+		t.Helper()
+		return failuresWith(t, e, append([]Option{fixtureDirs, fixturePure, fixtureUnchecked, fixtureLibs}, opts...)...)
+	}
+	for _, tc := range []struct {
+		name  string
+		edits edits
+		opts  []Option
+		want  []string
+	}{
+		{name: "listed packages", opts: []Option{fixturePkg}},
+		{
+			name: "lists add up",
+			opts: []Option{WithPkgPackages("pkg/paging"), WithPkgPackages(), WithPkgPackages("pkg/policy")},
+		},
+		{
+			name: "without the list",
+			want: []string{"pkg/paging: " + whyPkg, "pkg/policy: " + whyPkg},
+		},
+		{
+			name:  "new package",
+			edits: edits{util: goSrc("util"), "pkg/util/util_test.go": goSrc("util_test")},
+			opts:  []Option{fixturePkg},
+			want:  []string{"pkg/util: " + whyPkg},
+		},
+		{
+			name:  "new package listed",
+			edits: edits{util: goSrc("util")},
+			opts:  []Option{fixturePkg, WithPkgPackages("pkg/util")},
+		},
+		{
+			name:  "subpackage of a listed package",
+			edits: edits{"pkg/policy/rules/rules.go": goSrc("rules")},
+			opts:  []Option{fixturePkg},
+			want:  []string{"pkg/policy/rules: " + whyPkg},
+		},
+		{
+			name:  "package of tests only",
+			edits: edits{"pkg/util/util_test.go": goSrc("util_test")},
+			opts:  []Option{fixturePkg},
+			want:  []string{"pkg/util: " + whyPkg},
+		},
+		{
+			name:  "file in pkg itself",
+			edits: edits{"pkg/doc.go": goSrc("pkg")},
+			opts:  []Option{fixturePkg},
+			want:  []string{"pkg: " + whyPkg},
+		},
+		{
+			name: "code of pkg in any directory",
+			edits: edits{
+				"pkg/_draft/draft.go":     goSrc("draft"),
+				"pkg/.cache/cache.go":     goSrc("cache"),
+				"pkg/testdata/a/a.go":     "package {",
+				"pkg/tools/go.mod":        "module example.org/tools\n",
+				"pkg/tools/tools.go":      goSrc("tools"),
+				"pkg/notes/readme.go.txt": "not a Go file",
+			},
+			opts: []Option{fixturePkg},
+			want: []string{
+				"pkg/.cache: " + whyPkg,
+				"pkg/_draft: " + whyPkg,
+				"pkg/testdata/a: " + whyPkg,
+				"pkg/tools: " + whyPkg,
+			},
+		},
+		{
+			name: "entry without a package",
+			opts: []Option{fixturePkg, WithPkgPackages("pkg/ghost", "pkg/policy/rules")},
+			want: []string{
+				`pkg package "pkg/ghost" has no Go files: remove it from WithPkgPackages`,
+				`pkg package "pkg/policy/rules" has no Go files: remove it from WithPkgPackages`,
+			},
+		},
+		{
+			name:  "entry of a package whose code lies in its subpackages",
+			edits: edits{"pkg/api/v1/api.go": goSrc("v1")},
+			opts:  []Option{fixturePkg, WithPkgPackages("pkg/api")},
+			want: []string{
+				"pkg/api/v1: " + whyPkg,
+				`pkg package "pkg/api" has no Go files: remove it from WithPkgPackages`,
+			},
+		},
+		{
+			name:  "known violation",
+			edits: edits{util: goSrc("util")},
+			opts:  []Option{fixturePkg, WithKnownViolations(map[string]string{"pkg/util": "RHAR-13"})},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			requireFailures(t, listed(tc.edits, tc.opts...), tc.want)
+		})
+	}
+
+	// Каталог-ссылка: сборка берёт пакет по импорту, правило — тоже.
+	t.Run("linked directory imported by its path", func(t *testing.T) {
+		t.Parallel()
+		fsys := fixture(t, edits{
+			"tools/util/util.go":            goSrc("util"),
+			"internal/domain/order/util.go": goSrc("order", mod+"/pkg/util"),
+		})
+		fsys["pkg/util"] = &fstest.MapFile{Data: []byte("../tools/util"), Mode: fs.ModeSymlink}
+		got, err := inspect(fsys, configure(fixtureDirs, fixturePkg, fixturePure, fixtureUnchecked, fixtureLibs))
+		if err != nil {
+			t.Fatal(err)
+		}
+		requireFailures(t, got, []string{"pkg/util: " + whyPkg})
 	})
 }
 
@@ -412,7 +529,7 @@ func TestDomainRoot(t *testing.T) {
 	t.Run("without a root lib", func(t *testing.T) {
 		t.Parallel()
 		libs := WithRootLibs(kit+"/clockkit", kit+"/logkit", kit+"/outboxkit", kit+"/pgkit", "go.uber.org/fx")
-		got := failuresWith(t, nil, fixtureDirs, fixturePure, fixtureUnchecked, libs)
+		got := failuresWith(t, nil, fixtureDirs, fixturePkg, fixturePure, fixtureUnchecked, libs)
 		requireFailures(t, got, []string{"internal/domain/order/usecase.go imports " + kit + "/idkit: " + whyRoot})
 	})
 
@@ -421,7 +538,7 @@ func TestDomainRoot(t *testing.T) {
 	t.Run("without unchecked packages", func(t *testing.T) {
 		t.Parallel()
 		chain := whyRoot + " (internal/platform/identity → " + kit + "/httpkit)"
-		requireFailures(t, failuresWith(t, nil, fixtureDirs, fixturePure, fixtureLibs), []string{
+		requireFailures(t, failuresWith(t, nil, fixtureDirs, fixturePkg, fixturePure, fixtureLibs), []string{
 			"internal/domain/customer/entity.go imports internal/platform/identity: " + chain,
 			"internal/domain/customer/policy.go imports internal/platform/identity: " + chain,
 			"internal/domain/customer/usecase.go imports internal/platform/identity: " + chain,
@@ -432,7 +549,7 @@ func TestDomainRoot(t *testing.T) {
 	// Чистым слоям пакет открывает только WithPurePackages: запись WithUncheckedPackages — не она.
 	t.Run("without pure packages", func(t *testing.T) {
 		t.Parallel()
-		requireFailures(t, failuresWith(t, nil, fixtureDirs, fixtureUnchecked, fixtureLibs), []string{
+		requireFailures(t, failuresWith(t, nil, fixtureDirs, fixturePkg, fixtureUnchecked, fixtureLibs), []string{
 			"internal/domain/customer/entity.go imports internal/platform/identity: " + whyPure,
 			"internal/domain/customer/policy.go imports internal/platform/identity: " + whyPure,
 			"internal/domain/customer/policy.go imports pkg/policy: " + whyPure,

@@ -1,5 +1,5 @@
-// Package archkit — машинные правила раскладки сервиса на golibinfra: каталоги internal/, импорты
-// между доменами и слоями, корень домена без транспорта и I/O, чистые слои, часы, порты между
+// Package archkit — машинные правила раскладки сервиса на golibinfra: каталоги internal/ и пакеты pkg/,
+// импорты между доменами и слоями, корень домена без транспорта и I/O, чистые слои, часы, порты между
 // доменами и свои таблицы. Зовётся из теста потребителя (Check); сигналов не эмитит.
 package archkit
 
@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"maps"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -24,6 +25,7 @@ type options struct {
 	purePackages []string
 	unchecked    []string
 	internalDirs []string
+	pkgPackages  []string
 	known        map[string]string
 }
 
@@ -52,6 +54,13 @@ func WithUncheckedPackages(pkgs ...string) Option {
 // internal/domain и internal/platform; домены, platform и pkg их не импортируют.
 func WithInternalDirs(dirs ...string) Option {
 	return func(o *options) { o.internalDirs = append(o.internalDirs, dirs...) }
+}
+
+// WithPkgPackages называет пакеты pkg/ сервиса (путь от корня модуля: pkg/policy): Go-файл под pkg/ вне
+// них — нарушение, подпакет названного пакета под запись не попадает. Запись о каталоге без Go-файлов —
+// отказ.
+func WithPkgPackages(pkgs ...string) Option {
+	return func(o *options) { o.pkgPackages = append(o.pkgPackages, pkgs...) }
 }
 
 // WithKnownViolations называет известные нарушения: текст отказа до причины → ID находки
@@ -111,6 +120,7 @@ func moduleRoot() (string, error) {
 // rules — правила в порядке отчёта: нарушение, названное раньше, позже не повторяется.
 var rules = []func(*tree){
 	(*tree).internalLayout,
+	(*tree).pkgLayout,
 	(*tree).importBoundaries,
 	(*tree).pureLayers,
 	(*tree).domainRoot,
@@ -119,8 +129,9 @@ var rules = []func(*tree){
 	(*tree).ownTables,
 }
 
-// inspect — строки отказа по модулю в fsys: нарушения правил вне известных, записи
-// WithUncheckedPackages про запас и записи известных нарушений без ID находки или без нарушения.
+// inspect — строки отказа по модулю в fsys: нарушения правил вне известных, записи WithPkgPackages без
+// пакета, записи WithUncheckedPackages про запас и записи известных нарушений без ID находки или без
+// нарушения.
 func inspect(fsys fs.FS, o options) ([]string, error) {
 	for _, dir := range o.internalDirs {
 		// Каталог выше или мимо internal/<имя> («internal») выключил бы правило каталогов целиком.
@@ -131,6 +142,11 @@ func inspect(fsys fs.FS, o options) ([]string, error) {
 	for _, pkg := range o.unchecked {
 		if !lowLayer(pkg) {
 			return nil, fmt.Errorf("WithUncheckedPackages(%q): a package of pkg/ or internal/platform/ is named from the module root, such as internal/platform/identity", pkg)
+		}
+	}
+	for _, pkg := range o.pkgPackages {
+		if !strings.HasPrefix(pkg, pkgDir+"/") || path.Clean(pkg) != pkg {
+			return nil, fmt.Errorf("WithPkgPackages(%q): a package of pkg/ is named from the module root, such as pkg/policy", pkg)
 		}
 	}
 	t, err := load(fsys, o)
@@ -144,6 +160,12 @@ func inspect(fsys fs.FS, o options) ([]string, error) {
 	for _, v := range t.found {
 		if _, known := o.known[v.what]; !known {
 			failures = append(failures, v.what+": "+v.why)
+		}
+	}
+	pkgs := t.pkgPackages()
+	for _, pkg := range o.pkgPackages {
+		if !slices.Contains(pkgs, pkg) {
+			failures = append(failures, fmt.Sprintf("pkg package %q has no Go files: remove it from WithPkgPackages", pkg))
 		}
 	}
 	reached := t.importedByDomainRoots()

@@ -2,8 +2,8 @@
 
 Машинные правила раскладки сервиса на golibinfra. Сервисы stit делят одну раскладку —
 `internal/domain/<d>` со слоями, `internal/platform`, `pkg`, `cmd`; кит держит её границы одним
-вызовом из теста потребителя: каталоги `internal/`, импорты между доменами и слоями, корень
-домена без транспорта и I/O, чистые слои, настенные часы, порты между доменами, свои таблицы.
+вызовом из теста потребителя: каталоги `internal/` и пакеты `pkg/`, импорты между доменами и слоями,
+корень домена без транспорта и I/O, чистые слои, настенные часы, порты между доменами, свои таблицы.
 
 Правила едут в сервис версией golibinfra; у сервиса остаются настройки и список известных
 нарушений. Импортируется только из `*_test.go` — в production-граф не попадает.
@@ -46,7 +46,8 @@ func TestLayout(t *testing.T) {
 ```
 
 `WithInternalDirs` называет каталог самого теста, `WithRootLibs` — внешние пакеты, которые видит
-корень домена; остальное — по коду сервиса, § Настройки потребителя.
+корень домена; пакеты `pkg/` сервиса называет `WithPkgPackages`, остальное — по коду сервиса, § Настройки
+потребителя.
 
 Нарушение — строка отказа теста `archkit: <нарушение>: <правило>`:
 
@@ -59,7 +60,7 @@ archkit: internal/domain/order/crossref.go imports internal/domain/customer: ano
 ```
 cmd/<bin>/                        входы; cmd/migrate — миграции, в том числе outbox доменов
 migrations/*.up.sql               таблицы приложения
-pkg/<p>/                          правила и типы, общие доменам
+pkg/<p>/                          правила и типы, общие доменам: пакеты WithPkgPackages
 internal/platform/<p>/            клей платформы
 internal/<своё>/                  каталоги потребителя (WithInternalDirs)
 internal/domain/<d>/              корень домена: usecase, порты; чистые слои — entity.go, policy.go,
@@ -84,6 +85,7 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 | Правило | Что держит |
 |---|---|
 | Каталоги `internal/` | Go-файл под `internal/` лежит в `internal/domain`, `internal/platform` или каталоге `WithInternalDirs`: вне них код не видят правила слоёв. Правило смотрит, где лежит код, а не что из него собрано, — и в `testdata`, каталоге на `.` или `_`, вложенном модуле |
+| Пакеты `pkg/` | Go-файл под `pkg/` лежит в пакете `WithPkgPackages`: новый пакет — запись в настройках, видимая в диффе, а generic-примитив — в golibinfra. Правило смотрит, где лежит код, — и в `testdata`, каталоге на `.` или `_`, вложенном модуле, каталоге-ссылке, который сборка берёт по импорту |
 | Границы импортов | Не-тестовый код модуля импортирует пакеты модуля по таблице ниже |
 | Чистые слои | `entity.go`, `policy.go`, `dto.go`, `errors.go`, `events.go` корня домена видят stdlib без побочных эффектов и потоков (без `database/sql`, `net`, `os`, `syscall`, `io`, `bufio` и пакетов под ними; парсеры `net/mail`, `net/netip`, `net/url` — можно) и пакеты `WithPurePackages` |
 | Корень домена | Файлы корня видят stdlib без I/O (без `database/sql`, `net`, `os`, `syscall` и пакетов под ними, кроме тех же парсеров), пакеты `WithRootLibs`, а из `pkg/` и `internal/platform/` — пакеты, которые сами видят только это (пакеты `WithPurePackages` — на том же условии), и пакеты `WithUncheckedPackages`; путь до I/O — в скобках отказа: `(pkg/wrap → internal/platform/probeio → net/http)` |
@@ -116,6 +118,7 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 | `WithPurePackages(pkgs…)` | Пакеты модуля (путь от корня: `pkg/policy`), которые видят чистые слои. Корень домена проверяет их импорты наравне с остальными пакетами `pkg/` и `internal/platform/` |
 | `WithUncheckedPackages(pkgs…)` | Исключение из правила корня: пакеты `pkg/` и `internal/platform/` (путь от корня: `internal/platform/identity`), в импорты которых правило не заглядывает. За чистоту такого пакета отвечает потребитель, машина её не держит. Подпакет под запись не попадает. Запись про запас — отказ: о пакете, который чист и без неё, о пакете, которого корень домена не импортирует ни сам, ни через пакеты этих каталогов, и мимо этих каталогов. Предел: запись о пакете с I/O под другим доверенным пакетом с I/O (корень → `pkg/a` → `pkg/b`) принимается, хотя при записи о верхнем ничего не меняет |
 | `WithInternalDirs(dirs…)` | Каталоги `internal/` сверх `domain` и `platform` (путь от корня: `internal/testkit`). Другая форма (`internal`, `testkit`, `internal/a/b`) — отказ |
+| `WithPkgPackages(pkgs…)` | Пакеты `pkg/` сервиса (путь от корня: `pkg/policy`); без записи пакет `pkg/` — нарушение. Подпакет под запись не попадает — у него своя. Запись о каталоге без Go-файлов — отказ, другая форма (`pkg`, `policy`, `pkg/policy/`) — тоже |
 | `WithKnownViolations(map)` | Известные нарушения — см. ниже |
 
 Опции складываются; `nil` и пустой список ничего не меняют. Пути пакетов модуля — без module path,
@@ -125,6 +128,7 @@ internal/domain/<d>/mocks/        моки портов (и в подпакет�
 `pkg/policy` видят чистые слои, дописывает к вызову быстрого старта:
 
 ```go
+archkit.WithPkgPackages("pkg/policy"),
 archkit.WithPurePackages("internal/platform/identity", "pkg/policy"),
 archkit.WithUncheckedPackages("internal/platform/identity"),
 ```
@@ -170,6 +174,7 @@ func WithRootLibs(pkgs ...string) Option
 func WithPurePackages(pkgs ...string) Option
 func WithUncheckedPackages(pkgs ...string) Option
 func WithInternalDirs(dirs ...string) Option
+func WithPkgPackages(pkgs ...string) Option
 func WithKnownViolations(known map[string]string) Option
 ```
 

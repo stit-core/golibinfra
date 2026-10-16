@@ -30,6 +30,7 @@ func check(t *testing.T, dir string, opts ...archkit.Option) *recorder {
 	rec := &recorder{TB: t}
 	archkit.Check(rec, append([]archkit.Option{
 		archkit.WithInternalDirs("internal/testkit"),
+		archkit.WithPkgPackages("pkg/paging", "pkg/policy"),
 		archkit.WithPurePackages("internal/platform/identity", "pkg/policy"),
 		archkit.WithUncheckedPackages("internal/platform/identity"),
 		archkit.WithRootLibs(kit+"/clockkit", kit+"/idkit", kit+"/logkit", kit+"/outboxkit", kit+"/pgkit", "go.uber.org/fx"),
