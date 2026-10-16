@@ -14,6 +14,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/bruteforcekit/pgstore"
 	"git.stit.tech/stit-core/golibinfra/pgkit"
 	"git.stit.tech/stit-core/golibinfra/testkit"
+	"git.stit.tech/stit-core/golibinfra/testkit/bruteforcetest"
 	"git.stit.tech/stit-core/golibinfra/testkit/metrictest"
 )
 
@@ -885,16 +886,19 @@ func TestStore_NoDeadlocks(t *testing.T) {
 		}
 	}
 
-	// Вход пары вперемешку с попытками той же пары.
+	// Вход и возврат попытки пары вперемешку с попытками той же пары.
 	var wg sync.WaitGroup
 	for w := range 4 {
 		wg.Go(func() {
 			for i := range 150 {
-				if (w+i)%2 == 0 {
+				switch (w + i) % 3 {
+				case 0:
 					_, err := s.Attempt(ctx, "mix@example.com", "10.1.1.1")
 					note(err)
-				} else {
+				case 1:
 					note(s.RecordSuccess(ctx, "mix@example.com", "10.1.1.1"))
+				default:
+					note(s.Refund(ctx, "mix@example.com", "10.1.1.1"))
 				}
 			}
 		})
@@ -1012,5 +1016,144 @@ func TestStore_CleanupSkipsBusyRows(t *testing.T) {
 	}
 	if failedCount(t, ctx, db, "busy@example.com", "") != 1 || failedCount(t, ctx, db, "stale@example.com", "") != -1 {
 		t.Fatal("Cleanup must skip the busy row and delete the stale one")
+	}
+}
+
+// Хранилище держит общий контракт Guard — тот же, что фейк bruteforcetest.Counting.
+func TestStore_Contract(t *testing.T) {
+	db, _ := startDB(t)
+	bruteforcetest.RunContract(t, func(t *testing.T, cfg bruteforcekit.Config) bruteforcekit.Guard {
+		return newStore(t, db, cfg)
+	})
+}
+
+// lockedUntil — срок блокировки строки (subject, ip); нулевой — блокировки нет.
+func lockedUntil(t *testing.T, ctx context.Context, db *pgkit.DB, subject, ip string) time.Time {
+	t.Helper()
+	var until *time.Time
+	if err := db.QueryRow(ctx, `SELECT locked_until FROM bruteforce_attempts WHERE subject = $1 AND ip = $2`, subject, ip).Scan(&until); err != nil {
+		t.Fatalf("locked_until: %v", err)
+	}
+	if until == nil {
+		return time.Time{}
+	}
+	return *until
+}
+
+// Блокировка истекла — окно кончилось: возврат его попытки строку не трогает, и следующая попытка открывает новое
+// окно, а не продолжает старое на пороге.
+func TestStore_RefundKeepsExpiredLock(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	s := newStore(t, db, cfg)
+	const subject, ip = "expired@example.com", "10.5.5.1"
+	attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+	if _, err := db.Exec(ctx, `UPDATE bruteforce_attempts SET locked_until = NOW() - interval '1 second' WHERE subject = $1 AND ip = $2`, subject, ip); err != nil {
+		t.Fatal(err)
+	}
+	expired := lockedUntil(t, ctx, db, subject, ip)
+	if err := s.Refund(ctx, subject, ip); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	if n, until := failedCount(t, ctx, db, subject, ip), lockedUntil(t, ctx, db, subject, ip); n != cfg.MaxFailures || !until.Equal(expired) {
+		t.Fatalf("after Refund of an ended window: failed_count %d, locked_until %v; want %d and %v", n, until, cfg.MaxFailures, expired)
+	}
+	attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+	if st, err := s.Attempt(ctx, subject, ip); err != nil || st == nil {
+		t.Fatalf("Attempt over the new window = %v, %v, want lock", st, err)
+	}
+}
+
+// Откат транзакции вызывающего оставляет попытку учтённой (fail-closed), коммит — возвращает её.
+func TestStore_RefundInTransaction(t *testing.T) {
+	pg := testkit.StartPostgres(t, testkit.WithMigrations(pgstore.Migrations))
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	db, tr := pg.DB(t), pg.Transactor(t)
+	cfg := config()
+	s := newStore(t, db, cfg)
+	const subject, ip = "tx-refund@example.com", "10.5.5.2"
+	attempts(t, ctx, s, subject, ip, cfg.MaxFailures)
+
+	errRollback := errors.New("rollback")
+	err := tr.WithTx(ctx, func(txCtx context.Context) error {
+		if err := s.Refund(txCtx, subject, ip); err != nil {
+			return err
+		}
+		return errRollback
+	})
+	if !errors.Is(err, errRollback) {
+		t.Fatalf("WithTx = %v, want the rollback error", err)
+	}
+	if st, err := s.Attempt(ctx, subject, ip); err != nil || st == nil {
+		t.Fatalf("Attempt after a rolled back Refund = %v, %v, want the lock", st, err)
+	}
+	if err := tr.WithTx(ctx, func(txCtx context.Context) error { return s.Refund(txCtx, subject, ip) }); err != nil {
+		t.Fatalf("Refund in a committed transaction: %v", err)
+	}
+	attempts(t, ctx, s, subject, ip, 1)
+}
+
+// Регрессия VGA-01: отказ перегрузки хэшера — попытка без проверки секрета, её возвращают Refund. Под
+// одновременными попытками и возвратами пары («пользователи», которым проверку не дали) и попытками без
+// возврата («перебор») счётчик в итоге равен числу попыток без возврата, и их к проверке доходит не больше
+// MaxFailures: возвраты не теряются и не дают перебору лишних.
+func TestStore_RefundConcurrent(t *testing.T) {
+	db, ctx := startDB(t)
+	cfg := config()
+	cfg.MaxFailures = 5
+	s := newStore(t, db, cfg)
+	const subject, ip = "refund-race@example.com", "10.5.5.3"
+
+	var (
+		wg      sync.WaitGroup
+		checked atomic.Int64
+		mu      sync.Mutex
+		errs    []error
+	)
+	note := func(err error) {
+		if err != nil {
+			mu.Lock()
+			errs = append(errs, err)
+			mu.Unlock()
+		}
+	}
+	for range 20 {
+		wg.Go(func() {
+			for range 25 {
+				st, err := s.Attempt(ctx, subject, ip)
+				note(err)
+				if err == nil && st == nil {
+					note(s.Refund(ctx, subject, ip))
+				}
+			}
+		})
+	}
+	wg.Go(func() {
+		for range 200 {
+			st, err := s.Attempt(ctx, subject, ip)
+			note(err)
+			if err == nil && st == nil {
+				checked.Add(1)
+			}
+		}
+	})
+	wg.Wait()
+	for _, err := range errs {
+		t.Fatalf("operation failed: %v", err)
+	}
+
+	k := int(checked.Load())
+	if k > cfg.MaxFailures {
+		t.Fatalf("%d attempts without a refund reached the secret check, want at most %d", k, cfg.MaxFailures)
+	}
+	if n := failedCount(t, ctx, db, subject, ip); n != k {
+		t.Fatalf("failed_count = %d, want the %d attempts without a refund", n, k)
+	}
+	if n := failedCount(t, ctx, db, subject, ""); n != k {
+		t.Fatalf("subject failed_count = %d, want %d", n, k)
+	}
+	if locked := !lockedUntil(t, ctx, db, subject, ip).IsZero(); locked != (k == cfg.MaxFailures) {
+		t.Fatalf("pair locked = %v with %d attempts without a refund, want a lock only at %d", locked, k, cfg.MaxFailures)
 	}
 }

@@ -144,16 +144,23 @@ if errors.Is(err, ErrNotFound) {
 }
 ok, err := hasher.Verify(ctx, submittedPassword, user.PasswordHash)
 switch {
-case errors.Is(err, authnkit.ErrBusy):
-	return err // перегрузка: 503 с Retry-After — как у VerifyDummy выше
+case err != nil && !errors.Is(err, authnkit.ErrPasswordTooLong) && !errors.Is(err, authnkit.ErrInvalidHash):
+	return err // ErrBusy, отмена ctx — как у VerifyDummy выше; ErrBusy — 503 с Retry-After
 case err != nil || !ok:
 	return ErrInvalidCredentials // одинаковый ответ на оба случая
 }
 ```
 
-Отказ `ErrBusy` — не неверный пароль: ответ на него — 503 с `Retry-After` на обоих путях, а
-не «неверные учётные данные». Иначе под нагрузкой путь без учётной записи и путь с ней отвечали
-бы по-разному, а пользователь с верным паролем получал бы отказ входа.
+Отказ `ErrBusy` и отмена `ctx` в очереди — не неверный пароль: проверки не было, и ответ на
+них один на обоих путях (на `ErrBusy` — 503 с `Retry-After`), а не «неверные учётные данные».
+Иначе под нагрузкой путь без учётной записи и путь с ней отвечали бы по-разному, а
+пользователь с верным паролем получал бы отказ входа.
+
+Попытку, которую guard входа (`bruteforcekit.Guard.Attempt`) учёл до проверки, на `ErrBusy`
+возвращают — `Guard.Refund(ctx, subject, ip)`, затем 503: проверки секрета не было, и без
+возврата клиент, повторяющий отказ, за `BRUTEFORCE_MAX_FAILURES` отказов блокирует свою пару,
+не проверив пароль ни разу. Перебор от возврата лишних попыток не получает: к проверке доходит
+не больше `BRUTEFORCE_MAX_FAILURES` попыток окна.
 
 ## Sign / Verify JWT
 
@@ -429,8 +436,9 @@ App-структуры — отдельный `fx.Provide` не нужен. Не
   восьми вызовов на слот, следующий сразу получает `ErrBusy` — ответ 503 с
   `Retry-After` (`RetryAfter()` ошибки; `httpkit.ErrorMap` ставит заголовок сам, если
   ошибка домена заворачивает `ErrBusy`), а не
-  429: перегрузка общая, а не лимит клиента. Ожидание в очереди ограничено и `ctx`
-  запроса — передавай его, а не `context.Background()`.
+  429: перегрузка общая, а не лимит клиента. Попытку guard'а входа, учтённую до
+  проверки, на `ErrBusy` возвращает `bruteforcekit.Guard.Refund`. Ожидание в очереди
+  ограничено и `ctx` запроса — передавай его, а не `context.Background()`.
 - **Стойкость Argon2id растёт со временем, безопасно для старых хэшей.** Параметры
   зашиты в PHC-строку, поэтому поднятие `Argon2idConfig` не ломает проверку ранее
   выданных хэшей. Перевыпуск под новую стойкость — `NeedsRehash` + `Hash` на

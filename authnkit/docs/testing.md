@@ -58,8 +58,10 @@ _ = NewUsecase(h).Login(ctx, "nobody@example.com", "pw")
 if h.VerifyCalls() != 0 || h.VerifyDummyCalls() != 1 { … }
 
 busy := &authntest.DeterministicHasher{Busy: true}
-err := NewUsecase(busy).Login(ctx, "nobody@example.com", "pw")
-// перегрузка на пути без учётной записи — тот же отказ, что с ней: errors.Is(err, authnkit.ErrBusy)
+guard := &bruteforcetest.Recorder{}
+err := NewUsecase(busy, guard).Login(ctx, "nobody@example.com", "pw")
+// перегрузка на пути без учётной записи — тот же отказ, что с ней: errors.Is(err, authnkit.ErrBusy);
+// попытка guard'а, учтённая до проверки, возвращена: len(guard.Refunds()) == 1
 ```
 
 Хэш предсказуем и не секретен — только для тестов. Предохранитель на случай

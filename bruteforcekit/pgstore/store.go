@@ -99,8 +99,9 @@ WHERE subject = $1 AND ip = $2 AND locked_until > NOW()
 
 // attemptRounds — сколько раз Attempt повторяет оператор: строку субъекта удалил cleanup до
 // оператора или блокировка, не пустившая upsert, снялась до её чтения (успех параллельного входа,
-// истечение).
-const attemptRounds = 4
+// возврат попытки на пороге, истечение). Под потоком попыток и возвратов одной пары повтор нужен
+// каждой десятой попытке, пятый — единицам из тысяч: запас — на порядки.
+const attemptRounds = 16
 
 // attemptResult — строка attemptSQL: нет строки субъекта, блокировка субъекта до попытки, учёт
 // пары и субъекта.
@@ -216,6 +217,34 @@ func (s *Store) RecordSuccess(ctx context.Context, subject, ip string) error {
 	}
 	if _, err := s.db.Exec(ctx, deletePairSQL, subject, ip); err != nil {
 		return fmt.Errorf("bruteforcekit/pgstore: record success: %w", err)
+	}
+	return nil
+}
+
+// refundSQL — минус одна попытка окна строки (subject, ip): блокировку, которую поставила попытка на пороге $3,
+// снимает вместе с ней; истёкшую не трогает — следующая попытка откроет новое окно, а не продолжит старое.
+const refundSQL = `
+UPDATE bruteforce_attempts
+SET failed_count = GREATEST(failed_count - 1, 0),
+    locked_until = CASE WHEN failed_count - 1 >= $3 THEN locked_until END
+WHERE subject = $1 AND ip = $2 AND (locked_until IS NULL OR locked_until > NOW())
+`
+
+// Refund возвращает разрешённую попытку, не дошедшую до проверки секрета: минус одна попытка окна субъекта и пары,
+// блокировка, поставленная ею на пороге, снимается. Двумя операторами в порядке блокировок Attempt (субъект, затем
+// пара), как RecordSuccess; невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (s *Store) Refund(ctx context.Context, subject, ip string) error {
+	subject, ip, err := s.cfg.NormalizeKey(subject, ip)
+	if err != nil {
+		return err
+	}
+	if s.cfg.SubjectMaxFailures != bruteforcekit.SubjectBudgetOff {
+		if _, err := s.db.Exec(ctx, refundSQL, subject, "", s.cfg.SubjectMaxFailures); err != nil {
+			return fmt.Errorf("bruteforcekit/pgstore: refund: %w", err)
+		}
+	}
+	if _, err := s.db.Exec(ctx, refundSQL, subject, ip, s.cfg.MaxFailures); err != nil {
+		return fmt.Errorf("bruteforcekit/pgstore: refund: %w", err)
 	}
 	return nil
 }

@@ -32,6 +32,9 @@ func TestPermissive_NoLock(t *testing.T) {
 	if err := (bruteforcetest.Permissive{}).RecordSuccess(t.Context(), "u1", "1.1.1.1"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
 	}
+	if err := (bruteforcetest.Permissive{}).Refund(t.Context(), "u1", "1.1.1.1"); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
 }
 
 func TestLocked_ReturnsState(t *testing.T) {
@@ -44,6 +47,12 @@ func TestLocked_ReturnsState(t *testing.T) {
 	}
 	if err := g.RecordSuccess(t.Context(), "u1", "1.1.1.1"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
+	}
+	if err := g.Refund(t.Context(), "u1", "1.1.1.1"); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	if st, err := g.Attempt(t.Context(), "u1", "1.1.1.1"); err != nil || st == nil {
+		t.Fatalf("Attempt after Refund = %v, %v, want the lock", st, err)
 	}
 }
 
@@ -59,6 +68,9 @@ func TestRecorder_TracksSubjectAndIP(t *testing.T) {
 	if err := r.RecordSuccess(ctx, "u1", "203.0.113.7"); err != nil {
 		t.Fatalf("RecordSuccess: %v", err)
 	}
+	if err := r.Refund(ctx, "u2", "203.0.113.8"); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
 
 	want := []bruteforcetest.Attempt{{Subject: "u1", IP: "203.0.113.7"}, {Subject: "u2", IP: "203.0.113.8"}}
 	got := r.Attempts()
@@ -67,6 +79,9 @@ func TestRecorder_TracksSubjectAndIP(t *testing.T) {
 	}
 	if succ := r.Successes(); len(succ) != 1 || succ[0] != want[0] {
 		t.Fatalf("Successes=%v", succ)
+	}
+	if refunds := r.Refunds(); len(refunds) != 1 || refunds[0] != want[1] {
+		t.Fatalf("Refunds=%v, want %v", refunds, want[1:])
 	}
 
 	got[0].IP = "tampered"
@@ -107,6 +122,9 @@ func TestFakesRejectInvalidKeyLikePgstore(t *testing.T) {
 			if err := g.RecordSuccess(t.Context(), k.subject, k.ip); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
 				t.Errorf("%s.RecordSuccess(%q, %q) = %v, want ErrInvalidKey", name, k.subject, k.ip, err)
 			}
+			if err := g.Refund(t.Context(), k.subject, k.ip); !errors.Is(err, bruteforcekit.ErrInvalidKey) {
+				t.Errorf("%s.Refund(%q, %q) = %v, want ErrInvalidKey", name, k.subject, k.ip, err)
+			}
 		}
 	}
 
@@ -114,14 +132,15 @@ func TestFakesRejectInvalidKeyLikePgstore(t *testing.T) {
 	r := &bruteforcetest.Recorder{}
 	_, _ = r.Attempt(t.Context(), "u1", "")
 	_ = r.RecordSuccess(t.Context(), "u1", "")
-	if len(r.Attempts()) != 0 || len(r.Successes()) != 0 {
-		t.Errorf("Attempts=%v Successes=%v, want empty", r.Attempts(), r.Successes())
+	_ = r.Refund(t.Context(), "u1", "")
+	if len(r.Attempts()) != 0 || len(r.Successes()) != 0 || len(r.Refunds()) != 0 {
+		t.Errorf("Attempts=%v Successes=%v Refunds=%v, want empty", r.Attempts(), r.Successes(), r.Refunds())
 	}
 }
 
 // Как pgstore, фейки отвергают Attempt внутри транзакции: сервис, учитывающий
 // попытку в Transactor.WithTx, краснеет в юнит-тесте с фейком pgtest — в проде
-// откат на неверном пароле снимал бы учёт. RecordSuccess в транзакции допустим.
+// откат на неверном пароле снимал бы учёт. RecordSuccess и Refund в транзакции допустимы.
 func TestFakesRejectAttemptInTransaction(t *testing.T) {
 	t.Parallel()
 
@@ -143,6 +162,9 @@ func TestFakesRejectAttemptInTransaction(t *testing.T) {
 		}
 		if err := g.RecordSuccess(inTx, "u1", "203.0.113.7"); err != nil {
 			t.Errorf("%s.RecordSuccess in a transaction: %v", name, err)
+		}
+		if err := g.Refund(inTx, "u1", "203.0.113.7"); err != nil {
+			t.Errorf("%s.Refund in a transaction: %v", name, err)
 		}
 	}
 	if got := recorder.Attempts(); len(got) != 0 {
@@ -393,5 +415,77 @@ func TestCounting_RecordSuccessFollowsTheTransaction(t *testing.T) {
 	}
 	if st := attempt(); st != nil {
 		t.Fatalf("the committed RecordSuccess must erase the lock, got %+v", st)
+	}
+}
+
+// Counting держит общий контракт Guard — тот же, что pgstore.
+func TestCounting_Contract(t *testing.T) {
+	t.Parallel()
+	bruteforcetest.RunContract(t, func(t *testing.T, cfg bruteforcekit.Config) bruteforcekit.Guard {
+		g, err := bruteforcetest.NewCounting(cfg, nil)
+		if err != nil {
+			t.Fatalf("NewCounting: %v", err)
+		}
+		return g
+	})
+}
+
+// Блокировка истекла — окно кончилось: возврат его попытки не трогает строку, и следующая попытка открывает
+// новое окно, а не продолжает старое на пороге.
+func TestCounting_RefundKeepsExpiredLock(t *testing.T) {
+	t.Parallel()
+	clock := clockkit.NewTickable(time.Unix(1_700_000_000, 0))
+	cfg := countingConfig()
+	g, err := bruteforcetest.NewCounting(cfg, clock)
+	if err != nil {
+		t.Fatalf("NewCounting: %v", err)
+	}
+	ctx := t.Context()
+	for range cfg.MaxFailures {
+		if _, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil {
+			t.Fatalf("Attempt: %v", err)
+		}
+	}
+	clock.Advance(cfg.LockDuration)
+	if err := g.Refund(ctx, "u1", "203.0.113.7"); err != nil {
+		t.Fatalf("Refund: %v", err)
+	}
+	for i := range cfg.MaxFailures {
+		if st, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil || st != nil {
+			t.Fatalf("new window Attempt %d = %v, %v, want allowed", i+1, st, err)
+		}
+	}
+	if st, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil || st == nil {
+		t.Fatalf("Attempt over the new window = %v, %v, want lock", st, err)
+	}
+}
+
+// Откат транзакции фейка pgtest оставляет попытку учтённой — как у pgstore: возврат в откатанной транзакции не
+// расширяет окно.
+func TestCounting_RefundFollowsTheTransaction(t *testing.T) {
+	t.Parallel()
+	cfg := countingConfig()
+	g, err := bruteforcetest.NewCounting(cfg, nil)
+	if err != nil {
+		t.Fatalf("NewCounting: %v", err)
+	}
+	ctx := t.Context()
+	for range cfg.MaxFailures {
+		if _, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil {
+			t.Fatalf("Attempt: %v", err)
+		}
+	}
+	errRollback := errors.New("rollback")
+	err = pgtest.Identity{}.WithTx(ctx, func(txCtx context.Context) error {
+		if err := g.Refund(txCtx, "u1", "203.0.113.7"); err != nil {
+			return err
+		}
+		return errRollback
+	})
+	if !errors.Is(err, errRollback) {
+		t.Fatalf("WithTx = %v, want the rollback error", err)
+	}
+	if st, err := g.Attempt(ctx, "u1", "203.0.113.7"); err != nil || st == nil {
+		t.Fatalf("Attempt after a rolled back Refund = %v, %v, want the lock", st, err)
 	}
 }

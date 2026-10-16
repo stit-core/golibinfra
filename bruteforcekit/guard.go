@@ -1,7 +1,8 @@
 // Package bruteforcekit — guard против brute-force на login-эндпойнты:
 // учитывает попытки по паре (subject — логин/email, ip) и по subject на всех адресах до
 // проверки секрета и блокирует пару после MaxFailures, а subject — после SubjectMaxFailures
-// попыток без успеха. Core-абстракции (Guard, Cleaner) отделены от pgstore-реализации.
+// попыток без успеха; попытку, не дошедшую до проверки, возвращает Refund. Core-абстракции
+// (Guard, Cleaner) отделены от pgstore-реализации.
 package bruteforcekit
 
 import (
@@ -38,7 +39,8 @@ type LockState struct {
 }
 
 // Guard — request-path guard'а: попытка учитывается до проверки секрета, успех
-// снимает историю. Реализация в библиотеке — bruteforcekit/pgstore.
+// снимает историю, попытку без проверки секрета возвращает Refund. Реализация в
+// библиотеке — bruteforcekit/pgstore.
 type Guard interface {
 	// Attempt атомарно учитывает попытку пары (subject, ip) и subject'а до проверки секрета:
 	// nil — попытка разрешена (одна из MaxFailures пары и SubjectMaxFailures субъекта в окне),
@@ -49,6 +51,13 @@ type Guard interface {
 	// RecordSuccess снимает историю попыток пары и окно субъекта: успех сбрасывает оба. В
 	// транзакции допустим — её откат оставляет счётчики; строки он берёт в порядке Attempt.
 	RecordSuccess(ctx context.Context, subject, ip string) error
+
+	// Refund возвращает попытку, которую Attempt разрешил, а секрет так и не проверили (перегрузка проверки —
+	// authnkit.ErrBusy): минус одна попытка окна пары и субъекта, и блокировку, которую эта попытка поставила на
+	// пороге, снимает. Только после разрешённого Attempt и до проверки секрета: возврат проверенной попытки дал бы
+	// перебору лишнюю. Истёкшую блокировку и историю, стёртую успехом, не трогает; в транзакции допустим — её
+	// откат оставляет попытку учтённой; строки берёт в порядке Attempt.
+	Refund(ctx context.Context, subject, ip string) error
 }
 
 // Cleaner — maintenance-путь guard'а, отдельный от request-path: его реализуют хранилища

@@ -1,5 +1,6 @@
 // Package bruteforcetest — фейки bruteforcekit.Guard для тестов сценариев
-// логина без Postgres.
+// логина без Postgres и контрактный набор RunContract: фейк Counting и
+// bruteforcekit/pgstore проверяются одними кейсами.
 package bruteforcetest
 
 import (
@@ -49,6 +50,11 @@ func (Permissive) RecordSuccess(_ context.Context, subject, ip string) error {
 	return validateKey(subject, ip)
 }
 
+// Refund ничего не делает; невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (Permissive) Refund(_ context.Context, subject, ip string) error {
+	return validateKey(subject, ip)
+}
+
 // Locked — bruteforcekit.Guard, заблокированный до Until. Ключ проверяется как
 // в pgstore.
 type Locked struct {
@@ -70,6 +76,11 @@ func (Locked) RecordSuccess(_ context.Context, subject, ip string) error {
 	return validateKey(subject, ip)
 }
 
+// Refund ничего не делает; невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (Locked) Refund(_ context.Context, subject, ip string) error {
+	return validateKey(subject, ip)
+}
+
 // Attempt — один вызов guard'а: с каким ключом его позвал сервис.
 type Attempt struct {
 	// Subject — subject, переданный guard'у.
@@ -84,6 +95,7 @@ type Recorder struct {
 	mu        sync.Mutex
 	attempts  []Attempt
 	successes []Attempt
+	refunds   []Attempt
 }
 
 // Attempt запоминает пару (subject, ip) и разрешает попытку; в транзакции —
@@ -110,6 +122,17 @@ func (r *Recorder) RecordSuccess(_ context.Context, subject, ip string) error {
 	return nil
 }
 
+// Refund запоминает пару (subject, ip); невалидный ключ — bruteforcekit.ErrInvalidKey.
+func (r *Recorder) Refund(_ context.Context, subject, ip string) error {
+	if err := validateKey(subject, ip); err != nil {
+		return err
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.refunds = append(r.refunds, Attempt{Subject: subject, IP: ip})
+	return nil
+}
+
 // Attempts — копия вызовов Attempt в порядке записи: по ней тест сервиса
 // видит, что попытка учтена и с каким ключом (адрес клиента).
 func (r *Recorder) Attempts() []Attempt {
@@ -125,11 +148,19 @@ func (r *Recorder) Successes() []Attempt {
 	return append([]Attempt(nil), r.successes...)
 }
 
+// Refunds — копия вызовов Refund в порядке записи: по ней тест сервиса видит, что попытка без
+// проверки секрета (перегрузка хэшера) возвращена.
+func (r *Recorder) Refunds() []Attempt {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return append([]Attempt(nil), r.refunds...)
+}
+
 // Counting — bruteforcekit.Guard в памяти с политикой pgstore: попытка
 // учитывается до проверки секрета, пройти в окне успевают MaxFailures попыток пары и
 // SubjectMaxFailures попыток subject'а со всех адресов, попытка под блокировкой счётчики не
 // меняет, истечение блокировки начинает новое окно, RecordSuccess стирает историю пары и окно
-// субъекта. Сценарий «N попыток → lock» проверяется без Postgres.
+// субъекта, Refund возвращает попытку в окно. Сценарий «N попыток → lock» проверяется без Postgres.
 type Counting struct {
 	cfg   bruteforcekit.Config
 	clock clockkit.Clock
@@ -229,6 +260,44 @@ func (c *Counting) RecordSuccess(ctx context.Context, subject, ip string) error 
 		c.mu.Lock()
 		defer c.mu.Unlock()
 		maps.Copy(c.rows, saved)
+	})
+	return nil
+}
+
+// Refund возвращает разрешённую попытку, не дошедшую до проверки секрета, — как pgstore: минус одна
+// попытка окна пары и субъекта, блокировка, поставленная на пороге, снимается, истёкшая остаётся. В
+// транзакции фейка pgtest её откат попытку в счёт возвращает — как у pgstore.
+func (c *Counting) Refund(ctx context.Context, subject, ip string) error {
+	key, err := c.key(subject, ip)
+	if err != nil {
+		return err
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	now := c.clock.Now()
+	saved := map[Attempt]countingRow{}
+	refund := func(k Attempt, threshold int) {
+		row, ok := c.rows[k]
+		if !ok || (!row.lockedUntil.IsZero() && !row.lockedUntil.After(now)) {
+			return
+		}
+		saved[k] = *row
+		row.failedCount = max(row.failedCount-1, 0)
+		if row.failedCount < threshold {
+			row.lockedUntil = time.Time{}
+		}
+	}
+	if c.cfg.SubjectMaxFailures != bruteforcekit.SubjectBudgetOff {
+		refund(Attempt{Subject: key.Subject}, c.cfg.SubjectMaxFailures)
+	}
+	refund(key, c.cfg.MaxFailures)
+	pgtest.OnRollback(ctx, func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for k, row := range saved {
+			c.rows[k] = &row
+		}
 	})
 	return nil
 }

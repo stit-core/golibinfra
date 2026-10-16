@@ -33,6 +33,11 @@ blocked-by: —
   тем же токеном через 2 с — `ErrReused`, сессия отозвана; три сценария кражи — `ErrReused`.
 - Параллельно в golibinfra идут треки g-arch (`archkit/`) и g-kits (`httpkit/errormap.go`, `logkit/`): их файлы план
   не трогает.
+- Валидация `9d96d98` — `N/validation-g-auth.md` (пробы `N/val-g-auth/`): FAIL по VGA-01 (high) — guard входа
+  (`bruteforcekit`, шаблон `auth/usecase.go:81,233`) учитывает попытку до хэша, и отказ `ErrBusy` под потоком
+  блокирует честного пользователя за пять повторов 503 (10 жертв: база — вошли все, ветка — 8–9 заблокированы на
+  15 мин); minor VGA-02…06. Дирижёр расширил владение на `bruteforcekit/` и `testkit/bruteforcetest` (вариант (а)
+  валидатора — возврат попытки) и включил minor в трек.
 
 ## Не входит
 - Правки шаблона (трек g-upgrade), push и тег `v1.6.0` (дирижёр), аудит golibinfra и её собственный бэклог.
@@ -66,13 +71,18 @@ blocked-by: —
     дедлайну; ветка: 340 мс, затем отказ за 0 с (500 — `ErrBusy` в шаблоне ещё без правила), поток отклонён сразу
     (`tpl-*-h2.log`). E3 — база: `AUTH_REFRESH_REUSED`, сессий 0, `refresh_reused` 1; ветка: 204, сессия открыта,
     `refresh_reused` 0, старый cookie после использования преемника — `AUTH_REFRESH_REUSED` (`tpl-base.log`, `tpl-branch.log`)
-- [x] **AC6** — доки и сигналы кита по факту: README и `docs/` authnkit, строки testkit и корневого README, `ErrBusy` и
-  ответ на него (503 и `Retry-After`), `authn_password_busy_total`, `result="retry"`, `SESSION_RETRY_WINDOW`; «Handoff» —
-  строки аннотации `v1.6.0` и шаги шаблона, сверенные с `make release-diff`. Проверка: `make envdoc-check` → OK; `make release-diff PREV=v1.5.0` — каждая строка в «Handoff»
-  - Подтверждено: `make envdoc-check` → OK (255 переменных); `make release-diff PREV=v1.5.0` — три несовместимые строки
-    API (`VerifyDummy` у `Hasher`, `*Argon2idHasher`, `authntest.DeterministicHasher`) — в Breaking, новое (`ErrBusy`,
-    `Config.RetryWindow`, `DeterministicHasher.Busy`), `+ SESSION_RETRY_WINDOW=30s` и `+ authn_password_busy_total` — в
-    Изменениях и Поведении; футеры `BREAKING CHANGE` коммитов S1 и S2 — строки Breaking
+- [ ] **AC7** — VGA-01: попытка, разрешённая guard'ом и не дошедшая до проверки секрета, возвращается
+  (`bruteforcekit.Guard.Refund`) — одинаково в pgstore и фейке, без гонок; на копии шаблона с правкой входа (возврат на
+  `ErrBusy`) жертвы с верным паролем под потоком входят без блокировок, а перебор упирается в guard после
+  `MaxFailures` проверенных попыток. Проверка: `bruteforcetest.RunContract` (фейк и pgstore), `TestStore_RefundConcurrent` → PASS; эксперимент валидатора `TestValExp_Lockout*` — база: блокировки, ветка: 0
+- [ ] **AC8** — minor валидатора: два повтора подряд и срок токена повтора у конца сессии закреплены (мутанты V1, V3
+  убиты), фейк при окне 0 и часах назад — как pgstore (V2 убит), параллельные повторы в окне фейк и pgstore проводят
+  одинаково — все, живым остаётся один токен (VGA-04), пример «Логин» отвечает на отмену одинаково (VGA-05),
+  `SESSION_RETRY_WINDOW` — не больше 5m и совет держать секунды (VGA-06). Проверка: `go test -race ./authnkit/session/... ./testkit/sessiontest/` → PASS, кейсы красные на `9d96d98`; мутанты V1–V3 → убиты
+- [ ] **AC6** — доки и сигналы китов по факту: README и `docs/` authnkit и bruteforcekit, строки testkit и корневого
+  README, `ErrBusy` и ответ на него (503, `Retry-After`, возврат попытки guard'а), `authn_password_busy_total`,
+  `result="retry"`, `SESSION_RETRY_WINDOW`; «Handoff» — строки аннотации `v1.6.0` и шаги шаблона, сверенные с
+  `make release-diff`. Проверка: `make envdoc-check` → OK; `make release-diff PREV=v1.5.0` — каждая строка в «Handoff»
 
 ## Шаги
 - [x] **S1** — authnkit: очередь хэшера с отказом `ErrBusy` (RSECT-01) — вычисления ждут слот не дальше
@@ -106,6 +116,27 @@ blocked-by: —
   - Сделано: «Handoff» сверен с `release-diff` построчно; тексты кита и контракта — граница окна («меньше чем через»),
     параллельные ротации в архитектуре; `make check` → `✓ check clean (./...)`; `make gate-clean` на коммите шага →
     `✓ check clean (./...)`
+
+### Доводка по валидации
+- [x] **S5** — bruteforcekit: возврат попытки без проверки секрета (VGA-01) — `Guard.Refund` в pgstore и фейках,
+  контракт `bruteforcetest.RunContract`; доки bruteforcekit и authnkit: возврат на `ErrBusy`, пример «Логин» (VGA-05)
+  - Проверка: `go test -race ./bruteforcekit/... ./testkit/bruteforcetest/` → PASS; `make check` → `✓ check clean (./...)` · Закрывает: AC7, AC8
+  - Сделано: `Guard.Refund` — минус попытка окна субъекта и пары, блокировка ниже порога снята, истёкшая — нет; pgstore
+    двумя операторами в порядке `Attempt`, фейки (`Counting` — с откатом `pgtest`, `Recorder.Refunds()`); контракт
+    `RunContract` (семь кейсов) проходят `Counting` и pgstore, два сломанных возврата его проваливают;
+    `TestStore_RefundConcurrent` (21 поток попыток и возвратов одной пары, `-count=10`) — счётчик равен попыткам без
+    возврата, к проверке их не больше `MaxFailures`; `attemptRounds` 4 → 16 (под этим потоком 4 раунда не хватало).
+    Доки: README bruteforcekit (поток входа, `Refund`, инварианты), authnkit (возврат на `ErrBusy`, пример «Логин» —
+    отмена `ctx` на обоих путях одна, VGA-05), строки testkit и корневого README. На `9d96d98` возврата нет — тест не
+    собирается; `make check` → `✓ check clean (./...)`
+- [ ] **S6** — сессии: параллельные повторы в окне проходят все (VGA-04), фейк в строгом режиме (VGA-03), кейсы двух
+  повторов подряд и срока токена повтора (VGA-02)
+  - Проверка: `go test -race ./authnkit/session/... ./testkit/sessiontest/` → PASS, кейсы на `9d96d98` красные; мутанты V1–V3 → убиты · Закрывает: AC8
+- [ ] **S7** — `SESSION_RETRY_WINDOW` не больше 5m и совет держать окно коротким (VGA-06)
+  - Проверка: `go test -race ./authnkit/session/ ./internal/envconf/` → PASS · Закрывает: AC8
+- [ ] **S8** — эксперимент VGA-01 на копии шаблона с правкой входа (возврат на `ErrBusy`), «Handoff», гейт на чистом
+  дереве
+  - Проверка: `TestValExp_Lockout*` на копиях; `make gate-clean` → `✓ check clean (./...)` · Закрывает: AC7, AC6 · Зависит от: S5, S6, S7
 
 ## Решения
 - RSECT-01 — отказ по длине очереди, а не по сроку ожидания: при полной очереди отказ приходит сразу и освобождает
@@ -159,6 +190,23 @@ blocked-by: —
   `ConcurrentRotateHasOneWinner`) — без окна; гонку повторов в окне pgstore держит своим тестом по базе
   (`TestStore_ConcurrentRetry`), а контракт — общее для фейка и pgstore: не больше одного живого токена.
 - Чужие файлы: строка authnkit в корневых `README.md` (§ Пакеты) и `SECURITY.md` (§ Что в скоупе) — описание своего кита.
+- VGA-01 — возврат попытки методом `Guard.Refund`, а не билетом из `Attempt`: билет меняет сигнатуру `Attempt` у
+  каждого вызывающего, а возврат нужен одному пути — отказу проверки. Семантика: минус одна попытка окна пары и
+  субъекта (не ниже нуля); блокировка снимается, только если счётчик упал ниже порога, — её поставила на пороге эта или
+  параллельная разрешённая попытка, и проверенных в окне от этого не больше `MaxFailures`; истёкшую блокировку возврат
+  не трогает — иначе следующая попытка продолжила бы старое окно на пороге; стёртую успехом историю не создаёт.
+  Безопасность — правило вызова: возврат только непроверенной попытки (`authnkit.ErrBusy`); перебор от возвратов
+  лишних проверок не получает (кейс `RefundKeepsCheckedAttempts`), возврат проверенной дал бы — это названо в доках.
+- `Refund` — метод `Guard` (request-path рядом с `Attempt` и `RecordSuccess`), а не отдельный интерфейс: Breaking для
+  своих реализаций `Guard` у потребителей, шаблон оборачивает `Guard`, а не реализует его. В транзакции допустим, как
+  `RecordSuccess`: откат оставляет попытку учтённой (fail-closed). Метрик возврат не заводит: его темп виден по
+  `authn_password_busy_total`, блокировка, снятая возвратом, остаётся в `bruteforce_locks_total` — названо в доках.
+- `attemptRounds` pgstore — 16 (было 4): возврат на пороге снимает блокировку, и гонка «upsert видел блокировку, чтение
+  — уже нет» под потоком попыток и возвратов одной пары чаще (стресс-тест: пятый раунд — единицы из тысяч попыток,
+  `Attempt` падал `rows changed`). Ошибка guard'а — fail-closed (500), но это отказ честному клиенту; 16 раундов —
+  запас на порядки, предел цикла остаётся.
+- Контракт `bruteforcetest.RunContract` — новый: возврат обязан вести себя одинаково в pgstore и фейке; кейсы без
+  сдвига часов (pgstore считает время часами базы), истечение блокировки — тесты хранилищ.
 
 ## Handoff
 ### Аннотация `v1.6.0` — authnkit
@@ -168,6 +216,9 @@ Breaking:
 - authnkit: `Hash`, `Verify`, `VerifyDummy` при полной очереди Argon2id — `ErrBusy` сразу (было: ожидание слота до
   дедлайна ctx) → правило `errors.Is(err, authnkit.ErrBusy)` → 503 на всех путях пароля (вход по известному и
   неизвестному адресу, регистрация, смена и сброс), `Retry-After` — из `RetryAfter()` ошибки в цепочке; без правила — 500.
+  Попытку guard'а входа, учтённую до проверки, на `ErrBusy` вернуть — `bruteforcekit.Guard.Refund`, затем 503: иначе
+  повторы 503 под потоком блокируют честного пользователя за `BRUTEFORCE_MAX_FAILURES` отказов.
+- bruteforcekit: `Guard` + `Refund(ctx, subject, ip) error` — своя реализация `Guard` добавляет метод.
 - testkit/authntest: `DeterministicHasher.VerifyDummy` отдаёт `error`.
 - authnkit/session/pgstore: миграция `0002` источника `authnkit_session` (`successor_hash` в `authn_session_tokens`) —
   до старта новой версии: без неё старт — `pgkit.ErrSchema`; `pgkit.MigrateModule` в графе применяет её сам.
@@ -183,6 +234,7 @@ Breaking:
 - authnkit: `ErrBusy` (`RetryAfter()` — 1 с), метрика `authn_password_busy_total`.
 - authnkit/session: `Config.RetryWindow` (`SESSION_RETRY_WINDOW`).
 - testkit/authntest: `DeterministicHasher.Busy` — `ErrBusy` у `Hash`, `Verify` и `VerifyDummy`.
+- testkit/bruteforcetest: `Refund` у фейков, `Recorder.Refunds()`, контракт `RunContract(t, newGuard)`.
 
 ### Потребителю — шаблон (трек g-upgrade)
 1. `go get …/golibinfra@v1.6.0`; миграция `0002` кита идёт командой миграций (`cmd/migrate/sources`), без эффекта
@@ -191,9 +243,10 @@ Breaking:
    `VerifyDummy` — как ошибка `Verify`; `authnkit.ErrBusy` на путях пароля (`Login`, `ChangePassword`, `user.Register`,
    сброс пароля `verification`) → ошибка домена с 503 и `Retry-After` (ошибка кита — в цепочке); правило в таблицах
    операций, `make gen` (`openapi.json`); тесты — `authntest.DeterministicHasher{Busy: true}` на известном и неизвестном
-   адресе. Guard входа (`LoginGuard.Attempt` до проверки пароля) считает отказ `ErrBusy` неудачей: клиент, повторяющий
-   отказ, блокирует свою пару «адрес — IP» (H2: 429 на десятой попытке) — решение шаблона (у `bruteforcekit.Guard`
-   возврата попытки нет; `RecordSuccess` на отказе снял бы защиту от перебора).
+   адресе. Возврат попытки: порт `LoginGuard` + `Refund` (адаптер `infra/bruteforce` зовёт `Guard.Refund`); `Login` —
+   на `ErrBusy` известного (`Verify`), неизвестного и заблокированного адреса (`VerifyDummy`), `ChangePassword` — на
+   `ErrBusy` проверки старого пароля: `Refund(ctx, email, ip)`, затем 503; тесты — `bruteforcetest.NewCounting`: пять
+   `ErrBusy` подряд пару не блокируют, `Recorder.Refunds()` — возврат с ключом клиента.
 3. Повтор refresh: `TestSessions` (`cmd/api`) ждёт 401 на немедленный повтор и одного победителя параллельных обновлений,
    smoke `test/smoke/test_auth.py` — 401 на повтор погашенного cookie: на окне по умолчанию это повтор в окне (204, прежний
    преемник погашен). Кейсы — без окна (`SESSION_RETRY_WINDOW=0`) или повтор после использования преемника, плюс кейс
@@ -203,6 +256,7 @@ Breaking:
    `.env.example` (`SESSION_RETRY_WINDOW`), якоря `scripts/tools/mutants.txt` у правленого кода.
 
 ## Где мы сейчас
-Все шаги и критерии закрыты: хэшер отказывает при полной очереди (`ErrBusy`), повтор ротации в окне выдаёт нового
-преемника, эксперименты аудитора на копии шаблона чисты, «Handoff» сверен с `release-diff`. Дальше — валидатор трека,
-затем дирижёр: слияние в `main`, удаление плана, тег `v1.6.0` с аннотацией из «Handoff» и трек g-upgrade шаблона.
+Доводка по валидации (`N/validation-g-auth.md`, FAIL по VGA-01): S5 закрыт — возврат попытки `Guard.Refund` в
+bruteforcekit, пример «Логин» (VGA-05). Следующий шаг — S6: параллельные повторы refresh в окне проходят все (VGA-04),
+фейк в строгом режиме (VGA-03), кейсы VGA-02; затем S7 (VGA-06) и S8 — эксперимент VGA-01 на копии шаблона, «Handoff»,
+`make gate-clean`.
