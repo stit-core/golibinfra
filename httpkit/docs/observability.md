@@ -98,6 +98,7 @@ Trace-context клиента (`traceparent`, `tracestate`, `baggage`) по со�
 | `request deadline exceeded` | Warn | `timeout` | дедлайн запроса |
 | `readiness probe failed` | Warn | `probe`, `error` | `/ready`: проба вернула ошибку |
 | `readiness probe panicked` | Error | `probe`, `panic`, `stack` | `/ready`: panic пробы |
+| `huma group operation body limit is capped by its literal: MaxBodyBytes: -1 in the literal lifts it` | Warn | `operation`, `limit`, `requested` | старт: операция группы huma, тело которой huma режет раньше лимита кита или хука |
 | `http server listening` | Info | `addr` | старт |
 | `http server stopped` | Error | `error` | падение `Serve` |
 | `http server stop deadline: requests cancelled, connections closed` | Warn | `requests`, `error` | дедлайн остановки |
@@ -118,6 +119,10 @@ Trace-context клиента (`traceparent`, `tracestate`, `baggage`) по со�
   ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)).
 - `readiness probe failed` — текст ошибки клиенту не отдаётся; при panic проба `down`,
   процесс жив.
+- `huma group operation body limit is capped by …` — тело операции группы huma с префиксом huma читает по
+  `MaxBodyBytes` её литерала (у `Body` без него — 1 MiB): `limit` — этот лимит, им тело и режется, `requested`
+  — лимит кита или хука (не больше нуля — без предела); `MaxBodyBytes: -1` в литерале возвращает операции
+  `requested` ([configuration.md § MaxBodyConfig](configuration.md#maxbodyconfig)).
 - `http server listening` — `addr` фактический; после `http server stopped` приложение гасится.
 - `http server stop deadline: requests cancelled, connections closed` — `requests` — число
   запросов в полёте: их ctx отменён, соединения закрыты

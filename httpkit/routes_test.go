@@ -3,6 +3,8 @@ package httpkit_test
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -16,6 +18,7 @@ import (
 	"git.stit.tech/stit-core/golibinfra/httpkit"
 	"git.stit.tech/stit-core/golibinfra/logkit"
 	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
+	"git.stit.tech/stit-core/golibinfra/testkit/logtest"
 )
 
 // startErr собирает граф с Module и возвращает ошибку сборки или старта; стартовавший граф
@@ -349,6 +352,85 @@ func TestServer_GroupOperationRunsAsDocumented(t *testing.T) {
 		t.Run(a.id+" Body over the limit", func(t *testing.T) {
 			handlertest.AssertAPIError(t, serve(http.MethodPost, a.prefix+"/upload", over, auth, asJSON), http.StatusRequestEntityTooLarge, "BODY_TOO_LARGE")
 			handlertest.AssertStatus(t, serve(http.MethodPost, a.prefix+"/upload", `{"name":"x"}`, auth, asJSON), http.StatusNoContent)
+		})
+	}
+}
+
+// Урезанный лимит тела операции группы huma с префиксом виден на старте: тело копии группы huma читает по её литералу
+// (у Body без него — 1 MiB), и лимит кита или хука выше этого — одна строка WARN на операцию: лимит, которым режет huma,
+// запрошенный лимит и подсказка MaxBodyBytes: -1. Без группы, с -1 в литерале, у RawBody и multipart-формы её нет.
+func TestServer_GroupBodyLimitCapIsWarned(t *testing.T) {
+	const capped = "huma group operation body limit is capped by its literal: MaxBodyBytes: -1 in the literal lifts it"
+	type named struct {
+		Body struct {
+			Name string `json:"name"`
+		}
+	}
+	type form struct {
+		RawBody huma.MultipartFormFiles[struct {
+			File huma.FormFile `form:"file"`
+		}]
+	}
+	noOutput := func(context.Context, *named) (*struct{}, error) { return nil, nil }
+	raise := httpkit.WithHumaConfig(func(c *huma.Config) {
+		c.OnAddOperation = append(c.OnAddOperation, func(_ *huma.OpenAPI, op *huma.Operation) {
+			if strings.HasSuffix(op.Path, "/raised") {
+				op.MaxBodyBytes = 4 << 20
+			}
+		})
+	})
+	for _, tc := range []struct {
+		name     string
+		maxBytes int64
+		want     map[string][2]string // операция → поля limit и requested её строки WARN
+	}{
+		{"server limit off", 0, map[string][2]string{
+			"g-upload": {"1048576", "0"}, "g-raised": {"1048576", "4194304"}, "g-small": {"16", "0"},
+		}},
+		{"default server limit", 1 << 20, map[string][2]string{
+			"g-raised": {"1048576", "4194304"}, "g-small": {"16", "1048576"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "127.0.0.1:0")
+			cfg.MaxBody.MaxBytes = tc.maxBytes
+			log := logtest.Capture()
+			srv, err := httpkit.NewServer(cfg, log, raise)
+			if err != nil {
+				t.Fatalf("NewServer: %v", err)
+			}
+			api := srv.BindAPI()
+			for _, a := range []struct {
+				id  string
+				api huma.API
+			}{{"", api}, {"g-", huma.NewGroup(api, "/v1")}} {
+				for _, op := range []huma.Operation{
+					{OperationID: a.id + "upload", Method: http.MethodPost, Path: "/upload"},
+					{OperationID: a.id + "raised", Method: http.MethodPost, Path: "/raised"},
+					{OperationID: a.id + "small", Method: http.MethodPost, Path: "/small", MaxBodyBytes: 16},
+					{OperationID: a.id + "big", Method: http.MethodPost, Path: "/big", MaxBodyBytes: -1},
+				} {
+					huma.Register(a.api, httpkit.Public(op), noOutput)
+				}
+				huma.Register(a.api, httpkit.Public(huma.Operation{OperationID: a.id + "raw", Method: http.MethodPost, Path: "/raw"}),
+					func(context.Context, *struct{ RawBody []byte }) (*struct{}, error) { return nil, nil })
+				huma.Register(a.api, httpkit.Public(huma.Operation{OperationID: a.id + "form", Method: http.MethodPost, Path: "/form", MaxBodyBytes: 64}),
+					func(context.Context, *form) (*struct{}, error) { return nil, nil })
+			}
+			got := map[string][2]string{}
+			for _, e := range log.Entries() {
+				if e.Msg != capped {
+					continue
+				}
+				id := e.Str("operation")
+				if _, twice := got[id]; twice || e.Level != slog.LevelWarn {
+					t.Errorf("operation %s: a second record or not WARN (%v)", id, e.Level)
+				}
+				got[id] = [2]string{e.Str("limit"), e.Str("requested")}
+			}
+			if !maps.Equal(got, tc.want) {
+				t.Errorf("WARN %q: got %v, want %v", capped, got, tc.want)
+			}
 		})
 	}
 }

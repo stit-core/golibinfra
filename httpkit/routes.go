@@ -109,8 +109,8 @@ type opAdapter struct {
 // Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в replaced. Хендлер
 // операции из huma.Register исполняет её копию из OpenAPI (documented): группа huma с префиксом отдаёт
 // сюда другую копию, без правок хуков OnAddOperation — Security, лимита тела и вызова 401. Тело такой
-// операции huma читает по лимиту своей копии: копия из OpenAPI берёт лимит, который режет раньше, и
-// описывает его 413.
+// операции huma читает по лимиту своей копии: копия из OpenAPI берёт лимит, который режет раньше,
+// описывает его 413, а урезанный лимит кита или хука пишет в WARN.
 func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
 	documented := a.reg.claim(op)
 	if documented == nil {
@@ -119,6 +119,8 @@ func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
 	}
 	if readsBody(documented) {
 		if limit := stricterLimit(documented.MaxBodyBytes, op.MaxBodyBytes); limit != documented.MaxBodyBytes {
+			a.log.Warn(context.Background(), "huma group operation body limit is capped by its literal: MaxBodyBytes: -1 in the literal lifts it",
+				"operation", operationName(documented), "limit", limit, "requested", documented.MaxBodyBytes)
 			documented.MaxBodyBytes = limit
 			a.reg.describe(a.reg.OpenAPI(), documented)
 		}

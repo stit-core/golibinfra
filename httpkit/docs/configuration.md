@@ -103,7 +103,14 @@ Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP и�
 (при `HTTP_MAX_BODY_BYTES=0` лимит хука режет сам кит), — но тело huma читает по `MaxBodyBytes`
 своей копии — литерала операции (у `Body` без него — 1 MiB huma): хук до неё не доходит. Лимит
 такой операции — меньший из двух, и 413 в OpenAPI — по нему. Лимит выше 1 MiB или без предела —
-`MaxBodyBytes: -1` в литерале: huma тело не режет, режет лимит кита.
+`MaxBodyBytes: -1` в литерале: huma тело не режет, режет лимит кита. Урезание видно на старте:
+строка WARN `huma group operation body limit is capped by …` на каждую такую операцию — `limit`
+(лимит huma) и `requested` (лимит кита или хука), [observability.md § Логи](observability.md#логи).
+
+Модификатор группы (`UseModifier`, `UseSimpleModifier`) лимит, с которым huma читает тело, не меняет,
+как и хук: huma читает по литералу до модификаторов, а кит берёт её лимит из копии после них. Лимит
+операции группы ставит хук, а снимает лимит huma только литерал: `MaxBodyBytes: -1` из модификатора
+при `HTTP_MAX_BODY_BYTES=0` убирает 413 из OpenAPI, а huma всё равно режет тело на 1 MiB.
 
 ## SecurityHeadersConfig
 
