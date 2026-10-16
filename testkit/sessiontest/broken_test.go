@@ -87,6 +87,10 @@ func TestRunContract_BrokenStoreFails(t *testing.T) {
 			},
 			"RetryKillsPreviousSuccessor",
 		},
+		"retry-races-its-check": {
+			func(s session.Store) session.Store { return sessiontest.RacyRetry(s.(*sessiontest.Store)) },
+			"ConcurrentRetriesLeaveOneLiveToken",
+		},
 	}
 	if variant := os.Getenv(brokenEnv); variant != "" {
 		sessiontest.RunContract(t, func(t *testing.T, cfg session.Config, clock clockkit.Clock) session.Store {

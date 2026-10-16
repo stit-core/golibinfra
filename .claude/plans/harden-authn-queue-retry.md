@@ -38,6 +38,10 @@ blocked-by: —
   блокирует честного пользователя за пять повторов 503 (10 жертв: база — вошли все, ветка — 8–9 заблокированы на
   15 мин); minor VGA-02…06. Дирижёр расширил владение на `bruteforcekit/` и `testkit/bruteforcetest` (вариант (а)
   валидатора — возврат попытки) и включил minor в трек.
+- Перепроверка `cc9beab` — PASS (`N/validation-g-auth.md § 9`, пробы `N/val-g-auth/probes/recheck/`) с двумя minor —
+  пробелами тестов: VGA-07 — контракт сессий не ловит хранилище, у которого параллельные повторы оставляют несколько
+  живых токенов (проба `zzracy`); VGA-08 — пол счётчика `Refund` не закреплён (мутант W3, проба R4). Журнал доводки —
+  `N/g-auth3/progress.md`.
 
 ## Не входит
 - Правки шаблона (трек g-upgrade), push и тег `v1.6.0` (дирижёр), аудит golibinfra и её собственный бэклог.
@@ -99,6 +103,15 @@ blocked-by: —
     `MaxRetryWindow`, `Refund` у pgstore и фейков, `Recorder.Refunds`, `bruteforcetest.RunContract`,
     `DeterministicHasher.Busy`), `+ SESSION_RETRY_WINDOW=30s`, `+ authn_password_busy_total` — в Изменениях и
     Поведении; футеры `BREAKING CHANGE` коммитов S1, S2 и S5 — строки Breaking
+- [x] **AC9** — VGA-07: `sessiontest.RunContract` снаружи, без доступа к устройству хранилища, проваливает хранилище,
+  у которого параллельные повторы в окне оставляют сессии несколько живых токенов; фейк и pgstore контракт проходят.
+  Проверка: `go test -race -run 'TestStore_Contract|TestRunContract_BrokenStoreFails' ./testkit/sessiontest/ ./authnkit/session/pgstore/` → PASS; наивные хранилища — красные в `ConcurrentRetriesLeaveOneLiveToken`
+  - Подтверждено: → PASS; контракт `cc9beab` наивные хранилища (`RacyRetry` и `zzracy` валидатора) проходят целиком,
+    новый — красный: ротируются 7 из 8 выданных (`N/g-auth3/vga07-red-green.log`); самотест `retry-races-its-check` —
+    красный в 1100 прогонах из 1100, в том числе под нагрузкой CPU; мутант pgstore «повтор гасит преемника без
+    `used_at IS NULL`» контракт `cc9beab` пропускал (ловил только `TestStore_ConcurrentRetry`), новый — красный
+- [ ] **AC10** — VGA-08: возврат после параллельного успешного входа не уводит окно ниже нуля — субъект пропускает
+  `SubjectMaxFailures` попыток, не больше, одинаково в фейке и pgstore. Проверка: `go test -race -run 'TestCounting_Contract|TestStore_Contract|TestRunContract_BrokenGuardFails' ./testkit/bruteforcetest/ ./bruteforcekit/pgstore/` → PASS; мутанты «пол снят» (W3 в pgstore, `max` фейка) — красные
 
 ## Шаги
 - [x] **S1** — authnkit: очередь хэшера с отказом `ErrBusy` (RSECT-01) — вычисления ждут слот не дальше
@@ -171,6 +184,18 @@ blocked-by: —
     попытки и сверен с `release-diff`; строка покрытия README bruteforcekit; `make check` → `✓ check clean (./...)`;
     `make gate-clean` на коммите шага → `✓ check clean (./...)`
 
+### Доводка по перепроверке
+- [x] **S9** — контракт сессий: после параллельных повторов в окне живой токен один (VGA-07)
+  - Проверка: `go test -race ./testkit/sessiontest/ ./authnkit/session/pgstore/` → PASS; наивные хранилища — красные в новом кейсе · Закрывает: AC9
+  - Сделано: кейс `ConcurrentRetriesLeaveOneLiveToken` — восемь параллельных `Rotate` одним токеном, у каждого
+    выданного — сессия и владелец исходного, затем выданные предъявляются с последнего завершённого: ротаций не больше
+    одной; самотест `retry-races-its-check` — фейк с повтором, который проверяет и гасит преемника не под одной
+    блокировкой (`RacyRetry`, `export_test.go`), контракт проваливает в этом кейсе; доки — `authnkit/docs/testing.md`,
+    строка `sessiontest` README testkit; «Handoff» — строка `sessiontest`. Красное и зелёное — AC9;
+    `go test -race ./testkit/sessiontest/ ./authnkit/session/pgstore/` → PASS; `make check` → `✓ check clean (./...)`
+- [ ] **S10** — контракт возврата: пол счётчика `Refund` — кейс по пробе R4 валидатора (VGA-08)
+  - Проверка: `go test -race ./testkit/bruteforcetest/ ./bruteforcekit/pgstore/` → PASS; мутанты «пол снят» — красные · Закрывает: AC10
+
 ## Решения
 - RSECT-01 — отказ по длине очереди, а не по сроку ожидания: при полной очереди отказ приходит сразу и освобождает
   соединение и горутину, а ожидание по таймеру держало бы каждый лишний запрос весь срок; длина очереди на слот
@@ -222,7 +247,15 @@ blocked-by: —
 - Повтор в окне у отозванной или истёкшей сессии — `*ReusedError`, как у любого использованного токена: порядок исходов
   прежний, окно меняет только случай «сессия жива, преемник не использован» (кейсы `RetryDoesNot…` контракта).
 - Контракт `RunContract` берёт `Config` кейса: окно — минута, строгие кейсы (`Strict…`, `ConcurrentRotateHasOneWinner`)
-  — без окна; «живой токен после гонки ровно один» pgstore держит тестом по базе (`TestStore_ConcurrentRetry`).
+  — без окна.
+- «Живой токен после параллельных повторов — один» контракт сессий проверяет снаружи (`ConcurrentRetriesLeaveOneLiveToken`):
+  выданные предъявляются с последнего завершённого вызова, ротаций — не больше одной. Ровно одной требовать нельзя:
+  порядок завершения вызовов не обязан совпадать с порядком записи, а первый же погашенный токен отзывает сессию; у
+  наивного хранилища живые — токены перекрывшихся повторов, они завершаются последними и идут первыми. «Ровно один»
+  pgstore держит ещё тестом по базе (`TestStore_ConcurrentRetry`).
+- Наивное хранилище самотеста сессий — фейк с повтором, который проверяет и гасит преемника не под одной блокировкой
+  (`RacyRetry` в `export_test.go`, белый ящик), а не обёртка над фейком: через его API два живых токена одной сессии не
+  получить — ротация атомарна. Окно между проверкой и записью — 20 мс: перекрытие повторов не зависит от планировщика.
 - Чужие файлы: строки authnkit (корневые `README.md`, `SECURITY.md`) и bruteforcekit (`README.md`) — о своих китах.
 - VGA-01 — возврат попытки методом `Guard.Refund`, а не билетом из `Attempt`: билет меняет сигнатуру `Attempt` у
   каждого вызывающего, а возврат нужен одному пути — отказу проверки. Семантика: минус одна попытка окна пары и
@@ -255,7 +288,8 @@ Breaking:
 - testkit/authntest: `DeterministicHasher.VerifyDummy` отдаёт `error`.
 - authnkit/session/pgstore: миграция `0002` источника `authnkit_session` (`successor_hash` в `authn_session_tokens`) —
   до старта новой версии: без неё старт — `pgkit.ErrSchema`; `pgkit.MigrateModule` в графе применяет её сам.
-- testkit/sessiontest: `RunContract` проверяет окно повтора — своя реализация `session.Store` должна его держать.
+- testkit/sessiontest: `RunContract` проверяет окно повтора — своя реализация `session.Store` должна его держать, в том
+  числе один живой токен после параллельных повторов (повтор проверяет и гасит преемника атомарно).
 
 Поведение:
 - authnkit/session: `SESSION_RETRY_WINDOW` = 30s — повтор использованного refresh-токена в окне после его ротации,
@@ -293,8 +327,8 @@ Breaking:
    `.env.example` (`SESSION_RETRY_WINDOW`: секунды, потолок 5m), якоря `scripts/tools/mutants.txt` у правленого кода.
 
 ## Где мы сейчас
-Все шаги и критерии закрыты, включая доводку по валидации (`N/validation-g-auth.md`): VGA-01 — возврат попытки
-`bruteforcekit.Guard.Refund`, на копии шаблона с возвратом блокировок жертв нет, перебор упирается в guard после пяти
-проверенных попыток; VGA-02…06 закрыты. Дальше — повторная проверка валидатором, затем дирижёр: слияние в `main`,
-удаление плана, тег `v1.6.0` с аннотацией из «Handoff» и трек g-upgrade шаблона (заготовка правки входа —
-`N/g-auth/tpl-v-fix/internal/domain/auth/`).
+Шаги S1–S8 и критерии AC1–AC8 закрыты, перепроверка `cc9beab` — PASS с двумя minor-пробелами тестов. S9 закрыт:
+контракт сессий проваливает хранилище, у которого параллельные повторы оставляют несколько живых токенов (VGA-07).
+Дальше — S10 (VGA-08): кейс контракта `bruteforcetest` по пробе R4 — возврат после параллельного успешного входа не
+уводит окно ниже нуля; затем дирижёр: слияние в `main`, удаление плана, тег `v1.6.0` с аннотацией из «Handoff» и трек
+g-upgrade шаблона (заготовка правки входа — `N/g-auth/tpl-v-fix/internal/domain/auth/`).

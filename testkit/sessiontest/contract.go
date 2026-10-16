@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"regexp"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -42,6 +43,7 @@ func RunContract(t *testing.T, newStore func(t *testing.T, cfg session.Config, c
 		{"RetryDoesNotReopenClosedSession", false, retryOfClosedSession},
 		{"RetryDoesNotOutliveSession", false, retryAfterAbsoluteDeadline},
 		{"ConcurrentRetriesKeepTheSession", false, concurrentRetriesKeepTheSession},
+		{"ConcurrentRetriesLeaveOneLiveToken", false, concurrentRetriesLeaveOneLiveToken},
 		{"StrictReuseRevokesSession", true, strictReuseRevokesSession},
 		{"StrictReuseAfterClockStepBack", true, strictReuseAfterClockStepBack},
 		{"ConcurrentRotateHasOneWinner", true, concurrentRotate},
@@ -238,35 +240,75 @@ func retryAfterAbsoluteDeadline(t *testing.T, s session.Store, clock *clockkit.T
 	wantReused(t, s, tok.Value, tok)
 }
 
+// parallelRotate — n одновременных Rotate одним токеном: выданные токены в порядке завершения вызовов и ошибки.
+func parallelRotate(s session.Store, refresh string, n int) ([]session.Token, []error) {
+	var (
+		wg     sync.WaitGroup
+		mu     sync.Mutex
+		issued []session.Token
+		errs   []error
+	)
+	start := make(chan struct{})
+	for range n {
+		wg.Go(func() {
+			<-start
+			next, err := s.Rotate(context.Background(), refresh)
+			mu.Lock()
+			defer mu.Unlock()
+			if err != nil {
+				errs = append(errs, err)
+				return
+			}
+			issued = append(issued, next)
+		})
+	}
+	close(start)
+	wg.Wait()
+	return issued, errs
+}
+
 // Параллельные ротации одним токеном в окне — повторы друг друга: проходят по очереди, каждый вызов получает новый
 // токен, и сессия жива — честные параллельные обновления клиента её не закрывают; живым остаётся последний выданный.
 func concurrentRetriesKeepTheSession(t *testing.T, s session.Store, _ *clockkit.Tickable) {
 	subj := subject(t)
 	first := mustIssue(t, s, subj)
 	const n = 8
-	var (
-		wg   sync.WaitGroup
-		mu   sync.Mutex
-		errs []error
-	)
-	start := make(chan struct{})
-	for range n {
-		wg.Go(func() {
-			<-start
-			if _, err := s.Rotate(context.Background(), first.Value); err != nil {
-				mu.Lock()
-				errs = append(errs, err)
-				mu.Unlock()
-			}
-		})
-	}
-	close(start)
-	wg.Wait()
-	if len(errs) != 0 {
+	if _, errs := parallelRotate(s, first.Value, n); len(errs) != 0 {
 		t.Fatalf("%d parallel Rotate in the window: errors %v, want a token for each", n, errs)
 	}
 	if owner, err := s.Revoke(t.Context(), first.Value); err != nil || owner != subj {
 		t.Fatalf("Revoke after parallel retries = %q, %v; want the open session of %q", owner, err, subj)
+	}
+}
+
+// Параллельные повторы не раздваивают сессию: из выданных ими токенов живым остаётся один. Иначе вор, повторивший
+// украденный токен вместе с клиентом, держит свою ветку сессии, и повтор его не выдаёт. Снаружи живые токены видны
+// ротацией: выданные, предъявленные с последнего завершённого вызова, дают не больше одной — первый же погашенный
+// отзывает сессию.
+func concurrentRetriesLeaveOneLiveToken(t *testing.T, s session.Store, _ *clockkit.Tickable) {
+	first := mustIssue(t, s, subject(t))
+	const n = 8
+	issued, errs := parallelRotate(s, first.Value, n)
+	if len(errs) != 0 {
+		t.Fatalf("%d parallel Rotate in the window: errors %v, want a token for each", n, errs)
+	}
+	for _, tok := range issued {
+		if tok.SessionID != first.SessionID || tok.Subject != first.Subject {
+			t.Fatalf("parallel Rotate issued %+v, want a token of session %s of %s", tok, first.SessionID, first.Subject)
+		}
+	}
+	rotated := 0
+	for _, tok := range slices.Backward(issued) {
+		_, err := s.Rotate(t.Context(), tok.Value)
+		switch {
+		case err == nil:
+			rotated++
+		case !errors.Is(err, session.ErrReused) && !errors.Is(err, session.ErrInvalid):
+			t.Fatalf("Rotate of a token issued by a parallel retry = %v, want a token, ErrReused or ErrInvalid", err)
+		}
+	}
+	if rotated > 1 {
+		t.Fatalf("%d of %d tokens issued by parallel Rotate in the window rotated, want at most one live", rotated, n)
 	}
 }
 
