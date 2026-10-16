@@ -103,7 +103,10 @@ var userErrors = httpkit.NewErrorMap(
   добавляет к ним 422 и 500), коды — в описание ответа своего статуса в
   `openapi.json` (`Conflict: USER_CONCURRENT_UPDATE`). Операция с `Security`
   объявляет `401` сама (`Unauthorized: UNAUTHORIZED`, коды 401 из `Declare` —
-  рядом).
+  рядом), при включённом лимитере каждая операция — `429` с `Retry-After`
+  (`Too Many Requests: RATE_LIMITED`). Правило `429 RATE_LIMITED` в таблице (свой
+  лимитер `RateLimit` на части путей) нужно, только когда лимитер сервера выключен:
+  при включённом код тот же и не повторяется.
 - `Unmapped(errs...)` — в тесте полноты: sentinel'ы домена, которых таблица не
   ловит (ждём пусто).
 

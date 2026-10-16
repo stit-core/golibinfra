@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -24,6 +25,8 @@ var (
 	errConflict = errors.New("concurrent update")
 	errWeak     = errors.New("weak password")
 	errLocked   = errors.New("account locked")
+	// errRateLimited — отказ своего лимитера потребителя: его отдаёт middleware, правило лишь объявляет код.
+	errRateLimited = errors.New("rate limited")
 )
 
 type forbiddenError struct{ action string }
@@ -212,7 +215,7 @@ func TestErrorMap_Declare(t *testing.T) {
 		"404": "Not Found: USER_NOT_FOUND",
 		"409": "Conflict: USER_CONCURRENT_UPDATE, AUTH_SESSION_CONFLICT",
 		"422": "Unprocessable Entity: USER_WEAK_PASSWORD",
-		"429": "Too Many Requests: AUTH_LOCKED",
+		"429": "Too Many Requests: AUTH_LOCKED, RATE_LIMITED", // лимитер сервера по умолчанию включён
 		"500": "Internal Server Error",
 	}
 	for status, desc := range want {
@@ -281,6 +284,105 @@ func TestErrorMap_DeclareSecured401FromConsumerHook(t *testing.T) {
 	resp := api.OpenAPI().Paths["/admin/users"].Get.Responses["401"]
 	if resp == nil || resp.Description != "Unauthorized: UNAUTHORIZED" {
 		t.Fatalf("401 = %+v, want %q", resp, "Unauthorized: UNAUTHORIZED")
+	}
+}
+
+// Регрессия golibinfra-httpkit-429: лимитер сервера отвечает 429 на любой операции, а контракт знал 429 только из
+// таблиц. При HTTP_RATE_LIMIT_RPS > 0 каждая операция объявляет 429 RATE_LIMITED — код и Retry-After те, что
+// отдаёт лимитер; коды 429 таблицы — первыми и без повтора; при 0 — только 429 таблицы; Retry-After — у любого 429.
+func TestErrorMap_DescribesServerRateLimit(t *testing.T) {
+	limitErrors := httpkit.NewErrorMap( // свой лимитер потребителя на части путей
+		httpkit.ErrorRule{Err: errRateLimited, Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Detail: "rate limit exceeded"},
+	)
+	lockErrors := httpkit.NewErrorMap(
+		httpkit.ErrorRule{Err: errLocked, Status: http.StatusTooManyRequests, Code: "AUTH_LOCKED"},
+	)
+	bearer := httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
+		Extract: func(r *http.Request) (context.Context, error) { return r.Context(), nil },
+	}
+	noBody := func(context.Context, *struct{}) (*struct{}, error) { return nil, nil } // тело ответа не нужно
+	register := func(api huma.API) {
+		httpkit.RegisterHealth(api, time.Second, nil)
+		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "ping", Method: http.MethodGet, Path: "/ping"}), noBody)
+		huma.Register(api, huma.Operation{
+			OperationID: "getMe", Method: http.MethodGet, Path: "/me", Security: []map[string][]string{{"Bearer": {}}},
+		}, noBody)
+		huma.Register(api, lockErrors.Declare(httpkit.Public(huma.Operation{OperationID: "login", Method: http.MethodPost, Path: "/login"})), noBody)
+		huma.Register(api, limitErrors.Declare(httpkit.Public(huma.Operation{OperationID: "logout", Method: http.MethodPost, Path: "/logout"})), noBody)
+		// Маршрут мимо huma, описанный в OpenAPI руками: ответов у операции нет.
+		api.OpenAPI().AddOperation(&huma.Operation{OperationID: "stream", Method: http.MethodGet, Path: "/stream"})
+	}
+	const limited = "Too Many Requests: RATE_LIMITED"
+	for _, tc := range []struct {
+		name string
+		rps  int
+		want map[string]string // операция → описание 429; "" — ответа 429 нет
+	}{
+		{"limiter on", 1, map[string]string{
+			"get-health": limited, "get-ready": limited, "ping": limited, "getMe": limited, "stream": limited,
+			"login": "Too Many Requests: AUTH_LOCKED, RATE_LIMITED", "logout": limited,
+		}},
+		{"limiter off", 0, map[string]string{
+			"get-health": "", "get-ready": "", "ping": "", "getMe": "", "stream": "",
+			"login": "Too Many Requests: AUTH_LOCKED", "logout": limited,
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testConfig(t, "127.0.0.1:0")
+			cfg.RateLimit = httpkit.RateLimitConfig{RPS: tc.rps, Burst: tc.rps}
+			api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), handlertest.WithSecuritySchemes(bearer))
+			ops := map[string]*huma.Operation{}
+			for _, item := range api.OpenAPI().Paths {
+				for _, op := range []*huma.Operation{item.Get, item.Post} {
+					if op != nil {
+						ops[op.OperationID] = op
+					}
+				}
+			}
+			for id, want := range tc.want {
+				op := ops[id]
+				if op == nil {
+					t.Fatalf("operation %s is not in OpenAPI", id)
+				}
+				resp := op.Responses[strconv.Itoa(http.StatusTooManyRequests)]
+				if want == "" {
+					if resp != nil {
+						t.Errorf("%s: 429 = %q without a limiter or a table rule", id, resp.Description)
+					}
+					continue
+				}
+				if resp == nil || resp.Description != want {
+					t.Errorf("%s: 429 = %+v, want %q", id, resp, want)
+					continue
+				}
+				if ref := resp.Content[httpkit.ProblemContentType].Schema.Ref; !strings.HasSuffix(ref, "/APIError") {
+					t.Errorf("%s: 429 schema = %q, want APIError", id, ref)
+				}
+				h := resp.Headers["Retry-After"]
+				if h == nil || !h.Required || h.Schema == nil || h.Schema.Type != huma.TypeInteger || h.Schema.Minimum == nil || *h.Schema.Minimum != 1 {
+					t.Errorf("%s: 429 must declare a required integer Retry-After >= 1, got %+v", id, h)
+				}
+			}
+			if tc.rps == 0 {
+				return
+			}
+			// Описание — то, что лимитер отвечает на этой же операции.
+			api.Get("/ping")
+			resp := api.Get("/ping")
+			got := handlertest.DecodeAPIError(t, resp)
+			handlertest.AssertAPIError(t, resp, http.StatusTooManyRequests, got.Code)
+			var codes []string
+			if described := ops["ping"].Responses["429"]; described != nil {
+				codes = strings.Split(strings.TrimPrefix(described.Description, "Too Many Requests: "), ", ")
+			}
+			if !slices.Contains(codes, got.Code) {
+				t.Errorf("the limiter answers %s, the contract of ping lists %v", got.Code, codes)
+			}
+			if secs, err := strconv.Atoi(resp.Header().Get("Retry-After")); err != nil || secs < 1 {
+				t.Errorf("the limiter answers Retry-After %q, the contract promises an integer >= 1", resp.Header().Get("Retry-After"))
+			}
+		})
 	}
 }
 

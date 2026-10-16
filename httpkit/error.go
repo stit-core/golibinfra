@@ -211,7 +211,7 @@ func codeForStatus(status int) string {
 	case http.StatusUnprocessableEntity:
 		return "VALIDATION_FAILED"
 	case http.StatusTooManyRequests:
-		return "RATE_LIMITED"
+		return codeRateLimited
 	case http.StatusInternalServerError:
 		return "INTERNAL"
 	case http.StatusServiceUnavailable:

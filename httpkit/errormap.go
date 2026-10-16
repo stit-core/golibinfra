@@ -131,28 +131,52 @@ func (m ErrorMap) Declare(op huma.Operation) huma.Operation {
 }
 
 // describeErrors — OnAddOperation сервера: коды Declare — в описание ответа своего
-// статуса (huma создаёт эти ответы раньше хука), а операция с Security объявляет
-// 401 HumaAuth сама.
-func describeErrors(oapi *huma.OpenAPI, op *huma.Operation) {
-	declared, _ := op.Metadata[errorCodesKey].(map[int][]string)
-	codes := maps.Clone(declared)
-	if len(op.Security) > 0 {
+// статуса (huma создаёт эти ответы раньше хука); 401 HumaAuth — у операции с Security,
+// 429 лимитера сервера (rateLimited) — у каждой операции; у ответа 429 — Retry-After.
+func describeErrors(rateLimited bool) huma.AddOpFunc {
+	return func(oapi *huma.OpenAPI, op *huma.Operation) {
+		declared, _ := op.Metadata[errorCodesKey].(map[int][]string)
+		codes := maps.Clone(declared)
 		if codes == nil {
 			codes = map[int][]string{}
 		}
-		if !slices.Contains(codes[http.StatusUnauthorized], codeUnauthorized) {
-			codes[http.StatusUnauthorized] = append(slices.Clone(codes[http.StatusUnauthorized]), codeUnauthorized)
+		if len(op.Security) > 0 {
+			kitResponse(oapi, op, codes, http.StatusUnauthorized, codeUnauthorized)
 		}
-		if op.Responses[strconv.Itoa(http.StatusUnauthorized)] == nil {
-			schema := oapi.Components.Schemas.Schema(reflect.TypeFor[APIError](), true, "APIError")
-			op.Responses[strconv.Itoa(http.StatusUnauthorized)] = &huma.Response{
-				Content: map[string]*huma.MediaType{ProblemContentType: {Schema: schema}},
+		if rateLimited {
+			kitResponse(oapi, op, codes, http.StatusTooManyRequests, codeRateLimited)
+		}
+		for status, list := range codes {
+			if resp := op.Responses[strconv.Itoa(status)]; resp != nil {
+				resp.Description = http.StatusText(status) + ": " + strings.Join(list, ", ")
+			}
+		}
+		if resp := op.Responses[strconv.Itoa(http.StatusTooManyRequests)]; resp != nil {
+			if resp.Headers == nil {
+				resp.Headers = map[string]*huma.Param{}
+			}
+			resp.Headers["Retry-After"] = &huma.Param{
+				Description: "Seconds to wait before repeating the request",
+				Required:    true,
+				Schema:      &huma.Schema{Type: huma.TypeInteger, Minimum: new(1.0)},
 			}
 		}
 	}
-	for status, list := range codes {
-		if resp := op.Responses[strconv.Itoa(status)]; resp != nil {
-			resp.Description = http.StatusText(status) + ": " + strings.Join(list, ", ")
+}
+
+// kitResponse объявляет у операции ответ status с кодом code, который кит отдаёт сам: код —
+// после кодов Declare и без повтора, ответа статуса у операции нет — ответ со схемой APIError.
+func kitResponse(oapi *huma.OpenAPI, op *huma.Operation, codes map[int][]string, status int, code string) {
+	if !slices.Contains(codes[status], code) {
+		codes[status] = append(slices.Clone(codes[status]), code)
+	}
+	if op.Responses == nil {
+		op.Responses = map[string]*huma.Response{}
+	}
+	if op.Responses[strconv.Itoa(status)] == nil {
+		schema := oapi.Components.Schemas.Schema(reflect.TypeFor[APIError](), true, "APIError")
+		op.Responses[strconv.Itoa(status)] = &huma.Response{
+			Content: map[string]*huma.MediaType{ProblemContentType: {Schema: schema}},
 		}
 	}
 }

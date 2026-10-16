@@ -5,9 +5,10 @@
 `testkit/handlertest` поднимает huma-API сервера `httpkit` (`NewServer` + `BindAPI` — та же
 сборка, что у `Module`, с цепочкой кита целиком: лимитер и лимит тела — по конфигу) под
 `humatest` без реального `*http.Server`, с контрактом сервера: ответы-ошибки те же, что в
-проде — `request_id`, `Retry-After`, 404/405 маршрутизатора, коды `ErrorMap.Declare` в
-OpenAPI; `HumaAuth` стоит до маршрутов; маршруты `register` проходят проверку старта `Module`
-(`Server.CheckRoutes`, иначе `t.Fatalf`); конфиг — `httpkit.NewConfig()`:
+проде — `request_id`, `Retry-After`, 404/405 маршрутизатора, коды `ErrorMap.Declare`, 401
+`Security` и 429 лимитера в OpenAPI; `HumaAuth` стоит до маршрутов; маршруты `register`
+проходят проверку старта `Module` (`Server.CheckRoutes`, иначе `t.Fatalf`); конфиг —
+`httpkit.NewConfig()`:
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/testkit/handlertest"
@@ -60,7 +61,8 @@ func TestUserErrorsComplete(t *testing.T) {
 ```
 
 Коды `Declare` видны в `api.OpenAPI()` API из `handlertest.NewAPI` или `Module`:
-описание ответа статуса — `Conflict: USER_CONCURRENT_UPDATE`.
+описание ответа статуса — `Conflict: USER_CONCURRENT_UPDATE`. Лимитер по умолчанию включён:
+у каждой операции там же есть `429` — `Too Many Requests: RATE_LIMITED`.
 
 ## Middleware напрямую
 

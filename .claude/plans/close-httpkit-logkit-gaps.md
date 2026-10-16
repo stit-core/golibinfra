@@ -47,16 +47,22 @@ g-kits): 429 общего лимитера httpkit описан в контра�
   не читает).
 
 ## Критерии приёмки
-- [ ] **AC1** — При включённом лимитере сервера (`HTTP_RATE_LIMIT_RPS > 0`) у каждой операции OpenAPI — публичной
+- [x] **AC1** — При включённом лимитере сервера (`HTTP_RATE_LIMIT_RPS > 0`) у каждой операции OpenAPI — публичной
   и под `Security`, с таблицей `Declare` и без, `/health` и `/ready`, добавленной в OpenAPI мимо `huma.Register` —
   ответ 429 со схемой `APIError` (`application/problem+json`), кодом `RATE_LIMITED` в описании и заголовком
   `Retry-After` (целое от 1, обязательный); код и заголовок — те, что лимитер отвечает на этой операции. При
   `HTTP_RATE_LIMIT_RPS=0` 429 у операции — только из её таблицы. Проверка: `go test -race -run
   TestErrorMap_DescribesServerRateLimit ./httpkit/` → PASS; на `90adb36` — FAIL (у операции без таблицы 429 нет)
-- [ ] **AC2** — 429 не задваивается: таблица с 429 `RATE_LIMITED` (свой лимитер потребителя, как `authlimit.Rule`)
+  - Подтверждено: на `90adb36` тест красный — у `ping`, `getMe`, `stream`, `/health`, `/ready` 429 нет, лимитер
+    отвечает `RATE_LIMITED` с `Retry-After: 1`, а контракт `ping` 429 не знает (`N/g-kits/red-s1-429.log`); на
+    ветке — PASS (`N/g-kits/green-s1-429.log`)
+- [x] **AC2** — 429 не задваивается: таблица с 429 `RATE_LIMITED` (свой лимитер потребителя, как `authlimit.Rule`)
   при включённом лимитере даёт описание `Too Many Requests: RATE_LIMITED`, с другим кодом 429 — `Too Many Requests:
   AUTH_LOCKED, RATE_LIMITED` (коды таблицы — первыми); `Retry-After` — у каждого 429 операции. Проверка: тот же
   тест → PASS; на `90adb36` — FAIL (нет `Retry-After`)
+  - Подтверждено: тот же тест — на `90adb36` у `logout` и `login` нет `Retry-After`, `login` без `RATE_LIMITED`; на
+    ветке — PASS; шаблон на ветке (`go.work`): у `/api/auth/*` описание 429 прежнее, код не повторён
+    (`N/g-kits/template-openapi-s1.diff`)
 - [ ] **AC3** — `logkit.NewFromEnv()` собирает `Logger` команды из `LOG_*` и `LOG_REDACT_*` тем же ридером ENV,
   что граф `logkit.Module` с `NewConfig` и `NewRedactConfig`: при одном окружении записи двух логгеров совпадают
   (формат, уровень, маски, замена, `source`); негодные `LOG_LEVEL`, `LOG_FORMAT`, `LOG_SILENT`,
@@ -76,11 +82,17 @@ g-kits): 429 общего лимитера httpkit описан в контра�
 
 ## Шаги
 ### Киты
-- [ ] **S1** — httpkit: 429 лимитера сервера и `Retry-After` в контракте операций (`describeErrors`),
+- [x] **S1** — httpkit: 429 лимитера сервера и `Retry-After` в контракте операций (`describeErrors`),
   регрессионный тест, доки ошибок и OpenAPI httpkit; коммит `fix(httpkit)!:` с `BREAKING CHANGE:`
   - Проверка: новый тест на `90adb36` → FAIL, на ветке → PASS; `go test -short -race ./httpkit/...
     ./testkit/handlertest/...` → PASS; `flock N/gate.lock make check` → `✓ check clean (./...)`
   - Закрывает: AC1, AC2, AC4 · Зависит от: —
+  - Сделано: `describeErrors(rateLimited)` объявляет 429 `codeRateLimited` у каждой операции при
+    `HTTP_RATE_LIMIT_RPS > 0` (код — после кодов таблицы, без повтора; ответов нет — ответ со схемой `APIError`) и
+    обязательный `Retry-After` (целое от 1) у любого 429; `TestErrorMap_DescribesServerRateLimit` на `90adb36` →
+    FAIL, на ветке → PASS; `TestErrorMap_Declare` — код кита после `AUTH_LOCKED`; доки — README httpkit,
+    `docs/{architecture,usage,configuration,testing}.md`, строка индекса корневого README; `go test -short -race
+    ./httpkit/... ./testkit/handlertest/...` → PASS; `make check` → `✓ check clean (./...)`
 - [ ] **S2** — logkit: `NewFromEnv` — тесты паритета с `Module`, ошибок конфига и `LOG_SILENT`; README logkit,
   строка индекса корневого README
   - Проверка: `go test -short -race ./logkit/...` → PASS; `make envdoc-check` → OK; `flock N/gate.lock make
@@ -95,14 +107,29 @@ g-kits): 429 общего лимитера httpkit описан в контра�
 ## Решения
 - Строки аннотации `v1.6.0` и «Потребителю» — подразделы `## Handoff`: так их берёт `/release` (профиль плана),
   других разделов формат планов не знает.
+- 429 кит объявляет только при включённом лимитере сервера (`HTTP_RATE_LIMIT_RPS > 0`) — тот же флаг, что ставит
+  `RateLimit` в цепочку: контракт не обещает ответа, которого сервер не даёт. Свой лимитер потребителя на части путей
+  при выключенном лимитере сервера объявляется правилом таблицы — кит сведёт код без повтора.
+- `Retry-After` — у любого 429 операции, и из таблицы: кит ставит его на каждый ответ 429 (`APIError.retryAfter`,
+  не меньше секунды), поэтому заголовок обязательный, целое от 1.
+- `default` huma у операции без таблицы остаётся рядом с 429 кита, как рядом с 401 у `Security`: хук идёт после
+  `defineErrors` huma, и решать за huma о 422 и 500 кит не берётся.
+- Операция, которую потребитель описал в OpenAPI мимо `huma.Register` без ответов (`Responses == nil`), получает 429
+  без паники: лимитер стоит и на её маршруте.
+- Код 429 — константа `codeRateLimited` рядом с лимитером, как `codeUnauthorized` у `HumaAuth`: её отдают лимитер и
+  `codeForStatus` и объявляет хук. Ради этого вне `errormap.go` — строка в `httpkit/ratelimit.go`, `httpkit/error.go`
+  и вызов хука в `httpkit/server.go`; иначе ответ и описание держали бы два литерала.
+- S1 — `fix(httpkit)!`: контракт не описывал ответ сервера (дефект с регрессионным тестом), а перегенерация
+  контракта и тестов потребителя — breaking.
 
 ## Handoff
 ### Аннотация v1.6.0 — строки трека
 Breaking:
-- httpkit: при включённом лимитере (`HTTP_RATE_LIMIT_RPS > 0`) каждая операция в OpenAPI объявляет ответ
-  `429 RATE_LIMITED` (схема `APIError`), у каждого 429 — заголовок `Retry-After` → перегенерировать контракт
-  (`openapi.json`); своё объявление 429 лимитера в таблицах снять — его описывает кит; тесты, которые держат набор
-  ответов операций, — под новый набор.
+- httpkit: при включённом лимитере (`HTTP_RATE_LIMIT_RPS > 0`, по умолчанию) каждая операция в OpenAPI объявляет
+  ответ `429 RATE_LIMITED` (схема `APIError`; код — после кодов 429 таблицы, без повтора), у каждого 429 —
+  обязательный заголовок `Retry-After` (целое от 1) → перегенерировать закоммиченный контракт (`openapi.json`) и
+  поправить тесты, которые держат набор ответов операций; правило 429 `RATE_LIMITED` в таблице ради своего лимитера
+  при включённом лимитере сервера не нужно — снять.
 
 Изменения:
 - logkit: `NewFromEnv()` — `Logger` команды вне fx из `LOG_*` и `LOG_REDACT_*`, как граф с `Module`; при
@@ -120,4 +147,6 @@ Breaking:
 5. Доки и обвязка под пп. 2–4; бэклог — снять `golibinfra-httpkit-429` и `golibinfra-logkit-env`.
 
 ## Где мы сейчас
-План заведён. Следующий шаг — S1: регрессионный тест 429 (на `90adb36` красный), затем `describeErrors`.
+S1 сделан: 429 лимитера и `Retry-After` в контракте операций. Шаблон на ветке (`go.work`): `openapi.json` меняется
+только в 429, `TestHTTPOperations` падает ровно на проверке «429 только под `/api/auth/`» (снимает g-upgrade).
+Следующий шаг — S2: `logkit.NewFromEnv`.

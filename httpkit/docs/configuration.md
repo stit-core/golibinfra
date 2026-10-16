@@ -69,7 +69,8 @@ usecase'а кладёт IP без middleware — `handlertest.ContextWithClientI
 
 Token-bucket на клиента (`golang.org/x/time/rate`): ключ — IP из `ClientIP` (без него в
 цепочке — адрес соединения), IPv6 — по подсети `/64`, как у `bruteforcekit`. Превышение →
-`429 RATE_LIMITED` с `Retry-After: 1` и `application/problem+json`. Простаивающие bucket'ы
+`429 RATE_LIMITED` с `Retry-After: 1` и `application/problem+json`; при `RPS > 0` этот ответ
+объявлен в OpenAPI каждой операции. Простаивающие bucket'ы
 выметаются (5 минут без запросов); bucket'ов не больше 100 000 (≈17 MiB) — сверх предела
 новые клиенты до выметания делят один общий bucket.
 
