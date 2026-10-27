@@ -428,7 +428,7 @@ replace git.stit.tech/stit-core/golibinfra => ../golibinfra
 Это одна из открытых библиотек stit (Apache-2.0). Карта всех шаблонов и точка
 входа — **[витрина stit](https://github.com/stit-core)**.
 Нужна команда, стандарт или поддержка —
-**[наш подход и контакты (vision)](https://git.stit.tech/stit/vision)**.
+**[пишите в Telegram @gommgo](https://t.me/gommgo)**.
 
 ## Лицензия
 
