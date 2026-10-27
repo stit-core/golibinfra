@@ -10,11 +10,13 @@ auth, БД, messaging, кэш, аудит, storage, AI-клиент. Кажды�
 по умолчанию. Импортируется как Go-модуль из бизнес-репозиториев.
 
 [![License](https://img.shields.io/badge/license-Apache--2.0-2563eb)](LICENSE)
-[![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://git.stit.tech/stit-core/stit-public)
+[![Часть stit](https://img.shields.io/badge/stit-открытые_шаблоны-6366f1)](https://github.com/stit-core)
 [![Go](https://img.shields.io/badge/Go-1.26+-00ADD8)](#использование-в-проекте)
 [![Observability](https://img.shields.io/badge/observability-OTel_by_default-8b5cf6)](#observability)
 
 </div>
+
+> Разработка идёт в приватном Gitea (`git.stit.tech/stit-core/golibinfra`), публичное зеркало — [github.com/stit-core/golibinfra](https://github.com/stit-core/golibinfra). Как с ним работать вне инфраструктуры stit — в [профиле stit-core](https://github.com/stit-core).
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/pgkit"
@@ -26,15 +28,15 @@ import "git.stit.tech/stit-core/golibinfra/testkit"
 ## Где это в экосистеме
 
 `golibinfra` — общая Go-lib экосистемы stit (7 форкаемых шаблонов + 2 общие
-библиотеки: эта и [`pylibinfra`](https://git.stit.tech/stit-core/pylibinfra) для
+библиотеки: эта и [`pylibinfra`](https://github.com/stit-core/pylibinfra) для
 Python). Её импортирует
-[`go-backend-template`](https://git.stit.tech/stit-core/go-backend-template)
+[`go-backend-template`](https://github.com/stit-core/go-backend-template)
 (форк `<org>/backend`), а также бэкенды `ai-gateway-template` и
 `amocrm-gateway-template`. Библиотека не форкается: потребители тянут модуль по
 тегу, а выкатка их образов идёт из `<org>/infra`. Карта репо и операционный флоу —
-[`docs/reference/ecosystem.md`](https://git.stit.tech/stit-core/project-infra-template-compose/src/branch/main/docs/reference/ecosystem.md)
+[`docs/reference/ecosystem.md`](https://github.com/stit-core/project-infra-template-compose/blob/main/docs/reference/ecosystem.md)
 в `project-infra-template-compose`; витрина всех репо —
-[stit-public](https://git.stit.tech/stit-core/stit-public).
+[stit-core](https://github.com/stit-core).
 
 ## Доступ к репозиторию
 
@@ -424,7 +426,7 @@ replace git.stit.tech/stit-core/golibinfra => ../golibinfra
 ## Часть экосистемы stit
 
 Это одна из открытых библиотек stit (Apache-2.0). Карта всех шаблонов и точка
-входа — **[витрина stit](https://git.stit.tech/stit-core/stit-public)**.
+входа — **[витрина stit](https://github.com/stit-core)**.
 Нужна команда, стандарт или поддержка —
 **[наш подход и контакты (vision)](https://git.stit.tech/stit/vision)**.
 
