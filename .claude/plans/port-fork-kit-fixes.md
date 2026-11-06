@@ -32,8 +32,9 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
   контейнер на вызов. Проверка: `go test -race -run 'TestShared|TestLease' ./testkit/` → PASS
   - Подтверждено: `TestShared_Postgres`, `…ClonesInParallel`, `…TemplateInParallel`, `…DropsOpenDatabase`,
     `…BrokenMigration`, `TestShared_NATS`, `…Redis`, `…MinIO`, `…File`, `TestLease` — PASS (-race, Docker)
-- [ ] **AC2** — `StartMinIO` поднимает образ, который есть в registry. Проверка: `docker manifest inspect
+- [x] **AC2** — `StartMinIO` поднимает образ, который есть в registry. Проверка: `docker manifest inspect
   pgsty/silo:RELEASE.2026-10-26T00-00-00Z` → манифест; `go test -run 'TestStartMinIO|TestShared_MinIO' ./testkit/` → PASS
+  - Подтверждено: `docker manifest inspect` Silo — манифест (`minio/minio` — отказ); `TestStartMinIO`, `TestShared_MinIO` — PASS
 - [x] **AC3** — `SubscribeStream` на поток, которого нет, отдаёт handle сразу и встаёт, когда автор заведёт поток;
   ожидание видно по WARN и `nats_subscriptions_waiting{stream}`, `SubscribeOnStart` не валит старт. Проверка:
   `go test -race -run TestStreamWait ./natskit/` → PASS
@@ -55,8 +56,9 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
   - Проверка: `go test -race -run 'TestShared|TestLease' ./testkit/` → PASS · Закрывает: AC1
   - Сделано: `testkit/shared.go`, аренда `shared_unix.go`, `TestShared_*` и `TestLease`; README кита § Общий режим, строка
     корневого README; `make envdoc-check` — OK
-- [ ] **S4** — testkit: образ MinIO — `pgsty/silo`
+- [x] **S4** — testkit: образ MinIO — `pgsty/silo`
   - Проверка: `go test -run 'TestStartMinIO|TestShared_MinIO' ./testkit/` → PASS · Закрывает: AC2 · Зависит от: S3
+  - Сделано: `MinIOImage` — `pgsty/silo:RELEASE.2026-10-26T00-00-00Z`, таблица образов и пример JSON общего режима в README
 - [ ] **S5** — Трения проекта для китов — строками бэклога; гейт и выпуск `v1.7.0` (`/release`)
   - Проверка: `make check` → `✓ check clean (./...)`; тег в origin и github · Закрывает: AC5 · Зависит от: S1–S4
 
@@ -66,4 +68,4 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
   на ожидание (WARN, `nats_subscriptions_waiting`).
 
 ## Где мы сейчас
-S1–S3 закрыты; дальше — S4 (образ MinIO), затем S5.
+S1–S4 закрыты, `make check` на итоговом дереве — `✓ check clean (./...)`; дальше — S5: бэклог, закрытие плана, тег `v1.7.0`.

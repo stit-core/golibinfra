@@ -196,10 +196,11 @@ helper'ов, ENV-переопределений образов нет тоже. 
 | `PostgresImage` | `postgres:17-alpine` | `5432/tcp`, база/пользователь/пароль `test` |
 | `NATSImage` | `nats:2.14.6-alpine` | `4222/tcp` |
 | `RedisImage` | `redis:7-alpine` | `6379/tcp` |
-| `MinIOImage` | `minio/minio:RELEASE.2025-01-20T14-49-07Z` | креды в `MinIOFixture` |
+| `MinIOImage` | `pgsty/silo:RELEASE.2026-10-26T00-00-00Z` | `9000/tcp`, креды в `MinIOFixture` |
 
-Готовность Postgres, NATS и Redis ждётся по логу **и** по слушающему порту, MinIO —
-по HTTP-пробе `/minio/health/cluster`; таймаут старта — 60 секунд.
+MinIO — образ PGSTY Silo: форк MinIO с теми же S3 API, переменными `MINIO_*`, командой
+`server` и пробами `/minio/health/`. Готовность Postgres, NATS и Redis ждётся по логу **и** по
+слушающему порту, MinIO — по HTTP-пробе `/minio/health/cluster`; таймаут старта — 60 секунд.
 
 ### Общий режим
 
@@ -217,7 +218,7 @@ helper'ов, ENV-переопределений образов нет тоже. 
   "postgres": {"image": "postgres:17-alpine", "url": "postgres://test:test@127.0.0.1:5432/test?sslmode=disable"},
   "nats": [{"image": "nats:2.14.6-alpine", "url": "nats://127.0.0.1:4222"}],
   "redis": [{"image": "redis:7-alpine", "url": "redis://127.0.0.1:6379"}],
-  "minio": [{"image": "minio/minio:RELEASE.2025-01-20T14-49-07Z", "endpoint": "127.0.0.1:9000",
+  "minio": [{"image": "pgsty/silo:RELEASE.2026-10-26T00-00-00Z", "endpoint": "127.0.0.1:9000",
              "access_key": "minioadmin", "secret_key": "minioadmin"}]
 }
 ```

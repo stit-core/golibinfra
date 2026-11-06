@@ -8,8 +8,9 @@ import (
 	"github.com/testcontainers/testcontainers-go/wait"
 )
 
-// MinIOImage — образ StartMinIO по умолчанию; переопределяется WithImage.
-const MinIOImage = "minio/minio:RELEASE.2025-01-20T14-49-07Z"
+// MinIOImage — образ StartMinIO по умолчанию: PGSTY Silo, форк MinIO с теми же S3 API, переменными
+// MINIO_* и пробами /minio/health/; переопределяется WithImage.
+const MinIOImage = "pgsty/silo:RELEASE.2026-10-26T00-00-00Z"
 
 // MinIOFixture — живой MinIO теста: S3-эндпоинт (host:port, plaintext — storagekit.Config
 // берёт "http://"+Endpoint), креды и handle контейнера. Бакеты создаёт тест — фикстура их не заводит.
