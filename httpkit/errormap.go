@@ -133,11 +133,12 @@ func (m ErrorMap) Declare(op huma.Operation) huma.Operation {
 
 // describeErrors — OnAddOperation сервера: коды Declare — в описание ответа своего статуса (huma
 // создаёт эти ответы раньше хука), и ответы, которые кит отдаёт сам, — там, где он их отдаёт: 429
-// лимитера с Retry-After — у каждой операции, 503 дедлайна запроса — у каждой, кроме потока SSE; у
+// лимитера с Retry-After — у каждой операции, 503 дедлайна запроса — у каждой, кроме потока SSE, 403
+// проверки Origin при cookie сессии (originChecked) — у каждой операции изменяющего метода; у
 // операции huma (registered, а не маршрута мимо huma) — 401 HumaAuth с WWW-Authenticate при
 // обязательной аутентификации, 413 при теле под лимитом, а со store (idempotent) у записи со схемой
 // в Security — ответы Idempotency: 409, 422 и 503 при FailClosed.
-func describeErrors(cfg Config, idempotent bool, registered func(*huma.Operation) bool) huma.AddOpFunc {
+func describeErrors(cfg Config, idempotent, originChecked bool, registered func(*huma.Operation) bool) huma.AddOpFunc {
 	return func(oapi *huma.OpenAPI, op *huma.Operation) {
 		declared, _ := op.Metadata[errorCodesKey].(map[int][]string)
 		codes := maps.Clone(declared)
@@ -152,6 +153,9 @@ func describeErrors(cfg Config, idempotent bool, registered func(*huma.Operation
 			slices.ContainsFunc(op.Security, func(alt map[string][]string) bool { return len(alt) > 0 })
 		if authRequired {
 			kitResponse(oapi, op, codes, http.StatusUnauthorized, codeUnauthorized)
+		}
+		if originChecked && !safeMethod(op.Method) {
+			kitResponse(oapi, op, codes, http.StatusForbidden, codeOriginNotAllowed)
 		}
 		if cfg.RateLimit.RPS > 0 {
 			kitResponse(oapi, op, codes, http.StatusTooManyRequests, codeRateLimited)

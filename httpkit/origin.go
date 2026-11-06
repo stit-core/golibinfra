@@ -13,11 +13,12 @@ import (
 
 // SessionCookies — имена cookie сессии сервиса: изменяющий запрос (любой метод, кроме GET, HEAD, OPTIONS и TRACE) с
 // любой из них проходит только с Origin, точно совпавшим с записью HTTP_CORS_ORIGINS («*» и «null» адресов не
-// разрешают), иначе — 403 ORIGIN_NOT_ALLOWED до тела, HumaAuth и хендлера. Одно значение на граф; без адреса в
-// HTTP_CORS_ORIGINS Module не стартует (ErrConfig).
+// разрешают), иначе — 403 ORIGIN_NOT_ALLOWED до тела, HumaAuth и хендлера; этот 403 — в OpenAPI каждой операции
+// изменяющего метода. Одно значение на граф; без адреса в HTTP_CORS_ORIGINS Module не стартует (ErrConfig).
 type SessionCookies []string
 
-// codeOriginNotAllowed — code 403 проверки Origin: его же объявляет в OpenAPI операция изменяющего метода.
+// codeOriginNotAllowed — code 403 проверки Origin: его же при cookie сессии объявляет в OpenAPI каждая операция
+// изменяющего метода.
 const codeOriginNotAllowed = "ORIGIN_NOT_ALLOWED"
 
 // maxLoggedOrigin — потолок Origin в записи лога: заголовок пишет клиент.

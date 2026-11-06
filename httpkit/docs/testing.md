@@ -6,9 +6,9 @@
 сборка, что у `Module`, с цепочкой кита целиком: лимитер и лимит тела — по конфигу) под
 `humatest` без реального `*http.Server`, с контрактом сервера: ответы-ошибки те же, что в
 проде — `request_id`, `Retry-After`, 404/405 маршрутизатора, коды `ErrorMap.Declare` и ответы
-кита (401, 429, 503 дедлайна, 413) в OpenAPI; `HumaAuth` стоит до маршрутов; маршруты `register`
-проходят проверку старта `Module` (`Server.CheckRoutes`, иначе `t.Fatalf`); конфиг —
-`httpkit.NewConfig()`:
+кита (401, 403 проверки Origin, 429, 503 дедлайна, 413) в OpenAPI; `HumaAuth` стоит до
+маршрутов; маршруты `register` проходят проверку старта `Module` (`Server.CheckRoutes`, иначе
+`t.Fatalf`); конфиг — `httpkit.NewConfig()`:
 
 ```go
 import "git.stit.tech/stit-core/golibinfra/testkit/handlertest"
@@ -78,20 +78,24 @@ func TestUserErrorsComplete(t *testing.T) {
 
 Коды `Declare` видны в `api.OpenAPI()` API из `handlertest.NewAPI` или `Module`:
 описание ответа статуса — `Conflict: USER_CONCURRENT_UPDATE`. Там же — ответы, которые кит отдаёт
-сам; лимитер и дедлайн запроса по умолчанию включены, лимит тела — тоже:
+сам; лимитер и дедлайн запроса по умолчанию включены, лимит тела — тоже, а 403 проверки Origin —
+у API с cookie сессии (`WithSessionCookies`; таблица — с ней):
 
-| Операция | 401 | 413 | 429 | 503 |
-|---|---|---|---|---|
-| с телом (`Body`, `RawBody`) | — | да | да | да |
-| multipart-форма | — | — | да | да |
-| поток SSE (`sse.Register`) | — | — | да | — |
-| под `Security` | да | — | да | да |
-| необязательная аутентификация (`{}` в `Security`) | — | — | да | да |
-| маршрут мимо huma, описанный в OpenAPI руками | — | — | да | да |
+| Операция | 401 | 403 | 413 | 429 | 503 |
+|---|---|---|---|---|---|
+| `POST` с телом (`Body`, `RawBody`) | — | да | да | да | да |
+| `POST` multipart-форма | — | да | — | да | да |
+| `GET` поток SSE (`sse.Register`) | — | — | — | да | — |
+| `GET` под `Security` | да | — | — | да | да |
+| `DELETE` под `Security` | да | да | — | да | да |
+| `GET` с необязательной аутентификацией (`{}` в `Security`) | — | — | — | да | да |
+| `POST` мимо huma, описанный в OpenAPI руками | — | да | — | да | да |
 
 Потока SSE дедлайн не касается, multipart-форму huma разбирает сама (превышение — 422
 валидации), 401 и 413 маршрута мимо huma — ответы его хендлера: их он описывает в `Responses`
-своей операции. Ответов `Idempotency` у API из `handlertest.NewAPI` нет — store в нём не
+своей операции. 403 — у каждой операции изменяющего метода (не `GET`, `HEAD`, `OPTIONS`,
+`TRACE`), и мимо huma тоже: проверка стоит в цепочке кита, а cookie браузер прикладывает к
+запросу любого пути. Ответов `Idempotency` у API из `handlertest.NewAPI` нет — store в нём не
 подключён: их видит API `NewServer` с `WithIdempotencyStore` или `Module` со store в графе.
 
 ## Middleware напрямую

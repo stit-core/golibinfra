@@ -52,8 +52,8 @@ func WithSecuritySchemes(schemes ...httpkit.SecuritySchemeEntry) Option {
 
 // WithSessionCookies — cookie сессии сервиса (httpkit.SessionCookies): изменяющий запрос с ними проходит только с
 // заголовком Origin из HTTP_CORS_ORIGINS конфига — тест шлёт его, как браузер (`"Origin: https://app.example.com"`),
-// без него — 403 ORIGIN_NOT_ALLOWED. Стартовой проверки адресов, как у Module, нет: без адреса в конфиге такой запрос
-// получает 403.
+// без него — 403 ORIGIN_NOT_ALLOWED, и этот 403 — в OpenAPI изменяющих операций. Стартовой проверки адресов, как у
+// Module, нет: без адреса в конфиге такой запрос получает 403.
 func WithSessionCookies(names ...string) Option {
 	return func(o *options) { o.cookies = append(o.cookies, names...) }
 }

@@ -16,19 +16,21 @@ import (
 )
 
 // VGK-06: таблица ответов кита в docs/testing.md — то, что видит в OpenAPI тест на API из handlertest.NewAPI с конфигом
-// по умолчанию: строка — вид операции, ячейка — есть ли у неё ответ статуса столбца. Дока — источник: строка без
-// операции в тесте и операция без строки — отказ.
+// по умолчанию и cookie сессии: строка — вид операции, ячейка — есть ли у неё ответ статуса столбца. Дока — источник:
+// строка без операции в тесте и операция без строки — отказ.
 func TestTestingDoc_KitResponsesTable(t *testing.T) {
 	raw, err := os.ReadFile("docs/testing.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	const header = "| Операция | 401 | 413 | 429 | 503 |"
-	_, table, found := strings.Cut(string(raw), header+"\n|---|---|---|---|---|\n")
+	const header = "| Операция | 401 | 403 | 413 | 429 | 503 |"
+	_, table, found := strings.Cut(string(raw), header+"\n|---|---|---|---|---|---|\n")
 	if !found {
 		t.Fatalf("docs/testing.md: the table of kit responses %q is not found", header)
 	}
-	statuses := []int{http.StatusUnauthorized, http.StatusRequestEntityTooLarge, http.StatusTooManyRequests, http.StatusServiceUnavailable}
+	statuses := []int{
+		http.StatusUnauthorized, http.StatusForbidden, http.StatusRequestEntityTooLarge, http.StatusTooManyRequests, http.StatusServiceUnavailable,
+	}
 	rows := map[string][]bool{}
 	for line := range strings.Lines(table) {
 		if !strings.HasPrefix(line, "|") {
@@ -60,12 +62,13 @@ func TestTestingDoc_KitResponsesTable(t *testing.T) {
 	noBody := func(context.Context, *struct{}) (*struct{}, error) { return nil, nil } // тело ответа не нужно
 	secured := []map[string][]string{{"Bearer": {}}}
 	kinds := map[string]string{ // строка таблицы → операция
-		"с телом (`Body`, `RawBody`)": "body",
-		"multipart-форма":             "form",
-		"поток SSE (`sse.Register`)":  "events",
-		"под `Security`":              "me",
-		"необязательная аутентификация (`{}` в `Security`)": "maybe",
-		"маршрут мимо huma, описанный в OpenAPI руками":     "rawRoute",
+		"`POST` с телом (`Body`, `RawBody`)": "body",
+		"`POST` multipart-форма":             "form",
+		"`GET` поток SSE (`sse.Register`)":   "events",
+		"`GET` под `Security`":               "me",
+		"`DELETE` под `Security`":            "forget",
+		"`GET` с необязательной аутентификацией (`{}` в `Security`)": "maybe",
+		"`POST` мимо huma, описанный в OpenAPI руками":               "rawRoute",
 	}
 	api := handlertest.NewAPI(t, func(api huma.API) {
 		huma.Register(api, httpkit.Public(huma.Operation{OperationID: "body", Method: http.MethodPost, Path: "/body"}),
@@ -75,6 +78,7 @@ func TestTestingDoc_KitResponsesTable(t *testing.T) {
 		sse.Register(api, httpkit.Public(huma.Operation{OperationID: "events", Method: http.MethodGet, Path: "/events"}),
 			map[string]any{"tick": struct{}{}}, func(context.Context, *struct{}, sse.Sender) {})
 		huma.Register(api, huma.Operation{OperationID: "me", Method: http.MethodGet, Path: "/me", Security: secured}, noBody)
+		huma.Register(api, huma.Operation{OperationID: "forget", Method: http.MethodDelete, Path: "/me", Security: secured}, noBody)
 		huma.Register(api, huma.Operation{
 			OperationID: "maybe", Method: http.MethodGet, Path: "/maybe", Security: []map[string][]string{{"Bearer": {}}, {}},
 		}, noBody)
@@ -85,7 +89,7 @@ func TestTestingDoc_KitResponsesTable(t *testing.T) {
 	}, handlertest.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
 		Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"},
 		Extract: func(r *http.Request) (context.Context, error) { return r.Context(), nil },
-	}))
+	}), handlertest.WithSessionCookies("session"))
 	ops := operations(api.OpenAPI())
 	for row, id := range kinds {
 		has, ok := rows[row]

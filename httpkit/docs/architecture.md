@@ -235,6 +235,10 @@ WebSocket-upgrade. Повторное оборачивание того же wri
   свои коды extractor'а — в тот же ответ. Заголовок `WWW-Authenticate` — вызов схем операции
   (он же — пример в OpenAPI), необязательный: свой 401 хендлера его не несёт. При
   необязательной аутентификации (`{}`) и у маршрута мимо huma 401 кит не отдаёт.
+- `403 ORIGIN_NOT_ALLOWED` (проверка Origin) при `SessionCookies` — у каждой операции
+  изменяющего метода (не `GET`, `HEAD`, `OPTIONS`, `TRACE`), и у описанной в OpenAPI мимо
+  `huma.Register`: проверка стоит в цепочке кита, а cookie браузер прикладывает к запросу любого
+  пути (§ Проверка Origin); коды 403 из `Declare` (`FORBIDDEN` домена) — в тот же ответ, первыми.
 - `429 RATE_LIMITED` (`RateLimit`) при `HTTP_RATE_LIMIT_RPS > 0` — у каждой операции, и у
   `/health`, `/ready`, и у описанной в OpenAPI мимо `huma.Register`. У любого 429 операции —
   обязательный `Retry-After` (целые секунды, от 1): кит ставит его на каждый ответ 429.
@@ -345,7 +349,8 @@ cookie его не отсекает. Изменяющий запрос без pr
   extractor'а схемы, идемпотентности и хендлера, на любом пути: у операции huma, у маршрута
   мимо huma и у пути без маршрута (там — вместо `404`); WARN `session cookie refused: origin is
   not allowed` с методом и `Origin` и `http_origin_rejections_total{path, reason}`
-  ([observability.md](observability.md));
+  ([observability.md](observability.md)); в OpenAPI этот 403 — у каждой операции изменяющего
+  метода (§ Контракт ошибок);
 - в цепочке — после `RateLimit` (§ Конвейер middleware и порядок): отказ расходует bucket
   клиента, как любой запрос.
 

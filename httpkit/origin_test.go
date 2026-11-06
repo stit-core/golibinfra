@@ -13,6 +13,7 @@ import (
 
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
+	"github.com/danielgtaylor/huma/v2/sse"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
@@ -416,6 +417,78 @@ func TestSessionCookies_Signals(t *testing.T) {
 	} {
 		if e := refusals[i]; e.Level != slog.LevelWarn || e.Str("method") != want.method || e.Str("origin") != want.origin {
 			t.Errorf("refusal %d: %v %+v, want Warn with method %s and origin %q", i, e.Level, e.KV, want.method, want.origin)
+		}
+	}
+}
+
+// 403 ORIGIN_NOT_ALLOWED — в OpenAPI каждой операции изменяющего метода, которой его отдаёт проверка: операции huma,
+// группы huma и мимо huma с описанием руками, — после кодов 403 из Declare; у безопасного метода и у сервера без cookie
+// сессии его нет. Описание — то, что кит отвечает.
+func TestSessionCookies_OpenAPI(t *testing.T) {
+	type named struct {
+		Body struct {
+			Name string `json:"name"`
+		}
+	}
+	register := func(api huma.API) {
+		huma.Register(api, httpkit.Public(operation("create", http.MethodPost, "/orders")),
+			func(context.Context, *named) (*struct{}, error) { return nil, nil })
+		huma.Register(api, userErrors.Declare(secured(operation("replace", http.MethodPut, "/orders"))), noBody)
+		huma.Register(api, secured(operation("amend", http.MethodPatch, "/orders")), noBody)
+		huma.Register(api, secured(operation("drop", http.MethodDelete, "/orders")), noBody)
+		huma.Register(api, secured(operation("list", http.MethodGet, "/orders")), noBody)
+		huma.Register(api, httpkit.Public(operation("peek", http.MethodHead, "/orders")), noBody)
+		sse.Register(api, httpkit.Public(operation("events", http.MethodGet, "/events")),
+			map[string]any{"tick": struct{}{}}, func(context.Context, *struct{}, sse.Sender) {})
+		huma.Register(huma.NewGroup(api, "/v1"), httpkit.Public(operation("gcreate", http.MethodPost, "/orders")), noBody)
+		api.OpenAPI().AddOperation(&huma.Operation{OperationID: "rawRoute", Method: http.MethodPost, Path: "/raw-route", Security: bearerOnly})
+	}
+	cfg := originConfig(t, appOrigin)
+	schemes := handlertest.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: bearerScheme,
+		Extract: func(r *http.Request) (context.Context, error) {
+			return httpkit.ContextWithSubject(r.Context(), "u1"), nil
+		},
+	})
+	const refused = "Forbidden: ORIGIN_NOT_ALLOWED"
+
+	api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), schemes, handlertest.WithSessionCookies("sid"))
+	ops := operations(api.OpenAPI())
+	for id, want := range map[string]string{
+		"create": refused, "replace": "Forbidden: FORBIDDEN, ORIGIN_NOT_ALLOWED", "amend": refused, "drop": refused,
+		"gcreate": refused, "rawRoute": refused, "list": "", "events": "",
+	} {
+		resp, got := ops[id].Responses["403"], ""
+		if resp != nil {
+			got = resp.Description
+		}
+		if got != want {
+			t.Errorf("%s: 403 = %q, want %q", id, got, want)
+		}
+		if resp != nil && !strings.HasSuffix(resp.Content[httpkit.ProblemContentType].Schema.Ref, "/APIError") {
+			t.Errorf("%s: 403 is not an APIError", id)
+		}
+	}
+	if head := api.OpenAPI().Paths["/orders"].Head; head == nil || head.Responses["403"] != nil {
+		t.Errorf("HEAD /orders declares 403: %+v", head)
+	}
+	resp := api.Post("/orders", "Cookie: sid="+sessionValue, map[string]any{"name": "x"})
+	handlertest.AssertAPIError(t, resp, http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	if codes := codesOf(ops["create"], http.StatusForbidden); !slices.Contains(codes, "ORIGIN_NOT_ALLOWED") {
+		t.Errorf("the kit answers 403 ORIGIN_NOT_ALLOWED, the contract of create lists %v", codes)
+	}
+
+	plain := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), schemes)
+	for id, op := range operations(plain.OpenAPI()) {
+		got, want := "", ""
+		if id == "replace" {
+			want = "Forbidden: FORBIDDEN"
+		}
+		if resp := op.Responses["403"]; resp != nil {
+			got = resp.Description
+		}
+		if got != want {
+			t.Errorf("without session cookies: %s 403 = %q, want %q", id, got, want)
 		}
 	}
 }
