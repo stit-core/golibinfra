@@ -189,3 +189,9 @@
 - **no-error-funcs** — функции китов, чья ошибка не бывает (`oidckit.RandomToken`, `oidckit.PKCE`), отдают её в
   сигнатуре: при 100 % покрытия потребитель не исполнит ветку отказа и обходит кит (`authnkit.NewToken`). Правка
   сигнатур — breaking. Триггер: следующий breaking-minor.
+- **httpkit-origin-upgrade** — upgrade WebSocket — `GET`, и проверка Origin с cookie сессии (`SessionCookies`) его не
+  касается: страница соседнего адреса того же сайта открывает сокет с cookie сессии (CSWSH), `Origin` у upgrade
+  сверяет обработчик маршрута. Триггер: потребитель с WebSocket под cookie сессии.
+- **oidckit-logout-same-site** — `POST /auth/logout` BFF пускает `Sec-Fetch-Site: same-site`: страница соседнего адреса
+  того же сайта выходит из чужой сессии; закрывает это `SessionCookies` сервиса с `CookieConfig.SessionCookieName()`.
+  Триггер: потребитель oidckit без `SessionCookies` или аудит oidckit.

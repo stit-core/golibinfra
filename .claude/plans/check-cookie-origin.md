@@ -64,7 +64,7 @@ preflight. Дать httpkit общий механизм: сервис назыв
   - Подтверждено: `TestSessionCookies_OpenAPI` (`POST`, `PUT` с `Declare` — `Forbidden: FORBIDDEN, ORIGIN_NOT_ALLOWED`,
     `PATCH`, `DELETE`, группа, мимо huma — `APIError`; `GET`, `HEAD`, SSE — без 403; ответ кита — код контракта),
     `TestTestingDoc_KitResponsesTable` — PASS; клетка 403 у `GET` под `Security`, поставленная «да», — отказ теста
-- [ ] **AC5** — Отказ виден оператору: `http_origin_rejections_total{path, reason}` (значения `reason` конечны, Origin
+- [x] **AC5** — Отказ виден оператору: `http_origin_rejections_total{path, reason}` (значения `reason` конечны, Origin
   в label нет) и WARN с методом и `Origin` — в таблицах `docs/observability.md`, их сверяет живой `Module`.
   Проверка: `go test -race -run 'TestSignals|TestSessionCookies_Signals' ./httpkit/` → PASS
   - Подтверждено: `TestSignals_MatchObservabilityDoc` (случаи `cookie-no-origin`, `cookie-foreign`, `cookie-app`;
@@ -74,10 +74,12 @@ preflight. Дать httpkit общий механизм: сервис назыв
   Проверка: `go test -race -run TestNewAPI_SessionCookies ./testkit/handlertest/` → PASS
   - Подтверждено: `TestNewAPI_SessionCookies` — без Origin и с чужим 403, с адресом конфига и Bearer 204, без опции
     проверки нет, невалидное имя валит тест — PASS
-- [ ] **AC7** — Доки описывают проверку — правило, включение, ответ, сигналы, тест потребителя: README кита,
+- [x] **AC7** — Доки описывают проверку — правило, включение, ответ, сигналы, тест потребителя: README кита,
   `httpkit/docs/`, `SECURITY.md`, строки корневого README и `testkit/README.md`. Проверка: ручная —
   `httpkit/docs/architecture.md § Проверка Origin`, `httpkit/docs/usage.md § Сессия в cookie`, `SECURITY.md`
   § Что в скоупе; доки-тесты кита в `make check` → `✓ check clean (./...)`
+  - Подтверждено: разделы на месте (правило, `null`, старт, OpenAPI, сигналы, `handlertest`); `make check` —
+    `✓ check clean (./...)`: таблицы сигналов и ответов кита, envdoc, индексы пакетов
 - [ ] **AC8** — Выпуск `v1.8.0`: аннотация по черновику (`make release-diff PREV=v1.7.0`), тег в origin и github.
   Проверка: `git ls-remote origin refs/tags/v1.8.0` и `git ls-remote github refs/tags/v1.8.0` → тег
 
@@ -105,8 +107,13 @@ preflight. Дать httpkit общий механизм: сервис назыв
   - Сделано: проверка Origin в описании и списке ответов кита README httpkit; `HTTP_CORS_ORIGINS` и старт —
     `configuration.md`; рецепт `usage.md § Сессия в cookie` (имена cookie `hubkit/sso` и `oidckit`); `SECURITY.md`
     § Что в скоупе; строка httpkit корневого README; `make envdoc-check` — OK, доки-тесты корня — PASS
-- [ ] **S5** — Гейт, `## Handoff`, черновик аннотации `v1.8.0` по `make release-diff PREV=v1.7.0`
+- [x] **S5** — Гейт, `## Handoff`, черновик аннотации `v1.8.0` по `make release-diff PREV=v1.7.0`
   - Проверка: `make check` → `✓ check clean (./...)` · Закрывает: AC7 · Зависит от: S4
+  - Сделано: `make check` — `✓ check clean (./...)`: lint 0 issues, unit и integration 72 пакетов (Docker),
+    govulncheck — No vulnerabilities found, envdoc — 256 переменных, plan-check; `make release-diff PREV=v1.7.0` —
+    несовместимого API нет, новое — `httpkit.SessionCookies`, `httpkit.WithSessionCookies`,
+    `handlertest.WithSessionCookies`, env без изменений, `+ http_origin_rejections_total`; черновик аннотации —
+    у сессии корня; бэклог — `httpkit-origin-upgrade`, `oidckit-logout-same-site`
 - [ ] **S6** — Ревью диффа и выпуск `v1.8.0` (`/release`) — сессия корня; план закрывается тем же
   - Проверка: тег в origin и github · Закрывает: AC8 · Зависит от: S5
 
@@ -132,8 +139,20 @@ preflight. Дать httpkit общий механизм: сервис назыв
   запросу любого пути сервиса, и проверка его касается.
 
 ## Handoff
-—
+- Шаблону бэкенда (`go-backend-template`) после `v1.8.0`: `go get git.stit.tech/stit-core/golibinfra@v1.8.0`,
+  `go mod tidy`, `make check` — без `SessionCookies` правок нет.
+- Включить проверку: `fx.Supply(httpkit.SessionCookies{authgate.CookieAccess, authgate.CookieRefresh})` — и в графе
+  сервиса (`authgate.Module`), и в графе спецификации (`authgate.SecurityScheme` / `buildAPI` в `cmd/api/api_test.go`):
+  403 `ORIGIN_NOT_ALLOWED` встаёт в `openapi.json` изменяющих операций — `make gen`. Обе cookie: refresh читают
+  публичные `POST /api/auth/refresh` и `/api/auth/logout`.
+- `HTTP_CORS_ORIGINS` — адрес SPA в каждом окружении (dev, compose, k8s в `<org>/infra`), и при SPA на одном адресе
+  с API: без адреса `Module` не стартует (`ErrConfig`); boot-тест шаблона ставит переменную.
+- Тесты хендлеров с cookie: `handlertest.WithSessionCookies(...)`, адрес в `cfg.CORS.Origins` (`WithConfig`) и
+  заголовок `Origin` в запросе; запрос с cookie без `Origin` — 403.
+- Клиенты: SPA шлёт запросы браузером (`Origin` ставит он); скрипт или CLI с cookie сессии шлёт `Origin` из списка
+  или переходит на Bearer.
 
 ## Где мы сейчас
-S1–S4 закрыты: проверка Origin в цепочке httpkit, сигналы, `handlertest.WithSessionCookies`, 403 в OpenAPI, доки.
-Дальше — S5: `make check`, `## Handoff`, черновик аннотации `v1.8.0`.
+S1–S5 закрыты, коммиты в `main` локально, `make check` зелёный; черновик аннотации `v1.8.0` передан сессии корня.
+Дальше — S6 у сессии корня: ревью диффа `v1.7.0..main`, `make gate-clean`, тег `v1.8.0` с аннотацией, push в origin
+и github; тем же коммитом план закрывается (Handoff — в аннотацию и шаблону).
