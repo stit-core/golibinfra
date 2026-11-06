@@ -27,9 +27,11 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
 - Раннер, который поднимает серверы общего режима, — план `go-backend-template`.
 
 ## Критерии приёмки
-- [ ] **AC1** — С `TESTKIT_SHARED` у теста своя база Postgres (клон шаблона миграций), NATS с JetStream, Redis и MinIO
+- [x] **AC1** — С `TESTKIT_SHARED` у теста своя база Postgres (клон шаблона миграций), NATS с JetStream, Redis и MinIO
   — в исключительной аренде и чистые; другой образ и NATS без JetStream — свой контейнер, без переменной —
   контейнер на вызов. Проверка: `go test -race -run 'TestShared|TestLease' ./testkit/` → PASS
+  - Подтверждено: `TestShared_Postgres`, `…ClonesInParallel`, `…TemplateInParallel`, `…DropsOpenDatabase`,
+    `…BrokenMigration`, `TestShared_NATS`, `…Redis`, `…MinIO`, `…File`, `TestLease` — PASS (-race, Docker)
 - [ ] **AC2** — `StartMinIO` поднимает образ, который есть в registry. Проверка: `docker manifest inspect
   pgsty/silo:RELEASE.2026-10-26T00-00-00Z` → манифест; `go test -run 'TestStartMinIO|TestShared_MinIO' ./testkit/` → PASS
 - [x] **AC3** — `SubscribeStream` на поток, которого нет, отдаёт handle сразу и встаёт, когда автор заведёт поток;
@@ -49,8 +51,10 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
 - [x] **S2** — natskit: подписка на поток, которого нет, ждёт его автора
   - Проверка: `go test -race ./natskit/` → PASS · Закрывает: AC3
   - Сделано: `natskit/streamwait.go`, `TestStreamWait_*`; доки natskit, строки README и testkit/README; `natskit` — PASS (-race)
-- [ ] **S3** — testkit: общий режим `TESTKIT_SHARED`
+- [x] **S3** — testkit: общий режим `TESTKIT_SHARED`
   - Проверка: `go test -race -run 'TestShared|TestLease' ./testkit/` → PASS · Закрывает: AC1
+  - Сделано: `testkit/shared.go`, аренда `shared_unix.go`, `TestShared_*` и `TestLease`; README кита § Общий режим, строка
+    корневого README; `make envdoc-check` — OK
 - [ ] **S4** — testkit: образ MinIO — `pgsty/silo`
   - Проверка: `go test -run 'TestStartMinIO|TestShared_MinIO' ./testkit/` → PASS · Закрывает: AC2 · Зависит от: S3
 - [ ] **S5** — Трения проекта для китов — строками бэклога; гейт и выпуск `v1.7.0` (`/release`)
@@ -62,4 +66,4 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
   на ожидание (WARN, `nats_subscriptions_waiting`).
 
 ## Где мы сейчас
-S1–S2 закрыты; дальше — S3 (общий режим testkit), S4 (образ MinIO), затем S5.
+S1–S3 закрыты; дальше — S4 (образ MinIO), затем S5.

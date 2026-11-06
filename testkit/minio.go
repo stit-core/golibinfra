@@ -27,6 +27,9 @@ func StartMinIO(t testing.TB, opts ...Option) *MinIOFixture {
 	t.Helper()
 	RequireDocker(t)
 	o := newOptions(t, support{helper: "StartMinIO"}, MinIOImage, opts)
+	if s := shared(t); s != nil && samePool(s.MinIO, o.image) {
+		return sharedMinIO(t, s)
+	}
 
 	c, err := tcminio.Run(t.Context(), o.image, testcontainers.WithLogger(newTestLogger(t)),
 		// /minio/health/live отвечает 200 раньше, чем поднят слой объектов: под нагрузкой первый

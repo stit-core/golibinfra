@@ -27,6 +27,9 @@ func StartNATS(t testing.TB, opts ...Option) *NATSFixture {
 	t.Helper()
 	RequireDocker(t)
 	o := newOptions(t, support{helper: "StartNATS", jetStream: true}, NATSImage, opts)
+	if s := shared(t); s != nil && o.jetStream && samePool(s.NATS, o.image) {
+		return sharedNATS(t, s)
+	}
 
 	req := testcontainers.ContainerRequest{
 		Image:        o.image,

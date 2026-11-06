@@ -37,6 +37,9 @@ func StartPostgres(t testing.TB, opts ...Option) *PostgresFixture {
 	t.Helper()
 	RequireDocker(t)
 	o := newOptions(t, support{helper: "StartPostgres", migrations: true}, PostgresImage, opts)
+	if s := shared(t); s != nil && s.Postgres != nil && s.Postgres.Image == o.image {
+		return sharedPostgres(t, *s.Postgres, o)
+	}
 	ctx := t.Context()
 
 	c, err := tcpostgres.Run(

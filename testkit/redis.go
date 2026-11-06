@@ -23,6 +23,9 @@ func StartRedis(t testing.TB, opts ...Option) *RedisFixture {
 	t.Helper()
 	RequireDocker(t)
 	o := newOptions(t, support{helper: "StartRedis"}, RedisImage, opts)
+	if s := shared(t); s != nil && samePool(s.Redis, o.image) {
+		return sharedRedis(t, s)
+	}
 
 	c, err := testcontainers.GenericContainer(t.Context(), testcontainers.GenericContainerRequest{
 		ContainerRequest: testcontainers.ContainerRequest{
