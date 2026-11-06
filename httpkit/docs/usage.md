@@ -5,14 +5,14 @@
 - **Сервер**: `NewServer(cfg, log, opts...) (*Server, error)` — та же сборка, что у `Module`
   (цепочка кита, `HumaAuth` в `BindAPI`; невалидный `Config` — `ErrConfig`; log nil —
   `logkit.Nop()`); опции `WithSecuritySchemes`, `WithIdempotencyStore`,
-  `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes` (с nil — ничего). Методы:
+  `WithMiddleware`, `WithHumaConfig`, `WithPublicRoutes`, `WithSessionCookies` (с nil — ничего). Методы:
   `Router()`, `API()`/`BindAPI()`, `CheckRoutes()`, `Listen()`, `Addr()`, `Serve()`, `Stop(ctx)`.
 - **Middleware** (net/http): `RequestID`, `ClientIP(trustProxyHops, log)`,
   `OTel(trustTraceContext, quietPaths...)`, `Recovery(log)`,
   `SecurityHeaders(cfg)`, `CORS(cfg)`, `RateLimit(cfg)`, `MaxBody(cfg)`,
   `AccessLog(log, quietPaths...)`, `Metrics()`,
   `Idempotency(cfg, store, log)`. huma-уровень: `HumaAuth(schemes, log)`.
-- **fx**: `Module`, `Middlewares`, `HumaConfigs`, `PublicRoutes` (значения графа),
+- **fx**: `Module`, `Middlewares`, `HumaConfigs`, `PublicRoutes`, `SessionCookies` (значения графа),
   `ProvideSecurityScheme(ctor, anns...)` → группа `SecuritySchemeGroup`.
 - **Ошибки**: `APIError`, `FieldError`, `Error/BadRequest/Unauthorized/Forbidden/NotFound/
   Conflict/Internal/Unavailable`, `ErrorMap` (`NewErrorMap`, `ErrorRule`, `Map`,
@@ -216,7 +216,7 @@ HTTP_CSP="default-src 'self'"
 ## CORS / RateLimit
 
 ```bash
-HTTP_CORS_ORIGINS="https://app.example.com,https://admin.example.com"
+HTTP_CORS_ORIGINS="https://app.example.com,https://admin.example.com"  # при SessionCookies — и адреса, с которых cookie меняет данные
 HTTP_CORS_ALLOW_CREDENTIALS=true          # cookie-сессии; несовместимо с "*"
 HTTP_CORS_EXPOSE_HEADERS="X-Request-ID,Location,Retry-After,Idempotent-Replayed"
 
@@ -310,6 +310,33 @@ httpkit.ProvideSecurityScheme(func(jwt authnkit.JWTParser, revoked cachekit.Cach
 
 Имя схемы в графе одно: дубль имени и схема без `Scheme` — ошибка сборки графа
 (`httpkit.ErrConfig` с обоими значениями).
+
+## Сессия в cookie
+
+Cookie сессии браузер прикладывает и к запросу со страницы соседнего адреса того же сайта, и
+`SameSite` его не отсекает. Сервис называет свои cookie сессии одним значением на граф — все,
+которыми он узнаёт пользователя, и refresh, которую читает публичная операция обновления
+(`cookie:"refresh_token"` во входе): проверка смотрит на cookie запроса, а не на `Security`
+операции.
+
+```go
+fx.Supply(httpkit.SessionCookies{"access_token", "refresh_token"}) // без fx — httpkit.WithSessionCookies(...)
+```
+
+```bash
+HTTP_CORS_ORIGINS="https://app.example.com"   # адрес SPA; SPA на одном адресе с API — тоже он
+HTTP_CORS_ALLOW_CREDENTIALS=true              # SPA на другом адресе шлёт cookie с credentials: "include"
+```
+
+Изменяющий запрос (не `GET`, `HEAD`, `OPTIONS`, `TRACE`) с любой из этих cookie проходит только с
+`Origin` из `HTTP_CORS_ORIGINS`, иначе — `403 ORIGIN_NOT_ALLOWED` до `HumaAuth` и хендлера; в
+OpenAPI этот 403 — у каждой операции изменяющего метода. Запроса без этих cookie — сервис или
+клиент с `Authorization: Bearer` — проверка не касается. Данные меняет только изменяющий метод:
+`GET` с побочным эффектом и upgrade WebSocket проверка не закрывает. Без адреса в списке `Module`
+не стартует (`ErrConfig`); тест хендлера — `handlertest.WithSessionCookies` и заголовок `Origin`
+([testing.md](testing.md)). Cookie китов: `hubkit/sso` — `sso.Config.Cookie` и `CustomerCookie`
+(`HUB_SSO_COOKIE`, `HUB_SSO_CUSTOMER_COOKIE`), `oidckit` — `CookieConfig.SessionCookieName()`.
+Правило целиком — [architecture.md § Проверка Origin](architecture.md#проверка-origin).
 
 ## Свои middleware и настройка huma
 

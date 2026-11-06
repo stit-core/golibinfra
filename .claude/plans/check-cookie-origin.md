@@ -100,8 +100,11 @@ preflight. Дать httpkit общий механизм: сервис назыв
     `TestSessionCookies_OpenAPI`; столбец 403 и строка `DELETE` таблицы ответов кита, строки — с методом;
     § Контракт ошибок `docs/architecture.md`; `go test -race ./httpkit/... ./testkit/handlertest/` — PASS, lint — 0 issues
 ### Доки и выпуск
-- [ ] **S4** — Доки: README кита, `docs/configuration.md` и `docs/usage.md` httpkit, `SECURITY.md`, корневой README
+- [x] **S4** — Доки: README кита, `docs/configuration.md` и `docs/usage.md` httpkit, `SECURITY.md`, корневой README
   - Проверка: `make envdoc-check` → OK; ручная — разделы AC7 · Закрывает: AC7 · Зависит от: S3
+  - Сделано: проверка Origin в описании и списке ответов кита README httpkit; `HTTP_CORS_ORIGINS` и старт —
+    `configuration.md`; рецепт `usage.md § Сессия в cookie` (имена cookie `hubkit/sso` и `oidckit`); `SECURITY.md`
+    § Что в скоупе; строка httpkit корневого README; `make envdoc-check` — OK, доки-тесты корня — PASS
 - [ ] **S5** — Гейт, `## Handoff`, черновик аннотации `v1.8.0` по `make release-diff PREV=v1.7.0`
   - Проверка: `make check` → `✓ check clean (./...)` · Закрывает: AC7 · Зависит от: S4
 - [ ] **S6** — Ревью диффа и выпуск `v1.8.0` (`/release`) — сессия корня; план закрывается тем же
@@ -132,5 +135,5 @@ preflight. Дать httpkit общий механизм: сервис назыв
 —
 
 ## Где мы сейчас
-S1–S3 закрыты: проверка Origin в цепочке httpkit, сигналы, `handlertest.WithSessionCookies`, 403 в OpenAPI. Дальше —
-S4: README кита, `configuration.md`, `usage.md`, `SECURITY.md`, корневой README.
+S1–S4 закрыты: проверка Origin в цепочке httpkit, сигналы, `handlertest.WithSessionCookies`, 403 в OpenAPI, доки.
+Дальше — S5: `make check`, `## Handoff`, черновик аннотации `v1.8.0`.

@@ -37,9 +37,15 @@ No-op при пустом `Origins`. Конкретный origin эхается 
 разрешённый только по `*`, всегда получает `*` **без** credentials — отражать
 произвольный origin вместе с credentials небезопасно.
 
+`HTTP_CORS_ORIGINS` — ещё и адреса, с которых меняет данные запрос с cookie сессии, когда
+сервис называет их (`SessionCookies`, [architecture.md § Проверка Origin](architecture.md#проверка-origin)):
+изменяющий запрос с ними проходит только с `Origin`, точно совпавшим с записью, — `*` и `null`
+адресов не разрешают, свой адрес сервиса (SPA на одном адресе с API) — тоже запись. Без адреса в
+списке такой `Module` не стартует (`ErrConfig`).
+
 | Env | Поле | Тип | Default | Назначение |
 |---|---|---|---|---|
-| `HTTP_CORS_ORIGINS` | `Origins` | `[]string` | — (CORS выключен) | разрешённые Origin; `*` = любой |
+| `HTTP_CORS_ORIGINS` | `Origins` | `[]string` | — (CORS выключен) | разрешённые Origin; `*` = любой; при `SessionCookies` — и адреса, с которых меняет данные запрос с cookie сессии (`*` и `null` — не адреса) |
 | `HTTP_CORS_METHODS` | `Methods` | `[]string` | `GET,POST,PUT,PATCH,DELETE,OPTIONS` | `Access-Control-Allow-Methods` |
 | `HTTP_CORS_HEADERS` | `Headers` | `[]string` | `Authorization,Content-Type,X-Request-ID,Idempotency-Key` | `Access-Control-Allow-Headers`; свой `HTTP_IDEMPOTENCY_HEADER` — добавьте его сюда, иначе браузер не отправит ключ |
 | `HTTP_CORS_EXPOSE_HEADERS` | `ExposeHeaders` | `[]string` | `X-Request-ID,Location,Retry-After,Idempotent-Replayed` | `Access-Control-Expose-Headers`: без него cross-origin JS не читает даже заголовки, которые ставит сам кит |
@@ -196,7 +202,9 @@ SSE-поток держит соединение. Чтобы HTTP не упир�
 - `CORS.AllowCredentials` несовместим с origin `*`.
 
 Zero-value `Config` отвергается (`Addr` пуст) и в `Module`, и в `NewServer` (`ErrConfig`) —
-сервер стартует только на осознанно заданных значениях.
+сервер стартует только на осознанно заданных значениях. При `SessionCookies` сверх `Validate`
+`Module` на старте требует адрес в `HTTP_CORS_ORIGINS` (§ CORSConfig): `ErrConfig` называет
+переменную и cookie.
 
 ## Public API
 

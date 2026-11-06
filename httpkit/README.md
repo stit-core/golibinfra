@@ -5,8 +5,10 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 контрактом ошибок. Один `Server` несёт `*chi.Mux` (транспорт) и `huma.API`
 (типобезопасные операции + OpenAPI). Из коробки: `RequestID`, `ClientIP` (IP клиента в ctx —
 `ClientIPFrom`, доверие прокси — `HTTP_TRUST_PROXY_HOPS`), `OTel`,
-`AccessLog`, `Metrics`, `Recovery`, `SecurityHeaders`, `CORS`, `RateLimit`,
-`MaxBody` (поднятый лимит операции поднимает и его), дедлайн запроса
+`AccessLog`, `Metrics`, `Recovery`, `SecurityHeaders`, `CORS`, `RateLimit`, опц. проверка
+Origin (сервис называет cookie сессии — `httpkit.SessionCookies`: изменяющий запрос с ними
+проходит только с `Origin` из `HTTP_CORS_ORIGINS`, иначе `403 ORIGIN_NOT_ALLOWED` до auth и
+хендлера), `MaxBody` (поднятый лимит операции поднимает и его), дедлайн запроса
 (`HTTP_REQUEST_TIMEOUT`), HEAD на GET-маршрутах, опц. `Idempotency`, `HumaAuth`. Любой
 ответ-ошибка — `APIError` (`application/problem+json`: `title`, `status`, `detail`,
 машинный `code`, `request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный
@@ -14,8 +16,8 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 `request_id`), 429 — с `Retry-After`, 401 — с `WWW-Authenticate`; panic после начала
 ответа обрывает соединение. В OpenAPI операции — коды её таблицы `ErrorMap.Declare` и ответы,
 которые кит отдаёт сам, там, где он их отдаёт: 401 с `WWW-Authenticate`, `429 RATE_LIMITED` с
-`Retry-After`, `503 REQUEST_TIMEOUT` дедлайна, `413 BODY_TOO_LARGE` и ответы `Idempotency`
-(409, 422, 503 при `HTTP_IDEMPOTENCY_FAIL_CLOSED`). При схеме
+`Retry-After`, `503 REQUEST_TIMEOUT` дедлайна, `413 BODY_TOO_LARGE`, `403 ORIGIN_NOT_ALLOWED`
+проверки Origin и ответы `Idempotency` (409, 422, 503 при `HTTP_IDEMPOTENCY_FAIL_CLOSED`). При схеме
 безопасности в графе открытость операции явная — `Security` или `httpkit.Public`; дубли маршрутов (и маршрут мимо huma на
 пути операции), забытая пометка и маршрут мимо huma — ошибка старта (`CheckRoutes`). `/health` и `/ready` (по пробам из
 fx-группы `healthkit.probes`; panic пробы — проба `down`) регистрируются автоматически.
@@ -90,13 +92,13 @@ _ = s.Serve()
 
 - [docs/architecture.md](docs/architecture.md) — huma + chi, ленивый `BindAPI`,
   точки расширения, порядок middleware и почему он такой, wrapper ответа
-  (`Flush`/`Hijack`), контракт ошибок, auth, идемпотентность, health.
+  (`Flush`/`Hijack`), контракт ошибок, auth, проверка Origin, идемпотентность, health.
 - [docs/configuration.md](docs/configuration.md) — справочник ENV: `Config`,
   `CORSConfig`, `RateLimitConfig`, `MaxBodyConfig`, `SecurityHeadersConfig`,
   `IdempotencyConfig`, правила `Validate`.
 - [docs/observability.md](docs/observability.md) — метрики, labels, спаны, логи.
 - [docs/usage.md](docs/usage.md) — рецепты: роуты, `ErrorMap`,
-  идемпотентность, CORS/RateLimit за прокси, auth, свои middleware и `huma.Config`,
-  readiness, SSE/WebSocket.
+  идемпотентность, CORS/RateLimit за прокси, auth, сессия в cookie, свои middleware и
+  `huma.Config`, readiness, SSE/WebSocket.
 - [docs/testing.md](docs/testing.md) — `testkit/handlertest`, тесты middleware,
   метрик и fx-проводки.
