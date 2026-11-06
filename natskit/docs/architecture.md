@@ -30,12 +30,13 @@ retry-политика бизнес-уровня, выбор subject'ов и str
 | `bus.go` | `Bus`-интерфейс (`Publish`/`Subscribe`/`SubscribeQueue`), `natsBus` (Core NATS), `ErrTerminal`, дженерики `PublishJSON[T]`/`SubscribeJSON[T]`/`SubscribeQueueJSON[T]`, `decodeJSON`. |
 | `publish.go` | `PublishOption` и `PublishSpec` — общие опции публикации обоих транспортов (`WithMsgID`, `WithHeader`, `WithMetricSubject`, `WithTraceParent`). |
 | `jetstream.go` | `StreamBus`-интерфейс, `jsBus` (JetStream), `disabledStreamBus` (no-op при выключенном JS), `StreamChecker` (`CheckStreams` — стримы публикатора), `ensureStreams`/`reconcileStream`, deadline + `InProgress` обработчика (`keepInProgress`), poison-обработка (`failStream`/`terminalReason`/`deadLetter`), `StreamMsg`, `SubjectMatches`, дженерики `PublishStreamJSON[T]`/`SubscribeStreamJSON[T]`. |
+| `streamwait.go` | Подписка на поток, которого ещё нет: `awaitStream` отдаёт handle сразу, фоновая попытка с растущим отступом заводит консьюмер, когда поток появится. |
 | `subscription.go` | `Handler`, `Subscription` (`Unsubscribe`/`Drain`), внутренняя `subscription` и `inflightGroup` — учёт работающих обработчиков. |
 | `conn.go` | `Conn` — соединение + реестр подписок; `NewConn` (аутентификация, handlers nats.go → logkit), `Healthy`, graceful `Close`/`CloseContext`, `redactURL`, ctx обработчиков. |
 | `client.go` | `Client` — инстанс шины (соединение + `Bus` + `StreamBus`), `New`, `Probe` (`healthkit.Probe`). |
 | `config.go` | `Config` / `BackpressureConfig` / `JetStreamConfig` — публичный env-контракт; `NewConfig`, `NewInstanceConfig` (ENV — ридером китов `internal/envconf`, префикс инстанса без fallback на беспрефиксные переменные), `Validate` и `ErrConfig`. |
 | `context.go` | `SubjectFromContext` / `HeadersFromContext` — доступ к subject и header'ам входящего сообщения внутри обработчика. |
-| `instrumentation.go` | `natsInstruments` (5 otel-инструментов через `internal/otelkit`), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
+| `instrumentation.go` | `natsInstruments` (6 otel-инструментов через `internal/otelkit`), producer/consumer-спаны, `natsHeaderCarrier` (TextMapCarrier на `nats.Header` для trace-propagation). |
 | `module.go` | fx `Module(name)` (`*Client` + `Bus` + `StreamBus`), `ProvideConfig(name)`, `ProvideProbe(name)`, `SubscribeOnStart` — подписка в `OnStart`, drain в `OnStop`. |
 
 ## Bus (Core NATS)
@@ -207,6 +208,27 @@ invoke(handler): panic → recover (panicked=true), иначе вернуть о
   больше `MaxDeliver` раз. Без DLQ сервер перестаёт доставлять его сам, и оно остаётся в
   стриме неподтверждённым — клиенту нечего дед-леттерить.
 
+### Поток автора
+
+Поток событий заводит их автор (`NATS_JS_STREAM_NAMES` у публикатора), а подписчики стартуют в
+любом порядке. `SubscribeStream` на поток, которого ещё нет (`jetstream.ErrStreamNotFound` у
+`CreateOrUpdateConsumer`), ошибки не отдаёт: handle подписки возвращается сразу, а фоновая
+попытка заводит консьюмер с отступом 1s, удваивая его до 30s. Пока поток не появился:
+
+- WARN `natskit: stream not found, waiting for its author to create it` — на входе в ожидание,
+  `natskit: still waiting for stream` с `waited` — раз в 5 минут; gauge
+  `nats_subscriptions_waiting{stream}` держит число ждущих подписок;
+- иная ошибка попытки (консьюмер с тем же durable и несовместимым конфигом, обрыв соединения) —
+  WARN `natskit: subscribe to the awaited stream failed, retrying`, ожидание идёт дальше;
+- `Unsubscribe`, `Drain` и `Close` шины снимают ожидание сразу; durable освобождается, как у
+  обычной подписки.
+
+Поток появился — консьюмер встаёт (INFO `natskit: awaited stream appeared, subscribed` с
+`waited`) и, как любой новый durable, читает поток с начала: события, опубликованные до него, не
+теряются (при `limits`-retention; `interest`-поток без консьюмеров сообщений не хранит). Другие
+ошибки регистрации — фильтр, DLQ, занятый durable, выключенный JetStream — `SubscribeStream`
+отдаёт сразу.
+
 `durable` — имя durable-консьюмера: переподключение продолжает с того же места,
 а не с начала стрима. Несколько инстансов с одним `durable` делят нагрузку
 (JetStream-аналог queue-группы).
@@ -318,6 +340,14 @@ fx.Provide(fx.Annotate(NewAlertPublisher, fx.ParamTags(`name:"hub"`))),
   `StreamBus` собирается, но его методы возвращают `ErrJetStreamDisabled`. fx-граф
   не ломается, а неверное использование выключенного транспорта — явная ошибка в
   рантайме, не nil-panic.
+- **Подписчик ждёт поток автора, readiness ожидание не отражает.** Поток заводит автор события, и
+  сервис, стартовавший раньше соседа, упал бы на подписке — порядок старта сцепил бы сервисы.
+  Ожидание — в шине, а не в `SubscribeOnStart`: его получает и подписка без fx, а лог и gauge знают
+  поток, durable и фильтр. `/ready` ожидание не валит: API сервиса от потока соседа не зависит, не
+  готовый инстанс выпал бы из балансировки до старта соседа, а событий ожидание не теряет — автор
+  до появления потока не публикует, новый durable читает поток с начала. Ждущую подписку видно по
+  WARN и gauge `nats_subscriptions_waiting`. Опечатка в имени потока тоже ждёт — её ловит тот же
+  gauge, а не падение старта.
 - **Стримы: создать или долить subject, не переписывать.** Полный `UpdateStream`
   из конфига кита затирал бы ручной тюнинг оператора (`Replicas`, `MaxBytes`,
   доп. subjects). Кит владеет только своим subject `<name>.>`; всё остальное —

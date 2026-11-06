@@ -56,6 +56,7 @@ type natsInstruments struct {
 	consumedTotal   metric.Int64Counter
 	handleDuration  metric.Float64Histogram
 	inflight        metric.Int64UpDownCounter
+	waiting         metric.Int64UpDownCounter
 }
 
 func newNatsInstruments(instance, transport string) *natsInstruments {
@@ -91,6 +92,10 @@ func newNatsInstruments(instance, transport string) *natsInstruments {
 		inflight: otelkit.Must(meter.Int64UpDownCounter(
 			"nats_inflight_messages",
 			metric.WithDescription("Messages currently being handled (per subscription subject)"),
+		)),
+		waiting: otelkit.Must(meter.Int64UpDownCounter(
+			"nats_subscriptions_waiting",
+			metric.WithDescription("Stream subscriptions waiting for their stream to be created"),
 		)),
 	}
 }

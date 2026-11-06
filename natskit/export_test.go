@@ -19,3 +19,8 @@ func ExportConnWith(nc *natsgo.Conn, log logkit.Logger, cfg Config) *Conn {
 	nc.SetClosedHandler(c.onClosed)
 	return c
 }
+
+// ExportStreamWait задаёт шине sb отступ и напоминание ожидания потока, которого нет: тест не ждёт секунды и минуты.
+func ExportStreamWait(sb StreamBus, first, maxDelay, remind time.Duration) {
+	sb.(*jsBus).streamWait = streamWaitPolicy{first: first, max: maxDelay, remind: remind}
+}

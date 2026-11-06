@@ -18,6 +18,7 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | `nats_messages_consumed_total` | counter (`Int64Counter`) | `instance`, `subject`, `status`, `transport`* | +1 на каждое обработанное входящее сообщение. `status` ∈ `ok` / `handler_error` / `panic` / `dead` / `dlq_error`. |
 | `nats_handle_duration_seconds` | histogram (`Float64Histogram`, unit `s`) | `instance`, `subject`, `transport`* | Длительность работы обработчика (включая ack/nak). Пишется при любом исходе. |
 | `nats_inflight_messages` | up-down counter (`Int64UpDownCounter`) | `instance`, `subject`, `transport`* | Сообщения в обработке прямо сейчас. +1 на входе в обработчик, −1 на выходе. |
+| `nats_subscriptions_waiting` | up-down counter (`Int64UpDownCounter`) | `instance`, `stream`, `transport`* | Stream-подписки, которые ждут поток автора: +1, когда `SubscribeStream` не нашёл поток, −1, когда консьюмер встал или ожидание снято. Серия выше нуля дольше выкатки — поток не заводится (автор не запущен, опечатка в имени). |
 
 \* Label `transport` присутствует **только у JetStream-пути** (`jsBus`) со
 значением `jetstream`. Core-путь (`natsBus`) этот label не ставит — для Core
@@ -117,6 +118,10 @@ Meter и Tracer: `git.stit.tech/stit-core/golibinfra/natskit` (через
 | `warn` | `natskit: subscription drain timeout, handlers cancelled` | Drain подписки `SubscribeOnStart` исчерпал две трети бюджета остановки: обработчикам подписки отменён `ctx` (поля `subject`, `inflight`). |
 | `warn` | `natskit: drain timeout, handlers still in flight` | `Close` исчерпал `DrainTimeout`, обработчики ещё работают (поле `inflight`). |
 | `warn` | `natskit: drain timeout, closing connection` | Flush публикаций не уложился в остаток бюджета — соединение закрыто принудительно. |
+| `warn` | `natskit: stream not found, waiting for its author to create it` | `SubscribeStream` на поток, которого нет: подписка ждёт его в фоне; поля `stream`, `subject`, `durable`. |
+| `warn` | `natskit: still waiting for stream` | Поток всё ещё не появился — раз в 5 минут ожидания; поля те же плюс `waited`. |
+| `warn` | `natskit: subscribe to the awaited stream failed, retrying` | Попытка завести консьюмер ждущей подписки отказала не отсутствием потока (несовместимый консьюмер с тем же durable, обрыв соединения); поля те же плюс `error`, ожидание идёт дальше. |
+| `info` | `natskit: awaited stream appeared, subscribed` | Поток появился, консьюмер ждущей подписки встал; поля те же плюс `waited`. |
 | `warn` | `natskit: jetstream consume error` | Ошибка pull-консьюмера (нет heartbeat, консьюмер удалён, соединение закрыто); поля `stream`, `subject`, `durable`. |
 | `warn` | `natskit: jetstream in-progress` | Не удалось отправить `InProgress` — сервер может переотправить сообщение раньше, чем обработчик закончит. |
 | `error` | `natskit: handler error` / `natskit: jetstream handler error` | Обработчик вернул ошибку (кроме `context.Canceled`): поля `subject` — subject сообщения, у Core ещё `filter` — фильтр подписки, `error`, `trace_id` спана обработки. Обработчик ошибку возвращает и сам её не логирует — запись уже есть. |

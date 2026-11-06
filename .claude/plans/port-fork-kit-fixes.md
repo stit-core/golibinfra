@@ -32,9 +32,11 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
   контейнер на вызов. Проверка: `go test -race -run 'TestShared|TestLease' ./testkit/` → PASS
 - [ ] **AC2** — `StartMinIO` поднимает образ, который есть в registry. Проверка: `docker manifest inspect
   pgsty/silo:RELEASE.2026-10-26T00-00-00Z` → манифест; `go test -run 'TestStartMinIO|TestShared_MinIO' ./testkit/` → PASS
-- [ ] **AC3** — `SubscribeStream` на поток, которого нет, отдаёт handle сразу и встаёт, когда автор заведёт поток;
+- [x] **AC3** — `SubscribeStream` на поток, которого нет, отдаёт handle сразу и встаёт, когда автор заведёт поток;
   ожидание видно по WARN и `nats_subscriptions_waiting{stream}`, `SubscribeOnStart` не валит старт. Проверка:
   `go test -race -run TestStreamWait ./natskit/` → PASS
+  - Подтверждено: `TestStreamWait_SubscribesWhenStreamAppears`, `…StopWhileWaiting`, `…RetriesOtherErrors`, `…Reminds`,
+    `…SubscribeOnStartDoesNotFailStart` — PASS (-race, Docker)
 - [x] **AC4** — Уязвимостей нет. Проверка: шаг `vuln` `make check` → No vulnerabilities found
   - Подтверждено: шаг `vuln` `make check` — No vulnerabilities found
 - [ ] **AC5** — Выпуск `v1.7.0`: аннотация по `make release-diff PREV=v1.6.0` и `git log v1.6.0..`, тег в origin и
@@ -44,8 +46,9 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
 - [x] **S1** — `klauspost/compress` 1.20.2
   - Проверка: шаг `vuln` → чисто · Закрывает: AC4
   - Сделано: `klauspost/compress` v1.20.0 → v1.20.2 (indirect), новых модулей нет; шаг `vuln` — No vulnerabilities found
-- [ ] **S2** — natskit: подписка на поток, которого нет, ждёт его автора
+- [x] **S2** — natskit: подписка на поток, которого нет, ждёт его автора
   - Проверка: `go test -race ./natskit/` → PASS · Закрывает: AC3
+  - Сделано: `natskit/streamwait.go`, `TestStreamWait_*`; доки natskit, строки README и testkit/README; `natskit` — PASS (-race)
 - [ ] **S3** — testkit: общий режим `TESTKIT_SHARED`
   - Проверка: `go test -race -run 'TestShared|TestLease' ./testkit/` → PASS · Закрывает: AC1
 - [ ] **S4** — testkit: образ MinIO — `pgsty/silo`
@@ -59,4 +62,4 @@ testkit (`minio/minio` на Docker Hub больше нет), уязвимост�
   на ожидание (WARN, `nats_subscriptions_waiting`).
 
 ## Где мы сейчас
-S1 закрыт; дальше — S2 (natskit), S3 и S4 (testkit), затем бэклог, гейт и выпуск `v1.7.0` (S5).
+S1–S2 закрыты; дальше — S3 (общий режим testkit), S4 (образ MinIO), затем S5.

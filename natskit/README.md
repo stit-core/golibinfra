@@ -37,7 +37,10 @@ import "git.stit.tech/stit-core/golibinfra/natskit"
 [docs/usage.md](docs/usage.md)). `OnStop`-хук модуля делает graceful `Close`.
 Подписку вешает на жизненный цикл `natskit.SubscribeOnStart`: подписка — в
 `OnStart`, drain — в `OnStop`, ошибка подписки (и выключенный JetStream у
-stream-подписки) валит старт.
+stream-подписки) валит старт. Поток соседа, которого ещё нет, ошибкой не считается:
+stream-подписка ждёт, пока его заведёт автор события (отступ до 30s, WARN и gauge
+`nats_subscriptions_waiting`), и получает события с начала потока — сервисы
+стартуют в любом порядке; свои потоки (`NATS_JS_STREAM_NAMES`) шина заводит сразу.
 
 ```go
 package main

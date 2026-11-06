@@ -160,6 +160,8 @@ func SubscribeOnStart(lc fx.Lifecycle, subscribe func(ctx context.Context) (Subs
 - Ошибка подписки валит старт — в том числе `ErrJetStreamDisabled`: подписчик
   при `NATS_JETSTREAM_ENABLED=false` — ошибка конфигурации, а не молча
   выключенный приём.
+- Поток соседа, которого ещё нет, старт не валит: `SubscribeStream` ждёт его в фоне
+  (architecture.md § Поток автора), `OnStop` снимает ожидание.
 - `OnStop` дренит подписку до остановки этих зависимостей — обработчик в работе не
   упирается в закрытый пул — за две трети остатка бюджета остановки (`fx.StopTimeout`):
   обработчикам, не уложившимся в них, отменяется `ctx` (WARN `natskit: subscription drain
@@ -291,6 +293,12 @@ sub, err := natskit.SubscribeStreamJSON(sb, ctx, "ORDERS", "ORDERS.created", "or
 `SubscribeStream(stream, subject, durable, ...)`: `subject` — `FilterSubject`
 консьюмера (может быть wildcard, напр. `ORDERS.>`); `durable` — имя
 durable-консьюмера (инстансы с одним именем делят нагрузку).
+
+**Поток соседа заводит автор.** В `NATS_JS_STREAM_NAMES` сервис перечисляет свои потоки
+(события, которые он публикует); на поток соседа он только подписывается. Если соседа ещё нет,
+`SubscribeStream` ошибки не отдаёт — подписка ждёт поток с отступом до 30s и получает события с
+его начала, когда автор его заведёт (WARN и gauge `nats_subscriptions_waiting`, architecture.md
+§ Поток автора).
 
 **Один durable — один фильтр.** Консьюмер у сервера один на имя, и подписка с другим
 фильтром его перенацеливает: сообщения прежнего фильтра перестают доставляться. В пределах

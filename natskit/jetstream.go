@@ -89,6 +89,8 @@ type StreamBus interface {
 	PublishStreamBatch(ctx context.Context, msgs []StreamMsg) (results []error, err error)
 	// SubscribeStream — durable pull-консьюмер с explicit ack. ctx ограничивает
 	// только регистрацию; время жизни подписки — Subscription и Close инстанса.
+	// Потока stream ещё нет — не ошибка: подписка ждёт его в фоне и встаёт, когда
+	// его заведёт автор.
 	SubscribeStream(ctx context.Context, stream, subject, durable string, handler Handler) (Subscription, error)
 }
 
@@ -111,6 +113,8 @@ type jsBus struct {
 	// с PubAck. Иначе Core-публикацией: JetStream ждал бы PubAck, которого не будет.
 	dlqInStream bool
 	instr       *natsInstruments
+	// streamWait — отступ подписки на поток, которого нет (awaitStream).
+	streamWait streamWaitPolicy
 
 	// filters — фильтр живых подписок шины на durable-консьюмер («стрим/durable»): консьюмер у
 	// сервера один, и второй фильтр перенацелил бы его.
@@ -216,6 +220,7 @@ func NewStreamBus(cfg Config, conn *Conn, log logkit.Logger) (StreamBus, error) 
 		nakMaxBackoff:  nakMaxBackoff(cfg.JetStream),
 		dlqSubject:     cfg.JetStream.DLQSubject,
 		instr:          newNatsInstruments(instance, transportJetStream),
+		streamWait:     defaultStreamWait(),
 	}
 	if err := b.ensureStreams(context.Background(), cfg); err != nil {
 		return nil, err
@@ -527,61 +532,82 @@ func (b *jsBus) SubscribeStream(ctx context.Context, stream, subject, durable st
 			release()
 		}
 	}()
+	sc := streamConsumer{stream: stream, durable: durable, filter: subject}
+	var sub *subscription
+	cons, err := b.js.CreateOrUpdateConsumer(ctx, stream, b.consumerConfig(sc))
+	switch {
+	case errors.Is(err, jetstream.ErrStreamNotFound):
+		sub, err = b.awaitStream(sc, handler, release)
+	case err != nil:
+		return nil, fmt.Errorf("natskit: jetstream consumer: %w", err)
+	default:
+		sub, err = b.c.subscribe(func() (*subscription, error) {
+			s := newSubscription(b.c, subject)
+			s.onForget = release
+			cc, err := b.consume(s, sc, cons, handler)
+			if err != nil {
+				return nil, err
+			}
+			s.done = cc.Closed()
+			s.stop = func(drain bool) error {
+				stopConsume(cc, drain)
+				return nil
+			}
+			return s, nil
+		})
+	}
+	if err != nil {
+		return nil, err
+	}
+	subscribed = true
+	return sub, nil
+}
+
+func (b *jsBus) consumerConfig(sc streamConsumer) jetstream.ConsumerConfig {
 	ccfg := jetstream.ConsumerConfig{
-		Durable:       durable,
+		Durable:       sc.durable,
 		AckPolicy:     jetstream.AckExplicitPolicy,
-		FilterSubject: subject,
+		FilterSubject: sc.filter,
 		AckWait:       b.ackWait,
 		MaxAckPending: b.maxInFlight,
 	}
 	if b.maxDeliver > 0 {
 		ccfg.MaxDeliver = b.serverMaxDeliver()
 	}
-	cons, err := b.js.CreateOrUpdateConsumer(ctx, stream, ccfg)
-	if err != nil {
-		return nil, fmt.Errorf("natskit: jetstream consumer: %w", err)
-	}
-	sc := streamConsumer{stream: stream, durable: durable, filter: subject}
+	return ccfg
+}
 
-	sub, err := b.c.subscribe(func() (*subscription, error) {
-		s := newSubscription(b.c, subject)
-		s.onForget = release
-		cc, err := cons.Consume(func(msg jetstream.Msg) {
-			// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
-			_ = b.sem.Acquire(context.Background(), 1)
-			untrack, ok := s.track()
-			if !ok {
-				b.sem.Release(1)
-				return
-			}
-			go func() {
-				defer untrack()
-				defer b.sem.Release(1)
-				b.handleStreamOne(s.ctx, sc, msg, handler)
-			}()
-		}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
-			b.log.Warn(context.Background(), "natskit: jetstream consume error",
-				"stream", stream, "subject", subject, "durable", durable, "error", err)
-		}))
-		if err != nil {
-			return nil, fmt.Errorf("natskit: jetstream consume: %w", err)
+// consume запускает доставку консьюмера cons обработчику подписки s.
+func (b *jsBus) consume(s *subscription, sc streamConsumer, cons jetstream.Consumer, handler Handler) (jetstream.ConsumeContext, error) {
+	cc, err := cons.Consume(func(msg jetstream.Msg) {
+		// С Background-контекстом Acquire не ошибается: блокировка delivery-горутины и есть backpressure.
+		_ = b.sem.Acquire(context.Background(), 1)
+		untrack, ok := s.track()
+		if !ok {
+			b.sem.Release(1)
+			return
 		}
-		s.done = cc.Closed()
-		s.stop = func(drain bool) error {
-			if drain {
-				cc.Drain()
-			} else {
-				cc.Stop()
-			}
-			return nil
-		}
-		return s, nil
-	})
+		go func() {
+			defer untrack()
+			defer b.sem.Release(1)
+			b.handleStreamOne(s.ctx, sc, msg, handler)
+		}()
+	}, jetstream.ConsumeErrHandler(func(_ jetstream.ConsumeContext, err error) {
+		b.log.Warn(context.Background(), "natskit: jetstream consume error",
+			"stream", sc.stream, "subject", sc.filter, "durable", sc.durable, "error", err)
+	}))
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("natskit: jetstream consume: %w", err)
 	}
-	subscribed = true
-	return sub, nil
+	return cc, nil
+}
+
+func stopConsume(cc jetstream.ConsumeContext, drain bool) {
+	if drain {
+		cc.Drain()
+	} else {
+		cc.Stop()
+	}
 }
 
 func (b *jsBus) handleStreamOne(parent context.Context, sc streamConsumer, msg jetstream.Msg, handler Handler) {

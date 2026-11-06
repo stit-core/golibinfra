@@ -73,12 +73,17 @@ func TestSomething(t *testing.T) {
 | `TestConn_CloseIsIdempotentAndNilSafe` | повторный и nil-`Close` безопасны; `Healthy` после — `ErrConnectionClosed`. |
 | `TestSubscribeOnStart_SubscribesOnStartDrainsOnStop` | подписка — в `OnStart` после зависимостей, объявленных раньше, drain — в `OnStop` до их остановки (без Docker). |
 | `TestSubscribeOnStart_JetStreamDisabledFailsStart` | `ErrJetStreamDisabled` из stream-подписки валит старт (без Docker). |
+| `TestStreamWait_SubscribesWhenStreamAppears` | подписка на поток, которого нет, не отказывает: WARN, gauge ожидания; поток появился — события с его начала, INFO, gauge — к нулю. |
+| `TestStreamWait_StopWhileWaiting` | `Unsubscribe`, `Drain` и `Close` снимают ожидание сразу: gauge — к нулю, durable свободен, поток, заведённый позже, консьюмера не получает. |
+| `TestStreamWait_RetriesOtherErrors` | отказ попытки не отсутствием потока (durable занят несовместимым консьюмером) — WARN и ожидание дальше; durable свободен — подписка встаёт. |
+| `TestStreamWait_Reminds` | долгое ожидание повторяет WARN с `waited`. |
+| `TestStreamWait_SubscribeOnStartDoesNotFailStart` | сервис с подпиской на поток соседа, которого нет, стартует; остановка снимает ожидание. |
 | `TestConn_ReconnectLogsRedactedURL` | пароль из `NATS_URL` не попадает в лог переподключения. |
 | `TestConn_ErrorsHideURLSecret` | пароль из `NATS_URL` без схемы и из неразбираемого URL не попадает в ошибку старта (без Docker). |
 | `TestConn_ReconnectsExhaustedIsLoggedAndUnhealthy` | исчерпание reconnect'ов — `error`-запись и `ErrConnectionClosed` у пробы. |
 | `TestClient_ProbeReflectsConnectionState` | проба зелёная на живом соединении и красная после `Close`. |
 | `TestNewConn_RejectsInvalidConfig` / `TestNewConn_AuthFiles` | невалидный URL и битый nkey-seed валят старт; пароль не попадает в текст ошибки. |
-| `TestBus_EmitsMetricsAndSpans` | эмитятся все 5 метрик `nats_*` и спаны `natskit.publish`/`natskit.handle`. |
+| `TestBus_EmitsMetricsAndSpans` | эмитятся 5 метрик доставки `nats_*` (публикация, обработка, in-flight) и спаны `natskit.publish`/`natskit.handle`; gauge ожидания потока — тесты `TestStreamWait_*`. |
 | `TestBus_ConsumerSpanIsChildOfProducer` | consumer-спан — child producer-спана (trace-context через `nats.Header`). |
 | `TestBus_PublishMetricSubjectIsOptIn` | label `subject` publish-метрик появляется только с `WithMetricSubject`. |
 | `TestBus_ProducerSpanNameIsTemplateNotSubject` | имя producer-спана — `natskit.publish` или шаблон из `WithMetricSubject`, не subject с id. |
@@ -119,7 +124,8 @@ func TestSomething(t *testing.T) {
 `natskit.StreamChecker`, доставляя сообщения подписчикам синхронно. Отвергает он то же, что
 шина: subject, фильтр, durable и queue — правилами natskit, тело сверх `max_payload`
 (`WithMaxPayload`, по умолчанию 1 MiB), stream-публикацию и подписку без стрима — стримы
-объявляет тест (`WithStream`, как `NATS_JS_STREAM_NAMES`), фильтр, накрывающий DLQ
+объявляет тест (`WithStream`, как `NATS_JS_STREAM_NAMES`; шина подписку на поток, которого нет,
+принимает и ждёт его автора, а фейк строже — так он ловит опечатку в имени потока), фильтр, накрывающий DLQ
 (`WithDLQ`). Ошибка stream-обработчика повторяется до `WithMaxDeliver(n)` доставок (без опции —
 одна), `natskit.ErrTerminal` — без повтора; мёртвые сообщения в DLQ фейк не публикует.
 
