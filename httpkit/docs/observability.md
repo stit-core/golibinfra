@@ -26,6 +26,7 @@ Instrumentation-scope `git.stit.tech/stit-core/golibinfra/httpkit`. Гистог
 | `http_max_body_rejections_total` | Int64 Counter | `path` | `MaxBody` | ответы 413 |
 | `http_rate_limited_total` | Int64 Counter | — | `RateLimit` | ответы 429 |
 | `http_idempotency_total` | Int64 Counter | `result` | `Idempotency` | исходы идемпотентности |
+| `http_origin_rejections_total` | Int64 Counter | `path`, `reason` | проверка Origin (`SessionCookies`) | ответы `403 ORIGIN_NOT_ALLOWED` |
 
 Значения labels — конечные множества:
 
@@ -35,17 +36,23 @@ Instrumentation-scope `git.stit.tech/stit-core/golibinfra/httpkit`. Гистог
 | `path` | chi route-pattern (`/users/{id}`); путь без маршрута — `unmatched` |
 | `status` | код ответа |
 | `result` | `stored`, `replayed`, `conflict`, `in_progress`, `skipped`, `error` |
+| `reason` | `missing`, `not_allowed` |
 
 Label `path` — паттерн маршрута, а не путь запроса: сканы 404 не растят кардинальность.
-Ответ, который выдан до роутера или вместо хендлера, — 429 лимитера, preflight 204, 405 —
-считается под маршрутом своего пути: паттерн ищется по пути запроса (сначала с его
-методом, затем с остальными). `unmatched` — только у пути, для которого маршрута нет ни
-с одним методом. В подроутере (`Router().Mount`) 404 и 405 идут под паттерном
-монтирования — `/v1/*`: его роутер выставил до подроутера.
+Ответ, который выдан до роутера или вместо хендлера, — 429 лимитера, 403 проверки Origin,
+preflight 204, 405 — считается под маршрутом своего пути: паттерн ищется по пути запроса
+(сначала с его методом, затем с остальными). `unmatched` — только у пути, для которого
+маршрута нет ни с одним методом. В подроутере (`Router().Mount`) 404 и 405 идут под
+паттерном монтирования — `/v1/*`: его роутер выставил до подроутера.
 
-Panic-запросы, 429 и preflight 204 попадают в `http_requests_total` наравне с
-остальными: `Metrics` стоит выше `Recovery`, `CORS` и `RateLimit` и пишет сэмпл
-через `defer`.
+Panic-запросы, 429, 403 проверки Origin и preflight 204 попадают в `http_requests_total`
+наравне с остальными: `Metrics` стоит выше `Recovery`, `CORS`, `RateLimit` и проверки Origin
+и пишет сэмпл через `defer`.
+
+`http_origin_rejections_total` — изменяющий запрос с cookie сессии, у которого `Origin` нет
+в `HTTP_CORS_ORIGINS` ([architecture.md § Проверка Origin](architecture.md#проверка-origin)):
+`reason` — `missing` (заголовка `Origin` нет) или `not_allowed` (адреса нет в списке, и
+`null`). Сам `Origin` пишет клиент, в label он не идёт — он в строке лога отказа (§ Логи).
 
 ## Спаны
 
@@ -93,6 +100,7 @@ Trace-context клиента (`traceparent`, `tracestate`, `baggage`) по со�
 | `auth backend unavailable` | Warn | `error` | `HumaAuth`: 503, extractor вернул `ErrAuthUnavailable` |
 | `auth failed` | Error | `error`, `code` | `HumaAuth`: extractor вернул 5xx `APIError` |
 | `auth not configured` | Error | `operation` | `HumaAuth`: у схемы операции нет extractor'а |
+| `session cookie refused: origin is not allowed` | Warn | `method`, `origin` | проверка Origin: изменяющий запрос с cookie сессии без `Origin` из `HTTP_CORS_ORIGINS` |
 | `idempotency store failed` | Warn | `op`, `error`, `fail_closed` | `Idempotency`: отказ store |
 | `idempotency reservation expired before the response` | Warn | `reserve_ttl` | `Idempotency`: handler шёл дольше резерва |
 | `request deadline exceeded` | Warn | `timeout` | дедлайн запроса |
@@ -110,6 +118,9 @@ Trace-context клиента (`traceparent`, `tracestate`, `baggage`) по со�
   `HTTP_QUIET_PATHS` уходят на Debug, а их ошибки остаются на Warn/Error. `route` — паттерн
   маршрута, как label `path`; `duration_ms` — миллисекунды, float.
 - `handler error` — клиенту уходит только статус, код и `request_id`; причина — в `error`.
+- `session cookie refused: origin is not allowed` — клиенту ушёл `403 ORIGIN_NOT_ALLOWED`; `method` —
+  метод запроса, `origin` — его заголовок `Origin` (пусто — заголовка нет; длиннее 256 байт — обрезан с
+  `…`), значение cookie в строку не идёт. Тот же отказ считает `http_origin_rejections_total`.
 - `idempotency store failed` — `op`: `get`, `reserve`, `set`, `release`; тот же отказ считает
   `http_idempotency_total{result="error"}`. `op=reserve` с текстом `key budget of the client is
   exhausted` — клиент исчерпал бюджет ключей (store исправен).

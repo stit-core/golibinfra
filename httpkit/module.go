@@ -94,11 +94,12 @@ type serverIn struct {
 	Config Config
 	Log    logkit.Logger
 
-	Store        IdempotencyStore      `optional:"true"`
-	Middlewares  Middlewares           `optional:"true"`
-	HumaConfigs  HumaConfigs           `optional:"true"`
-	PublicRoutes PublicRoutes          `optional:"true"`
-	Schemes      []SecuritySchemeEntry `group:"httpkit.security_scheme"`
+	Store          IdempotencyStore      `optional:"true"`
+	Middlewares    Middlewares           `optional:"true"`
+	HumaConfigs    HumaConfigs           `optional:"true"`
+	PublicRoutes   PublicRoutes          `optional:"true"`
+	SessionCookies SessionCookies        `optional:"true"`
+	Schemes        []SecuritySchemeEntry `group:"httpkit.security_scheme"`
 }
 
 // healthIn — fx.In, а не fx.Annotate: ошибка графа (нет Logger, нет Config) называет функции
@@ -127,12 +128,13 @@ func registerHealth(in healthIn) error {
 
 // newServer — NewServer из графа: схемы и конфиг проверяются уже в fx.New, а не на OnStart.
 func newServer(in serverIn) (*Server, error) {
-	opts := make([]ServerOption, 0, 4+len(in.HumaConfigs))
+	opts := make([]ServerOption, 0, 5+len(in.HumaConfigs))
 	opts = append(opts,
 		WithSecuritySchemes(in.Schemes...),
 		WithIdempotencyStore(in.Store),
 		WithMiddleware(in.Middlewares...),
 		WithPublicRoutes(in.PublicRoutes...),
+		WithSessionCookies(in.SessionCookies...),
 	)
 	for _, fn := range in.HumaConfigs {
 		opts = append(opts, WithHumaConfig(fn))
@@ -166,6 +168,9 @@ func serve(in serveIn) {
 			if ops := unauthenticated(s.registry(), s.opts.schemes); len(ops) > 0 {
 				return fmt.Errorf("%w: security schemes of these operations have no SecuritySchemeEntry.Extract: %s",
 					ErrAuthNotConfigured, strings.Join(ops, ", "))
+			}
+			if err := s.checkSessionOrigins(); err != nil {
+				return err
 			}
 			if err := s.Listen(); err != nil {
 				return err

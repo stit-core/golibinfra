@@ -88,6 +88,9 @@ fx выполняет `OnStart` в порядке добавления хуко�
   операции, в том числе из группы huma (§ Аутентификация).
 - `WithPublicRoutes(paths...)` / значение `httpkit.PublicRoutes` в графе — пути chi
   маршрутов мимо `huma.Register`, открытых без аутентификации (§ Аутентификация).
+- `WithSessionCookies(names...)` / значение `httpkit.SessionCookies` в графе — cookie сессии
+  сервиса: изменяющий запрос с ними проходит только с `Origin` из `HTTP_CORS_ORIGINS`
+  (§ Проверка Origin).
 - `HTTP_DOCS_ENABLED=true` — `/docs`, `/openapi.*` и `/schemas/*` (по умолчанию их нет: это карта
   всех операций без аутентификации).
 
@@ -107,22 +110,23 @@ chi применяет middleware в порядке регистрации: пе
 | 7 | `SecurityHeaders` | всегда | заголовки на любой ответ, включая 429 и 413 |
 | 8 | `CORS` | если `CORS.Origins` не пуст | preflight отвечает 204 до лимитера и тела |
 | 9 | `RateLimit` | если `RateLimit.RPS > 0` | bucket на клиента (IPv6 — по `/64`); дешёвый отказ до тяжёлой работы |
-| 10 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом; лимит фиксируется на первом чтении — операция huma ставит свой `MaxBodyBytes` |
-| 11 | дедлайн запроса | если `RequestTimeout > 0`; GET-поток (операция SSE, upgrade мимо huma) — без него | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ, запись хендлера после него отбрасывается; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
-| 12 | HEAD как GET | всегда | HEAD без своего маршрута идёт в GET-маршрут (RFC 9110 §9.1), тело net/http не отправляет |
-| 13 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
+| 10 | проверка Origin | если есть `SessionCookies` | изменяющий запрос с cookie сессии без `Origin` из `HTTP_CORS_ORIGINS` — `403 ORIGIN_NOT_ALLOWED` до тела, `HumaAuth` и хендлера; после лимитера — отказ расходует bucket клиента (§ Проверка Origin) |
+| 11 | `MaxBody` | если `MaxBody.MaxBytes > 0` | `MaxBytesReader` до чтения body handler'ом; лимит фиксируется на первом чтении — операция huma ставит свой `MaxBodyBytes` |
+| 12 | дедлайн запроса | если `RequestTimeout > 0`; GET-поток (операция SSE, upgrade мимо huma) — без него | ctx с дедлайном и `503 REQUEST_TIMEOUT` за не начатый к нему ответ, запись хендлера после него отбрасывается; над `Idempotency` — она видит ответ хендлера и держит резерв до его возврата ([configuration.md § Дедлайн запроса](configuration.md#дедлайн-запроса)) |
+| 13 | HEAD как GET | всегда | HEAD без своего маршрута идёт в GET-маршрут (RFC 9110 §9.1), тело net/http не отправляет |
+| 14 | middleware потребителя | `WithMiddleware`, в графе — значение `httpkit.Middlewares` | ближе всего к handler'у, в порядке слайса |
 
 Лимит тела операции, `HumaAuth` и `Idempotency` (если есть `IdempotencyStore`) — отдельный
 слой на `huma.API`, в этом порядке, до middleware huma потребителя: идемпотентность знает
 операцию и субъекта.
 
 Почему так: `RequestID`, `ClientIP` и `OTel` первыми, чтобы контекст запроса был полным у
-всех остальных. `AccessLog` и `Metrics` — **над** `Recovery`, `CORS` и
-`RateLimit`: иначе panic-запросы (самые тяжёлые 500-е), 429 и preflight
-отвечали бы выше них и не попадали ни в `http_requests_total`, ни в access-log.
+всех остальных. `AccessLog` и `Metrics` — **над** `Recovery`, `CORS`,
+`RateLimit` и проверкой Origin: иначе panic-запросы (самые тяжёлые 500-е), 429, 403 и
+preflight отвечали бы выше них и не попадали ни в `http_requests_total`, ни в access-log.
 Обе записи сделаны через `defer`, поэтому запрос учитывается и когда снизу
 прилетела panic. Дальше — от дешёвого отказа к дорогой работе: заголовки,
-preflight, лимитер, лимит тела, идемпотентность.
+preflight, лимитер, проверка Origin, лимит тела, идемпотентность.
 
 ### Зависимости через fx
 
@@ -137,6 +141,8 @@ preflight, лимитер, лимит тела, идемпотентность.
 - `Middlewares` (`optional`) → цепочка в порядке слайса.
 - `HumaConfigs` (`optional`) → правки huma в порядке слайса.
 - `PublicRoutes` (`optional`) → открытые маршруты мимо `huma.Register`.
+- `SessionCookies` (`optional`) → проверка Origin; имя, которого не бывает у cookie, — ошибка
+  сборки графа (`ErrConfig`), а без адреса в `HTTP_CORS_ORIGINS` — ошибка старта (§ Проверка Origin).
 - `[]healthkit.Probe` (группа `healthkit.probes`) → `/ready`; две пробы с одним именем —
   ошибка сборки графа (`ErrConfig`). Тип именованный:
   `httpkit.Probe` — alias `healthkit.Probe`, а `pgkit.Probe`, `natskit.Probe`,
@@ -206,8 +212,8 @@ WebSocket-upgrade. Повторное оборачивание того же wri
   статуса: ставит `request_id` и `Retry-After` в копию ошибки (общий
   package-level `APIError` не мутируется) и пишет причину 5xx в логгер
   `NewServer` (с `logkit.Nop()` причина теряется).
-- **Ответы мимо huma** — `Recovery` (500), `RateLimit` (429), `Idempotency`,
-  `HumaAuth` и маршрутизатор: неизвестный путь — `404 NOT_FOUND`, метод —
+- **Ответы мимо huma** — `Recovery` (500), `RateLimit` (429), проверка Origin (403),
+  `Idempotency`, `HumaAuth` и маршрутизатор: неизвестный путь — `404 NOT_FOUND`, метод —
   `405 METHOD_NOT_ALLOWED` с `Allow`. Их пишет кит сам той же формой.
 
 `APIError` реализует `error`, `huma.StatusError` и `huma.ContentTypeFilter`;
@@ -314,6 +320,44 @@ Debug), `*APIError` от extractor'а сохраняет свой статус �
 Middleware работает с `huma.Context` (`*http.Request` достаётся из адаптера или
 собирается из полей контекста), поэтому один и тот же гейт тестируется и на
 prod-адаптере chi, и на `testkit/handlertest`.
+
+## Проверка Origin
+
+Cookie сессии браузер прикладывает и к запросу со страницы соседнего адреса того же сайта:
+`app.`, `api.` и `files.` одного домена — один сайт, такой запрос — same-site, и `SameSite`
+cookie его не отсекает. Изменяющий запрос без preflight браузер шлёт и без `Content-Type`
+(тело — `Blob` без типа), а huma читает такое тело как JSON: CORS запрос не останавливает, он
+запрещает только чтение ответа. Сервис, у которого сессия в cookie, называет их значением
+`httpkit.SessionCookies` (без fx — `WithSessionCookies`), и цепочка кита пропускает
+изменяющий запрос с любой из них только с `Origin` из `HTTP_CORS_ORIGINS`:
+
+- изменяющий запрос — любой метод, кроме безопасных `GET`, `HEAD`, `OPTIONS` и `TRACE`
+  (RFC 9110 §9.2.1), в том числе метод, которого кит не знает; безопасный метод данных не
+  меняет — `GET` с побочным эффектом и upgrade WebSocket (`GET`) проверка не закрывает;
+- запрос с cookie — в нём есть cookie с одним из имён, хоть и пустая (`r.Cookie(name)` — тот
+  же разбор, что у extractor'а и входа huma `cookie:"…"`); запроса без них — `Authorization:
+  Bearer`, сервис — проверка не касается, а запроса с cookie и `Authorization` — касается:
+  cookie в нём есть;
+- `Origin` сверяется точным совпадением с записью списка без пробелов вокруг, как у CORS:
+  другая схема, порт, регистр или хвостовой `/` — отказ; `*` и `null` адресов не разрешают;
+  без `Origin` — отказ: браузер шлёт его в каждом изменяющем запросе;
+- отказ — `403 ORIGIN_NOT_ALLOWED` problem+json с `request_id` до тела, `HumaAuth`,
+  extractor'а схемы, идемпотентности и хендлера, на любом пути: у операции huma, у маршрута
+  мимо huma и у пути без маршрута (там — вместо `404`); WARN `session cookie refused: origin is
+  not allowed` с методом и `Origin` и `http_origin_rejections_total{path, reason}`
+  ([observability.md](observability.md));
+- в цепочке — после `RateLimit` (§ Конвейер middleware и порядок): отказ расходует bucket
+  клиента, как любой запрос.
+
+Список — тот же, что у CORS: адрес, которому сервис разрешил читать свои ответы, и только он
+меняет данные с cookie сессии. Свой адрес сервиса (SPA на одном адресе с API) — тоже запись
+списка: браузер шлёт `Origin` и в изменяющем запросе своего адреса. Без адреса в
+`HTTP_CORS_ORIGINS` (пусто или только `*` и `null`) `Module` не стартует — `ErrConfig` на
+`OnStart` с именами cookie: каждый изменяющий запрос с ними получал бы 403. Граф без старта
+(сборка спецификации, проверка маршрутов) собирается и без адреса; сервер без fx стартовой
+проверки не делает и отвечает такому запросу 403. Имя, которого не бывает у cookie (пустое, с
+пробелом, `=`, `;`, `,`, не ASCII), — `ErrConfig` `NewServer`: запрос такую cookie не принёс бы,
+и проверка молча не действовала бы.
 
 ## Идемпотентность
 

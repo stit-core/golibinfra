@@ -37,11 +37,13 @@ preflight. Дать httpkit общий механизм: сервис назыв
   объёма аудита; их cookie закрывает `SessionCookies` сервиса.
 
 ## Критерии приёмки
-- [ ] **AC1** — С `SessionCookies` изменяющий запрос (не `GET`, `HEAD`, `OPTIONS`, `TRACE`) с cookie сессии проходит
+- [x] **AC1** — С `SessionCookies` изменяющий запрос (не `GET`, `HEAD`, `OPTIONS`, `TRACE`) с cookie сессии проходит
   только с `Origin`, точно совпавшим с записью `HTTP_CORS_ORIGINS`; без `Origin`, с чужим, с `null` и с адресом,
   который разрешает только `*` списка, — `403` problem+json `ORIGIN_NOT_ALLOWED` до хендлера и extractor'а схемы;
   запрос без этих cookie (Bearer, сервис) и безопасный метод проходят. Проверка: `go test -race -run
   'TestSessionCookies_(Matrix|ConfigOrigins|BeforeAuth|RawRoute)' ./httpkit/` → PASS
+  - Подтверждено: `TestSessionCookies_Matrix` (9 методов × 9 Cookie × 9 Origin), `…ConfigOrigins`, `…BeforeAuth`
+    (extractor и хендлер не зовутся, тело сверх лимита — 403, а не 413; Bearer без Origin — 204), `…RawRoute` — PASS
 - [ ] **AC2** — Без `SessionCookies` поведение httpkit прежнее: ожидания прежних тестов кита не правятся, 403 кит в
   OpenAPI не объявляет. Проверка: `go test -race ./httpkit/... ./testkit/handlertest/` → PASS;
   `TestSessionCookies_OpenAPI` — у `POST` сервера без cookie сессии ответа 403 нет
@@ -49,6 +51,9 @@ preflight. Дать httpkit общий механизм: сервис назыв
   `WithSessionCookies`; имя, которого не бывает у cookie, — `ErrConfig` `NewServer`; без адреса в `HTTP_CORS_ORIGINS`
   `Module` не стартует (`ErrConfig`), а граф без старта собирается. Проверка: `go test -race -run
   'TestSessionCookies_(Names|NeedOrigin|Module)' ./httpkit/` → PASS; `make envdoc-check` → OK
+  - Подтверждено: `TestSessionCookies_Names`, `…NeedOrigin` (пусто, `*`, `*`+`null`, пробел: `app.Err()` — nil,
+    `Start` — `ErrConfig` с `HTTP_CORS_ORIGINS` и именами), `…Module` (`fx.ValidateApp`, живой сервер; без значения —
+    прежнее поведение) — PASS; `make envdoc-check` — OK, 256 переменных
 - [ ] **AC4** — `403 ORIGIN_NOT_ALLOWED` — в OpenAPI каждой операции изменяющего метода (huma, группы huma, мимо huma
   с описанием руками) механизмом ответов кита, после кодов `Declare`; таблица ответов кита `docs/testing.md` со
   столбцом 403 сверена тестом. Проверка: `go test -run 'TestSessionCookies_OpenAPI|TestTestingDoc_KitResponsesTable'
@@ -56,6 +61,9 @@ preflight. Дать httpkit общий механизм: сервис назыв
 - [ ] **AC5** — Отказ виден оператору: `http_origin_rejections_total{path, reason}` (значения `reason` конечны, Origin
   в label нет) и WARN с методом и `Origin` — в таблицах `docs/observability.md`, их сверяет живой `Module`.
   Проверка: `go test -race -run 'TestSignals|TestSessionCookies_Signals' ./httpkit/` → PASS
+  - Подтверждено: `TestSignals_MatchObservabilityDoc` (случаи `cookie-no-origin`, `cookie-foreign`, `cookie-app`;
+    оба значения `reason` встречены), `TestSignals_CodeMatchesObservabilityDoc`, `TestSessionCookies_Signals` (серии
+    `missing`/`not_allowed`/`unmatched`, WARN без значения cookie, длинный Origin обрезан) — PASS
 - [ ] **AC6** — Тест хендлера потребителя включает проверку и шлёт `Origin`: `handlertest.WithSessionCookies`.
   Проверка: `go test -race -run TestNewAPI_SessionCookies ./testkit/handlertest/` → PASS
 - [ ] **AC7** — Доки описывают проверку — правило, включение, ответ, сигналы, тест потребителя: README кита,
@@ -67,9 +75,13 @@ preflight. Дать httpkit общий механизм: сервис назыв
 
 ## Шаги
 ### Механизм
-- [ ] **S1** — httpkit: `SessionCookies` и `WithSessionCookies`, проверка в цепочке после `RateLimit`, отказ имени и
+- [x] **S1** — httpkit: `SessionCookies` и `WithSessionCookies`, проверка в цепочке после `RateLimit`, отказ имени и
   старта без адреса, метрика и WARN; тесты матрицы, fx и сигналов, таблицы `docs/observability.md`
   - Проверка: `go test -race ./httpkit/` → PASS · Закрывает: AC1, AC3, AC5
+  - Сделано: `httpkit/origin.go`, проводка в `server.go`/`module.go`, `http_origin_rejections_total` в
+    `metrics.go`; `httpkit/origin_test.go`, случаи и `reason` в `signals_test.go`; таблицы `docs/observability.md`,
+    § Проверка Origin и строка конвейера в `docs/architecture.md`; `go test -race ./httpkit/...` — PASS, lint
+    `./httpkit/...` — 0 issues
 - [ ] **S2** — testkit/handlertest: `WithSessionCookies`
   - Проверка: `go test -race ./testkit/handlertest/` → PASS · Закрывает: AC6 · Зависит от: S1
 - [ ] **S3** — httpkit: `403 ORIGIN_NOT_ALLOWED` в OpenAPI изменяющих операций, столбец 403 таблицы `docs/testing.md`
@@ -107,4 +119,4 @@ preflight. Дать httpkit общий механизм: сервис назыв
 —
 
 ## Где мы сейчас
-План заведён; дальше — S1: механизм в httpkit.
+S1 закрыт: проверка Origin в цепочке httpkit, сигналы и их таблицы. Дальше — S2: `handlertest.WithSessionCookies`.

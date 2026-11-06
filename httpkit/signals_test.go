@@ -131,6 +131,8 @@ type signalStand struct {
 	storeDown, probeDown, probePanics atomic.Bool
 	hold                              chan struct{}
 	holding                           chan struct{}
+	// cookies — cookie сессии приложения: с ними — проверка Origin.
+	cookies httpkit.SessionCookies
 }
 
 var errSignalItem = errors.New("item not found")
@@ -236,6 +238,7 @@ func (s *signalStand) start(t *testing.T, cfg httpkit.Config, log logkit.Logger)
 		fx.Provide(func() httpkit.IdempotencyStore {
 			return failingStore{MemoryStore: httpkit.NewMemoryStore(), down: &s.storeDown}
 		}),
+		fx.Provide(func() httpkit.SessionCookies { return s.cookies }),
 		httpkit.ProvideSecurityScheme(func() httpkit.SecuritySchemeEntry {
 			return httpkit.SecuritySchemeEntry{Name: "Bearer", Scheme: &huma.SecurityScheme{Type: "http", Scheme: "bearer"}, Extract: signalExtract}
 		}),
@@ -279,8 +282,19 @@ type signals struct {
 	srv   *httpkit.Server
 	log   *logtest.Recorder
 	spans *tracetest.SpanRecorder
-	// results — исходы http_idempotency_total, встреченные за сценарий.
-	results map[string]bool
+	// seen — значения label'ов enumerated, встреченные за сценарий.
+	seen map[string]map[string]bool
+}
+
+// enumerated — label'ы, каждое значение которых из доки сценарий обязан встретить, и метрики, которые их несут.
+var enumerated = map[string]string{"result": "http_idempotency_total", "reason": "http_origin_rejections_total"}
+
+func newSeen() map[string]map[string]bool {
+	seen := map[string]map[string]bool{}
+	for label := range enumerated {
+		seen[label] = map[string]bool{}
+	}
+	return seen
 }
 
 func waitFor[T any](t *testing.T, what string, find func() (T, bool)) T {
@@ -353,7 +367,7 @@ func (s *signals) run(c signalCase) metrictest.Snapshot {
 	if c.id == "item" && dur.Value < signalItemDelay.Seconds() {
 		t.Errorf("%s: duration %v s is shorter than the handler's %s", c.id, dur.Value, signalItemDelay)
 	}
-	for _, own := range []string{"http_panics_total", "http_max_body_rejections_total", "http_rate_limited_total", "http_idempotency_total"} {
+	for _, own := range []string{"http_panics_total", "http_max_body_rejections_total", "http_rate_limited_total", "http_idempotency_total", "http_origin_rejections_total"} {
 		grew := d.Find(own)
 		if len(c.metric) > 0 && c.metric[0] == own {
 			if len(grew) != 1 || d.Get(t, own, c.metric[1:]...).Value != 1 {
@@ -365,8 +379,10 @@ func (s *signals) run(c signalCase) metrictest.Snapshot {
 			t.Errorf("%s: %s grew by %v, want nothing", c.id, own, grew)
 		}
 	}
-	for _, series := range d.Find("http_idempotency_total") {
-		s.results[series.Labels["result"]] = true
+	for label, name := range enumerated {
+		for _, series := range d.Find(name) {
+			s.seen[label][series.Labels[label]] = true
+		}
 	}
 	if len(c.log) > 0 {
 		e, ok := s.record(rid, c.log[0])
@@ -425,15 +441,15 @@ func TestSignals_MatchObservabilityDoc(t *testing.T) {
 	t.Cleanup(func() { otel.SetTracerProvider(prev) })
 	started := metrictest.Collect(t)
 
-	stand := &signalStand{hold: make(chan struct{}), holding: make(chan struct{}, 1)}
+	stand := &signalStand{hold: make(chan struct{}), holding: make(chan struct{}, 1), cookies: httpkit.SessionCookies{"session"}}
 	cfg := testConfig(t, "127.0.0.1:0")
 	cfg.MaxBody.MaxBytes = 1024
 	cfg.CORS.Origins = []string{"https://app.example"}
 	cfg.RateLimit.RPS = 0
-	s := &signals{t: t, doc: doc, log: logtest.Capture(), spans: recorder, results: map[string]bool{}}
+	s := &signals{t: t, doc: doc, log: logtest.Capture(), spans: recorder, seen: newSeen()}
 	s.srv = stand.start(t, cfg, s.log)
 
-	ok, key := "Authorization: Bearer ok", "Idempotency-Key: "
+	ok, key, session := "Authorization: Bearer ok", "Idempotency-Key: ", "Cookie: session=s1"
 	cases := []signalCase{
 		{
 			id: "item", method: "GET", path: "/items/1", headers: []string{"X-Forwarded-For: 6.6.6.6"}, status: 204, label: "GET", route: "/items/{id}", level: slog.LevelInfo,
@@ -494,6 +510,20 @@ func TestSignals_MatchObservabilityDoc(t *testing.T) {
 			level: slog.LevelInfo, metric: []string{"http_idempotency_total", "result", "skipped"},
 		},
 		{
+			id: "cookie-no-origin", method: "POST", path: "/public", body: `{"n":1}`, headers: []string{session}, status: 403, label: "POST", route: "/public",
+			level: slog.LevelWarn, metric: []string{"http_origin_rejections_total", "path", "/public", "reason", "missing"},
+			log: []string{"session cookie refused: origin is not allowed", "method", "POST"},
+		},
+		{
+			id: "cookie-foreign", method: "DELETE", path: "/items/1", headers: []string{session, "Origin: https://evil.example"}, status: 403, label: "DELETE",
+			route: "/items/{id}", level: slog.LevelWarn, metric: []string{"http_origin_rejections_total", "path", "/items/{id}", "reason", "not_allowed"},
+			log: []string{"session cookie refused: origin is not allowed", "method", "DELETE", "origin", "https://evil.example"},
+		},
+		{
+			id: "cookie-app", method: "POST", path: "/public", body: `{"n":1}`, headers: []string{session, "Origin: https://app.example"}, status: 201,
+			label: "POST", route: "/public", level: slog.LevelInfo,
+		},
+		{
 			id: "store-down", method: "POST", path: "/orders", body: `{"n":3}`, headers: []string{ok, key + "k2"}, prepare: func() { stand.storeDown.Store(true) },
 			status: 201, label: "POST", route: "/orders", level: slog.LevelInfo, metric: []string{"http_idempotency_total", "result", "error"},
 			log: []string{"idempotency store failed", "op", "get", "error", "redis: connection refused", "fail_closed", "false"},
@@ -544,7 +574,7 @@ func TestSignals_MatchObservabilityDoc(t *testing.T) {
 	waitFor(t, "span of the request that held the key", func() (sdktrace.ReadOnlySpan, bool) { return s.span("sig-holder") })
 
 	// Лимитер — своё приложение: первый запрос занимает единственный токен клиента.
-	limiter := &signals{t: t, doc: doc, log: logtest.Capture(), spans: recorder, results: s.results}
+	limiter := &signals{t: t, doc: doc, log: logtest.Capture(), spans: recorder, seen: s.seen}
 	lcfg := testConfig(t, "127.0.0.1:0")
 	lcfg.RateLimit = httpkit.RateLimitConfig{RPS: 1, Burst: 1}
 	limiter.srv = (&signalStand{}).start(t, lcfg, limiter.log)
@@ -555,7 +585,7 @@ func TestSignals_MatchObservabilityDoc(t *testing.T) {
 	})
 
 	// Дедлайн запроса — своё приложение: 50 мс вместо 25 с.
-	deadline := &signals{t: t, doc: doc, log: logtest.Capture(), spans: recorder, results: s.results}
+	deadline := &signals{t: t, doc: doc, log: logtest.Capture(), spans: recorder, seen: s.seen}
 	dcfg := testConfig(t, "127.0.0.1:0")
 	dcfg.RequestTimeout = 50 * time.Millisecond
 	deadline.srv = (&signalStand{}).start(t, dcfg, deadline.log)
@@ -672,9 +702,11 @@ func (s *signals) checkInventory(t *testing.T, d metrictest.Snapshot) {
 			t.Errorf("metric %s from docs/observability.md was not emitted", name)
 		}
 	}
-	for _, r := range s.doc.values["result"] {
-		if !s.results[r] {
-			t.Errorf("http_idempotency_total result %q from the doc was not emitted: %v", r, slices.Sorted(maps.Keys(s.results)))
+	for label, name := range enumerated {
+		for _, v := range s.doc.values[label] {
+			if !s.seen[label][v] {
+				t.Errorf("%s %s %q from the doc was not emitted: %v", name, label, v, slices.Sorted(maps.Keys(s.seen[label])))
+			}
 		}
 	}
 	if collisions := d.Collisions(); len(collisions) > 0 {

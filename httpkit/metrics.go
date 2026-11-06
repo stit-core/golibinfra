@@ -22,6 +22,7 @@ type instruments struct {
 	maxBodyRejections metric.Int64Counter
 	idempotency       metric.Int64Counter
 	rateLimited       metric.Int64Counter
+	originRejections  metric.Int64Counter
 }
 
 // newInstruments зовётся при сборке middleware: инструмент берёт текущий
@@ -43,6 +44,8 @@ func newInstruments() *instruments {
 			metric.WithDescription("Idempotency middleware outcomes"))),
 		rateLimited: otelkit.Must(m.Int64Counter("http_rate_limited_total",
 			metric.WithDescription("Requests rejected by the per-client rate limiter"))),
+		originRejections: otelkit.Must(m.Int64Counter("http_origin_rejections_total",
+			metric.WithDescription("Changing requests with a session cookie rejected because their Origin is not allowed"))),
 	}
 }
 

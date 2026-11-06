@@ -1,9 +1,9 @@
 // Package httpkit — HTTP-сервер на huma/v2 + chi с готовой middleware-цепочкой
 // (RequestID, ClientIP, OTel, AccessLog, Metrics, Recovery, SecurityHeaders, CORS,
-// RateLimit, MaxBody, опц. Idempotency), health/readiness и контрактом ошибок
-// APIError (problem+json). Эмитит http_requests_total, http_request_duration_seconds,
-// http_panics_total, http_max_body_rejections_total, http_idempotency_total,
-// http_rate_limited_total.
+// RateLimit, опц. проверка Origin у запроса с cookie сессии, MaxBody, опц. Idempotency),
+// health/readiness и контрактом ошибок APIError (problem+json). Эмитит http_requests_total,
+// http_request_duration_seconds, http_panics_total, http_max_body_rejections_total,
+// http_idempotency_total, http_rate_limited_total, http_origin_rejections_total.
 package httpkit
 
 import (
@@ -123,15 +123,17 @@ type SecuritySchemeEntry struct {
 }
 
 // ServerOption — опция NewServer: схемы безопасности, хранилище идемпотентности, middleware
-// потребителя, правка huma.Config, публичные маршруты мимо huma. Опция с nil ничего не задаёт.
+// потребителя, правка huma.Config, публичные маршруты мимо huma, cookie сессии. Опция с nil ничего
+// не задаёт.
 type ServerOption func(*serverOptions)
 
 type serverOptions struct {
-	schemes      []SecuritySchemeEntry
-	store        IdempotencyStore
-	middleware   []func(http.Handler) http.Handler
-	humaConfig   []func(*huma.Config)
-	publicRoutes PublicRoutes
+	schemes        []SecuritySchemeEntry
+	store          IdempotencyStore
+	middleware     []func(http.Handler) http.Handler
+	humaConfig     []func(*huma.Config)
+	publicRoutes   PublicRoutes
+	sessionCookies SessionCookies
 }
 
 // WithSecuritySchemes добавляет схемы в `components.securitySchemes` OpenAPI, а их extractor'ы —
@@ -177,6 +179,13 @@ func WithPublicRoutes(paths ...string) ServerOption {
 	return func(o *serverOptions) { o.publicRoutes = append(o.publicRoutes, paths...) }
 }
 
+// WithSessionCookies включает проверку Origin у изменяющего запроса с cookie сессии names
+// (SessionCookies). Без fx стартовой проверки адресов нет: без адреса в HTTP_CORS_ORIGINS такой
+// запрос получает 403.
+func WithSessionCookies(names ...string) ServerOption {
+	return func(o *serverOptions) { o.sessionCookies = append(o.sessionCookies, names...) }
+}
+
 // Server — chi-роутер (транспорт) и huma.API (операции + OpenAPI) поверх
 // одного *http.Server.
 type Server struct {
@@ -214,8 +223,8 @@ func draining(ctx context.Context) bool {
 // NewServer собирает сервер кита — ту же сборку зовёт Module: цепочка middleware кита и
 // middleware потребителя внутри неё регистрируются сразу, huma.API с HumaAuth — лениво в
 // BindAPI. В log уходят access-log, panic, ошибки net/http (`http.Server.ErrorLog`) и
-// причины 5xx хендлеров; nil — logkit.Nop(). Невалидный cfg и схема безопасности без имени,
-// без Scheme или дважды — ErrConfig.
+// причины 5xx хендлеров; nil — logkit.Nop(). Невалидный cfg, схема безопасности без имени, без
+// Scheme или дважды и имя cookie сессии, которого не бывает у cookie, — ErrConfig.
 func NewServer(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
 		return nil, err
@@ -230,6 +239,9 @@ func NewServer(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, er
 		}
 	}
 	if err := checkSchemes(o.schemes); err != nil {
+		return nil, err
+	}
+	if err := checkSessionCookies(o.sessionCookies); err != nil {
 		return nil, err
 	}
 	r := chi.NewRouter()
@@ -260,10 +272,11 @@ func NewServer(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, er
 }
 
 // chain — цепочка кита: RequestID, ClientIP и OTel первыми (request_id, IP клиента и trace_id
-// в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429 и preflight попадали в
-// RED-метрики и access-log; дедлайн запроса — над Idempotency (в цепочке huma): она видит ответ
-// хендлера, а не 503 дедлайна, и держит резерв, пока хендлер не вернётся; middleware
-// потребителя — внутри всей цепочки кита.
+// в ctx у всех), AccessLog и Metrics — над Recovery, чтобы panic, 429, 403 проверки Origin и
+// preflight попадали в RED-метрики и access-log; проверка Origin — после лимитера и до тела: отказ
+// расходует bucket клиента и не читает тело; дедлайн запроса — над Idempotency (в цепочке huma):
+// она видит ответ хендлера, а не 503 дедлайна, и держит резерв, пока хендлер не вернётся;
+// middleware потребителя — внутри всей цепочки кита.
 func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) http.Handler {
 	return append([]func(http.Handler) http.Handler{
 		RequestID(),
@@ -275,6 +288,7 @@ func chain(cfg Config, log logkit.Logger, o serverOptions) []func(http.Handler) 
 		SecurityHeaders(cfg.Security),
 		CORS(cfg.CORS),
 		RateLimit(cfg.RateLimit),
+		originCheck(cfg.CORS, o.sessionCookies, log),
 		MaxBody(cfg.MaxBody),
 		deadline(cfg.RequestTimeout, log),
 		headAsGet,
