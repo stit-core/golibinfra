@@ -64,8 +64,10 @@ preflight. Дать httpkit общий механизм: сервис назыв
   - Подтверждено: `TestSignals_MatchObservabilityDoc` (случаи `cookie-no-origin`, `cookie-foreign`, `cookie-app`;
     оба значения `reason` встречены), `TestSignals_CodeMatchesObservabilityDoc`, `TestSessionCookies_Signals` (серии
     `missing`/`not_allowed`/`unmatched`, WARN без значения cookie, длинный Origin обрезан) — PASS
-- [ ] **AC6** — Тест хендлера потребителя включает проверку и шлёт `Origin`: `handlertest.WithSessionCookies`.
+- [x] **AC6** — Тест хендлера потребителя включает проверку и шлёт `Origin`: `handlertest.WithSessionCookies`.
   Проверка: `go test -race -run TestNewAPI_SessionCookies ./testkit/handlertest/` → PASS
+  - Подтверждено: `TestNewAPI_SessionCookies` — без Origin и с чужим 403, с адресом конфига и Bearer 204, без опции
+    проверки нет, невалидное имя валит тест — PASS
 - [ ] **AC7** — Доки описывают проверку — правило, включение, ответ, сигналы, тест потребителя: README кита,
   `httpkit/docs/`, `SECURITY.md`, строки корневого README и `testkit/README.md`. Проверка: ручная —
   `httpkit/docs/architecture.md § Проверка Origin`, `httpkit/docs/usage.md § Сессия в cookie`, `SECURITY.md`
@@ -82,12 +84,14 @@ preflight. Дать httpkit общий механизм: сервис назыв
     `metrics.go`; `httpkit/origin_test.go`, случаи и `reason` в `signals_test.go`; таблицы `docs/observability.md`,
     § Проверка Origin и строка конвейера в `docs/architecture.md`; `go test -race ./httpkit/...` — PASS, lint
     `./httpkit/...` — 0 issues
-- [ ] **S2** — testkit/handlertest: `WithSessionCookies`
+- [x] **S2** — testkit/handlertest: `WithSessionCookies`
   - Проверка: `go test -race ./testkit/handlertest/` → PASS · Закрывает: AC6 · Зависит от: S1
+  - Сделано: опция и `TestNewAPI_SessionCookies`; абзац с примером в `httpkit/docs/testing.md`, строка
+    `handlertest` в `testkit/README.md`; `go test -race ./testkit/handlertest/` — PASS, lint — 0 issues
 - [ ] **S3** — httpkit: `403 ORIGIN_NOT_ALLOWED` в OpenAPI изменяющих операций, столбец 403 таблицы `docs/testing.md`
   - Проверка: `go test -race ./httpkit/...` → PASS · Закрывает: AC2, AC4 · Зависит от: S2
 ### Доки и выпуск
-- [ ] **S4** — Доки: README и `docs/` httpkit, `SECURITY.md`, корневой README, `testkit/README.md`
+- [ ] **S4** — Доки: README кита, `docs/configuration.md` и `docs/usage.md` httpkit, `SECURITY.md`, корневой README
   - Проверка: `make envdoc-check` → OK; ручная — разделы AC7 · Закрывает: AC7 · Зависит от: S3
 - [ ] **S5** — Гейт, `## Handoff`, черновик аннотации `v1.8.0` по `make release-diff PREV=v1.7.0`
   - Проверка: `make check` → `✓ check clean (./...)` · Закрывает: AC7 · Зависит от: S4
@@ -119,4 +123,5 @@ preflight. Дать httpkit общий механизм: сервис назыв
 —
 
 ## Где мы сейчас
-S1 закрыт: проверка Origin в цепочке httpkit, сигналы и их таблицы. Дальше — S2: `handlertest.WithSessionCookies`.
+S1 и S2 закрыты: проверка Origin в цепочке httpkit, сигналы и их таблицы, `handlertest.WithSessionCookies`. Дальше —
+S3: `403 ORIGIN_NOT_ALLOWED` в OpenAPI изменяющих операций.

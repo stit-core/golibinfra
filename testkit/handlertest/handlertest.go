@@ -28,6 +28,7 @@ type options struct {
 	cfg     *httpkit.Config
 	log     logkit.Logger
 	schemes []httpkit.SecuritySchemeEntry
+	cookies []string
 }
 
 // WithConfig — конфиг сервера вместо httpkit.NewConfig(); невалидный — t.Fatalf.
@@ -47,6 +48,14 @@ func WithLogger(log logkit.Logger) Option {
 // ними — Security или httpkit.Public у каждой, как старт Module.
 func WithSecuritySchemes(schemes ...httpkit.SecuritySchemeEntry) Option {
 	return func(o *options) { o.schemes = append(o.schemes, schemes...) }
+}
+
+// WithSessionCookies — cookie сессии сервиса (httpkit.SessionCookies): изменяющий запрос с ними проходит только с
+// заголовком Origin из HTTP_CORS_ORIGINS конфига — тест шлёт его, как браузер (`"Origin: https://app.example.com"`),
+// без него — 403 ORIGIN_NOT_ALLOWED. Стартовой проверки адресов, как у Module, нет: без адреса в конфиге такой запрос
+// получает 403.
+func WithSessionCookies(names ...string) Option {
+	return func(o *options) { o.cookies = append(o.cookies, names...) }
 }
 
 // NewAPI поднимает in-memory huma.API сервера httpkit.NewServer — та же сборка, что у Module:
@@ -71,7 +80,7 @@ func NewAPI(t testing.TB, register func(api huma.API), opts ...Option) API {
 			return nil
 		}
 	}
-	s, err := httpkit.NewServer(cfg, o.log, httpkit.WithSecuritySchemes(o.schemes...))
+	s, err := httpkit.NewServer(cfg, o.log, httpkit.WithSecuritySchemes(o.schemes...), httpkit.WithSessionCookies(o.cookies...))
 	if err != nil {
 		t.Fatalf("handlertest: %v", err)
 		return nil

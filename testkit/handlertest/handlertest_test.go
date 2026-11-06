@@ -325,6 +325,39 @@ func TestNewAPI_WithLogger(t *testing.T) {
 	}
 }
 
+// Cookie сессии — как у сервера: изменяющий запрос с ними проходит только с Origin из HTTP_CORS_ORIGINS конфига, тест
+// шлёт его заголовком; запрос без cookie и чтение Origin не сверяют, без опции проверки нет.
+func TestNewAPI_SessionCookies(t *testing.T) {
+	cfg, err := httpkit.NewConfig()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cfg.CORS.Origins = []string{"https://app.example.com"}
+	register := func(api huma.API) {
+		for _, method := range []string{http.MethodGet, http.MethodPost} {
+			huma.Register(api, huma.Operation{OperationID: "session-" + strings.ToLower(method), Method: method, Path: "/session"},
+				func(context.Context, *struct{}) (*emptyOutput, error) { return &emptyOutput{}, nil })
+		}
+	}
+	api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), handlertest.WithSessionCookies("sid"))
+	cookie := "Cookie: sid=s1"
+
+	handlertest.AssertAPIError(t, api.Post("/session", cookie), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertAPIError(t, api.Post("/session", cookie, "Origin: https://evil.example.com"), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertStatus(t, api.Post("/session", cookie, "Origin: https://app.example.com"), http.StatusNoContent)
+	handlertest.AssertStatus(t, api.Post("/session", "Authorization: Bearer alice"), http.StatusNoContent)
+	handlertest.AssertStatus(t, api.Get("/session", cookie, "Origin: https://evil.example.com"), http.StatusNoContent)
+
+	plain := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg))
+	handlertest.AssertStatus(t, plain.Post("/session", cookie), http.StatusNoContent)
+
+	tb := &recordTB{}
+	handlertest.NewAPI(tb, register, handlertest.WithConfig(cfg), handlertest.WithSessionCookies("not a cookie name"))
+	if tb.fatals == 0 {
+		t.Fatal("an invalid session cookie name must fail the test, as NewServer fails")
+	}
+}
+
 // IP из ContextWithClientIP — тот же, что middleware ClientIP кладёт по адресу соединения: тест
 // usecase'а видит адрес в канонической форме, как в проде; не IP — ctx без адреса.
 func TestContextWithClientIP(t *testing.T) {

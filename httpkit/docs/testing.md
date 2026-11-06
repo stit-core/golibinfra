@@ -44,6 +44,22 @@ api := handlertest.NewAPI(t, func(api huma.API) { registerRoutes(api, svc) },
 handlertest.AssertAPIError(t, api.Get("/me"), http.StatusUnauthorized, "UNAUTHORIZED")
 ```
 
+Cookie сессии сервиса (`httpkit.SessionCookies` в графе) — опция `WithSessionCookies(names...)`:
+изменяющий запрос с ними проходит только с `Origin` из `HTTP_CORS_ORIGINS` конфига, и тест шлёт
+его заголовком, как браузер ([architecture.md § Проверка Origin](architecture.md#проверка-origin)).
+Стартовой проверки адресов, как у `Module`, у `NewAPI` нет: без адреса в конфиге такой запрос
+получает 403.
+
+```go
+cfg, _ := httpkit.NewConfig()
+cfg.CORS.Origins = []string{"https://app.example.com"}
+api := handlertest.NewAPI(t, func(api huma.API) { registerRoutes(api, svc) },
+    handlertest.WithConfig(cfg), handlertest.WithSessionCookies("access_token"))
+session := "Cookie: access_token=" + token
+handlertest.AssertAPIError(t, api.Post("/orders", session, order), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+handlertest.AssertStatus(t, api.Post("/orders", session, "Origin: https://app.example.com", order), http.StatusCreated)
+```
+
 `HumaAuth` действует на операции, зарегистрированные после него: свой `HumaAuth`
 внутри `register` не нужен, и операции, добавленные на API после `NewAPI`, проверку
 маршрутов не проходят.
