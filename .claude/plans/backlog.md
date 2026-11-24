@@ -195,6 +195,11 @@
 - **oidckit-logout-same-site** — `POST /auth/logout` BFF пускает `Sec-Fetch-Site: same-site`: страница соседнего адреса
   того же сайта выходит из чужой сессии; закрывает это `SessionCookies` сервиса с `CookieConfig.SessionCookieName()`.
   Триггер: потребитель oidckit без `SessionCookies` или аудит oidckit.
+- **httpkit-origin-session-issuers** — `SessionCookies` проверяет Origin только у запроса с cookie сессии, а вход идёт
+  без них и сам их ставит: страница соседнего адреса того же сайта входит в браузере пользователя под учётной
+  записью нарушителя (login CSRF; простой `POST` без `Content-Type` huma читает как JSON). Опция — операции и
+  маршруты, которые выдают сессию, требуют Origin из `HTTP_CORS_ORIGINS` и без cookie, с 403 в OpenAPI.
+  Триггер: шаблон бэкенда закрывает подделку входа (его бэклог `login-origin`).
 - **oidckit-bff-texts-ru** — ответы BFF `oidckit` (`huma.Error4xx` в `oidckit/bff.go`: «missing code or state»,
   «unknown or expired state», «no sso session», «cross-site logout» …) английские, а тексты ответов API китов —
   русские (CLAUDE.md § Стиль, «Язык»): oidckit вне объёма аудита и в перевод `httpkit` не вошёл. Перевести — по
