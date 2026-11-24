@@ -3,6 +3,8 @@ package httpkit
 import (
 	"fmt"
 	"net/http"
+	"net/textproto"
+	"slices"
 	"strings"
 
 	"go.opentelemetry.io/otel/attribute"
@@ -86,11 +88,16 @@ func originCheck(cors CORSConfig, cookies []string, log logkit.Logger) func(http
 	}
 }
 
-// carriesCookie — в запросе есть cookie с одним из имён, хоть и пустая: тот же разбор, что у extractor'а и входа huma.
+// carriesCookie — в запросе есть cookie с одним из имён, хоть и пустая. Имя ищется в каждой части каждой строки Cookie
+// без предела их числа: r.Cookie при частях сверх GODEBUG httpcookiemaxnum не видит ни одной, а вход huma
+// `cookie:"…"` их читает, — поиск не уже ни одного из тех, кто cookie читает.
 func carriesCookie(r *http.Request, names []string) bool {
-	for _, name := range names {
-		if _, err := r.Cookie(name); err == nil {
-			return true
+	for _, line := range r.Header.Values("Cookie") {
+		for part := range strings.SplitSeq(line, ";") {
+			name, _, _ := strings.Cut(part, "=")
+			if slices.Contains(names, textproto.TrimString(name)) {
+				return true
+			}
 		}
 	}
 	return false

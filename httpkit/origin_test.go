@@ -270,6 +270,23 @@ func TestSessionCookies_RawRoute(t *testing.T) {
 	handlertest.AssertAPIError(t, api.Post("/nowhere", headers("sid="+sessionValue, appOrigin)...), http.StatusNotFound, "NOT_FOUND")
 }
 
+// Cookie сессии среди частей сверх предела net/http (GODEBUG httpcookiemaxnum, по умолчанию 3000) r.Cookie не видит, а
+// вход huma `cookie:"…"` читает: проверка находит её и там — и во второй строке Cookie.
+func TestSessionCookies_ManyCookieParts(t *testing.T) {
+	s := mustServer(t, originConfig(t, appOrigin), httpkit.WithSessionCookies("sid"))
+	var calls atomic.Int32
+	registerThings(&calls)(s.BindAPI())
+	api := humatest.Wrap(t, s.BindAPI())
+
+	many := strings.Repeat("a=b; ", 3000) + "sid=" + sessionValue
+	handlertest.AssertAPIError(t, api.Post("/things", "Cookie: "+many), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertAPIError(t, api.Post("/things", "Cookie: a=b", "Cookie: sid="+sessionValue), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	if calls.Load() != 0 {
+		t.Fatalf("the handler ran %d times after the refusal", calls.Load())
+	}
+	handlertest.AssertStatus(t, api.Post("/things", "Cookie: "+many, "Origin: "+appOrigin), http.StatusNoContent)
+}
+
 // Имя, которого не бывает у cookie, запрос не принёс бы, и проверка молча не действовала бы: NewServer — ErrConfig с
 // этим именем. Опция без имён ничего не включает.
 func TestSessionCookies_Names(t *testing.T) {
