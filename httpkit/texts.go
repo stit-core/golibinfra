@@ -78,12 +78,18 @@ func byteSize(n int64) string {
 	return strconv.FormatInt(n, 10) + " байт"
 }
 
-// bodyTooLargeText — detail 413: с лимитом, если он известен.
+// bodyTooLargeText — detail 413 лимита MaxBody (http.MaxBytesReader пускает тело ровно в limit байт): с лимитом, если
+// он известен.
 func bodyTooLargeText(limit int64) string {
 	if limit <= 0 {
 		return textBodyTooLarge
 	}
 	return "Запрос слишком большой: допустимо не больше " + byteSize(limit) + ". Уменьшите его размер и повторите."
+}
+
+// bodyLimitText — detail 413 лимита операции huma: huma отвергает и тело ровно в limit байт.
+func bodyLimitText(limit int64) string {
+	return "Запрос слишком большой: допустимо меньше " + byteSize(limit) + ". Уменьшите его размер и повторите."
 }
 
 // bodyLimitMessage — сообщение huma о теле сверх лимита операции (`request body is too large limit=N bytes`).
@@ -105,7 +111,7 @@ func detailText(msg string) string {
 	}
 	if m := bodyLimitMessage.FindStringSubmatch(msg); m != nil {
 		limit, _ := strconv.ParseInt(m[1], 10, 64)
-		return bodyTooLargeText(limit)
+		return bodyLimitText(limit)
 	}
 	return msg
 }
@@ -247,6 +253,7 @@ var fieldTexts = newTextTable(
 	[2]string{"required header parameter is missing", "не указан обязательный заголовок запроса"},
 	[2]string{"required path parameter is missing", "в адресе не указан обязательный параметр"},
 	[2]string{"required cookie parameter is missing", "не передан обязательный параметр в куки"},
+	[2]string{"required form parameter is missing", "не заполнено обязательное поле формы"},
 	[2]string{"expected at most one value, but received multiple values", "нужно одно значение, а передано несколько"},
 	[2]string{"invalid integer", "нужно целое число"},
 	[2]string{"invalid float", "нужно число"},
@@ -260,4 +267,13 @@ var fieldTexts = newTextTable(
 	[2]string{"invalid character %v", "данные запроса записаны с ошибкой: встретился недопустимый знак"},
 	[2]string{"unknown content type", "формат данных не поддерживается"},
 	[2]string{"unknown content type: %s", "формат данных не поддерживается: ${1}"},
+
+	// Сообщения huma о формах multipart и файлах в них.
+	[2]string{"File required", "нужен файл"},
+	[2]string{"At least one file is required", "нужен хотя бы один файл"},
+	[2]string{"Multiple files received but only one was expected", "нужен один файл, а передано несколько"},
+	[2]string{"Invalid mime type: got %v, expected %v", "тип файла не подходит: передан ${1}, нужен ${2}"},
+	[2]string{"Failed to open file", "файл не удалось прочитать"},
+	[2]string{"Failed to infer file media type", "не удалось определить тип файла"},
+	[2]string{"cannot read multipart form: %v", "данные формы не удалось прочитать: запрос оборван или записан с ошибкой"},
 )

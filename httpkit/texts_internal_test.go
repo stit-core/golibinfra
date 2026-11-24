@@ -95,9 +95,9 @@ func TestDetailText(t *testing.T) {
 	for msg, want := range map[string]string{
 		"validation failed":                             "Данные не прошли проверку. Исправьте указанные поля и повторите запрос.",
 		"request body is required":                      "В запросе нет данных. Передайте их и повторите запрос.",
-		"request body is too large limit=1048576 bytes": "Запрос слишком большой: допустимо не больше 1 МБ. Уменьшите его размер и повторите.",
-		"request body is too large limit=65536 bytes":   "Запрос слишком большой: допустимо не больше 64 КБ. Уменьшите его размер и повторите.",
-		"request body is too large limit=1500 bytes":    "Запрос слишком большой: допустимо не больше 1500 байт. Уменьшите его размер и повторите.",
+		"request body is too large limit=1048576 bytes": "Запрос слишком большой: допустимо меньше 1 МБ. Уменьшите его размер и повторите.",
+		"request body is too large limit=65536 bytes":   "Запрос слишком большой: допустимо меньше 64 КБ. Уменьшите его размер и повторите.",
+		"request body is too large limit=1500 bytes":    "Запрос слишком большой: допустимо меньше 1500 байт. Уменьшите его размер и повторите.",
 		"item not found":                                "item not found", // текст потребителя остаётся как есть
 		"":                                              "",
 	} {
@@ -136,6 +136,14 @@ func TestFieldTexts_Translate(t *testing.T) {
 		"expected string to be regex: error parsing regexp":                "нужно регулярное выражение, записанное без ошибок",
 		"expected duration: time: invalid duration":                        "нужна длительность, например 1h30m (h – часы, m – минуты, s – секунды)",
 		"expected boolean":                                                 "нужно значение «да» или «нет»",
+		"required form parameter is missing":                               "не заполнено обязательное поле формы",
+		"File required":                                                    "нужен файл",
+		"At least one file is required":                                    "нужен хотя бы один файл",
+		"Multiple files received but only one was expected":                "нужен один файл, а передано несколько",
+		"Invalid mime type: got text/plain, expected image/png":            "тип файла не подходит: передан text/plain, нужен image/png",
+		"Failed to open file":                                              "файл не удалось прочитать",
+		"Failed to infer file media type":                                  "не удалось определить тип файла",
+		"cannot read multipart form: multipart: NextPart: EOF":             "данные формы не удалось прочитать: запрос оборван или записан с ошибкой",
 		"expected integer":                                                 "нужно целое число",
 		"expected number":                                                  "нужно число",
 		"expected string":                                                  "нужен текст",
@@ -216,12 +224,13 @@ func TestFieldTexts_PlaceholdersMatchFormats(t *testing.T) {
 
 // Новое сообщение huma после обновления библиотеки без строки в таблице осталось бы английским: тест называет его.
 func TestFieldTexts_CoverEveryHumaMessage(t *testing.T) {
-	pc := reflect.ValueOf(huma.NewError).Pointer()
+	// Каталог huma — по функции, которую httpkit не подменяет: huma.NewError кит заменяет своим newError.
+	pc := reflect.ValueOf(huma.DefaultConfig).Pointer()
 	file, _ := runtime.FuncForPC(pc).FileLine(pc)
 	src := filepath.Join(filepath.Dir(file), "validation", "messages.go")
 	parsed, err := parser.ParseFile(token.NewFileSet(), src, nil, 0)
 	if err != nil {
-		t.Skipf("huma sources are not readable (%v)", err)
+		t.Fatalf("huma sources are not readable: %v", err)
 	}
 	var found int
 	ast.Inspect(parsed, func(n ast.Node) bool {

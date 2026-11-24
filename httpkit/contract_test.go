@@ -203,7 +203,7 @@ func TestErrorContract(t *testing.T) {
 		},
 		{
 			name: "лимит тела", method: http.MethodPost, path: "/signup", body: `{"email":"` + strings.Repeat("a", 300) + `"}`, status: http.StatusRequestEntityTooLarge, code: "BODY_TOO_LARGE",
-			detail: "Запрос слишком большой: допустимо не больше 256 байт. Уменьшите его размер и повторите.",
+			detail: "Запрос слишком большой: допустимо меньше 256 байт. Уменьшите его размер и повторите.",
 		},
 		{
 			name: "auth", method: http.MethodGet, path: "/me", status: http.StatusUnauthorized, code: "UNAUTHORIZED",
