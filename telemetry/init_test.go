@@ -20,7 +20,6 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/attribute"
 	"go.opentelemetry.io/otel/log"
-	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
 	"go.opentelemetry.io/otel/sdk/metric/metricdata"
@@ -43,7 +42,7 @@ func TestInitDisabled_StillInstallsPropagatorAndGlobals(t *testing.T) {
 	if !slices.Contains(fields, "traceparent") || !slices.Contains(fields, "baggage") {
 		t.Fatalf("propagator fields = %v, want traceparent+baggage", fields)
 	}
-	if global.GetLoggerProvider() != log.LoggerProvider(p.LoggerProvider) {
+	if otel.GetLoggerProvider() != log.LoggerProvider(p.LoggerProvider) {
 		t.Fatal("global logger provider must be the one from Init")
 	}
 	_, span := otel.Tracer("test").Start(t.Context(), "job")
@@ -345,7 +344,7 @@ func TestInit_ExportsAllSignalsToSpecPaths(t *testing.T) {
 	span.End()
 	var rec log.Record
 	rec.SetBody(attribute.StringValue("hello"))
-	global.GetLoggerProvider().Logger("test").Emit(context.Background(), rec)
+	otel.GetLoggerProvider().Logger("test").Emit(context.Background(), rec)
 
 	if err := p.Shutdown(t.Context()); err != nil {
 		t.Fatalf("Shutdown: %v", err)
@@ -443,12 +442,12 @@ func TestInitDisabled_TracerCreatedBeforeInitIsNoop(t *testing.T) {
 // поэтому канал внутренних сообщений просто глушится.
 func restoreGlobals(t *testing.T) {
 	t.Helper()
-	tp, mp, lp, prop := otel.GetTracerProvider(), otel.GetMeterProvider(), global.GetLoggerProvider(), otel.GetTextMapPropagator()
+	tp, mp, lp, prop := otel.GetTracerProvider(), otel.GetMeterProvider(), otel.GetLoggerProvider(), otel.GetTextMapPropagator()
 	eh := otel.GetErrorHandler()
 	t.Cleanup(func() {
 		otel.SetTracerProvider(tp)
 		otel.SetMeterProvider(mp)
-		global.SetLoggerProvider(lp)
+		otel.SetLoggerProvider(lp)
 		otel.SetTextMapPropagator(prop)
 		otel.SetErrorHandler(eh)
 		otel.SetLogger(logr.Discard())

@@ -142,8 +142,43 @@ func meter() any { return otelkit.Meter("kit") }
 	}
 }
 
+// Шов пакета otel — и провайдер логов: Logger и GetLoggerProvider, как Meter, Tracer и их
+// Get*Provider; установка провайдера (Set*Provider) инструмента не создаёт.
+func TestPackageLevelInstruments_SeesOTelSeams(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "kit.go")
+	src := `package kit
+
+import "go.opentelemetry.io/otel"
+
+var meter = otel.Meter("kit")
+
+var tracer = otel.Tracer("kit")
+
+var logger = otel.Logger("kit")
+
+var meters = otel.GetMeterProvider()
+
+var tracers = otel.GetTracerProvider()
+
+var loggers = otel.GetLoggerProvider()
+
+func init() { otel.SetLoggerProvider(loggers) }
+`
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{
+		"kit.go:5 otel.Meter", "kit.go:7 otel.Tracer", "kit.go:9 otel.Logger",
+		"kit.go:11 otel.GetMeterProvider", "kit.go:13 otel.GetTracerProvider", "kit.go:15 otel.GetLoggerProvider",
+	}
+	if got := packageLevelInstruments(t, dir, []string{path}); !slices.Equal(got, want) {
+		t.Fatalf("found %v, want %v", got, want)
+	}
+}
+
 // packageLevelInstruments — вызовы в коде инициализации пакета paths (инициализаторы var,
-// init()), которые создают инструмент: шов (Meter/Tracer/Get*Provider пакетов otelkit и otel)
+// init()), которые создают инструмент: шов (Meter/Tracer/Logger/Get*Provider пакетов otelkit и otel)
 // или функция, метод, значение функции своего пакета, которые зовут шов.
 func packageLevelInstruments(t *testing.T, root string, paths []string) []string {
 	t.Helper()
@@ -376,13 +411,17 @@ func (fs fileScope) pkgFunc(fun ast.Expr) (path, name string) {
 	return "", ""
 }
 
-// isSeam — Meter/Tracer/Get*Provider шва: otelkit и otel.
+// isSeam — Meter/Tracer/Logger/Get*Provider шва: otelkit и otel.
 func (fs fileScope) isSeam(fun ast.Expr) bool {
 	path, name := fs.pkgFunc(fun)
 	if path != ModulePath+"/internal/otelkit" && path != "go.opentelemetry.io/otel" {
 		return false
 	}
-	return name == "Meter" || name == "Tracer" || name == "GetMeterProvider" || name == "GetTracerProvider"
+	switch name {
+	case "Meter", "Tracer", "Logger", "GetMeterProvider", "GetTracerProvider", "GetLoggerProvider":
+		return true
+	}
+	return false
 }
 
 func (fs fileScope) isOnce(fun ast.Expr) bool {

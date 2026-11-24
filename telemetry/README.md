@@ -9,7 +9,7 @@ W3C-propagator и runtime-инструментация. Корневой obs-к�
 
 - **Init трёх сигналов** — `TracerProvider`, `MeterProvider`, `LoggerProvider`
   выставляются глобальными (`otel.SetTracerProvider` / `otel.SetMeterProvider`
-  / `global.SetLoggerProvider`); `log.LoggerProvider` дополнительно отдаётся во
+  / `otel.SetLoggerProvider`); `log.LoggerProvider` дополнительно отдаётся во
   fx-граф — `logkit.Module` подхватывает его как второй sink.
 - **OTLP/HTTP по спецификации** — `OTEL_EXPORTER_OTLP_ENDPOINT` — базовый URL
   коллектора, который выбирает потребитель; схема задаёт TLS, per-signal пути

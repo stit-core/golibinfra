@@ -15,7 +15,6 @@ import (
 	"go.opentelemetry.io/otel/exporters/otlp/otlplog/otlploghttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlpmetric/otlpmetrichttp"
 	"go.opentelemetry.io/otel/exporters/otlp/otlptrace/otlptracehttp"
-	"go.opentelemetry.io/otel/log/global"
 	"go.opentelemetry.io/otel/propagation"
 	sdklog "go.opentelemetry.io/otel/sdk/log"
 	sdkmetric "go.opentelemetry.io/otel/sdk/metric"
@@ -177,7 +176,7 @@ func mergeResource(base, extra *resource.Resource) (*resource.Resource, error) {
 func setGlobals(tracer trace.TracerProvider, p *Providers) {
 	otel.SetTracerProvider(tracer)
 	otel.SetMeterProvider(p.MeterProvider)
-	global.SetLoggerProvider(p.LoggerProvider)
+	otel.SetLoggerProvider(p.LoggerProvider)
 	otel.SetTextMapPropagator(propagation.NewCompositeTextMapPropagator(
 		propagation.TraceContext{},
 		propagation.Baggage{},
