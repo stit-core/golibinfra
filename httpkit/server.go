@@ -337,7 +337,10 @@ func (s *Server) bindAPI() {
 		}
 	}
 	s.api = &registry{API: api, describe: describe}
-	s.api.adapter = &opAdapter{Adapter: api.Adapter(), router: s.router, reg: s.api, timeout: s.cfg.RequestTimeout, log: s.log}
+	s.api.adapter = &opAdapter{
+		Adapter: api.Adapter(), router: s.router, reg: s.api, timeout: s.cfg.RequestTimeout, log: s.log,
+		cors: s.cfg.CORS, sessionCookies: s.opts.sessionCookies,
+	}
 	s.api.UseMiddleware(operationBodyLimit, HumaAuth(s.opts.schemes, s.log))
 	if s.opts.store != nil {
 		s.api.UseMiddleware(humaMiddleware(Idempotency(s.cfg.Idempotency, s.opts.store, s.log)))

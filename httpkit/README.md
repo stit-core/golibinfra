@@ -8,7 +8,7 @@ HTTP-сервер на [huma/v2](https://github.com/danielgtaylor/huma) пове
 `AccessLog`, `Metrics`, `Recovery`, `SecurityHeaders`, `CORS`, `RateLimit`, опц. проверка
 Origin (сервис называет cookie сессии — `httpkit.SessionCookies`: изменяющий запрос с ними
 проходит только с `Origin` из `HTTP_CORS_ORIGINS`, иначе `403 ORIGIN_NOT_ALLOWED` до auth и
-хендлера), `MaxBody` (поднятый лимит операции поднимает и его), дедлайн запроса
+хендлера; вход — операция `httpkit.IssuesSession` — отказывает чужому `Origin` и без cookie), `MaxBody` (поднятый лимит операции поднимает и его), дедлайн запроса
 (`HTTP_REQUEST_TIMEOUT`), HEAD на GET-маршрутах, опц. `Idempotency`, `HumaAuth`. Любой
 ответ-ошибка — `APIError` (`application/problem+json`: `title`, `status`, `detail`,
 машинный `code`, `request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный

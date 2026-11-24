@@ -189,6 +189,8 @@ func (s *signalStand) routes(api huma.API) {
 		})
 	huma.Register(api, httpkit.Public(huma.Operation{OperationID: "create-public", Method: http.MethodPost, Path: "/public", DefaultStatus: http.StatusCreated}),
 		func(context.Context, *signalOrder) (*struct{}, error) { return nil, nil }) // тело не нужно
+	huma.Register(api, httpkit.IssuesSession(httpkit.Public(huma.Operation{OperationID: "login", Method: http.MethodPost, Path: "/login"})),
+		func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело не нужно
 }
 
 func (s *signalStand) probe() healthkit.Probe {
@@ -522,6 +524,16 @@ func TestSignals_MatchObservabilityDoc(t *testing.T) {
 		{
 			id: "cookie-app", method: "POST", path: "/public", body: `{"n":1}`, headers: []string{session, "Origin: https://app.example"}, status: 201,
 			label: "POST", route: "/public", level: slog.LevelInfo,
+		},
+		{
+			id: "issuer-foreign", method: "POST", path: "/login", headers: []string{"Origin: https://evil.example"}, status: 403, label: "POST",
+			route: "/login", level: slog.LevelWarn, metric: []string{"http_origin_rejections_total", "path", "/login", "reason", "not_allowed"},
+			log: []string{"session issuer refused: origin is not allowed", "method", "POST", "origin", "https://evil.example", "content_type", ""},
+		},
+		{
+			id: "issuer-no-origin", method: "POST", path: "/login", headers: []string{"Content-Type: text/plain"}, status: 403, label: "POST",
+			route: "/login", level: slog.LevelWarn, metric: []string{"http_origin_rejections_total", "path", "/login", "reason", "missing"},
+			log: []string{"session issuer refused: origin is not allowed", "method", "POST", "origin", "", "content_type", "text/plain"},
 		},
 		{
 			id: "store-down", method: "POST", path: "/orders", body: `{"n":3}`, headers: []string{ok, key + "k2"}, prepare: func() { stand.storeDown.Store(true) },

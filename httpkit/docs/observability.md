@@ -50,8 +50,8 @@ Panic-запросы, 429, 403 проверки Origin и preflight 204 попа
 и пишет сэмпл через `defer`.
 
 `http_origin_rejections_total` — изменяющий запрос с cookie сессии, у которого `Origin` нет
-в `HTTP_CORS_ORIGINS` ([architecture.md § Проверка Origin](architecture.md#проверка-origin)):
-`reason` — `missing` (заголовка `Origin` нет) или `not_allowed` (адреса нет в списке, и
+в `HTTP_CORS_ORIGINS`, и отказ операции `IssuesSession`
+([architecture.md § Проверка Origin](architecture.md#проверка-origin)): `reason` — `missing` (заголовка `Origin` нет) или `not_allowed` (адреса нет в списке, и
 `null`). Сам `Origin` пишет клиент, в label он не идёт — он в строке лога отказа (§ Логи).
 
 ## Спаны
@@ -101,6 +101,7 @@ Trace-context клиента (`traceparent`, `tracestate`, `baggage`) по со�
 | `auth failed` | Error | `error`, `code` | `HumaAuth`: extractor вернул 5xx `APIError` |
 | `auth not configured` | Error | `operation` | `HumaAuth`: у схемы операции нет extractor'а |
 | `session cookie refused: origin is not allowed` | Warn | `method`, `origin` | проверка Origin: изменяющий запрос с cookie сессии без `Origin` из `HTTP_CORS_ORIGINS` |
+| `session issuer refused: origin is not allowed` | Warn | `method`, `origin`, `content_type` | проверка Origin: изменяющий запрос к операции `IssuesSession` без cookie сессии с чужим `Origin` или без него с телом, которое браузер шлёт без preflight |
 | `idempotency store failed` | Warn | `op`, `error`, `fail_closed` | `Idempotency`: отказ store |
 | `idempotency reservation expired before the response` | Warn | `reserve_ttl` | `Idempotency`: handler шёл дольше резерва |
 | `request deadline exceeded` | Warn | `timeout` | дедлайн запроса |
@@ -121,6 +122,12 @@ Trace-context клиента (`traceparent`, `tracestate`, `baggage`) по со�
 - `session cookie refused: origin is not allowed` — клиенту ушёл `403 ORIGIN_NOT_ALLOWED`; `method` —
   метод запроса, `origin` — его заголовок `Origin` (пусто — заголовка нет; длиннее 256 байт — обрезан с
   `…`), значение cookie в строку не идёт. Тот же отказ считает `http_origin_rejections_total`.
+- `session issuer refused: origin is not allowed` — `403 ORIGIN_NOT_ALLOWED` операции, которая выдаёт сессию
+  (`IssuesSession`), на запрос без cookie сессии с чужим `Origin` или без `Origin` с телом, которое браузер шлёт без
+  preflight (подделка входа); `method` и `origin` — как выше (`origin` пусто — заголовка нет), `content_type` —
+  заголовок `Content-Type` запроса (пусто — его нет; длиннее 256 байт — обрезан): отказ без `Origin` у клиента, который
+  забыл `application/json`, отличается от старого браузера по нему. Отказ считает `http_origin_rejections_total` с
+  `reason` `not_allowed` или `missing`.
 - `idempotency store failed` — `op`: `get`, `reserve`, `set`, `release`; тот же отказ считает
   `http_idempotency_total{result="error"}`. `op=reserve` с текстом `key budget of the client is
   exhausted` — клиент исчерпал бюджет ключей (store исправен).

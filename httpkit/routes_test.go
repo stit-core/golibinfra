@@ -189,6 +189,18 @@ func TestModule_RoutesCheck(t *testing.T) {
 			})},
 			want: []string{"route GET /items replaces operation list"},
 		},
+		{name: "IssuesSession у изменяющего метода", opts: []fx.Option{register(httpkit.IssuesSession(operation("login", http.MethodPost, "/login")))}},
+		{name: "IssuesSession у безопасного метода Adapter().Handle", opts: []fx.Option{fx.Invoke(func(api huma.API) {
+			op := httpkit.IssuesSession(huma.Operation{Method: http.MethodGet, Path: "/login-link"})
+			api.Adapter().Handle(&op, func(huma.Context) {})
+		})}, want: []string{"operation GET /login-link is httpkit.IssuesSession, but GET is a safe method"}},
+		{name: "IssuesSession у изменяющего метода Adapter().Handle", opts: []fx.Option{fx.Invoke(func(api huma.API) {
+			op := httpkit.IssuesSession(huma.Operation{Method: http.MethodPost, Path: "/login"})
+			api.Adapter().Handle(&op, func(huma.Context) {})
+		})}},
+		{name: "безопасный метод Adapter().Handle без метки", opts: []fx.Option{fx.Invoke(func(api huma.API) {
+			api.Adapter().Handle(&huma.Operation{Method: http.MethodGet, Path: "/feed"}, func(huma.Context) {})
+		})}},
 		{name: "группа с двумя префиксами — хендлеры своих операций", opts: []fx.Option{withBearer, fx.Invoke(func(api huma.API) {
 			huma.Register(huma.NewGroup(api, "/v1", "/v2"), secured(operation("things", http.MethodGet, "/things")), noBody)
 		})}},
@@ -210,6 +222,15 @@ func TestModule_RoutesCheck(t *testing.T) {
 				if !strings.Contains(err.Error(), w) {
 					t.Errorf("start error must contain %q: %v", w, err)
 				}
+			}
+		})
+	}
+	for _, method := range safeMethods {
+		t.Run("IssuesSession у безопасного метода "+method, func(t *testing.T) {
+			err := startErr(t, register(httpkit.IssuesSession(operation("login-link", method, "/login"))))
+			want := "operation login-link is httpkit.IssuesSession, but " + method + " is a safe method"
+			if !errors.Is(err, httpkit.ErrRoutes) || !strings.Contains(err.Error(), want) {
+				t.Fatalf("start error = %v, want ErrRoutes with %q", err, want)
 			}
 		})
 	}

@@ -56,8 +56,9 @@ type registry struct {
 	ops      []*huma.Operation
 	// pending — операции, которым huma.Register ещё не поставил хендлер.
 	pending []*huma.Operation
-	// replaced — маршруты chi, которые операция заменила при регистрации.
-	replaced []string
+	// problems — то, что видит только Handle: маршрут chi, который операция заменила, и метка IssuesSession у
+	// безопасного метода маршрута Adapter().Handle; CheckRoutes добавляет их к своим.
+	problems []string
 }
 
 // DocumentOperation запоминает операцию и добавляет в OpenAPI нескрытую — как huma без
@@ -104,9 +105,12 @@ type opAdapter struct {
 	// timeout и log — дедлайн запроса операции, отложенный deadline (operationDeadline).
 	timeout time.Duration
 	log     logkit.Logger
+	// cors и sessionCookies — проверка Origin операции IssuesSession (issuerCheck).
+	cors           CORSConfig
+	sessionCookies []string
 }
 
-// Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в replaced. Хендлер
+// Handle регистрирует хендлер как humachi; маршрут, который операция заменяет, — в problems. Хендлер
 // операции из huma.Register исполняет её копию из OpenAPI (documented): группа huma с префиксом отдаёт
 // сюда другую копию, без правок хуков OnAddOperation — Security, лимита тела и вызова 401. Тело такой
 // операции huma читает по лимиту своей копии: копия из OpenAPI берёт лимит, который режет раньше,
@@ -114,7 +118,11 @@ type opAdapter struct {
 func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
 	documented := a.reg.claim(op)
 	if documented == nil {
-		a.router.MethodFunc(op.Method, op.Path, func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(op, r, w)) })
+		if issuesSession(op) && safeMethod(op.Method) {
+			a.reg.problems = append(a.reg.problems, issuerSafeMethod(operationName(op), op.Method))
+		}
+		a.router.MethodFunc(op.Method, op.Path, issuerCheck(a.cors, a.sessionCookies, a.log, op,
+			func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(op, r, w)) }))
 		return
 	}
 	if readsBody(documented) {
@@ -128,11 +136,12 @@ func (a *opAdapter) Handle(op *huma.Operation, handler func(huma.Context)) {
 	route := op.Method + " " + routeKey(op.Path)
 	if h, ok := routeHandlers(a.router)[route]; ok {
 		if _, isOp := h.(opHandler); !isOp {
-			a.reg.replaced = append(a.reg.replaced, fmt.Sprintf("route %s is registered before operation %s, which replaces it", route, operationName(documented)))
+			a.reg.problems = append(a.reg.problems, fmt.Sprintf("route %s is registered before operation %s, which replaces it", route, operationName(documented)))
 		}
 	}
 	serve := func(w http.ResponseWriter, r *http.Request) { handler(humachi.NewContext(documented, r, w)) }
-	a.router.Method(op.Method, op.Path, opHandler{operationDeadline(a.timeout, a.log, documented, serve)})
+	deadlined := operationDeadline(a.timeout, a.log, documented, serve)
+	a.router.Method(op.Method, op.Path, opHandler{issuerCheck(a.cors, a.sessionCookies, a.log, documented, deadlined)})
 }
 
 // SanitizeInternalContext — опциональный интерфейс адаптера humachi (autopatch huma).
@@ -156,9 +165,9 @@ func (r *registry) Config() huma.Config {
 // CheckRoutes — проверка старта: METHOD+path у операций не повторяется и не занят маршрутом
 // chi мимо huma.Register (в любом порядке регистрации), Public — без Security, в Security есть
 // альтернатива со схемой (открытая без credentials операция — Public), схема Security — из
-// components. Если в components.securitySchemes есть схема, у каждой операции, в том числе
-// скрытой, — Security или Public, а маршрут chi мимо huma.Register (кроме /docs, /openapi.*,
-// /schemas) — в PublicRoutes. Module зовёт её на OnStart, после всех Invoke; маршрут,
+// components, IssuesSession — у изменяющего метода. Если в components.securitySchemes есть схема,
+// у каждой операции, в том числе скрытой, — Security или Public, а маршрут chi мимо huma.Register
+// (кроме /docs, /openapi.*, /schemas) — в PublicRoutes. Module зовёт её на OnStart, после всех Invoke; маршрут,
 // добавленный позже, она не видит. Ошибка — ErrRoutes с именами операций и маршрутов.
 func (s *Server) CheckRoutes() error {
 	reg := s.registry()
@@ -182,6 +191,9 @@ func (s *Server) CheckRoutes() error {
 		case len(op.Security) > 0 && !slices.ContainsFunc(op.Security, func(alt map[string][]string) bool { return len(alt) > 0 }):
 			problems = append(problems, fmt.Sprintf("operation %s has only empty Security alternatives: mark it httpkit.Public", name))
 		}
+		if issuesSession(op) && safeMethod(op.Method) {
+			problems = append(problems, issuerSafeMethod(name, op.Method))
+		}
 		for _, req := range op.Security {
 			for scheme := range req {
 				if _, ok := schemes[scheme]; !ok {
@@ -190,7 +202,7 @@ func (s *Server) CheckRoutes() error {
 			}
 		}
 	}
-	problems = append(problems, reg.replaced...)
+	problems = append(problems, reg.problems...)
 	problems = append(problems, s.rawRouteProblems(ops, guarded)...)
 	if len(problems) == 0 {
 		return nil
@@ -261,6 +273,11 @@ var pathParam = regexp.MustCompile(`\{[^}]*\}`)
 // маршрутом, и второй молча заменяет первый.
 func routeKey(path string) string {
 	return pathParam.ReplaceAllString(path, "{}")
+}
+
+// issuerSafeMethod — проблема CheckRoutes: метка IssuesSession у безопасного метода ничего не закрывает.
+func issuerSafeMethod(name, method string) string {
+	return fmt.Sprintf("operation %s is httpkit.IssuesSession, but %s is a safe method: a link sends it without Origin, and the check cannot refuse a forged login", name, method)
 }
 
 func operationName(op *huma.Operation) string {

@@ -326,7 +326,8 @@ func TestNewAPI_WithLogger(t *testing.T) {
 }
 
 // Cookie сессии — как у сервера: изменяющий запрос с ними проходит только с Origin из HTTP_CORS_ORIGINS конфига, тест
-// шлёт его заголовком; запрос без cookie и чтение Origin не сверяют, без опции проверки нет.
+// шлёт его заголовком; запрос без cookie и чтение Origin не сверяют, кроме входа (httpkit.IssuesSession): с чужим Origin
+// и без Origin с телом, которое браузер шлёт без preflight, — 403; без опции проверки нет.
 func TestNewAPI_SessionCookies(t *testing.T) {
 	cfg, err := httpkit.NewConfig()
 	if err != nil {
@@ -338,6 +339,8 @@ func TestNewAPI_SessionCookies(t *testing.T) {
 			huma.Register(api, huma.Operation{OperationID: "session-" + strings.ToLower(method), Method: method, Path: "/session"},
 				func(context.Context, *struct{}) (*emptyOutput, error) { return &emptyOutput{}, nil })
 		}
+		huma.Register(api, httpkit.IssuesSession(huma.Operation{OperationID: "login", Method: http.MethodPost, Path: "/login"}),
+			func(context.Context, *struct{}) (*emptyOutput, error) { return &emptyOutput{}, nil })
 	}
 	api := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg), handlertest.WithSessionCookies("sid"))
 	cookie := "Cookie: sid=s1"
@@ -347,9 +350,15 @@ func TestNewAPI_SessionCookies(t *testing.T) {
 	handlertest.AssertStatus(t, api.Post("/session", cookie, "Origin: https://app.example.com"), http.StatusNoContent)
 	handlertest.AssertStatus(t, api.Post("/session", "Authorization: Bearer alice"), http.StatusNoContent)
 	handlertest.AssertStatus(t, api.Get("/session", cookie, "Origin: https://evil.example.com"), http.StatusNoContent)
+	handlertest.AssertAPIError(t, api.Post("/login", "Origin: https://evil.example.com"), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertStatus(t, api.Post("/login", "Origin: https://app.example.com"), http.StatusNoContent)
+	handlertest.AssertStatus(t, api.Post("/login", "Content-Type: application/json"), http.StatusNoContent)
+	handlertest.AssertAPIError(t, api.Post("/login"), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertStatus(t, api.Post("/session", "Origin: https://evil.example.com"), http.StatusNoContent)
 
 	plain := handlertest.NewAPI(t, register, handlertest.WithConfig(cfg))
 	handlertest.AssertStatus(t, plain.Post("/session", cookie), http.StatusNoContent)
+	handlertest.AssertStatus(t, plain.Post("/login", "Origin: https://evil.example.com"), http.StatusNoContent)
 
 	tb := &recordTB{}
 	handlertest.NewAPI(tb, register, handlertest.WithConfig(cfg), handlertest.WithSessionCookies("not a cookie name"))

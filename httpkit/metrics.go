@@ -45,7 +45,7 @@ func newInstruments() *instruments {
 		rateLimited: otelkit.Must(m.Int64Counter("http_rate_limited_total",
 			metric.WithDescription("Requests rejected by the per-client rate limiter"))),
 		originRejections: otelkit.Must(m.Int64Counter("http_origin_rejections_total",
-			metric.WithDescription("Changing requests with a session cookie rejected because their Origin is not allowed"))),
+			metric.WithDescription("Changing requests rejected because their Origin is not allowed: with a session cookie or to an operation that issues a session"))),
 	}
 }
 

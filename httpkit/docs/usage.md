@@ -18,7 +18,8 @@
   Conflict/Internal/Unavailable`, `ErrorMap` (`NewErrorMap`, `ErrorRule`, `Map`,
   `Declare`, `Unmapped`), `ProblemContentType`.
 - **Auth и маршруты**: `SecuritySchemeEntry` (`Extract` — `AuthExtractor`), `ErrAuthUnavailable`,
-  `ErrAuthNotConfigured`, `ContextWithSubject`, `SubjectFrom`, `Public`, `PublicRoutes`, `ErrRoutes`.
+  `ErrAuthNotConfigured`, `ContextWithSubject`, `SubjectFrom`, `Public`, `PublicRoutes`, `IssuesSession`,
+  `ErrRoutes`.
 - **Health**: `RegisterHealth(api, probeTimeout, log, probes...)`, `Probe`
   (= `healthkit.Probe`); проверка здоровья контейнера — `Healthcheck(ctx)` (код выхода),
   `CheckHealth(ctx, addr)`.
@@ -331,8 +332,22 @@ HTTP_CORS_ALLOW_CREDENTIALS=true              # SPA на другом адрес
 Изменяющий запрос (не `GET`, `HEAD`, `OPTIONS`, `TRACE`) с любой из этих cookie проходит только с
 `Origin` из `HTTP_CORS_ORIGINS`, иначе — `403 ORIGIN_NOT_ALLOWED` до `HumaAuth` и хендлера; в
 OpenAPI этот 403 — у каждой операции изменяющего метода. Запроса без этих cookie — сервис или
-клиент с `Authorization: Bearer` — проверка не касается. Данные меняет только изменяющий метод:
-`GET` с побочным эффектом и upgrade WebSocket проверка не закрывает. Без адреса в списке `Module`
+клиент с `Authorization: Bearer` — проверка не касается, кроме операции, которая выдаёт сессию:
+вход и регистрация со входом — `httpkit.IssuesSession`, и запрос к ней с чужим `Origin` получает
+тот же 403 и без cookie (подделка входа), а без `Origin` проходит, только если такое тело браузер без
+preflight не шлёт: JSON клиента вне браузера проходит, пустой, битый `Content-Type`, `text/plain` и
+формы — отказ:
+
+```go
+huma.Register(api, httpkit.IssuesSession(httpkit.Public(huma.Operation{
+    OperationID: "login", Method: http.MethodPost, Path: "/api/auth/login",
+})), h.login)
+```
+
+Свою cookie с `Domain` родителя страница соседнего адреса ставит и без входа (cookie tossing): имена
+cookie сессии с префиксом `__Host-` (при `Secure`) такую подмену отсекают — проверка Origin её не видит.
+Данные меняет только изменяющий метод: `GET` с побочным эффектом и upgrade WebSocket проверка не
+закрывает. Без адреса в списке `Module`
 не стартует (`ErrConfig`); тест хендлера — `handlertest.WithSessionCookies` и заголовок `Origin`
 ([testing.md](testing.md)). Cookie китов: `hubkit/sso` — `sso.Config.Cookie` и `CustomerCookie`
 (`HUB_SSO_COOKIE`, `HUB_SSO_CUSTOMER_COOKIE`), `oidckit` — `CookieConfig.SessionCookieName()`.

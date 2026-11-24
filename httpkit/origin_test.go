@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -14,6 +15,7 @@ import (
 	"github.com/danielgtaylor/huma/v2"
 	"github.com/danielgtaylor/huma/v2/humatest"
 	"github.com/danielgtaylor/huma/v2/sse"
+	"github.com/go-chi/chi/v5/middleware"
 	"go.uber.org/fx"
 
 	"git.stit.tech/stit-core/golibinfra/httpkit"
@@ -113,6 +115,185 @@ func registerThings(calls *atomic.Int32) func(huma.API) {
 					return nil, nil // тело ответа не нужно
 				})
 		}
+	}
+}
+
+// Операция, которая выдаёт сессию (IssuesSession), отвергает изменяющий запрос с чужим Origin и без cookie сессии —
+// страница соседнего адреса того же сайта иначе вошла бы под чужой учётной записью, — и запрос без Origin с телом,
+// которое браузер шлёт без preflight; JSON без Origin (клиент вне браузера) и запрос с адресом из списка проходят,
+// операция без метки и сервер без SessionCookies Origin без cookie не сверяют. Проверка — на маршруте операции: путь,
+// который middleware потребителя переписал до маршрутизации, и маршрут Adapter().Handle её не обходят.
+func TestSessionIssuer(t *testing.T) {
+	const jsonBody = "Content-Type: application/json"
+	type credentials struct {
+		Body struct {
+			Login string `json:"login"`
+		}
+	}
+	var logins atomic.Int32
+	register := func(api huma.API) {
+		huma.Register(api, httpkit.IssuesSession(httpkit.Public(huma.Operation{OperationID: "login", Method: http.MethodPost, Path: "/login"})),
+			func(context.Context, *credentials) (*struct{}, error) {
+				logins.Add(1)
+				return nil, nil // тело ответа не нужно
+			})
+		registerThings(new(atomic.Int32))(api)
+	}
+	s := mustServer(t, originConfig(t, appOrigin), httpkit.WithSessionCookies("sid"))
+	register(s.BindAPI())
+	api := humatest.Wrap(t, s.BindAPI())
+	login := func(api humatest.TestAPI, hs ...any) *httptest.ResponseRecorder {
+		return api.Post("/login", append(hs, strings.NewReader(`{"login":"attacker"}`))...)
+	}
+
+	for name, hs := range map[string][]any{
+		"sibling page":               headers("", "https://evil.example.com", jsonBody),
+		"null":                       headers("", "null", jsonBody),
+		"other scheme":               headers("", "http://app.example.com", jsonBody),
+		"cookie from a sibling page": headers("sid="+sessionValue, "https://evil.example.com", jsonBody),
+		"cookie without origin":      headers("sid="+sessionValue, "", jsonBody),
+		"no origin, no content type": headers("", ""),
+		"no origin, text":            headers("", "", "Content-Type: Text/Plain; charset=utf-8"),
+		"no origin, url-encoded":     headers("", "", "Content-Type: application/x-www-form-urlencoded"),
+		"no origin, multipart":       headers("", "", "Content-Type: multipart/form-data; boundary=x"),
+		"no origin, no media type":   headers("", "", "Content-Type: ;charset=utf-8"),
+		// Firefox пускает их без preflight, а huma читает тело как JSON (тип — между «+» и «;»).
+		"no origin, text +json":      headers("", "", "Content-Type: text/plain +json;"),
+		"no origin, multipart +json": headers("", "", "Content-Type: multipart/form-data\t+json; boundary=x"),
+		"no origin, form +json":      headers("", "", "Content-Type: application/x-www-form-urlencoded +json;"),
+		"no origin, text, space":     headers("", "", "Content-Type: text/plain ;charset=utf-8"),
+	} {
+		handlertest.AssertAPIError(t, login(api, hs...), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+		if logins.Load() != 0 {
+			t.Fatalf("%s: the login ran after the refusal", name)
+		}
+	}
+	handlertest.AssertStatus(t, login(api, headers("", "", jsonBody)...), http.StatusNoContent)
+	handlertest.AssertStatus(t, login(api, headers("", "", "Content-Type: application/json; charset=UTF-8")...), http.StatusNoContent)
+	handlertest.AssertStatus(t, login(api, headers("", appOrigin)...), http.StatusNoContent)
+	handlertest.AssertStatus(t, api.Post("/things", headers("", "https://evil.example.com")...), http.StatusNoContent)
+	handlertest.AssertStatus(t, api.Post("/things"), http.StatusNoContent)
+	if got := logins.Load(); got != 3 {
+		t.Fatalf("logins = %d, want 3: JSON without an Origin, with a charset, and from the SPA", got)
+	}
+
+	stripped := mustServer(t, originConfig(t, appOrigin), httpkit.WithSessionCookies("sid"), httpkit.WithMiddleware(middleware.StripSlashes))
+	register(stripped.BindAPI())
+	strippedAPI := humatest.Wrap(t, stripped.BindAPI())
+	handlertest.AssertAPIError(t, strippedAPI.Post("/login/", headers("", "https://evil.example.com", jsonBody)...), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertStatus(t, strippedAPI.Post("/login/", append(headers("", appOrigin), strings.NewReader(`{"login":"alice"}`))...), http.StatusNoContent)
+	if got := logins.Load(); got != 4 {
+		t.Fatalf("logins = %d, want 4: the rewritten path reaches the login only from the SPA", got)
+	}
+
+	var raw atomic.Int32
+	rawLogin := httpkit.IssuesSession(huma.Operation{Method: http.MethodPost, Path: "/raw-login"})
+	s.BindAPI().Adapter().Handle(&rawLogin, func(ctx huma.Context) {
+		raw.Add(1)
+		ctx.SetStatus(http.StatusNoContent)
+	})
+	handlertest.AssertAPIError(t, api.Post("/raw-login", headers("", "https://evil.example.com")...), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertStatus(t, api.Post("/raw-login", headers("", appOrigin)...), http.StatusNoContent)
+	if got := raw.Load(); got != 1 {
+		t.Fatalf("the Adapter().Handle login ran %d times, want 1: only from the SPA", got)
+	}
+
+	plain := mustServer(t, originConfig(t, appOrigin))
+	register(plain.BindAPI())
+	handlertest.AssertStatus(t, login(humatest.Wrap(t, plain.BindAPI()), headers("", "https://evil.example.com", jsonBody)...), http.StatusNoContent)
+
+	op := huma.Operation{OperationID: "login", Metadata: map[string]any{"k": "v"}}
+	marked := httpkit.IssuesSession(op)
+	if len(op.Metadata) != 1 || marked.Metadata["k"] != "v" {
+		t.Fatalf("IssuesSession changes the metadata of the operation it got or loses it: %v, %v", op.Metadata, marked.Metadata)
+	}
+}
+
+// Отказ входа виден: WARN с методом, Origin и Content-Type (длинные — обрезаны) и http_origin_rejections_total на пути
+// операции — not_allowed с чужим Origin, missing без него.
+func TestSessionIssuer_Signals(t *testing.T) {
+	before := metrictest.Collect(t)
+	log := logtest.CaptureAt(slog.LevelWarn)
+	s, err := httpkit.NewServer(originConfig(t, appOrigin), log, httpkit.WithSessionCookies("sid"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	huma.Register(s.BindAPI(), httpkit.IssuesSession(httpkit.Public(huma.Operation{OperationID: "login", Method: http.MethodPost, Path: "/login"})),
+		func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
+	api := humatest.Wrap(t, s.BindAPI())
+	longOrigin := "https://" + strings.Repeat("a.", 150) + "example"
+	longType := "text/plain; note=" + strings.Repeat("x", 300)
+
+	handlertest.AssertAPIError(t, api.Post("/login", headers("", longOrigin, "Content-Type: application/json")...), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+	handlertest.AssertAPIError(t, api.Post("/login", headers("", "", "Content-Type: "+longType)...), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+
+	d := metrictest.Collect(t).Sub(before)
+	for _, reason := range []string{"not_allowed", "missing"} {
+		if got := d.Get(t, "http_origin_rejections_total", "path", "/login", "reason", reason); got.Kind != metrictest.Counter || got.Value != 1 {
+			t.Errorf("http_origin_rejections_total{path=/login, reason=%s} = %v (%s), want 1", reason, got.Value, got.Kind)
+		}
+	}
+	var refusals []logtest.Entry
+	for _, e := range log.Entries() {
+		if e.Msg == "session issuer refused: origin is not allowed" {
+			refusals = append(refusals, e)
+		}
+	}
+	if len(refusals) != 2 {
+		t.Fatalf("refusal lines: %+v, want two", refusals)
+	}
+	for i, want := range []struct{ origin, contentType string }{
+		{longOrigin[:256] + "…", "application/json"}, {"", longType[:256] + "…"},
+	} {
+		if e := refusals[i]; e.Level != slog.LevelWarn || e.Str("method") != http.MethodPost || e.Str("origin") != want.origin ||
+			e.Str("content_type") != want.contentType {
+			t.Errorf("refusal %d: %v %+v, want Warn with origin %q and content_type %q", i, e.Level, e.KV, want.origin, want.contentType)
+		}
+	}
+}
+
+// Отказ операции IssuesSession — до тела (413 лимита не наступает), HumaAuth (extractor не зовётся; Idempotency — за
+// ним) и хендлера, как у запроса с cookie сессии.
+func TestSessionIssuer_BeforeAuth(t *testing.T) {
+	var extracted, handled atomic.Int32
+	schemes := httpkit.WithSecuritySchemes(httpkit.SecuritySchemeEntry{
+		Name: "Bearer", Scheme: bearerScheme,
+		Extract: func(r *http.Request) (context.Context, error) {
+			extracted.Add(1)
+			if r.Header.Get("Authorization") != "Bearer ok" {
+				return nil, errors.New("no credentials")
+			}
+			return httpkit.ContextWithSubject(r.Context(), "u1"), nil
+		},
+	})
+	cfg := originConfig(t, appOrigin)
+	cfg.MaxBody.MaxBytes = 64
+	type signUp struct {
+		Body struct {
+			Note string `json:"note"`
+		}
+	}
+	api := cookieAPI(t, cfg, func(api huma.API) {
+		huma.Register(api, httpkit.IssuesSession(huma.Operation{
+			OperationID: "sign-up", Method: http.MethodPost, Path: "/sign-up", Security: []map[string][]string{{"Bearer": {}}},
+		}), func(context.Context, *signUp) (*struct{}, error) {
+			handled.Add(1)
+			return nil, nil // тело ответа не нужно
+		})
+	}, schemes)
+	big := `{"note":"` + strings.Repeat("x", 200) + `"}`
+
+	for name, origin := range map[string]string{"sibling page": "https://evil.example.com", "no origin": ""} {
+		hs := headers("", origin, "Authorization: Bearer ok", "Idempotency-Key: k1", "Content-Type: text/plain")
+		handlertest.AssertAPIError(t, api.Post("/sign-up", append(hs, strings.NewReader(big))...), http.StatusForbidden, "ORIGIN_NOT_ALLOWED")
+		if extracted.Load() != 0 || handled.Load() != 0 {
+			t.Fatalf("%s: the extractor ran %d times, the handler %d after the refusal", name, extracted.Load(), handled.Load())
+		}
+	}
+	resp := api.Post("/sign-up", "Origin: "+appOrigin, "Authorization: Bearer ok", "Content-Type: application/json", strings.NewReader(`{"note":"x"}`))
+	handlertest.AssertStatus(t, resp, http.StatusNoContent)
+	if extracted.Load() != 1 || handled.Load() != 1 {
+		t.Fatalf("from the SPA the extractor ran %d times, the handler %d, want 1 and 1", extracted.Load(), handled.Load())
 	}
 }
 

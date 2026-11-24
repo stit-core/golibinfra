@@ -46,7 +46,10 @@ handlertest.AssertAPIError(t, api.Get("/me"), http.StatusUnauthorized, "UNAUTHOR
 
 Cookie сессии сервиса (`httpkit.SessionCookies` в графе) — опция `WithSessionCookies(names...)`:
 изменяющий запрос с ними проходит только с `Origin` из `HTTP_CORS_ORIGINS` конфига, и тест шлёт
-его заголовком, как браузер ([architecture.md § Проверка Origin](architecture.md#проверка-origin)).
+его заголовком, как браузер ([architecture.md § Проверка Origin](architecture.md#проверка-origin));
+операция `httpkit.IssuesSession` (вход) отвечает 403 и без cookie запросу с чужим `Origin` и без
+`Origin` с телом, которое браузер шлёт без preflight: вход клиента вне браузера тест шлёт без `Origin` с
+`Content-Type: application/json`.
 Стартовой проверки адресов, как у `Module`, у `NewAPI` нет: без адреса в конфиге такой запрос
 получает 403.
 
