@@ -3,6 +3,7 @@ package httpkit
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
@@ -87,6 +88,14 @@ func TestIdempotency_DifferentBodySameKey_Conflict(t *testing.T) {
 	}
 	if calls.Load() != 1 {
 		t.Fatalf("handler must not run for mismatched fingerprint, calls=%d", calls.Load())
+	}
+	var body APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	want := "Ключ идемпотентности уже использован для другого запроса. Для нового запроса укажите новый ключ."
+	if body.Detail != want || len(body.Errors) != 1 || body.Errors[0].Location != "header.Idempotency-Key" || body.Errors[0].Message != want {
+		t.Fatalf("the reused key must be explained in Russian, once in detail and once on the header: %s", rec.Body.String())
 	}
 }
 
@@ -238,6 +247,13 @@ func TestIdempotency_InProgress(t *testing.T) {
 	}
 	if calls.Load() != 0 {
 		t.Fatal("handler must not run while the key is reserved")
+	}
+	var body APIError
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if want := "Запрос с таким ключом идемпотентности еще выполняется. Подождите и не отправляйте его повторно."; body.Detail != want {
+		t.Fatalf("detail %q, want %q", body.Detail, want)
 	}
 }
 

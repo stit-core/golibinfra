@@ -94,6 +94,12 @@ type TaskInput struct {
 `tzkit.Day` в ответе уезжает как `null` — схема кита это описывает
 (`nullable: true`), так что типизированный клиент не ломается.
 
+Неверное значение в запросе huma отвергает по схеме; в ответе сервера `httpkit`
+ошибка поля — по-русски, с примером записи: описание шаблона huma подставляет в
+сообщение («значение должно соответствовать: дата вида 2026-11-09 – год, месяц и
+день», «значение должно соответствовать: время вида 09:30 – часы и минуты»),
+несуществующая дата (`2026-13-40`) — «нужна дата, например 2026-11-09».
+
 Колонки `DATE`/`TIME` читаются и пишутся без промежуточного `time.Time`: `Day`
 и `WallTime` реализуют интерфейсы pgx (`DateValuer`/`DateScanner`,
 `TimeValuer`/`TimeScanner`), поэтому идут аргументом и в `Scan` напрямую:
@@ -182,7 +188,7 @@ App-конфига. `NewZone` возвращает ошибку на пусто�
 | `Weekday()` | день недели (от зоны не зависит) |
 | `Date() (int, time.Month, int)` / `IsZero()` | разбор и признак «не задан» |
 | `String()` / JSON / текст | `"2026-08-08"`; нулевой день — `""` и `null` |
-| `Schema(huma.Registry)` | OpenAPI: `string`, `format: date`, паттерн, `nullable` |
+| `Schema(huma.Registry)` | OpenAPI: `string`, `format: date`, паттерн с описанием по-русски, `nullable` |
 | `PgDate()` / `DayFromPg(v)` / `DateValue()` / `ScanDate(v)` | колонка `DATE` |
 
 ### `WallTime`
@@ -193,7 +199,7 @@ App-конфига. `NewZone` возвращает ошибку на пусто�
 | `Hour()` / `Minute()` / `Duration()` | разбор |
 | `Valid()` | значение в пределах суток `[00:00, 24:00)` |
 | `String()` / JSON / текст | `"17:00"`; значение вне суток — ошибка сериализации |
-| `Schema(huma.Registry)` | OpenAPI: `string` с паттерном `HH:MM` |
+| `Schema(huma.Registry)` | OpenAPI: `string` с паттерном `HH:MM` и описанием по-русски |
 | `PgTime()` / `WallTimeFromPg(v)` / `TimeValue()` / `ScanTime(v)` | колонка `TIME` |
 
 ### Свободные функции

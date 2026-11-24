@@ -195,3 +195,8 @@
 - **oidckit-logout-same-site** — `POST /auth/logout` BFF пускает `Sec-Fetch-Site: same-site`: страница соседнего адреса
   того же сайта выходит из чужой сессии; закрывает это `SessionCookies` сервиса с `CookieConfig.SessionCookieName()`.
   Триггер: потребитель oidckit без `SessionCookies` или аудит oidckit.
+- **oidckit-bff-texts-ru** — ответы BFF `oidckit` (`huma.Error4xx` в `oidckit/bff.go`: «missing code or state»,
+  «unknown or expired state», «no sso session», «cross-site logout» …) английские, а тексты ответов API китов —
+  русские (CLAUDE.md § Стиль, «Язык»): oidckit вне объёма аудита и в перевод `httpkit` не вошёл. Перевести — по
+  таблице `httpkit/texts.go`, с тестом, что ответы BFF без латиницы. Триггер: сервис подключает BFF `oidckit` или
+  аудит oidckit.

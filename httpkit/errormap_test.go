@@ -80,7 +80,7 @@ func TestErrorMap_Map(t *testing.T) {
 		if !errors.As(userErrors.Map(c.err), &apiErr) || apiErr.Status != c.status || apiErr.Code != c.code {
 			t.Errorf("Map(%v) = %#v, want %d %s", c.err, apiErr, c.status, c.code)
 		}
-		if apiErr != nil && (apiErr.Title != http.StatusText(c.status) || len(apiErr.Errors) != 0) {
+		if apiErr != nil && (apiErr.Title != titles[c.status] || len(apiErr.Errors) != 0) {
 			t.Errorf("Map(%v): title %q, errors %+v", c.err, apiErr.Title, apiErr.Errors)
 		}
 	}
@@ -301,7 +301,7 @@ func TestErrorMap_DeclareSecured401FromConsumerHook(t *testing.T) {
 // отдаёт лимитер; коды 429 таблицы — первыми и без повтора; при 0 — только 429 таблицы; Retry-After — у любого 429.
 func TestErrorMap_DescribesServerRateLimit(t *testing.T) {
 	limitErrors := httpkit.NewErrorMap( // свой лимитер потребителя на части путей
-		httpkit.ErrorRule{Err: errRateLimited, Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Detail: "rate limit exceeded"},
+		httpkit.ErrorRule{Err: errRateLimited, Status: http.StatusTooManyRequests, Code: "RATE_LIMITED", Detail: "Слишком много запросов"},
 	)
 	lockErrors := httpkit.NewErrorMap(
 		httpkit.ErrorRule{Err: errLocked, Status: http.StatusTooManyRequests, Code: "AUTH_LOCKED"},

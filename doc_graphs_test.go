@@ -66,7 +66,7 @@ func (userService) Get(context.Context, string) (string, error) { return "", Err
 // docHTTPKitQuickStart — httpkit/README.md § Быстрый старт.
 func docHTTPKitQuickStart(fx docFx, svc userService) {
 	userErrors := httpkit.NewErrorMap(
-		httpkit.ErrorRule{Err: ErrUserNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "user not found"},
+		httpkit.ErrorRule{Err: ErrUserNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "Пользователь не найден. Проверьте, что он не удален."},
 	)
 
 	app := fx.New(

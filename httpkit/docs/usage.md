@@ -77,7 +77,7 @@ func registerRoutes(api huma.API, svc *UserService) {
 Проверка входа в хендлере — готовый `APIError`:
 
 ```go
-return nil, httpkit.BadRequest("INVALID_EMAIL", "email is malformed")
+return nil, httpkit.BadRequest("INVALID_EMAIL", "Адрес электронной почты записан неверно. Проверьте его и повторите.")
 ```
 
 Доменные ошибки — одна таблица `ErrorMap` на домен или операцию, первое
@@ -86,12 +86,12 @@ return nil, httpkit.BadRequest("INVALID_EMAIL", "email is malformed")
 
 ```go
 var userErrors = httpkit.NewErrorMap(
-    httpkit.ErrorRule{Err: user.ErrNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "user not found"},
-    httpkit.ErrorRule{Err: user.ErrConflict, Status: http.StatusConflict, Code: "USER_CONCURRENT_UPDATE", Detail: "user changed concurrently"},
-    httpkit.ErrorRule{Match: policy.IsForbidden, Status: http.StatusForbidden, Code: "FORBIDDEN", Detail: "forbidden"},
+    httpkit.ErrorRule{Err: user.ErrNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "Пользователь не найден. Проверьте, что он не удален."},
+    httpkit.ErrorRule{Err: user.ErrConflict, Status: http.StatusConflict, Code: "USER_CONCURRENT_UPDATE", Detail: "Пользователя изменили, пока вы с ним работали. Загрузите его заново и повторите действие."},
+    httpkit.ErrorRule{Match: policy.IsForbidden, Status: http.StatusForbidden, Code: "FORBIDDEN", Detail: "Для этого действия не хватает прав."},
     httpkit.ErrorRule{Err: user.ErrWeakPassword, Status: http.StatusUnprocessableEntity,
-        Code: "USER_WEAK_PASSWORD", Detail: "password too weak", Field: "body.password"},
-    httpkit.ErrorRule{Err: auth.ErrLocked, Status: http.StatusTooManyRequests, Code: "AUTH_LOCKED", Detail: "too many attempts"},
+        Code: "USER_WEAK_PASSWORD", Detail: "Пароль слишком простой. Задайте не меньше 12 знаков.", Field: "body.password"},
+    httpkit.ErrorRule{Err: auth.ErrLocked, Status: http.StatusTooManyRequests, Code: "AUTH_LOCKED", Detail: "Слишком много неудачных попыток входа. Подождите и повторите."},
 )
 ```
 

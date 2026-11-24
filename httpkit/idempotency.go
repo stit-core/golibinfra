@@ -385,8 +385,7 @@ func idempotency(cfg IdempotencyConfig, store IdempotencyStore, log logkit.Logge
 					return
 				}
 				outcome(ctx, "in_progress")
-				writeAPIError(ctx, w, Error(codeIdempotencyInProgress, http.StatusConflict,
-					"a request with this "+cfg.Header+" is still being processed"))
+				writeAPIError(ctx, w, Error(codeIdempotencyInProgress, http.StatusConflict, textIdempotencyInProgress))
 				return
 			}
 
@@ -462,7 +461,7 @@ func humaMiddleware(mw func(http.Handler) http.Handler) func(huma.Context, func(
 func replay(ctx context.Context, w http.ResponseWriter, rec idempotencyRecord, fp, header string, outcome func(context.Context, string)) {
 	if rec.Fingerprint != fp {
 		outcome(ctx, "conflict")
-		e := Error(codeIdempotencyKeyReused, http.StatusUnprocessableEntity, header+" was already used with a different request")
+		e := Error(codeIdempotencyKeyReused, http.StatusUnprocessableEntity, textIdempotencyKeyReused)
 		e.Errors = []FieldError{{Location: "header." + header, Code: e.Code, Message: e.Detail}}
 		writeAPIError(ctx, w, e)
 		return

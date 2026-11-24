@@ -40,9 +40,9 @@ type APIError struct {
 
 // FieldError — ошибка одного места запроса: location (`body.email`, `path.id`,
 // `query.limit`, `header.<name>`), машинный code и message. Ошибки валидации
-// huma получают code INVALID и значение поля не цитируют: хвост сообщений,
-// которые его цитируют (форматы, ошибка UnmarshalText параметра), обрезается.
-// Текст декодера тела (синтаксис JSON, UnmarshalText/UnmarshalJSON типа поля)
+// huma получают code INVALID, message по-русски (fieldTexts) и значение поля не
+// цитируют: хвост сообщений, которые его цитируют (форматы, ошибка UnmarshalText
+// параметра), отбрасывается. Текст декодера типа поля (UnmarshalText/UnmarshalJSON)
 // huma отдаёт как есть.
 type FieldError struct {
 	Location string `json:"location" doc:"Where in the request: body.<field>, path.<name>, query.<name>, header.<name>"`
@@ -108,7 +108,7 @@ func Error(code string, status int, detail string) *APIError {
 	return &APIError{
 		Code:   code,
 		Status: status,
-		Title:  http.StatusText(status),
+		Title:  statusTitle(status),
 		Detail: detail,
 	}
 }
@@ -150,16 +150,18 @@ func Unavailable(code, detail string) *APIError {
 
 // neutral — 5xx без текста причины: клиенту — статус и код, cause — в лог сервера.
 func neutral(status int, cause error) *APIError {
-	return &APIError{Title: http.StatusText(status), Status: status, Code: codeForStatus(status), cause: cause}
+	return &APIError{Title: statusTitle(status), Status: status, Code: codeForStatus(status), cause: cause}
 }
 
 // newError — huma.NewError кита: 5xx нейтральна, 4xx несёт msg и ошибки полей
-// без эха значения (в нём бывает пароль); *http.MaxBytesError в причине — 413.
+// без эха значения (в нём бывает пароль); *http.MaxBytesError в причине — 413. Сообщения huma
+// (msg и message полей) уходят по-русски (texts.go); текст потребителя остаётся как есть.
 func newError(status int, msg string, errs ...error) huma.StatusError {
 	cause := errors.Join(errs...)
 	// Тело сверх лимита MaxBody huma читает как ошибку чтения (500), а это превышение лимита.
-	if IsMaxBodyError(cause) {
-		return Error(codeForStatus(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge, "request body is too large")
+	var tooLarge *http.MaxBytesError
+	if errors.As(cause, &tooLarge) {
+		return Error(codeForStatus(http.StatusRequestEntityTooLarge), http.StatusRequestEntityTooLarge, bodyTooLargeText(tooLarge.Limit))
 	}
 	if status >= http.StatusInternalServerError {
 		if cause == nil {
@@ -167,7 +169,7 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 		}
 		return neutral(status, fmt.Errorf("%s: %w", msg, cause))
 	}
-	e := Error(codeForStatus(status), status, msg)
+	e := Error(codeForStatus(status), status, detailText(msg))
 	e.cause = cause
 	for _, err := range errs {
 		if err == nil {
@@ -177,7 +179,7 @@ func newError(status int, msg string, errs ...error) huma.StatusError {
 		var d huma.ErrorDetailer
 		if errors.As(err, &d) {
 			detail := d.ErrorDetail()
-			fe.Location, fe.Message = detail.Location, withoutEcho(detail.Message)
+			fe.Location, fe.Message = detail.Location, withoutEcho(fieldTexts.translate(detail.Message))
 		}
 		e.Errors = append(e.Errors, fe)
 	}

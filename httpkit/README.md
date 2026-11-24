@@ -12,7 +12,8 @@ Origin (сервис называет cookie сессии — `httpkit.SessionCo
 (`HTTP_REQUEST_TIMEOUT`), HEAD на GET-маршрутах, опц. `Idempotency`, `HumaAuth`. Любой
 ответ-ошибка — `APIError` (`application/problem+json`: `title`, `status`, `detail`,
 машинный `code`, `request_id`, `errors[]` полей): хендлер, валидация, auth, неизвестный
-маршрут и метод, лимиты, дедлайн, panic; 5xx — без текста причины (она в логе с тем же
+маршрут и метод, лимиты, дедлайн, panic; тексты кита (`title`, `detail`, `errors[].message`) —
+русские, для человека, который систему не строил; 5xx — без текста причины (она в логе с тем же
 `request_id`), 429 — с `Retry-After`, 401 — с `WWW-Authenticate`; panic после начала
 ответа обрывает соединение. В OpenAPI операции — коды её таблицы `ErrorMap.Declare` и ответы,
 которые кит отдаёт сам, там, где он их отдаёт: 401 с `WWW-Authenticate`, `429 RATE_LIMITED` с
@@ -46,7 +47,7 @@ import "git.stit.tech/stit-core/golibinfra/httpkit"
 
 ```go
 userErrors := httpkit.NewErrorMap(
-    httpkit.ErrorRule{Err: ErrUserNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "user not found"},
+    httpkit.ErrorRule{Err: ErrUserNotFound, Status: http.StatusNotFound, Code: "USER_NOT_FOUND", Detail: "Пользователь не найден. Проверьте, что он не удален."},
 )
 
 app := fx.New(

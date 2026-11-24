@@ -81,7 +81,7 @@ func originCheck(cors CORSConfig, cookies []string, log logkit.Logger) func(http
 			))
 			log.Warn(r.Context(), "session cookie refused: origin is not allowed",
 				"method", r.Method, "origin", truncate(origin, maxLoggedOrigin))
-			writeAPIError(r.Context(), w, Forbidden(codeOriginNotAllowed, "a request that changes data with a session cookie needs an allowed Origin"))
+			writeAPIError(r.Context(), w, Forbidden(codeOriginNotAllowed, textOriginNotAllowed))
 		})
 	}
 }

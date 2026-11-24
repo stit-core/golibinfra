@@ -326,7 +326,7 @@ func authError(ctx context.Context, log logkit.Logger, failures []error) *APIErr
 		}
 	}
 	log.Debug(ctx, "auth rejected", "error", errors.Join(failures...))
-	return Unauthorized(codeUnauthorized, "unauthorized")
+	return Unauthorized(codeUnauthorized, textUnauthorized)
 }
 
 func writeHumaAPIError(ctx huma.Context, e *APIError) {

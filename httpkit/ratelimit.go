@@ -109,7 +109,7 @@ func rateLimitWith(l *rateLimiter, instr *instruments) func(http.Handler) http.H
 			}
 			if !l.allow(clientip.Key(addr, limiterIPv6Prefix)) {
 				instr.rateLimited.Add(r.Context(), 1)
-				writeAPIError(r.Context(), w, Error(codeRateLimited, http.StatusTooManyRequests, "rate limit exceeded"))
+				writeAPIError(r.Context(), w, Error(codeRateLimited, http.StatusTooManyRequests, textRateLimited))
 				return
 			}
 			next.ServeHTTP(w, r)

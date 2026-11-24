@@ -108,11 +108,14 @@ func contractRoutes(api huma.API) {
 	}, func(context.Context, *struct{}) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
 }
 
+const validationFailedText = "Данные не прошли проверку. Исправьте указанные поля и повторите запрос."
+
 type contractCase struct {
 	name, method, path, body string
 	headers                  []string
 	status                   int
 	code                     string
+	detail                   string // "" — detail не сверяется
 	retryAfter               string // "" — заголовка нет
 	logged                   bool   // строка причины (не access-log) с тем же request_id
 	check                    func(t *testing.T, resp *http.Response, e contractBody)
@@ -170,32 +173,42 @@ func TestErrorContract(t *testing.T) {
 		{name: "503 с RetryAfter в причине", method: http.MethodGet, path: "/maintenance", status: http.StatusServiceUnavailable, code: "UNAVAILABLE", retryAfter: "30", logged: true, check: noDetail},
 		{
 			name: "валидация", method: http.MethodPost, path: "/signup", body: `{"email":"not-an-email","password":"hunter2"}`,
-			status: http.StatusUnprocessableEntity, code: "VALIDATION_FAILED",
+			status: http.StatusUnprocessableEntity, code: "VALIDATION_FAILED", detail: validationFailedText,
 			check: func(t *testing.T, _ *http.Response, e contractBody) {
 				t.Helper()
 				fields := map[string]httpkit.FieldError{}
 				for _, fe := range e.Errors {
 					fields[fe.Location] = fe
 				}
-				for _, loc := range []string{"body.email", "body.password"} {
-					if fe, ok := fields[loc]; !ok || fe.Code != "INVALID" || fe.Message == "" {
-						t.Errorf("422 must list %s with code INVALID and a message: %+v", loc, e.Errors)
+				for loc, message := range map[string]string{
+					"body.email":    "нужен адрес электронной почты, например name@example.com",
+					"body.password": "число знаков: не меньше 12",
+				} {
+					if fe, ok := fields[loc]; !ok || fe.Code != "INVALID" || fe.Message != message {
+						t.Errorf("422 must list %s with code INVALID and message %q: %+v", loc, message, e.Errors)
 					}
 				}
 			},
 		},
 		{
 			name: "битый JSON", method: http.MethodPost, path: "/signup", body: `{"email":"a@b.c","password":"hunter2"`,
-			status: http.StatusBadRequest, code: "BAD_REQUEST",
+			status: http.StatusBadRequest, code: "BAD_REQUEST", detail: validationFailedText,
 			check: func(t *testing.T, _ *http.Response, e contractBody) {
 				t.Helper()
-				if len(e.Errors) != 1 || e.Errors[0].Location != "body" || e.Errors[0].Code != "INVALID" {
-					t.Errorf("malformed body must be one body error: %+v", e.Errors)
+				if len(e.Errors) != 1 || e.Errors[0].Location != "body" || e.Errors[0].Code != "INVALID" ||
+					e.Errors[0].Message != "данные запроса оборваны: запись не закончена" {
+					t.Errorf("malformed body must be one body error in Russian: %+v", e.Errors)
 				}
 			},
 		},
-		{name: "лимит тела", method: http.MethodPost, path: "/signup", body: `{"email":"` + strings.Repeat("a", 300) + `"}`, status: http.StatusRequestEntityTooLarge, code: "BODY_TOO_LARGE"},
-		{name: "auth", method: http.MethodGet, path: "/me", status: http.StatusUnauthorized, code: "UNAUTHORIZED"},
+		{
+			name: "лимит тела", method: http.MethodPost, path: "/signup", body: `{"email":"` + strings.Repeat("a", 300) + `"}`, status: http.StatusRequestEntityTooLarge, code: "BODY_TOO_LARGE",
+			detail: "Запрос слишком большой: допустимо не больше 256 байт. Уменьшите его размер и повторите.",
+		},
+		{
+			name: "auth", method: http.MethodGet, path: "/me", status: http.StatusUnauthorized, code: "UNAUTHORIZED",
+			detail: "Вы не вошли в систему или вход больше не действует. Войдите заново и повторите действие.",
+		},
 		{
 			name: "auth backend недоступен", method: http.MethodGet, path: "/me", headers: []string{"Authorization: Bearer backend-down"},
 			status: http.StatusServiceUnavailable, code: "AUTH_UNAVAILABLE", logged: true, check: noDetail,
@@ -205,9 +218,13 @@ func TestErrorContract(t *testing.T) {
 			headers: []string{"Authorization: Bearer ok", "Idempotency-Key: k-1"},
 			status:  http.StatusServiceUnavailable, code: "IDEMPOTENCY_UNAVAILABLE", logged: true, check: noDetail,
 		},
-		{name: "неизвестный маршрут", method: http.MethodGet, path: "/nowhere", status: http.StatusNotFound, code: "NOT_FOUND"},
+		{
+			name: "неизвестный маршрут", method: http.MethodGet, path: "/nowhere", status: http.StatusNotFound, code: "NOT_FOUND",
+			detail: "Такого адреса в системе нет. Проверьте адрес запроса.",
+		},
 		{
 			name: "метод", method: http.MethodDelete, path: "/mapped", status: http.StatusMethodNotAllowed, code: "METHOD_NOT_ALLOWED",
+			detail: "Для этого адреса такой способ запроса не подходит. Выберите другой способ.",
 			check: func(t *testing.T, resp *http.Response, _ contractBody) {
 				t.Helper()
 				if allow := resp.Header.Values("Allow"); !slices.Equal(allow, []string{http.MethodGet, http.MethodHead}) {
@@ -229,7 +246,10 @@ func TestErrorContract(t *testing.T) {
 		limited := startApp(t, fx.Decorate(func(logkit.Logger) logkit.Logger { return log }))
 		_ = get(t, limited, "/health")
 		resp := get(t, limited, "/health")
-		assertProblem(t, resp, contractCase{status: http.StatusTooManyRequests, code: "RATE_LIMITED", retryAfter: "1"}, logs)
+		assertProblem(t, resp, contractCase{
+			status: http.StatusTooManyRequests, code: "RATE_LIMITED", retryAfter: "1",
+			detail: "Слишком много запросов за короткое время. Подождите немного и повторите действие.",
+		}, logs)
 	})
 }
 
@@ -249,8 +269,11 @@ func assertProblem(t *testing.T, resp *http.Response, c contractCase, logs *sync
 	if err := json.Unmarshal(raw, &e); err != nil {
 		t.Fatalf("body is not JSON: %s", raw)
 	}
-	if e.Code != c.code || e.Status != c.status || e.Title != http.StatusText(c.status) {
-		t.Errorf("body = %s, want code %s and status %d", raw, c.code, c.status)
+	if e.Code != c.code || e.Status != c.status || e.Title != titles[c.status] {
+		t.Errorf("body = %s, want code %s, status %d and title %q", raw, c.code, c.status, titles[c.status])
+	}
+	if c.detail != "" && (e.Detail == nil || *e.Detail != c.detail) {
+		t.Errorf("body = %s, want detail %q", raw, c.detail)
 	}
 	id := resp.Header.Get(httpkit.HeaderRequestID)
 	if id == "" || e.RequestID != id {

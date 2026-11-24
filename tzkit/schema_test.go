@@ -1,12 +1,16 @@
 package tzkit_test
 
 import (
+	"context"
 	"encoding/json"
+	"net/http"
 	"reflect"
+	"slices"
 	"testing"
 
 	"github.com/danielgtaylor/huma/v2"
 
+	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 	"git.stit.tech/stit-core/golibinfra/tzkit"
 )
 
@@ -76,6 +80,61 @@ func TestSchemaValidation(t *testing.T) {
 			huma.Validate(reg, tt.schema, huma.NewPathBuffer([]byte(""), 0), huma.ModeWriteToServer, v, res)
 			if got := len(res.Errors) > 0; got != tt.wantErr {
 				t.Fatalf("validate(%s) errors = %v, want error: %v", tt.value, res.Errors, tt.wantErr)
+			}
+		})
+	}
+}
+
+// Неверный день или время суток в запросе — ответ по-русски: описание шаблона huma пишет в сообщение поля
+// («значение должно соответствовать: <описание>»), и человек видит, как записать значение.
+func TestSchemaFieldErrorsAreRussian(t *testing.T) {
+	t.Parallel()
+
+	type slot struct {
+		Body struct {
+			Day  tzkit.Day      `json:"day"`
+			Wall tzkit.WallTime `json:"wall"`
+		}
+	}
+	api := handlertest.NewAPI(t, func(api huma.API) {
+		huma.Put(api, "/slot", func(context.Context, *slot) (*struct{}, error) { return nil, nil }) // тело ответа не нужно
+	})
+	const (
+		dayPattern  = "значение должно соответствовать: дата вида 2026-11-09 – год, месяц и день"
+		dayFormat   = "нужна дата, например 2026-11-09"
+		wallPattern = "значение должно соответствовать: время вида 09:30 – часы и минуты"
+	)
+	tests := []struct {
+		name string
+		body map[string]any
+		want map[string][]string
+	}{
+		{
+			name: "another notation",
+			body: map[string]any{"day": "09.11.2026", "wall": "9:30"},
+			want: map[string][]string{"body.day": {dayPattern, dayFormat}, "body.wall": {wallPattern}},
+		},
+		{
+			name: "no such day and time",
+			body: map[string]any{"day": "2026-13-40", "wall": "25:00"},
+			want: map[string][]string{"body.day": {dayFormat}, "body.wall": {wallPattern}},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resp := api.Put("/slot", tt.body)
+			handlertest.AssertAPIError(t, resp, http.StatusUnprocessableEntity, "VALIDATION_FAILED")
+			got := map[string][]string{}
+			for _, e := range handlertest.DecodeAPIError(t, resp).Errors {
+				got[e.Location] = append(got[e.Location], e.Message)
+			}
+			for location, want := range tt.want {
+				if !slices.Equal(got[location], want) {
+					t.Errorf("%s: messages = %q, want %q", location, got[location], want)
+				}
+			}
+			if len(got) != len(tt.want) {
+				t.Errorf("errors at %v, want only at %v", got, tt.want)
 			}
 		})
 	}

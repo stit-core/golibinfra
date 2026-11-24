@@ -18,13 +18,28 @@ import (
 	"git.stit.tech/stit-core/golibinfra/testkit/handlertest"
 )
 
+// titles — title ответа по статусу: русский, без текста net/http.
+var titles = map[int]string{
+	http.StatusBadRequest:            "Запрос составлен неверно",
+	http.StatusUnauthorized:          "Нужен вход в систему",
+	http.StatusForbidden:             "Не хватает прав",
+	http.StatusNotFound:              "Не найдено",
+	http.StatusMethodNotAllowed:      "Способ запроса не подходит",
+	http.StatusConflict:              "Конфликт с текущими данными",
+	http.StatusRequestEntityTooLarge: "Запрос слишком большой",
+	http.StatusUnprocessableEntity:   "Данные не прошли проверку",
+	http.StatusTooManyRequests:       "Слишком много запросов",
+	http.StatusInternalServerError:   "Ошибка в работе системы",
+	http.StatusServiceUnavailable:    "Сервис временно недоступен",
+}
+
 func TestAPIError_JSON(t *testing.T) {
 	raw, err := json.Marshal(httpkit.Error("USER_NOT_FOUND", http.StatusNotFound, "user not found"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	s := string(raw)
-	for _, want := range []string{`"code":"USER_NOT_FOUND"`, `"status":404`, `"title":"Not Found"`, `"detail":"user not found"`} {
+	for _, want := range []string{`"code":"USER_NOT_FOUND"`, `"status":404`, `"title":"Не найдено"`, `"detail":"user not found"`} {
 		if !strings.Contains(s, want) {
 			t.Errorf("json %s lacks %s", s, want)
 		}
@@ -51,8 +66,8 @@ func TestHumaErrors_AreAPIErrors(t *testing.T) {
 		t.Fatalf("validation: %#v", validation)
 	}
 	want := []httpkit.FieldError{
-		{Location: "body.password", Code: "INVALID", Message: "expected length >= 12"},
-		{Code: "INVALID", Message: "end must follow start"},
+		{Location: "body.password", Code: "INVALID", Message: "число знаков: не меньше 12"},
+		{Code: "INVALID", Message: "end must follow start"}, // текст потребителя остаётся как есть
 	}
 	if len(apiErr.Errors) != len(want) || apiErr.Errors[0] != want[0] || apiErr.Errors[1] != want[1] {
 		t.Fatalf("Errors = %+v, want %+v", apiErr.Errors, want)
@@ -129,11 +144,11 @@ func TestHumaErrors_FormatMessagesDoNotEchoInput(t *testing.T) {
 		t.Fatalf("the input is echoed: %s", resp.Body.String())
 	}
 	want := map[string]string{
-		"body.email":    "expected string to be RFC 5322 email",
-		"body.uri":      "expected string to be RFC 3986 uri",
-		"body.uuid":     "expected string to be RFC 4122 uuid",
-		"body.regex":    "expected string to be regex",
-		"body.duration": "expected duration",
+		"body.email":    "нужен адрес электронной почты, например name@example.com",
+		"body.uri":      "нужна ссылка, например https://example.com/page",
+		"body.uuid":     "нужен идентификатор вида 123e4567-e89b-12d3-a456-426614174000",
+		"body.regex":    "нужно регулярное выражение, записанное без ошибок",
+		"body.duration": "нужна длительность, например 1h30m (h – часы, m – минуты, s – секунды)",
 	}
 	got := map[string]string{}
 	for _, fe := range handlertest.DecodeAPIError(t, resp).Errors {
@@ -167,8 +182,8 @@ func TestHumaErrors_ParamDecoderDoesNotEchoInput(t *testing.T) {
 			t.Fatalf("%s: the input is echoed: %s", location, resp.Body.String())
 		}
 		errs := handlertest.DecodeAPIError(t, resp).Errors
-		if len(errs) != 1 || errs[0].Location != location || errs[0].Message != "invalid value" {
-			t.Errorf("%s: errors = %+v, want one with message %q", location, errs, "invalid value")
+		if len(errs) != 1 || errs[0].Location != location || errs[0].Message != "значение указано неверно" {
+			t.Errorf("%s: errors = %+v, want one with message %q", location, errs, "значение указано неверно")
 		}
 	}
 }
@@ -221,8 +236,8 @@ func TestErrorHelpers(t *testing.T) {
 		{httpkit.Unavailable("C", "d"), http.StatusServiceUnavailable},
 	}
 	for _, c := range cases {
-		if c.got.Status != c.status || c.got.Title != http.StatusText(c.status) {
-			t.Errorf("%+v: want status %d", c.got, c.status)
+		if c.got.Status != c.status || c.got.Title != titles[c.status] {
+			t.Errorf("%+v: want status %d and title %q", c.got, c.status, titles[c.status])
 		}
 	}
 }

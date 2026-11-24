@@ -13,7 +13,7 @@ func (Day) Schema(huma.Registry) *huma.Schema {
 		Format:             "date",
 		Nullable:           true,
 		Pattern:            `^\d{4}-\d{2}-\d{2}$`,
-		PatternDescription: "a calendar day YYYY-MM-DD",
+		PatternDescription: "дата вида 2026-11-09 – год, месяц и день",
 		Examples:           []any{"2026-08-08"},
 	}
 }
@@ -23,7 +23,7 @@ func (WallTime) Schema(huma.Registry) *huma.Schema {
 	return &huma.Schema{
 		Type:               huma.TypeString,
 		Pattern:            `^([01][0-9]|2[0-3]):[0-5][0-9]$`,
-		PatternDescription: "a wall time HH:MM",
+		PatternDescription: "время вида 09:30 – часы и минуты",
 		Examples:           []any{"17:00"},
 	}
 }

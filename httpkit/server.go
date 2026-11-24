@@ -263,7 +263,7 @@ func NewServer(cfg Config, log logkit.Logger, opts ...ServerOption) (*Server, er
 	}
 	r.Use(chain(cfg, log, o)...)
 	r.NotFound(func(w http.ResponseWriter, req *http.Request) {
-		writeAPIError(req.Context(), w, Error("NOT_FOUND", http.StatusNotFound, "route not found"))
+		writeAPIError(req.Context(), w, Error("NOT_FOUND", http.StatusNotFound, textRouteNotFound))
 	})
 	r.MethodNotAllowed(methodNotAllowed(r))
 	// huma.API создаётся лениво в BindAPI(): humachi.New регистрирует
@@ -485,7 +485,7 @@ func methodNotAllowed(router chi.Routes) http.HandlerFunc {
 				}
 			}
 		}
-		writeAPIError(r.Context(), w, Error("METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed, "method not allowed"))
+		writeAPIError(r.Context(), w, Error("METHOD_NOT_ALLOWED", http.StatusMethodNotAllowed, textMethodNotAllowed))
 	}
 }
 

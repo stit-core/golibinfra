@@ -65,7 +65,7 @@ func TestDecodeAPIError_Problem(t *testing.T) {
 	if got.Detail != "user does not exist" {
 		t.Errorf("Detail = %q", got.Detail)
 	}
-	if got.Title != http.StatusText(http.StatusNotFound) {
+	if got.Title != "Не найдено" {
 		t.Errorf("Title = %q", got.Title)
 	}
 	if got.RequestID == "" || got.RequestID != resp.Header().Get(httpkit.HeaderRequestID) {
@@ -86,7 +86,7 @@ func TestDecodeAPIError_HumaValidation(t *testing.T) {
 	if got.Title == "" || got.Detail == "" {
 		t.Errorf("top-level fields lost: %+v", got)
 	}
-	want := httpkit.FieldError{Location: "body.name", Code: "INVALID", Message: "expected length >= 3"}
+	want := httpkit.FieldError{Location: "body.name", Code: "INVALID", Message: "число знаков: не меньше 3"}
 	if len(got.Errors) != 1 || got.Errors[0] != want {
 		t.Fatalf("Errors = %+v, want [%+v]", got.Errors, want)
 	}

@@ -170,10 +170,22 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 (RFC 9457):
 
 ```json
-{"title":"Unprocessable Entity","status":422,"detail":"validation failed",
+{"title":"Данные не прошли проверку","status":422,
+ "detail":"Данные не прошли проверку. Исправьте указанные поля и повторите запрос.",
  "code":"VALIDATION_FAILED","request_id":"01a0…","errors":[
-   {"location":"body.password","code":"INVALID","message":"expected length >= 12"}]}
+   {"location":"body.password","code":"INVALID","message":"число знаков: не меньше 12"}]}
 ```
+
+- **Язык.** `title`, `detail` и `errors[].message` кита — русские, для человека, который систему не
+  строил (`texts.go`; правило — CLAUDE.md § Стиль, «Язык»). `title` — по статусу (`400 Запрос составлен
+  неверно`, `404 Не найдено`, `422 Данные не прошли проверку`, `500 Ошибка в работе системы`); статус вне
+  таблицы — по классу (`Запрос не выполнен`, `Ошибка в работе системы`), вне 400–599 — текст net/http.
+  Сообщения huma (`validation.Msg*` и разбор параметров и тела) переводит таблица `fieldTexts`: шаблон
+  huma → русский текст с подстановкой значений, шаблон берётся из самой huma, и тест
+  `TestFieldTexts_CoverEveryHumaMessage` называет сообщение, которого в таблице нет после обновления
+  huma. Текст потребителя (`Detail` правила `ErrorMap`, `huma.Error4xx("…")`, `Resolve`, `patternDescription`
+  схемы — huma подставляет его в «значение должно соответствовать: …») кит не трогает: потребитель пишет его
+  по тому же правилу. `code`, статус и форма тела от языка не зависят.
 
 - `code` — стабильный машинный код: свой у операции (`404 USER_NOT_FOUND`) или
   общий кита по статусу — `400 BAD_REQUEST`, `401 UNAUTHORIZED`, `404 NOT_FOUND`,
@@ -186,15 +198,15 @@ WebSocket-upgrade. Повторное оборачивание того же wri
 - `errors[]` — ошибки мест запроса `{location, code, message}`: у валидации huma
   (`code` — `INVALID`) и у `422 IDEMPOTENCY_KEY_REUSED` (`header.Idempotency-Key`).
   Значение поля клиенту не возвращается: в нём бывает пароль. Сообщения huma,
-  которые цитируют ввод, обрезаются до базового текста — форматы (email, uri,
-  uuid, regex, duration: `expected string to be RFC 5322 email`) и ошибка
-  `UnmarshalText` параметра (`invalid value`). Исключение — текст декодера тела
-  с location `body`: синтаксис JSON (называет один символ) и ошибку
+  которые цитируют ввод, по-русски его не несут — форматы (email, uri, uuid,
+  regex, duration: `нужен адрес электронной почты, например name@example.com`)
+  и ошибка `UnmarshalText` параметра (`значение указано неверно`); синтаксис JSON
+  тела — без символа, на котором разбор остановился. Исключение — ошибку
   `UnmarshalText`/`UnmarshalJSON` типа поля, которую ловит не схема, а разбор
   тела (`netip.Prefix`), huma отдаёт как есть. Строковое поле, где бывает
   пароль, проверяет схема, а не декодер. Имена из запроса возвращаются: `location`
-  называет его ключ, и лишний тоже (`body.<ключ>`, `unexpected property`), а `415` —
-  его `Content-Type` (`unknown content type: …`).
+  называет его ключ, и лишний тоже (`body.<ключ>`, `лишнее поле: такого поля в запросе
+  нет`), а `415` — его `Content-Type` (`формат данных не поддерживается: …`).
 - 5xx, собранная китом, — только `title`, `status`, `code` и `request_id`: текст
   причины и `detail` уходят в лог строкой `handler error` (`operation`, `status`,
   `code`, `error`).
