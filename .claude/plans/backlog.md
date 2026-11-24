@@ -200,3 +200,7 @@
   русские (CLAUDE.md § Стиль, «Язык»): oidckit вне объёма аудита и в перевод `httpkit` не вошёл. Перевести — по
   таблице `httpkit/texts.go`, с тестом, что ответы BFF без латиницы. Триггер: сервис подключает BFF `oidckit` или
   аудит oidckit.
+- **lint-cache-toolchain** — тёплый кеш golangci-lint checkout'а (`.cache/golangci-lint`) после смены toolchain
+  (go1.26.10 → go1.26.11) дал 11 ложных SA5011 в тестах (`t.Fatalf` не признан завершающим), `golangci-lint cache
+  clean` — 0 issues; вердикт pre-push и `make gate-clean` — с холодным кешем, их это не задевает. В ключ кеша — версия
+  toolchain (или чистка кеша lint при её смене). Триггер: следующая смена toolchain.
